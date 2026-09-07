@@ -121,7 +121,6 @@ pub struct ApplyStories {
 impl EditCommand for ApplyStories {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         use squid_n_core::model::Constraint;
-        // 変更前の全量スナップショット（rep_nodes の置換/追加も含めて丸ごと復元できるようにする）。
         let old_nodes = model.nodes.clone();
         let old_generated_masters = model.generated_masters.clone();
         let old_mass_method = model.mass_method;
@@ -130,14 +129,12 @@ impl EditCommand for ApplyStories {
         for (node, st) in model.nodes.iter_mut().zip(self.node_story.iter()) {
             node.story = *st;
         }
-        // RigidDiaphragm のみ差し替え、それ以外の拘束は保持
         let old_constraints = model.constraints.clone();
         model
             .constraints
             .retain(|c| !matches!(c, Constraint::RigidDiaphragm { .. }));
         model.constraints.extend(self.constraints.iter().cloned());
 
-        // 剛床代表節点：ID＝配列インデックス不変条件を保って置換 or 追加する。
         for rn in &self.rep_nodes {
             let idx = rn.id.index();
             if idx < model.nodes.len() {
@@ -214,7 +211,6 @@ pub struct AddSlab {
 
 impl EditCommand for AddSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        // 境界が実在しない節点や断面を指す床は作らない（crate::refs の規約）。
         if !self
             .boundary
             .iter()
@@ -263,8 +259,6 @@ impl EditCommand for DeleteSlab {
             return Box::new(Noop);
         }
 
-        // カスケード: 床領域の slab_ids から除去し、位置を退避
-        // (床領域添字, リスト内位置) を昇順で記録する（InsertSlab での復元用）。
         let mut region_refs: Vec<(usize, usize)> = Vec::new();
         for (ri, region) in model.floor_regions.iter_mut().enumerate() {
             let mut pos = 0;
@@ -303,8 +297,7 @@ impl EditCommand for DeleteSlab {
 pub struct InsertSlab {
     pub index: usize,
     pub slab: squid_n_core::model::Slab,
-    /// 削除時に床領域の `slab_ids` から除去した参照の (床領域添字, リスト内位置)。
-    /// 昇順で記録されているため逆順で挿入して元の並びを復元する。
+    /// 削除時に床領域から除去した参照の (床領域添字, リスト内位置)。
     pub region_refs: Vec<(usize, usize)>,
 }
 
@@ -323,7 +316,6 @@ impl EditCommand for InsertSlab {
         slab.id = id;
         model.slabs.insert(self.index, slab);
 
-        // 床領域の slab_ids を元の位置へ復元（逆順挿入で昇順復元）。
         for &(ri, pos) in self.region_refs.iter().rev() {
             if let Some(region) = model.floor_regions.get_mut(ri) {
                 let insert_pos = pos.min(region.slab_ids.len());

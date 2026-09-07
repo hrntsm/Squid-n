@@ -5,8 +5,6 @@ use squid_n_core::ids::*;
 use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 use std::collections::HashSet;
 
-// ─── バリデーション ─────────────────────────────────────
-
 fn secondary_member_ok(model: &Model, sm: &SecondaryMember) -> bool {
     sm.nodes.iter().all(|&n| crate::refs::node_exists(model, n))
         && crate::refs::section_ref_ok(model, sm.section)
@@ -79,8 +77,6 @@ fn take_from_unassigned(
     unassigned.retain(|sm| !new_keys.contains(&endpoint_key(sm)));
 }
 
-// ─── 未割当小梁 ─────────────────────────────────────────
-
 /// 未割当小梁を末尾へ追加する。逆操作は [`DeleteUnassignedJoist`]。
 pub struct AddUnassignedJoist {
     pub sm: SecondaryMember,
@@ -147,8 +143,6 @@ impl EditCommand for InsertUnassignedJoist {
     }
 }
 
-// ─── 未割当間柱 ─────────────────────────────────────────
-
 /// 未割当間柱を末尾へ追加する。
 pub struct AddUnassignedPost {
     pub sm: SecondaryMember,
@@ -214,8 +208,6 @@ impl EditCommand for InsertUnassignedPost {
         "未割当間柱削除の取り消し"
     }
 }
-
-// ─── 床領域の小梁 ───────────────────────────────────────
 
 /// 床領域の小梁リスト（`secondary_joists`）を全置換する。
 ///
@@ -328,8 +320,6 @@ impl EditCommand for SetFloorRegionJoistSection {
         "床領域小梁断面変更"
     }
 }
-
-// ─── 壁領域 ────────────────────────────────────────────
 
 /// 壁領域の表示名変更。
 pub struct SetWallRegionName {

@@ -54,18 +54,13 @@ fn snapshot(model: &Model) -> RestoreStoryDefs {
 }
 
 /// 標高昇順へ並べ替え、`StoryId` ＝配列位置になるよう全参照を振り直す。
-///
-/// 並べ替え前の ID から並べ替え後の ID への対応表を作り、
-/// [`Model::visit_story_ids`] で一括置換する。
 fn resort_and_renumber(model: &mut Model) {
-    // 旧 ID（＝現在の配列位置）を保持したまま標高昇順へ並べる。
     let mut order: Vec<usize> = (0..model.stories.len()).collect();
     order.sort_by(|&a, &b| {
         model.stories[a]
             .elevation
             .total_cmp(&model.stories[b].elevation)
     });
-    // old_id → new_id（添字は並べ替え前の `Story::id`＝配列位置）
     let mut remap = vec![StoryId(0); model.stories.len()];
     for (new_idx, &old_idx) in order.iter().enumerate() {
         if let Some(slot) = remap.get_mut(model.stories[old_idx].id.index()) {
@@ -77,8 +72,6 @@ fn resort_and_renumber(model: &mut Model) {
             *sid = new;
         }
     });
-    // 参照を書き換えたあとに実体を並べ替える（並べ替えを先にすると
-    // `visit_story_ids` が拾う `Story::id` の対応が崩れる）。
     model.stories.sort_by_key(|s| s.id.0);
 }
 
@@ -91,7 +84,6 @@ impl EditCommand for SetStoryLevel {
         let before = snapshot(model);
         let story = &mut model.stories[idx];
         story.name = self.name.clone();
-        // 基部の階の標高は据え置く（上記の不変条件）。
         if idx != 0 {
             story.elevation = self.elevation;
         }
@@ -115,8 +107,6 @@ pub struct AddStory {
 impl EditCommand for AddStory {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let before = snapshot(model);
-        // 末尾へ加えてから並べ替える（挿入位置の計算と ID 繰り上げを
-        // `resort_and_renumber` の 1 箇所に集約する）。
         model.stories.push(Story {
             id: StoryId(model.stories.len() as u32),
             name: self.name.clone(),
@@ -136,18 +126,7 @@ impl EditCommand for AddStory {
     }
 }
 
-/// 階（床）を削除する。**階の定義だけを消し、節点・部材は残す**。
-///
-/// 階は床の定義であって部材の入れ物ではないため、削除しても構造は変わらない。
-/// ただし**層はなくなる**（層は隣り合う階の間であり、階を 1 つ消せば層も 1 つ減る）。
-/// 削除した階に属していた節点は所属階を失い、次の階生成で直下階の区間へ吸収される。
-/// その階の剛床拘束は意味を失うため取り除く。
-///
-/// **基部の階（`StoryId(0)`）は削除できない**（Noop）。階の列の先頭が基部で
-/// あることは [`Model::layers`] が依拠する不変条件であり、これを消すと最下層が
-/// 層の一覧から静かに落ちるためである。
-/// index が範囲外（削除済み等）の場合も Noop。`StoryId ＝配列位置`が
-/// 不変条件なので index 位置の階と ID は常に一致し、その確認は防御的なもの。
+/// 階（床）を削除する。節点・部材は残す。基部の階は削除できない。
 pub struct DeleteStory {
     pub story: StoryId,
 }
@@ -163,14 +142,12 @@ impl EditCommand for DeleteStory {
         }
         let before = snapshot(model);
         model.stories.remove(idx);
-        // 削除した階の剛床は載る先を失うため取り除く。
         model.constraints.retain(|c| {
             !matches!(
                 c,
                 squid_n_core::model::Constraint::RigidDiaphragm { story, .. } if *story == self.story
             )
         });
-        // 削除した階に属していた節点の所属階を外し、以降の階の ID を繰り上げる。
         let removed = self.story;
         for node in &mut model.nodes {
             match node.story {

@@ -110,13 +110,8 @@ impl EditCommand for AddNode {
     }
 }
 
-/// 節点削除（末尾以外の中間節点も可）。逆操作は [`InsertNode`]（元の位置に再挿入し、
-/// 繰り上がった ID・参照を元に戻す）。
-///
-/// ID＝配列インデックスの不変条件を保つため、削除後は当該節点より後ろの
-/// 節点 ID と、それを参照する全ての箇所（部材・節点荷重・階・床・拘束）を
-/// 1 つずつ繰り上げる。部材などからまだ参照されている節点は削除すると
-/// 参照が壊れるため Noop とする（先に参照を解消する必要がある）。
+/// 節点削除（末尾以外の中間節点も可）。逆操作は [`InsertNode`]。
+/// 削除後は ID を繰り上げる。参照されている節点は Noop とする。
 pub struct DeleteNode {
     pub id: NodeId,
 }
@@ -130,7 +125,6 @@ impl EditCommand for DeleteNode {
         if model.node_in_use(self.id) {
             return Box::new(Noop);
         }
-        // 剛床代表節点かどうかを退避し、リストからは先に除去してから ID を繰り上げる。
         let generated_master =
             if let Some(pos) = model.generated_masters.iter().position(|n| *n == self.id) {
                 model.generated_masters.remove(pos);
@@ -138,9 +132,6 @@ impl EditCommand for DeleteNode {
             } else {
                 false
             };
-        // 通り芯の所属は退避してから外す。通り芯は計算に用いない呼称であり、
-        // `node_in_use` には数えない（＝節点削除を妨げない）ため、ここで参照を
-        // 解消しないと `validate` の DanglingRef になる。
         let mut axis_membership = Vec::new();
         for (gi, group) in model.axes.iter_mut().enumerate() {
             for (ai, axis) in group.axes.iter_mut().enumerate() {
@@ -173,21 +164,15 @@ impl EditCommand for DeleteNode {
     }
 }
 
-/// 指定インデックスへ節点を再挿入し、以降の節点 ID・参照を 1 つ繰り下げる
-/// （[`DeleteNode`] の逆操作専用。新規追加は [`AddNode`] を使うこと）。
+/// 指定インデックスへ節点を再挿入する（[`DeleteNode`] の逆操作専用）。
 pub struct InsertNode {
     pub index: usize,
     pub coord: [f64; 3],
     pub restraint: squid_n_core::dof::Dof6Mask,
     pub mass: Option<[f64; 6]>,
     pub story: Option<squid_n_core::ids::StoryId>,
-    /// 支点ばね（[`DeleteNode`] で退避した値。省略時は `None`）。
     pub support_spring: Option<[f64; 6]>,
-    /// 削除された節点が `generated_masters`（剛床代表節点）に含まれていたか。
-    /// 含まれていた場合、再挿入後の ID を `generated_masters` へ戻す。
     pub generated_master: bool,
-    /// 削除された節点が属していた通り芯の位置（`model.axes` のグループ添字, 通り添字）。
-    /// 再挿入後、同じ通りへ所属を戻す。
     pub axis_membership: Vec<(usize, usize)>,
 }
 
@@ -214,7 +199,6 @@ impl EditCommand for InsertNode {
             model.generated_masters.push(id);
             model.generated_masters.sort();
         }
-        // 通り芯の所属を戻す（所属リストは節点 ID 昇順に保つ）。
         for &(gi, ai) in &self.axis_membership {
             if let Some(axis) = model.axes.get_mut(gi).and_then(|g| g.axes.get_mut(ai)) {
                 let pos = axis.nodes.partition_point(|n| *n < id);
@@ -385,7 +369,6 @@ impl EditCommand for PlaceSupportIsolator {
         let coord = model.nodes[idx].coord;
         let old_restraint = model.nodes[idx].restraint;
 
-        // 1) 接地節点を末尾に追加（restraint=FIXED、対象節点と同一座標＝零長要素）。
         let ground_id = NodeId(model.nodes.len() as u32);
         model.nodes.push(squid_n_core::model::Node {
             id: ground_id,
@@ -396,7 +379,6 @@ impl EditCommand for PlaceSupportIsolator {
             support_spring: None,
         });
 
-        // 2) 零長 Isolator 要素を末尾に追加（i端=接地節点、j端=対象節点）。
         let elem_id = ElemId(model.elements.len() as u32);
         model.elements.push(squid_n_core::model::ElementData {
             id: elem_id,
@@ -422,7 +404,6 @@ impl EditCommand for PlaceSupportIsolator {
                 props: self.props,
             });
 
-        // 3) 対象節点は免震装置を介して支持されるため、restraint を解放する。
         model.nodes[idx].restraint = squid_n_core::dof::Dof6Mask::FREE;
 
         Box::new(UndoPlaceSupportIsolator {
@@ -455,16 +436,11 @@ impl EditCommand for UndoPlaceSupportIsolator {
             return Box::new(Noop);
         }
         model.nodes[idx].restraint = self.old_restraint;
-        // 要素（Isolator＋属性）を先に削除してから接地節点を削除する
-        // （node_in_use は要素が参照している間、節点の削除を拒否するため）。
         DeleteMember { id: self.elem }.apply(model);
         DeleteNode {
             id: self.ground_node,
         }
         .apply(model);
-        // redo は同一パラメータで PlaceSupportIsolator を再適用する。LIFO の
-        // undo/redo 前提の下、生成される接地節点・要素 ID は元と同じ値に戻る
-        // （直前に削除した分だけ model.nodes/elements の末尾が縮んでいるため）。
         Box::new(PlaceSupportIsolator {
             node: self.node,
             props: self.props,
@@ -477,29 +453,13 @@ impl EditCommand for UndoPlaceSupportIsolator {
 }
 
 /// [`PlaceSupportIsolator`] で配置した支点免震要素の撤去（単体削除）。
-///
-/// [`Model::support_isolator_ends`] で対象節点 `node` に接続する支点免震要素
-/// （零長 `Isolator` 要素・他端が孤立した `restraint=FIXED` の接地節点）を特定し、
-/// その要素（＋免震特性）と接地節点を削除した上で、対象節点の `restraint` を
-/// `FIXED` へ戻す複合コマンド。対象が支点免震要素の形を満たさない場合は Noop
-/// （通常の〔支点ではない〕免震要素は [`DeleteMember`] を使うこと）。
-///
-/// **配置前の拘束は復元しない仕様**: `PlaceSupportIsolator` は設置前の `restraint`
-/// を記録していないため（対象節点の元の拘束を覚えていない）、本コマンドは
-/// 撤去後の拘束を常に `FIXED` に統一する。設置前がピン支点等だった場合でも
-/// `FIXED` に戻る点に注意（必要なら撤去後に境界条件パネルで再設定する）。
-///
-/// 逆操作（undo）は接地節点・要素を元の位置・ID・特性で完全に復元し、対象節点の
-/// 拘束も本コマンド実行直前の値（＝撤去前の値。通常は `PlaceSupportIsolator` が
-/// 解放した `FREE`）へ戻す。
+/// 撤去後の拘束は常に `FIXED` に統一する（設置前の拘束は復元しない）。
 pub struct RemoveSupportIsolator {
     pub node: NodeId,
 }
 
 impl EditCommand for RemoveSupportIsolator {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        // 対象節点が「上部節点」側になっている支点免震要素を探す
-        // （接地節点＝FIXED側を選んだ場合はヒットしない。support_isolator_ends 参照）。
         let found = model.elements.iter().find_map(|e| {
             model
                 .support_isolator_ends(e.id)
@@ -515,13 +475,9 @@ impl EditCommand for RemoveSupportIsolator {
         }
         let old_restraint = model.nodes[idx].restraint;
 
-        // 要素（Isolator＋属性）を先に削除してから接地節点を削除する
-        // （node_in_use は要素が参照している間、節点の削除を拒否するため。
-        // PlaceSupportIsolator の逆操作 UndoPlaceSupportIsolator と同じ順序）。
         let undo_member = DeleteMember { id: elem_id }.apply(model);
         let undo_node = DeleteNode { id: ground }.apply(model);
 
-        // 対象節点は撤去後、免震装置を介さない直接支点になる。
         let idx = self.node.index();
         if idx < model.nodes.len() && model.nodes[idx].id == self.node {
             model.nodes[idx].restraint = squid_n_core::dof::Dof6Mask::FIXED;
@@ -544,18 +500,12 @@ impl EditCommand for RemoveSupportIsolator {
 struct UndoRemoveSupportIsolator {
     node: NodeId,
     old_restraint: squid_n_core::dof::Dof6Mask,
-    /// 接地節点の再挿入（[`DeleteNode`] が返した `InsertNode`）。
     undo_node: Box<dyn EditCommand>,
-    /// 免震要素（＋属性）の再挿入（[`DeleteMember`] が返した `InsertMember`）。
     undo_member: Box<dyn EditCommand>,
 }
 
 impl EditCommand for UndoRemoveSupportIsolator {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        // 復元は削除と逆順: 先に接地節点を再挿入し、次に免震要素を再挿入する
-        // （PlaceSupportIsolator と同じ生成順）。再挿入は元の位置・ID を復元するため、
-        // 再挿入後は本コマンド実行前と同一の状態に戻る＝RemoveSupportIsolator を
-        // 再実行すれば同じ結果になる（redo はそれをそのまま使う）。
         self.undo_node.apply(model);
         self.undo_member.apply(model);
         let idx = self.node.index();
@@ -571,10 +521,6 @@ impl EditCommand for UndoRemoveSupportIsolator {
 }
 
 /// 部材削除（中間の部材も可）。逆操作は [`InsertMember`]。
-///
-/// ID＝配列インデックスの不変条件を保つため、削除後は当該部材より後ろの
-/// 部材 ID と、それを参照する部材荷重の `elem` を 1 つずつ繰り上げる。
-/// 当該部材を参照する部材荷重は連動して削除し、undo で復元する。
 pub struct DeleteMember {
     pub id: ElemId,
 }
@@ -585,7 +531,6 @@ impl EditCommand for DeleteMember {
         if idx >= model.elements.len() || model.elements[idx].id != self.id {
             return Box::new(Noop);
         }
-        // 当該部材を参照する部材荷重を (荷重ケース index, 荷重 index, 内容) で退避してから削除
         let mut removed_loads = Vec::new();
         for (lci, lc) in model.load_cases.iter_mut().enumerate() {
             let mut li = 0;
@@ -597,11 +542,7 @@ impl EditCommand for DeleteMember {
                 }
             }
         }
-        // 側テーブル属性（履歴則・ダンパー・免震等）を退避してから削除（残余は shift で繰上げ）。
         let removed_attrs = model.take_elem_attrs(self.id);
-        // 一本部材指定（beam_groups）から当該部材を連動削除する（残すと shift 後に
-        // 別部材を指し、検定の採用応力が無関係な部材と合成される）。undo 用に
-        // (グループ index, グループ内位置) を退避する。
         let mut removed_group_refs = Vec::new();
         for (gi, group) in model.beam_groups.iter_mut().enumerate() {
             let mut pos = 0;
@@ -614,8 +555,6 @@ impl EditCommand for DeleteMember {
                 }
             }
         }
-        // WallRegion/WallPlate は ElemId を持たない（壁の解析要素は準備計算からの
-        // 生成物であり、モデルには残さない。D4・D5）ため、壁領域側の連動処理は不要。
         let removed = model.elements.remove(idx);
         shift_elem_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -636,17 +575,15 @@ impl EditCommand for DeleteMember {
     }
 }
 
-/// 指定インデックスへ部材を再挿入し、以降の部材 ID・参照を 1 つ繰り下げ、
-/// 連動削除された部材荷重を復元する（[`DeleteMember`] の逆操作専用）。
+/// 指定インデックスへ部材を再挿入する（[`DeleteMember`] の逆操作専用）。
 pub struct InsertMember {
     pub index: usize,
     pub elem: squid_n_core::model::ElementData,
     /// (荷重ケース index, 荷重 index, 内容)
     pub member_loads: Vec<(usize, usize, squid_n_core::model::MemberLoad)>,
-    /// 削除時に退避した側テーブル属性（履歴則・ダンパー・免震等）。
+    /// 削除時に退避した側テーブル属性。
     pub elem_attrs: squid_n_core::model::ElemAttrs,
-    /// 削除時に一本部材指定（beam_groups）から外した参照の
-    /// (グループ index, グループ内位置)。undo で同じ位置へ復元する。
+    /// 削除時に一本部材指定から外した参照の (グループ index, グループ内位置)。
     pub beam_group_refs: Vec<(usize, usize)>,
 }
 
@@ -664,21 +601,13 @@ impl EditCommand for InsertMember {
         let mut elem = self.elem.clone();
         elem.id = id;
         model.elements.insert(self.index, elem);
-        // 部材荷重は削除時に「縮んでいく配列でのインデックス」を昇順で記録している。
-        // 正しく復元するには逆順（最後に削除したものから）で挿入する必要がある。
-        // 従来は前方順に挿入しており、同一部材を参照する複数荷重の順序が入れ替わり、
-        // undo が削除前の状態を正確に復元できていなかった。
         for (lci, li, load) in self.member_loads.iter().rev() {
             if let Some(lc) = model.load_cases.get_mut(*lci) {
                 let pos = (*li).min(lc.member.len());
                 lc.member.insert(pos, load.clone());
             }
         }
-        // 退避した側テーブル属性を再挿入 ID へ紐づけ直して復元。
         model.restore_elem_attrs(id, self.elem_attrs.clone());
-        // 一本部材指定（beam_groups）から外した参照を元の位置へ復元する。
-        // 削除時は「縮んでいく配列での位置」を昇順で記録しているため、
-        // 部材荷重と同様に逆順で挿入すると削除前の並びに戻る。
         for &(gi, pos) in self.beam_group_refs.iter().rev() {
             if let Some(group) = model.beam_groups.get_mut(gi) {
                 group.insert(pos.min(group.len()), id);
@@ -692,14 +621,12 @@ impl EditCommand for InsertMember {
     }
 }
 
-/// モデル内の全ての `ElemId` 参照（部材自身の ID・部材荷重・要素キー付き側テーブル・
-/// 一本部材指定）に `f` を適用する。要素の削除・挿入に伴う ID 繰上げ／繰下げで
-/// 参照整合を保つ。走査は core 側（[`Model::visit_elem_ids`]）が単一情報源として持つ。
+/// モデル内の全ての `ElemId` 参照に `f` を適用する。
 fn shift_elem_ids(model: &mut Model, f: impl FnMut(&mut ElemId)) {
     model.visit_elem_ids(f);
 }
 
-/// 何もしないコマンド（参照不正時の安全なフォールバック）。
+/// 何もしないコマンド。
 pub struct Noop;
 
 impl EditCommand for Noop {

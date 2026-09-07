@@ -76,8 +76,6 @@ impl EditCommand for SetSectionField {
             }
             SectionField::PanelThickness => {
                 let o = sec.panel_thickness.unwrap_or(0.0);
-                // 0 以下は「未入力」を表す。諸元解決も 0 以下を未入力として扱う
-                // （`squid_n_core::panel_zone::PanelGeometry::from_column`）。
                 sec.panel_thickness = (self.value > 0.0).then_some(self.value);
                 o
             }
@@ -112,7 +110,6 @@ impl EditCommand for SetSectionName {
         if idx >= model.sections.len() || model.sections[idx].id != self.id {
             return Box::new(Noop);
         }
-        // 符号＋階が他の断面と衝突する変更は適用しない。
         if squid_n_core::model::section_key_taken(
             &model.sections,
             (self.name.as_str(), self.floor.as_deref()),
@@ -282,8 +279,6 @@ impl EditCommand for DuplicateSectionForMember {
         let new_id = SectionId(model.sections.len() as u32);
         let mut new_sec = orig.clone();
         new_sec.id = new_id;
-        // 符号＋階は一意でなければならないため、階は元断面のまま符号を自動採番する
-        // （同じ断面を 2 回複製しても衝突しない）。
         new_sec.name = unique_duplicate_name(&model.sections, &orig.name, orig.floor.as_deref());
         model.sections.push(new_sec);
         model.elements[elem_idx].section = Some(new_id);
