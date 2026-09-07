@@ -258,27 +258,18 @@ impl ImportReport {
 }
 
 /// ST-Bridge ファイルを読み込み、UTF-8 文字列へデコードする。
-///
-/// 日本の建築業界では ST-Bridge が Shift_JIS（Windows-31J / CP932）で
-/// 保存されるケースが多いため、次の順で判定する（BOM の有無は問わない）。
-/// まず UTF-8 BOM 付き、または UTF-8 として妥当なら UTF-8 として扱い、
-/// それ以外は Shift_JIS（Windows-31J）としてデコードする。
-/// 読み込み自体の失敗 (存在しない等) は [`StbError::Io`] として返す。
 pub fn read_stbridge_file(path: &std::path::Path) -> Result<String, StbError> {
     use encoding_rs::SHIFT_JIS;
     let bytes =
         std::fs::read(path).map_err(|e| StbError::Io(format!("{}: {e}", path.display())))?;
 
-    // BOM 付き UTF-8 はそのまま UTF-8 扱い。
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8(bytes[3..].to_vec())
             .map_err(|e| StbError::Decode(format!("UTF-8 デコードエラー: {e}")));
     }
-    // UTF-8 として妥当ならそのまま扱う（ASCII や既存の UTF-8 ファイル互換）。
     if let Ok(s) = String::from_utf8(bytes.clone()) {
         return Ok(s);
     }
-    // それ以外は Shift_JIS（Windows-31J / CP932）としてデコードする。
     let (cow, _, had_errors) = SHIFT_JIS.decode(&bytes);
     if had_errors {
         return Err(StbError::Decode(
@@ -293,9 +284,7 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
     import_stbridge_with_report(xml).map(|(m, _)| m)
 }
 
-/// ST-Bridge 2.0 XML を内部モデルへ取り込み、[`ImportReport`]（欠落・近似の警告）も返す。
-/// XML のイベント走査（[`parser`]）と、中間表現からのモデル組み立て（[`assemble`]）の
-/// 2 段で処理する。
+/// ST-Bridge 2.0 XML を内部モデルへ取り込み、[`ImportReport`]も返す。
 pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), StbError> {
     let parsed = parser::parse(xml)?;
     assemble::assemble(parsed)

@@ -62,12 +62,10 @@ fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
         if e.nodes.len() != 2 {
             continue;
         }
-        // 梁は幾何で柱/梁を判定、ブレースは梁役割（水平材の断面型）として扱う。
         let is_col = match e.kind {
             ElementKind::Beam => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
                 squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
             }
             ElementKind::Brace { .. } => false,
@@ -126,8 +124,6 @@ impl SteelLibrary {
         if self.entries.is_empty() {
             return String::new();
         }
-        // StbSecSteel の子要素はスキーマ順（H → BOX → Pipe → T → C → L → LipC →
-        // FlatBar → RoundBar）に並べる必要がある。同順位内は挿入順を保つ（安定ソート）。
         let mut ordered: Vec<&String> = self.entries.iter().collect();
         ordered.sort_by_key(|e| steel_rank(e));
         let mut s = String::from("      <StbSecSteel>\n");
@@ -173,8 +169,6 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
         num(web_thick),
         num(flange_thick)
     );
-    // r（フィレット半径）は内部モデルにないが、スキーマ上 length>0 が必須。取り込みでは
-    // 無視される（A/B/t1/t2 のみ使用）ため、フランジ厚を便宜値として与える。
     let body = format!(
         "<StbSecRoll-H name=\"{}\" type=\"H\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r=\"{}\"/>",
         esc(&name),
@@ -194,10 +188,6 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
 /// ST-Bridge スキーマ上 r（length）に 0 以下を許さないため、従来通り板厚を
 /// 便宜値として与える（取り込み側では r 属性は無視されるため実害はない）。
 fn box_figure(height: f64, width: f64, thick: f64, corner_r: f64) -> (String, String) {
-    // 形鋼ライブラリ（`SteelLibrary::add`）は名前で重複排除するため、名前は形状の
-    // 全パラメータから導く。corner_r を含めないと「同寸で角部半径だけ異なる」
-    // 2 断面が同一名に潰れ、後着エントリが捨てられて再取り込みで角部半径が
-    // 先着の値に化ける。
     let name = if corner_r > 0.0 {
         format!(
             "BOX-{}x{}x{}r{}",
@@ -209,7 +199,6 @@ fn box_figure(height: f64, width: f64, thick: f64, corner_r: f64) -> (String, St
     } else {
         format!("BOX-{}x{}x{}", num(height), num(width), num(thick))
     };
-    // type は BCP/BCR/STKR/ELSE のいずれか（種別を内部で持たないため ELSE）。
     let r = if corner_r > 0.0 { corner_r } else { thick };
     let body = format!(
         "<StbSecRoll-BOX name=\"{}\" type=\"ELSE\" A=\"{}\" B=\"{}\" t=\"{}\" r=\"{}\"/>",
@@ -349,8 +338,6 @@ fn steel_figure(shape: &SectionShape) -> Option<(String, String)> {
                 num(lower_thick),
                 num(web_thick)
             );
-            // 標準属性 A/B/t1/t2 は上フランジで表す（第三者は対称 H として読める）。
-            // 下フランジは方言属性 B2/t2_lower で持ち、Squid の完全往復を保証する。
             let body = format!(
                 "<StbSecBuild-H name=\"{}\" type=\"H\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" B2=\"{}\" t2_lower=\"{}\"/>",
                 esc(&name),
@@ -674,7 +661,6 @@ fn src_section(
     steel_fig: &str,
     id_mat: &str,
 ) -> String {
-    // 内蔵鉄骨の鋼種は断面の内蔵鉄骨材料の名前（未割当は空文字列）。
     let steel_grade = grades.steel.unwrap_or("");
     let (b, d, rebar_arrangement, grade) = match shape {
         SectionShape::SrcRect { b, d, .. } => (
@@ -683,7 +669,6 @@ fn src_section(
             rebar_arrangement_generic(shape, grades, is_beam, "SRC"),
             steel_grade.to_string(),
         ),
-        // 呼び出し側で SrcRect のみ渡す想定。防御的に空で返す。
         _ => return raw(id, sec),
     };
     let (elem, fig_wrap, fig_body, steel_wrap) = if is_beam {
@@ -763,7 +748,6 @@ fn rebar_arrangement_generic(
             format!("StbSecBarColumn_{kind}_RectSame"),
         )
     };
-    // かぶりは配置コンテナへ（梁は top/bottom、柱は start_X/end_X/start_Y/end_Y。0 は省く）。
     let cover_attr = if is_beam {
         cover_attr_beam(r.cover)
     } else {
@@ -803,7 +787,6 @@ fn raw(id: u32, sec: &Section) -> String {
 /// 標準モードの `<StbSections>` 本体と、部材参照の張り替え用 id マップを生成する。
 pub(super) fn standard_sections(model: &Model) -> StandardSections {
     let roles = section_roles(model);
-    // 梁用の分割断面へ割り当てる追加 id は、既存 id の最大値の次から採番する。
     let mut next_id = model.sections.iter().map(|s| s.id.0).max().unwrap_or(0) + 1;
     let mut alloc = || {
         let v = next_id;
@@ -811,10 +794,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         v
     };
 
-    // 断面へ付す材料属性（ST-Bridge は材料を断面側にグレード名で持つ）。**内部でも
-    // 材料は断面が持つ**ため、部材からの逆算や柱用／梁用の代用は不要で、断面の
-    // 主材料をそのまま書き出す。鋼は形鋼参照へ strength_main、RC/CFT/SRC の
-    // コンクリートは strength_concrete を付す。
     let mat_name = |base: u32| -> Option<&str> {
         let sec = model.sections.get(base as usize)?;
         let mat = model.materials.get(sec.material?.index())?;
@@ -834,26 +813,15 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
     };
 
     let mut steel = SteelLibrary::default();
-    // 断面要素は `StbSections` のスキーマ順（柱 RC/S/SRC/CFT → 梁 RC/S/SRC → …）へ
-    // 並べる必要があるため、(順位, XML) で集めて最後に整列する。同順位内は生成順を保つ。
-    // 順位: Column_RC=0, Column_S=1, Column_SRC=2, Column_CFT=3, Beam_RC=4, Beam_S=5,
-    //       Beam_SRC=6, その他フォールバック(StbSecRaw)=90。
     let mut parts: Vec<(u8, String)> = Vec::new();
     let mut col_map: HashMap<u32, u32> = HashMap::new();
     let mut beam_map: HashMap<u32, u32> = HashMap::new();
 
-    // 壁版だけが参照する厚さ専用断面（thickness のみ・形状なし。import が
-    // StbSecWall_RC の厚さから生成する）は、壁断面ブロック（StbSecWall_RC、
-    // `export::wall_sections`）側で出力されるためここでは出力しない。
-    // 従来は StbSecRaw としても二重に出力され、再取り込みのたびに
-    // 「Raw 由来の断面＋厚さ専用断面」が 1 組ずつ増殖していた。
     let wall_only_sections: std::collections::HashSet<u32> = {
         let mut used_by_wall = std::collections::HashSet::new();
         let mut used_by_other = std::collections::HashSet::new();
         for e in &model.elements {
             if let Some(sid) = e.section {
-                // 壁ブロック（`export::wall_sections`）の出力対象は壁版と
-                // Shell のため、「壁側で出力される」判定もそろえる。
                 if matches!(e.kind, ElementKind::Wall | ElementKind::Shell) {
                     used_by_wall.insert(sid.0);
                 } else {
@@ -866,9 +834,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 used_by_wall.insert(sid.0);
             }
         }
-        // 二次部材（StbBeam/StbPost）は生の断面 id を id_section へ書き出すため、
-        // 二次部材が参照する断面を Raw 出力から除外すると出力 XML 内に存在しない
-        // 断面参照が生じる。壁専用扱いから外す（Raw を出力する）。
         for sm in model.joists().chain(model.posts()) {
             if let Some(sid) = sm.section {
                 used_by_other.insert(sid.0);
@@ -877,10 +842,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         used_by_wall.difference(&used_by_other).copied().collect()
     };
 
-    // 床だけが参照する断面（`SectionShape::RcSlab`）も、スラブ断面ブロック
-    // （`StbSecSlab_RC`、`export::slab_sections`）側で出力されるためここでは出さない。
-    // 壁と同じ理由で、Raw としても二重に出すと再取り込みのたびに
-    // 「Raw 由来の断面＋スラブ断面」が 1 組ずつ増殖する。
     let slab_only_sections: std::collections::HashSet<u32> = {
         let mut used_by_slab = std::collections::HashSet::new();
         let mut used_by_other = std::collections::HashSet::new();
@@ -894,7 +855,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 used_by_other.insert(sid.0);
             }
         }
-        // 二次部材は生の断面 id を書き出すため、Raw 出力から外さない。
         for sm in model.joists().chain(model.posts()) {
             if let Some(sid) = sm.section {
                 used_by_other.insert(sid.0);
@@ -914,11 +874,9 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
         let (used_col, used_beam) = roles.get(&base).copied().unwrap_or((false, false));
-        // どの部材からも参照されない断面も出力に残す（既定で柱扱い）。
         let need_col = used_col || !used_beam;
         let need_beam = used_beam;
 
-        // 形状から標準要素を試み、不可なら StbSecRaw へフォールバック。
         let steel_fig = sec.shape.as_ref().and_then(steel_figure);
         if let Some((fig_name, fig_body)) = steel_fig {
             steel.add(&fig_name, fig_body);
@@ -934,8 +892,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
 
-        // CFT（充填鋼管）: 柱として StbSecColumn_CFT。ST-Bridge に CFT 梁がないため
-        // 梁で使われる場合は Raw へフォールバックする。
         if matches!(
             sec.shape,
             Some(SectionShape::CftBox { .. } | SectionShape::CftPipe { .. })
@@ -958,7 +914,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
 
-        // SRC（RC＋内蔵鉄骨）: 柱 StbSecColumn_SRC / 梁 StbSecBeam_SRC。
         if matches!(sec.shape, Some(SectionShape::SrcRect { .. })) {
             let shape = sec.shape.as_ref().unwrap();
             let steel_fig = src_steel_figure(shape, &mut steel).expect("SRC 内蔵鉄骨図形");
@@ -1007,7 +962,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             let shape = sec.shape.as_ref().expect("RC 図形がある＝shape は Some");
             let grades = bar_grades(model, sec);
             if need_col {
-                // 円形など梁図形がない場合も柱としては出力できる。
                 if let Some(fig) = &rc_col_fig {
                     parts.push((
                         0,
@@ -1026,7 +980,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     parts.push((4, rc_beam(bid, sec, shape, grades, fig, &id_mat_attr(base))));
                     beam_map.insert(base, bid);
                 } else {
-                    // 梁で使われるが梁図形に落ちない形状（例: RC 円形）は Raw で残す。
                     let bid = if col_map.contains_key(&base) {
                         alloc()
                     } else {
@@ -1036,9 +989,6 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     beam_map.insert(base, bid);
                 }
             }
-            // 柱でも梁でも使われない RC 断面は need_col で拾えているが、
-            // 梁図形しかない（RcRect を柱に使わない）ケースでも need_col=true のとき
-            // rc_col_fig=Some なので出力済み。念のため未出力なら Raw で残す。
             if !col_map.contains_key(&base) && !beam_map.contains_key(&base) {
                 parts.push((90, raw(base, sec)));
                 col_map.insert(base, base);
@@ -1047,20 +997,16 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
 
-        // フォールバック: 耐震壁・形状未定義。Raw は柱/梁で型分けされないため
-        // 両者とも同一 id を参照する。
         parts.push((90, raw(base, sec)));
         col_map.insert(base, base);
         beam_map.insert(base, base);
     }
 
-    // スキーマ順（順位）に整列して結合する。同順位内は生成順（安定ソート）を保つ。
     parts.sort_by_key(|(rank, _)| *rank);
     let mut sections_xml = String::new();
     for (_, xml) in &parts {
         sections_xml.push_str(xml);
     }
-    // StbSecSteel（形鋼ライブラリ）は呼び出し側でスラブ・壁断面の後に付す。
     StandardSections {
         sections_xml,
         steel_lib: steel.render(),

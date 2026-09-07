@@ -67,7 +67,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
         }
         0.0
     };
-    // 径（数値 or 呼び名 `D22`）。
     let dia = |keys: &[&str]| -> f64 {
         for k in keys {
             if let Some(v) = a.get(k) {
@@ -88,12 +87,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
         }
         0
     };
-    // 主筋本数と段数を求める。Squid 出力の合計本数キー（`count_main_*`）があれば
-    // それを最優先で使う（往復での本数一致を保つ）。なければ実 ST-Bridge の段別本数
-    // （`N_main_*_1st`/`_2nd`/`_3rd`）を合算する（他社ファイルは段別にしか本数を持たず、
-    // 1 段目だけ読むと下端筋の 2 段目等を取りこぼす）。段数は明示キー
-    // （`count_main_layers_*`）を優先し、なければ非ゼロの段数を数える。
-    // 各引数: totals=合計本数キー, layers=段ごとの候補キー列, layer_attr=明示段数キー。
     let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
         for k in totals {
             if let Some(x) = a.get(k).and_then(|v| v.parse::<u32>().ok()) {
@@ -125,7 +118,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
             .unwrap_or_else(|| nonzero_stages.max(1));
         (sum, layers)
     };
-    // せい方向（X）／梁上端。合計本数キーがないときは 1〜3 段目を合算する。
     let (count_x, layers_x) = count_and_layers(
         &["count_main_X", "count_main_top"],
         &[
@@ -135,7 +127,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
         ],
         "count_main_layers_X",
     );
-    // 幅方向（Y）／梁下端。
     let (count_y, layers_y) = count_and_layers(
         &["count_main_Y", "count_main_bottom"],
         &[
@@ -158,7 +149,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
         },
         cover: f(&["cover", "kaburi"]),
         shear: ShearBar {
-            // 柱は帯筋 `D_band`、梁はあばら筋 `D_stirrup`（実 ST-Bridge 標準名）。
             dia: dia(&["D_band", "D_stirrup", "dia_band", "dia_stirrup", "dia_hoop"]),
             pitch: f(&["pitch_band", "pitch_stirrup", "pitch_hoop"]),
             legs: u(&[
@@ -170,8 +160,6 @@ pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
             ]),
         },
     };
-    // 材質はグレード名として別に返す（形状には入れない）。主筋は梁で上端/下端別に
-    // 持つ実装もあるため代表 1 つを拾う。
     let grades = RebarGrades {
         main: a
             .get("strength_main")

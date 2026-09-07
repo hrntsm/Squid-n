@@ -5,21 +5,12 @@ use squid_n_core::model::Model;
 use std::io::{Read, Write};
 use std::path::Path;
 
-// 未リリースのため後方互換なし。リリース前のスキーマ変更は版を上げずにこのまま 1 とする。
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-/// manifest への記載が必須な zip エントリ。ここにない名前はハッシュ検証されないまま
-/// 読み込まれてしまうため、読込時に存在を強制する。
+/// manifest への記載が必須な zip エントリ。
 const REQUIRED_ENTRIES: [&str; 2] = ["model.msgpack", "settings.json"];
 
-/// zip エントリ 1 個あたりの最大展開サイズ [byte]（zip 爆弾／DoS 対策）。
-///
-/// .scz は単層 zip（deflate）であり、deflate の展開率は理論上約 1032 倍が
-/// 上限のため、絶対サイズ上限が実効的なメモリ保護になる（展開率ベースの
-/// 判定は、ゼロ成分の多い正当な解析結果でも高圧縮になり誤検知しうるため
-/// 採用しない）。時刻歴の詳細記録など正当に数百 MB 級となる結果エントリを
-/// 拒否しないよう、上限は 4 GiB とする（保存側はこれより十分小さい閾値で
-/// ユーザーに確認を取る。`squid-n-app` の保存確認ダイアログ参照）。
+/// zip エントリ 1 個あたりの最大展開サイズ [byte]。
 const MAX_ENTRY_UNCOMPRESSED: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -188,8 +179,6 @@ pub fn save_scz(path: &Path, model: &Model, extras: SczExtras<'_>) -> Result<(),
             }
         }
 
-        // rename 前に内容をディスクへ永続化する。fsync を挟まないと rename が
-        // 原子的でも電源断で新ファイルが空・破損になり得る。
         let f = zip.finish().map_err(|e| IoError::Zip(e.to_string()))?;
         f.sync_all()?;
     }
@@ -227,13 +216,10 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(|e| IoError::Decode(e.to_string()))?;
 
-    // 未リリースのため後方互換なし。現行版以外は弾く（migrate は将来の版上げ用の骨子）。
     if manifest.schema_version != CURRENT_SCHEMA_VERSION {
         return Err(IoError::UnsupportedVersion(manifest.schema_version));
     }
 
-    // 必須エントリが manifest に列挙されていることを強制する。これがないと、
-    // manifest から model.msgpack を落としたファイルがハッシュ未検証のまま読めてしまう。
     for required in REQUIRED_ENTRIES {
         if !manifest.entries.iter().any(|e| e.name == required) {
             return Err(IoError::MissingEntry(required.to_string()));
@@ -259,7 +245,6 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
         }
     }
 
-    // REQUIRED_ENTRIES チェック済みなので必ず Some だが、防御的に扱う。
     let model_data = model_data.ok_or_else(|| IoError::MissingEntry("model.msgpack".into()))?;
 
     let model_data = migrate(manifest.schema_version, model_data)?;

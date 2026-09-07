@@ -1,8 +1,4 @@
 //! パース済み中間表現から内部モデルを組み立てる（Import の後段）。
-//!
-//! [`StbParser`] が集めた file id 付きの中間表現（`Raw*` / `Pending*`）を受け取り、
-//! id の 0 始まり連番への正規化・材料/断面の解決・部材/スラブ/壁/荷重ケースの構築・
-//! 支点の自動設定を行い、モデルと [`ImportReport`] を返す。
 
 use super::super::StbError;
 use super::parser::{RawSlabSection, StbParser};
@@ -48,16 +44,10 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
 
     let mut model = Model::default();
 
-    // 各 id 空間を file id 昇順の 0 始まり連番へ正規化する（内部モデルの不変条件
-    // 「配列添字 == id.index()」を満たすため）。返り値は file id → 新 index。
     let node_index = build_index(raw_nodes.iter().map(|n| n.file_id));
     let story_index = build_index(raw_stories.iter().map(|s| s.file_id));
     let material_index = build_index(raw_materials.iter().map(|m| m.file_id));
 
-    // file id の一意性を検証する（fail-loud）。build_index は id を重複排除するが、
-    // raw_* は排除しないまま push されるため、重複 id があると model.nodes 等の
-    // 配列長が index 数を超え「配列添字 == id.index()」の不変条件が壊れ、部材が
-    // 別実体の節点/断面/材料を無言で参照する（ジオメトリ破損）。重複はエラーとする。
     check_unique_ids("StbNode", raw_nodes.iter().map(|n| n.file_id), &node_index)?;
     check_unique_ids(
         "StbStory",
@@ -73,8 +63,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     build_nodes_and_stories(&mut model, raw_nodes, raw_stories, &node_index);
     build_axes(&mut model, raw_axis_groups, &node_index);
 
-    // 区分をグレード名から決められず、物性から推定した材料の名前。
-    // 推定は外れることがあるため、取込後に notes で利用者へ通知する。
     let mut guessed_categories: Vec<String> = Vec::new();
     build_materials(
         &mut model,
@@ -86,8 +74,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
 
     let mut notes: Vec<String> = Vec::new();
 
-    // 断面 id を整列・連番へ再割当てし、形鋼名を解決してモデルへ格納する。
-    // 符号＋階が重複する定義の統合・改番もここで行う。
     let section_index = build_sections(
         &mut model,
         pending_secs,
@@ -150,10 +136,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             rebuild.unmatched_old_regions
         ));
     }
-    // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出し、直前に積んだ壁版
-    // （WallPlate）を帰属させる。壁の解析要素（ElementKind::Wall）はここでは
-    // 作らない（D5）。準備計算・解析実行の直前に
-    // `squid_n_load::wall_expand::expand_wall_elements` が壁展開モデルとして生成する。
     let wall_rebuild = rebuild_wall_regions(&mut model);
     if wall_rebuild.unassigned_wall_plates != 0 {
         warnings.push(format!(
@@ -225,8 +207,6 @@ fn build_nodes_and_stories(
     mut raw_stories: Vec<RawStory>,
     node_index: &HashMap<u32, u32>,
 ) {
-    // 実 ST-Bridge の階所属（StbStory/StbNodeIdList）から file node id → file story id を作る。
-    // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、なければこの表を引く。
     let node_story_from_list: HashMap<u32, u32> = raw_stories
         .iter()
         .flat_map(|s| {
@@ -235,23 +215,17 @@ fn build_nodes_and_stories(
         })
         .collect();
 
-    // `Model::stories` は標高（`elevation`）の昇順という不変条件を持つ（階への帰属区間が
-    // 直下階のレベルで決まるため、並びが崩れると帰属が壊れる）。ST-Bridge の `StbStory` は
-    // 標高順に並んでいる保証がないため、ここで並べ替えたうえで `StoryId` を振り直す。
-    // 標高が同じ階は file id の昇順で安定させる。
     raw_stories.sort_by(|a, b| {
         a.elevation
             .total_cmp(&b.elevation)
             .then(a.file_id.cmp(&b.file_id))
     });
-    // file id → 標高昇順での位置（`StoryId` ＝配列位置の不変条件を満たす）。
     let story_rank: HashMap<u32, u32> = raw_stories
         .iter()
         .enumerate()
         .map(|(i, s)| (s.file_id, i as u32))
         .collect();
     for s in raw_stories {
-        // 階の所属節点を正規化後の NodeId へ解決する（存在しない節点は除外）。
         let node_ids = s
             .node_ids
             .iter()
@@ -276,7 +250,6 @@ fn build_nodes_and_stories(
             coord: n.coord,
             restraint: squid_n_core::dof::Dof6Mask::FREE,
             mass: None,
-            // 節点の所属階は `StbStory/StbNodeIdList` から引く（標準スキーマ）。
             story: node_story_from_list
                 .get(&n.file_id)
                 .and_then(|sfid| story_rank.get(sfid).copied())
@@ -285,8 +258,6 @@ fn build_nodes_and_stories(
         });
     }
 
-    // 念のため、節点の story から Story.node_ids を補完する
-    // （StbNodeIdList 由来との重複は除く）。
     for node in &model.nodes {
         if let Some(sid) = node.story {
             let list = &mut model.stories[sid.index()].node_ids;
@@ -303,9 +274,6 @@ fn build_axes(
     raw_axis_groups: Vec<RawAxisGroup>,
     node_index: &HashMap<u32, u32>,
 ) {
-    // 通り芯。所属節点の file id を正規化後の NodeId へ張り替える。取り込んだ通りは
-    // 利用者の入力と同格の `Manual` とし、柱位置からの自動生成で作り直さない
-    // （通り名・芯ずれした所属は自動生成では復元できないため）。
     for g in raw_axis_groups {
         let axes: Vec<squid_n_core::model::Axis> = g
             .axes
@@ -332,7 +300,6 @@ fn build_axes(
             axes,
         });
     }
-    // 平行芯グループは離れの昇順に保つ（一覧表示・書き出しが座標順になる）。
     for group in &mut model.axes {
         group.sort_axes();
     }
@@ -364,15 +331,10 @@ fn build_materials(
         });
     }
 
-    // ST-Bridge 2.0 の StbModel は材料テーブル（E・ν・密度）を持たず、材料は断面に付く
-    // グレード名（コンクリート `Fc21`、鋼種 `SN400B`、鉄筋 `SD345` 等）で表す。日本の
-    // 構造材料は規格化されており名前が物性を一意に定めるため、断面が参照するグレード名を
-    // 標準材料表で物性へ解決し、同名の材料がまだなければ材料として追加する。
     {
         use std::collections::HashSet;
         let mut existing: HashSet<String> =
             model.materials.iter().map(|m| m.name.clone()).collect();
-        // 文書順で決定的に列挙し、重複名は最初の 1 回だけ追加する。
         let mut grades: Vec<&str> = Vec::new();
         for p in pending_secs {
             if let Some(SecMatRef::Grade(name)) = &p.mat {
@@ -407,12 +369,7 @@ fn build_materials(
     }
 }
 
-/// 断面側の材料参照を、部材への伝播用に file id → 正規化後 material index へ解決する。
-///
-/// ST-Bridge は材料を断面に持つため、部材が id_material を持たない（実 STB 相当の）
-/// 場合に断面の材料を部材へ伝播する。数値 id は material_index、鋼のグレード名は
-/// 同名の材料へ突き合わせる（同名複数は最初の一致）。
-/// 部材・二次部材の参照解決の失敗件数（まとめて警告へ変換するための集計）。
+/// 断面側の材料参照を、部材への伝播用に解決する。
 #[derive(Default)]
 struct LinkStats {
     /// 存在しない節点を参照しスキップした部材数。
@@ -421,7 +378,7 @@ struct LinkStats {
     dangling_section: u32,
     /// 存在しない材料を参照し材料リンクを外した部材数。
     dangling_material: u32,
-    /// 断面に既に付いている材料と違う材料を指した部材数（先に付いた方を採る）。
+    /// 断面に既に付いている材料と違う材料を指した部材数。
     conflicting_material: u32,
 }
 
@@ -457,9 +414,7 @@ impl LinkStats {
     }
 }
 
-/// 部材（柱・大梁・ブレース）を格納する（節点・断面・材料の参照を正規化後の index に
-/// 張り替える）。参照先が存在しない部材はスキップし、断面/材料の欠落は None にして
-/// ダングリングを防ぐ。
+/// 部材（柱・大梁・ブレース）を格納する。
 fn build_members(
     model: &mut Model,
     pending_members: Vec<PendingMember>,
@@ -473,7 +428,6 @@ fn build_members(
             stats.skipped_members += 1;
             continue;
         };
-        // 断面参照: 実在しない id を指していれば警告して None にする（ダングリング防止）。
         let section = m.section.and_then(|fid| match section_index.get(&fid) {
             Some(&idx) => Some(SectionId(idx)),
             None => {
@@ -481,15 +435,10 @@ fn build_members(
                 None
             }
         });
-        // 材料は断面が持つため、部材の `id_material` は断面へ移す。断面がグレード名を
-        // 持たず部材だけが材料を指すファイル（実 ST-Bridge に多い）でも材料が失われない。
-        // 同じ断面を指す部材が別々の材料を指す場合は、最初の 1 件を採る。
         if let Some(fid) = m.material {
             match material_index.get(&fid) {
                 Some(&idx) => {
                     if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
-                        // 既に別の材料が付いている断面は上書きしない（先勝ち）。
-                        // 黙って捨てると材料の食い違いに気づけないため件数を数える。
                         match sec.material {
                             Some(existing) if existing != MaterialId(idx) => {
                                 stats.conflicting_material += 1;
@@ -503,7 +452,6 @@ fn build_members(
             }
         }
         let id = ElemId(model.elements.len() as u32);
-        // 梁・柱は端部接合条件（`condition_*`）を尊重し、ブレースは軸材なので両端ピン。
         let (kind, end_cond) = match m.kind {
             PendingMemberKind::Beam => (ElementKind::Beam, m.end_cond),
             PendingMemberKind::Brace { tension_only } => (
@@ -511,7 +459,6 @@ fn build_members(
                 [EndCondition::Pinned, EndCondition::Pinned],
             ),
         };
-        // ref_vector は部材軸（節点座標）と `rotate` から算出する。
         let ref_vector = ref_vector_from_rotate(
             model.nodes[ni as usize].coord,
             model.nodes[nj as usize].coord,
@@ -532,9 +479,7 @@ fn build_members(
     }
 }
 
-/// 二次部材（小梁・間柱）を未割当リストへ格納する（D6）。
-/// 全体解析の対象外（CMQ 用）のため `model.elements` には入れず
-/// `unassigned_joists` / `unassigned_posts` へ入れる。返り値は（小梁数, 間柱数）。
+/// 二次部材（小梁・間柱）を未割当リストへ格納する。
 fn build_secondaries(
     model: &mut Model,
     pending_secondaries: Vec<PendingSecondary>,
@@ -557,7 +502,6 @@ fn build_secondaries(
                 None
             }
         });
-        // 材料は断面が持つ。二次部材の `id_material` も部材と同じく断面へ移す。
         if let Some(fid) = s.material {
             match material_index.get(&fid) {
                 Some(&idx) => {
@@ -594,17 +538,7 @@ fn build_secondaries(
     (n_joists, n_posts)
 }
 
-/// スラブ（StbSlab）を格納する（境界の正規化・厚さ解決・自重の自動設定）。
-/// 返り値は自重を設定したスラブ数（notes 通知用）。
-///
-/// 3 頂点未満・存在しない節点を含むスラブはスキップして報告する。
-///
-/// スラブ断面（`StbSecSlab_RC` / `StbSecSlabDeck`）は符号・階・板厚・コンクリート
-/// のグレード名を持つため、内部の [`Section`] として組み立ててスラブへ割り当てる。
-/// **自重は面荷重へ焼き込まない**。板厚と材料が断面にそろっているので、自重は
-/// 使うたびに `Model::slab_self_weight_intensity` が算定する（板厚や材料を
-/// 変えたときに自重が追随しない食い違いを作らないため）。
-/// 仕上げ荷重・用途（積載）は ST-Bridge が持たないため、荷重タブでの設定が要る。
+/// スラブ（StbSlab）を格納する。返り値は自重を設定したスラブ数。
 fn build_slabs(
     model: &mut Model,
     raw_slabs: Vec<RawSlab>,
@@ -613,10 +547,6 @@ fn build_slabs(
     warnings: &mut Vec<String>,
 ) -> usize {
     let mut skipped_slabs = 0u32;
-    // ST-Bridge の XML には「スラブと小梁の親子関係」を明示する要素がない。
-    // 小梁実体は `build_secondaries` が未割当へ入れ、`rebuild_floor_regions` が
-    // 所属を付ける。ここでは床板と小梁の XML 親子関係を読まない。
-    // ST-Bridge の断面 file id → 内部の断面 ID。同じ断面を指すスラブで使い回す。
     let mut sec_of_file: HashMap<u32, SectionId> = HashMap::new();
     let mut slab_section_count = 0usize;
     for rs in raw_slabs {
@@ -649,9 +579,6 @@ fn build_slabs(
             Some(sid)
         });
         let new_id = SlabId(model.slabs.len() as u32);
-        // 取り込んだ版はいったん大梁または小梁で囲まれた床板として作る。床領域
-        // （大梁の区画）への帰属付けと、区画に収まらない版の片持ち判定は、
-        // 取り込み後の変換（`rebuild_floor_regions`）で行う（申し送りの Step 3）。
         model.slabs.push(Slab {
             id: new_id,
             shape: SlabShape::Enclosed { boundary },
@@ -730,13 +657,7 @@ fn ensure_material_by_grade(model: &mut Model, grade: &str) -> Option<MaterialId
     Some(id)
 }
 
-/// 壁（StbWall）を囲まれた壁版（`WallPlate`）として格納する。
-///
-/// 厚さ（StbSecWall_RC）は t>0 のとき厚さ専用の Section を末尾に追加して参照する
-/// （壁自重は section.thickness を用いるため）。断面は**厚さごとに 1 件**とし、同じ厚さの
-/// 壁が何枚あっても使い回す（断面の同一性キー「符号＋階」を壁でも一意に保つため。
-/// 壁ごとに断面を作ると `Wall t180` が枚数分並び、断面一覧が実態と合わなくなる）。
-/// 3頂点未満・存在しない節点を含む壁はスキップして報告する。
+/// 壁（StbWall）を囲まれた壁版として格納する。断面は厚さごとに 1 件とする。
 fn build_walls(
     model: &mut Model,
     raw_walls: Vec<RawWall>,
@@ -745,18 +666,8 @@ fn build_walls(
     material_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
 ) {
-    // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
-    // importer は `WallPlate`（囲まれた壁版）のみを組み立てる。`ElementKind::Wall`
-    // 要素はここでは作らない（D4・D5: 解析要素は準備計算からの生成物であり、
-    // 入力の正は壁版が持つ。展開は `squid_n_load::wall_expand::expand_wall_elements`
-    // が担う）。開口・柱際スリットは ST-Bridge に対応する情報源がないため常に
-    // 既定値（開口なし）になる（旧 `WallAttr` と同じ挙動）。直後に呼ばれる
-    // `rebuild_wall_regions` が、ここで積んだ `WallPlate` を検出済みの壁領域へ
-    // 帰属させる（`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10）。
     let mut skipped_walls = 0u32;
     let mut no_section_walls = 0u32;
-    // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
-    // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。
     let mut wall_sections: HashMap<String, SectionId> = HashMap::new();
     for rw in raw_walls {
         let mut boundary: Vec<NodeId> = Vec::with_capacity(rw.boundary.len());
@@ -774,7 +685,6 @@ fn build_walls(
             skipped_walls += 1;
             continue;
         }
-        // 厚さ >0 のときのみ厚さ専用断面を参照する（同じ厚さなら既存の断面を使い回す）。
         let section = rw
             .section_fid
             .and_then(|fid| wall_sec_thickness.get(&fid).copied())
@@ -784,8 +694,6 @@ fn build_walls(
                 if let Some(&sid) = wall_sections.get(&base) {
                     return sid;
                 }
-                // 断面定義側に同名の断面があるとキーが衝突するため、空いた符号まで送る
-                // （壁の厚さ断面は階を持たないので、符号だけで一意になればよい）。
                 let mut name = base.clone();
                 let mut n = 2u32;
                 while squid_n_core::model::section_key_taken(&model.sections, (&name, None), None) {
@@ -800,7 +708,6 @@ fn build_walls(
                 wall_sections.insert(base, sid);
                 sid
             });
-        // 壁の材料も断面が持つ（要素は持たない）。断面側が未設定なら補う。
         if let Some(mid) = rw
             .material_fid
             .and_then(|fid| material_index.get(&fid).copied())
@@ -854,8 +761,6 @@ fn build_load_cases(
             .nodal
             .into_iter()
             .filter_map(|(fid, values)| match node_index.get(&fid) {
-                // 取り込んだ荷重は利用者の入力として扱う（準備計算の同期対象に
-                // しない。`StbNodalLoad` に名称属性はないため名称は空）。
                 Some(&ni) => Some(NodalLoad::manual(NodeId(ni), values)),
                 None => {
                     dropped_loads += 1;
@@ -924,14 +829,7 @@ fn push_import_notes(
     }
 }
 
-/// 支点の自動設定: ST-Bridge は境界条件（支点）を持たないため、支点が 1 つも
-/// ないモデルは最下レベル（Z 最小、許容差 1mm）で柱脚を持つ節点をピン支点
-/// （並進固定・回転自由）に設定する（柱脚ピンの仮定＝基礎の回転拘束を
-/// 期待しない安全側の既定。解析可能な出発点にする）。
-///
-/// 柱が取り付かず梁だけが取り付く最下レベル節点（地中梁の中間節点など）は
-/// 支点にしない。仮定した内容は notes で通知する。拘束を 1 つでも持つモデル
-/// （将来の方言拡張等で取り込んだ場合）はそのまま尊重して何もしない。
+/// 支点の自動設定: 支点が 1 つもないモデルは最下レベルで柱脚節点をピン支点にする。
 fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
     use squid_n_core::dof::Dof6Mask;
     if !model.nodes.is_empty() && model.nodes.iter().all(|n| n.restraint == Dof6Mask::FREE) {
@@ -942,9 +840,6 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
             .map(|n| n.coord[2])
             .fold(f64::INFINITY, f64::min);
 
-        // 柱脚が取り付く節点の集合を求める。柱＝鉛直な 2 節点 Beam 要素
-        // （全クレート共通の 45° 余弦基準 `squid_n_core::geom::is_vertical_axis`）。
-        // その下端節点（Z が小さい方）を柱脚候補とする。
         let mut column_base: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for elem in &model.elements {
             if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
@@ -956,13 +851,12 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
             }
             let (pa, pb) = (model.nodes[a].coord, model.nodes[b].coord);
             if !squid_n_core::geom::is_vertical_axis(pa, pb) {
-                continue; // 長さ 0 または水平材（梁）は柱ではない
+                continue;
             }
             let bottom = if pa[2] <= pb[2] { a } else { b };
             column_base.insert(bottom);
         }
 
-        // 最下レベルかつ柱脚が取り付く節点だけをピン支点にする。
         let mut fixed = 0usize;
         for (i, n) in model.nodes.iter_mut().enumerate() {
             if (n.coord[2] - z_min).abs() <= BASE_LEVEL_TOL_MM && column_base.contains(&i) {
@@ -976,9 +870,6 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
                 "支点情報がないため、最下レベル（Z={z_min:.0} mm）で柱が取り付く節点 {fixed} 箇所をピン支点に設定しました（モデルタブ→境界条件で変更できます）"
             ));
         } else {
-            // 最下レベルに柱脚が 1 つもない（柱が全くない／柱脚が最下レベルに
-            // 達しない）場合は、解析可能性を優先して従来どおり最下レベルの全節点を
-            // ピン支点にフォールバックする。
             for n in &mut model.nodes {
                 if (n.coord[2] - z_min).abs() <= BASE_LEVEL_TOL_MM {
                     n.restraint = Dof6Mask::PINNED;
@@ -1069,18 +960,15 @@ fn build_sections(
     warnings: &mut Vec<String>,
     notes: &mut Vec<String>,
 ) -> HashMap<u32, u32> {
-    // file id 昇順で整列（Standard 書き出しは分割断面を文書順に整列させないため）。
     pending.sort_by_key(|s| s.file_id);
 
     let mut index_map: HashMap<u32, u32> = HashMap::new();
-    // 符号＋階 → model.sections の添字。衝突の検出と統合先の解決に使う。
     let mut by_key: HashMap<(String, Option<String>), usize> = HashMap::new();
     let mut merged = 0u32;
     let mut renamed: Vec<String> = Vec::new();
     for ps in pending.into_iter() {
         let file_id = ps.file_id;
         let floor = ps.floor.clone();
-        // 統合・改番で最終的な添字が決まるまで id は仮置きする（下で確定させる）。
         let new_id = SectionId(model.sections.len() as u32);
         let section = match ps.kind {
             PendingSecKind::Raw {
@@ -1112,8 +1000,6 @@ fn build_sections(
             },
             PendingSecKind::Shape(shape) => shape.to_section(new_id, ps.name),
             PendingSecKind::SteelRef(shape_name) => {
-                // 形鋼ライブラリに定義がない参照は物性ゼロの断面として残す
-                // （参照する部材の断面リンクを保つため。解析前に要確認）。
                 match shape_name.and_then(|nm| steel_lib.get(&nm).cloned()) {
                     Some(shape) => shape.to_section(new_id, ps.name),
                     None => {
@@ -1126,7 +1012,6 @@ fn build_sections(
                 }
             }
             PendingSecKind::CftRef(steel_name) => {
-                // 充填鋼管の形鋼（BOX/Pipe）を CFT 形状へ読み替える。
                 let cft = steel_name
                     .and_then(|nm| steel_lib.get(&nm).cloned())
                     .and_then(|s| match s {
@@ -1162,7 +1047,6 @@ fn build_sections(
                 rebar,
                 steel_name,
             } => {
-                // 内蔵鉄骨（H 形鋼）の寸法を解決する。未解決なら 0 とし、形状は保持する。
                 let steel_dims = steel_name
                     .and_then(|nm| steel_lib.get(&nm).cloned())
                     .and_then(|s| match s {
@@ -1195,8 +1079,6 @@ fn build_sections(
         };
         let mut section = section;
         section.floor = floor;
-        // 材料は断面が持つ。主材料は断面側の参照（数値 id またはグレード名）から、
-        // 配筋・内蔵鉄骨の材質はグレード名から材料テーブルへ解決して結ぶ。
         section.material = ps
             .mat
             .as_ref()
@@ -1214,14 +1096,11 @@ fn build_sections(
                 find_or_create_bar_material(model, g, MaterialCategory::Steel, notes)
             });
 
-        // 符号＋階の衝突を解決してから格納する。
         let idx = match by_key.get(&(section.name.clone(), section.floor.clone())) {
-            // 完全に同じ断面の重複定義。統合し、参照だけを既存の断面へ向ける。
             Some(&existing) if model.sections[existing].properties_eq(&section) => {
                 merged += 1;
                 existing
             }
-            // 同じ符号＋階で中身が違う。定義を捨てないよう符号へ連番を付けて残す。
             Some(_) => {
                 let original = section.name.clone();
                 let mut n = 2u32;
@@ -1242,7 +1121,6 @@ fn build_sections(
         ));
     }
     if !renamed.is_empty() {
-        // 衝突が多いファイルで警告 1 行が際限なく伸びないよう、列挙は先頭のみに留める。
         const MAX_LISTED: usize = 10;
         let listed = renamed
             .iter()
@@ -1290,13 +1168,11 @@ fn ref_vector_from_rotate(p_i: [f64; 3], p_j: [f64; 3], rotate_deg: f64) -> [f64
             [d[0] / l, d[1] / l, d[2] / l]
         }
     };
-    // 軸が鉛直に近ければ基準を X、そうでなければ Z にとる。
     let base = if axis[2].abs() > 0.99 {
         [1.0, 0.0, 0.0]
     } else {
         [0.0, 0.0, 1.0]
     };
-    // base を軸に直交化して rotate=0 の基準 ref0 を得る。
     let bdot = base[0] * axis[0] + base[1] * axis[1] + base[2] * axis[2];
     let ref0 = {
         let r = [
@@ -1314,7 +1190,6 @@ fn ref_vector_from_rotate(p_i: [f64; 3], p_j: [f64; 3], rotate_deg: f64) -> [f64
     if rotate_deg.abs() < 1e-9 {
         return ref0;
     }
-    // ref0 を軸まわりに rotate 回転（ロドリゲスの回転公式。ref0⊥axis なので簡約形）。
     let th = rotate_deg.to_radians();
     let (s, c) = (th.sin(), th.cos());
     let cross = [
@@ -1367,8 +1242,6 @@ fn find_or_create_bar_material(
     }
     let fy = match category {
         MaterialCategory::Rebar => squid_n_core::material_grade::rebar_grade_f_value(grade),
-        // 鋼材は板厚区分を持つが、断面側の板厚はここでは解決できないため
-        // 40mm 以下の基準強度で作る（板厚別の低減は検定側が板厚から解決する）。
         _ => squid_n_core::material_grade::steel_f_value_prefix(grade, 40.0),
     };
     if fy.is_none() {
@@ -1377,7 +1250,6 @@ fn find_or_create_bar_material(
         ));
     }
     let id = MaterialId(model.materials.len() as u32);
-    // 規格値はプリセット表から引く（名前が一致するものだけ。無ければ鋼系の一般値）。
     let preset = squid_n_core::material_grade::material_presets()
         .into_iter()
         .find(|p| p.name == grade);

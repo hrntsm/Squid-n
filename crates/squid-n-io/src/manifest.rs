@@ -4,7 +4,6 @@ pub struct Manifest {
     pub units: String,
     pub created_by: String,
     pub entries: Vec<EntryHash>,
-    // 将来: results_inclusion: ResultInclusion (内包/外部, 50MB閾値 R27) ── P0 では未使用
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
