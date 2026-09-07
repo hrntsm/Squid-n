@@ -234,7 +234,7 @@ fn crossings(axes: &[Axis]) -> Vec<(SecondaryKey, SecondaryKey)> {
     for (i, p) in axes.iter().enumerate() {
         for q in axes.iter().skip(i + 1) {
             if p.nodes.iter().any(|n| q.nodes.contains(n)) {
-                continue; // 節点を共有する取り付きは交差ではない。
+                continue;
             }
             let touches = [
                 (p.a, q.a, q.b, q.len),
