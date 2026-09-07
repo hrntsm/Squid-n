@@ -29,11 +29,6 @@ fn sid(internal_id: u32) -> u32 {
 
 /// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
-    // 壁の入力の正は壁版（`WallPlate`）であり、解析要素は生成物（D5）。
-    // `StbWall` は壁版から直接書き出す（4 節点以外も往復させる。解析要素に
-    // しない壁を展開経由で落とさないため）。シェルは引き続き要素から出す。
-
-    // 標準断面ブロックと、部材参照（id_section）の柱用・梁用張り替えマップ。
     let std = standard_sections(model);
     let (sections_body, steel_lib, col_map, beam_map) =
         (std.sections_xml, std.steel_lib, std.col_map, std.beam_map);
@@ -45,14 +40,12 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
          xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{STB_VERSION}\">\n"
     ));
 
-    // StbCommon（ルート必須。プロジェクト名・アプリ名は最小限の既定値）。
     s.push_str(
         "  <StbCommon project_name=\"Squid-n\" app_name=\"Squid-n\" app_version=\"0.0.1\"/>\n",
     );
 
     s.push_str("  <StbModel>\n");
 
-    // 節点（X/Y/Z、kind 必須）。所属部材が不明なので kind=ON_GRID を既定にする。
     s.push_str("    <StbNodes>\n");
     for n in &model.nodes {
         s.push_str(&format!(
@@ -65,11 +58,8 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     }
     s.push_str("    </StbNodes>\n");
 
-    // 通り芯（`StbAxes`。スキーマ上 `StbNodes` と `StbStories` の間に置く）。
     s.push_str(&axes_body(model));
 
-    // 層（name・height・kind 必須。所属節点は StbNodeIdList で列挙）。所属は各節点の
-    // `story`（正）と層の `node_ids` の和集合を、節点 id 昇順・重複なしで書き出す。
     s.push_str("    <StbStories>\n");
     for st in &model.stories {
         let mut members: Vec<u32> = model
@@ -102,16 +92,13 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     }
     s.push_str("    </StbStories>\n");
 
-    // 部材（複数形コンテナに種別ごとに束ねる。空コンテナは出力しない）。
     s.push_str("    <StbMembers>\n");
     s.push_str(&members_body(model, &col_map, &beam_map));
     s.push_str("    </StbMembers>\n");
 
-    // 断面（標準要素＋形鋼ライブラリ）＋スラブ断面＋壁断面。
     let slab_sec_base = slab_section_id_base(model, &col_map, &beam_map);
     let wall_sec_base = slab_sec_base + model.floor_regions.len() as u32;
 
-    // スキーマ順: 柱・梁・ブレース断面 → スラブ断面 → 壁断面 → 形鋼ライブラリ。
     s.push_str("    <StbSections>\n");
     s.push_str(&sections_body);
     s.push_str(&slab_sections(model, slab_sec_base));
@@ -159,7 +146,6 @@ fn members_body(
             ElementKind::Beam if e.nodes.len() == 2 => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                // 全クレート共通の 45° 余弦基準で柱/大梁を分ける。
                 let is_col = squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord);
                 let role_map = if is_col { col_map } else { beam_map };
                 let sec = e
@@ -224,8 +210,6 @@ fn members_body(
         }
     }
 
-    // 二次部材（小梁 StbBeam・間柱 StbPost）。全体解析の対象外だが往復のため
-    // 書き出す。member id は要素 id と別空間なので要素数の次から採番する。
     let secondary_member_base = model.elements.len() as u32;
     let mut sec_beams = String::new();
     let mut posts = String::new();
@@ -261,7 +245,6 @@ fn members_body(
                 ));
             }
             squid_n_core::model::SecondaryMemberKind::Post => {
-                // 下端→上端の順（Z で並べ替え）。
                 let n0 = &model.nodes[sm.nodes[0].index()];
                 let n1 = &model.nodes[sm.nodes[1].index()];
                 let (bot, top) = if n0.coord[2] <= n1.coord[2] {
@@ -278,17 +261,11 @@ fn members_body(
         }
     }
 
-    // スラブ（StbSlab）。境界節点ループ＋断面参照。member id は要素 id と別空間なので
-    // 要素数の次から採番する（1 始まり。二次部材の後）。
     let slab_member_base = model.elements.len() as u32 + all_secondaries.len() as u32;
     let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
     let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();
     for slab in &model.slabs {
-        // ST-Bridge の StbSlab は境界節点の並びで版を表すため、**大梁または小梁で
-        // 囲まれた床板だけを出力する**。取り付く床板（片持ち・バルコニー・出隅）は
-        // 自由端に節点を持たず書き出せない（往復互換性より正しいデータ構造を
-        // 優先するという方針による。申し送りの D12）。
         let Some(boundary) = slab.boundary_nodes() else {
             continue;
         };
@@ -313,10 +290,6 @@ fn members_body(
         slabs.push_str("        </StbSlab>\n");
     }
 
-    // 壁（StbWall）。囲まれた壁版（境界 3〜N 節点）とシェル要素。
-    // member id は要素・二次部材・スラブと別空間。スラブは `slab.id` を足すため、
-    // ここも `slabs.len()` の次から連番にする（壁版 id と柱要素 id がどちらも 0
-    // のとき `sid(0)` が衝突しないようにする）。
     let wall_member_base = slab_member_base + model.slabs.len() as u32;
     let wall_sec_base = slab_sec_base + model.floor_regions.len() as u32;
     let stb_walls = stb_walls_for_export(model);
@@ -342,9 +315,6 @@ fn members_body(
         walls.push_str("        </StbWall>\n");
     }
 
-    // 複数形コンテナはスキーマ上、子を 1 つ以上持つ必要がある。空なら出力しない。
-    // 順序はスキーマの sequence（Columns→Posts→Girders→Beams→Braces→Slabs→Walls）
-    // に合わせる。
     let mut body = String::new();
     if !columns.is_empty() {
         body.push_str("      <StbColumns>\n");
@@ -497,7 +467,6 @@ fn rotate_of(e: &squid_n_core::model::ElementData, p_i: [f64; 3], p_j: [f64; 3])
         base[1] - bdot * axis[1],
         base[2] - bdot * axis[2],
     ]);
-    // 現在の ref_vector を軸へ直交化。
     let r = e.local_axis.ref_vector;
     let rdot = r[0] * axis[0] + r[1] * axis[1] + r[2] * axis[2];
     let refv = normalize([
@@ -505,7 +474,6 @@ fn rotate_of(e: &squid_n_core::model::ElementData, p_i: [f64; 3], p_j: [f64; 3])
         r[1] - rdot * axis[1],
         r[2] - rdot * axis[2],
     ]);
-    // ref0→refv の軸まわり符号付き角。angle = atan2((ref0×refv)·axis, ref0·refv)。
     let cross = [
         ref0[1] * refv[2] - ref0[2] * refv[1],
         ref0[2] * refv[0] - ref0[0] * refv[2],
@@ -526,7 +494,6 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
 }
 
 fn exports_stb_slab(slab: &squid_n_core::model::Slab) -> bool {
-    // StbSlab は大梁または小梁で囲まれた床板だけ。取り付く床板は部材も孤立断面も出さない。
     slab.boundary_nodes().is_some()
 }
 
@@ -682,7 +649,6 @@ fn stb_walls_for_export(model: &Model) -> Vec<StbWallOut> {
 }
 
 pub(super) fn fmt(x: f64) -> String {
-    // 整数値は小数点なしで、それ以外は既定の f64 表記で（往復で値が保たれる）。
     if x == x.trunc() && x.is_finite() {
         format!("{}", x as i64)
     } else {
@@ -691,15 +657,10 @@ pub(super) fn fmt(x: f64) -> String {
 }
 
 pub(super) fn esc(s: &str) -> String {
-    // XML 1.0 で表現できない C0 制御文字（タブ/改行/CR 以外の #x00-#x1F）は文字参照でも
-    // 表せないため除去する。これをしないと不正な XML を出力してしまう。
     let cleaned: String = s
         .chars()
         .filter(|&c| c == '\t' || c == '\n' || c == '\r' || (c as u32) >= 0x20)
         .collect();
-    // & を最初に置換した後で制御空白を文字参照化する（後段で `&` を再エスケープしないため安全）。
-    // タブ/改行/CR を文字参照にしないと、XML 属性値正規化（読込側 normalized_value）で
-    // 空白 (#x20) に潰れ、属性値（例: 断面名・帯筋グレード）が往復で変化してしまう。
     cleaned
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -719,10 +680,6 @@ fn slab_floor_attr(sec: &squid_n_core::model::Section) -> String {
 }
 
 /// 断面の主材料の名前を `strength_concrete` 属性へ（未割当は属性ごと省く）。
-///
-/// ST-Bridge は材料をグレード名で表すため、材料の名前をそのまま出す。かつては
-/// スラブ・壁だけ `Fc21` 決め打ちだったが、断面が材料を持つようになったため
-/// 根拠のない既定値は置かない。
 fn concrete_attr(model: &Model, sec: &squid_n_core::model::Section) -> String {
     match sec
         .material

@@ -110,15 +110,12 @@ pub(super) struct RawSlabSection {
 /// [`StbParser::record_unsupported`] を参照）。本リストは、直属の親からは判別しづらい要素
 /// （通り芯など `StbModel` 直下のもの）を確実に拾うために併用する。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
-    // 部材（面要素・基礎・開口。StbSlab・StbWall は対応済み）
     "StbFooting",
     "StbPile",
     "StbFoundationColumn",
     "StbStripFooting",
     "StbParapet",
     "StbOpen",
-    // 断面（基礎・開口。鋼ブレース断面 StbSecBrace_S・StbSecSlab_RC・StbSecWall_RC・
-    // デッキ合成スラブ StbSecSlabDeck は対応済み。鋼スラブ StbSecSlab_S は未対応）
     "StbSecSlab_S",
     "StbSecFoundation_RC",
     "StbSecFoundationColumn_RC",
@@ -195,7 +192,6 @@ pub(super) struct StbParser {
     pub(super) steel_lib: HashMap<String, SectionShape>,
     /// 現在パース中の標準断面要素。
     pub(super) cur: CurSec,
-    // --- スラブ・壁関連の中間状態 ---
     pub(super) raw_slabs: Vec<RawSlab>,
     pub(super) slab_secs: HashMap<u32, RawSlabSection>,
     pub(super) cur_slab: Option<RawSlab>,
@@ -207,7 +203,6 @@ pub(super) struct StbParser {
     /// 実 ST-Bridge の `StbStory`（内部に `StbNodeIdList/StbNodeId` を持つ）を開いている間 true。
     /// 開いている `StbNodeId` を直近の階の所属節点として集めるために使う。
     pub(super) in_story: bool,
-    // --- 通り芯（`StbAxes` の子。開いているグループの最後の通りへ `StbNodeId` を集める） ---
     pub(super) raw_axis_groups: Vec<RawAxisGroup>,
     pub(super) cur_axis_group: Option<RawAxisGroup>,
 }
@@ -225,7 +220,6 @@ pub(super) fn parse(xml: &str) -> Result<StbParser, StbError> {
         let ev = reader
             .read_event()
             .map_err(|e| StbError::Parse(e.to_string()))?;
-        // 自己終了要素（<Foo/>）は End が来ないためスタックへ積まない。
         let is_empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Eof => break,
@@ -234,11 +228,7 @@ pub(super) fn parse(xml: &str) -> Result<StbParser, StbError> {
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 let a = attrs(&e)?;
                 p.on_start(&tag, &a)?;
-                // 属性の参照は on_start の内側で完結する（ハンドラは値を取り出して
-                // 中間表現へ写すだけで、`Attrs` を保持しない）。したがって戻った直後が
-                // 「この要素で何を読み、何を読まなかったか」を確定できる唯一の地点。
                 p.record_attr_usage(&tag, &a);
-                // 開始要素はスタックへ積む（自己終了要素は End が来ないため積まない）。
                 if !is_empty {
                     p.container_stack.push(tag);
                 }
@@ -248,9 +238,6 @@ pub(super) fn parse(xml: &str) -> Result<StbParser, StbError> {
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 p.on_end(&tag);
             }
-            // StbNodeIdOrder のテキスト内容（空白区切りの節点 id 列）を集める。
-            // 節点 id は数字と空白のみで XML 実体参照を含まないため、そのまま UTF-8
-            // 解釈でよい。CDATA 形式（<![CDATA[0 1 2 3]]>）にも対応する。
             Event::Text(t) if p.in_node_id_order => {
                 p.on_node_id_text(&String::from_utf8_lossy(t.as_ref()));
             }
@@ -272,15 +259,9 @@ pub(super) fn parse(xml: &str) -> Result<StbParser, StbError> {
 impl StbParser {
     /// 開始・自己終了イベントを、意味のまとまりごとの補助メソッドへ振り分ける。
     fn on_start(&mut self, tag: &str, a: &Attrs) -> Result<(), StbError> {
-        // StbNodeIdOrder のテキストは開始タグ直後の Text/CData のみで届く。
-        // 別要素が現れた時点で取り込み窓を閉じる（自己終了タグ
-        // <StbNodeIdOrder/> は End が来ずフラグが残るため、この明示リセットで
-        // 無関係な子要素のテキストを境界へ誤取り込みするのを防ぐ）。
         if tag != "StbNodeIdOrder" {
             self.in_node_id_order = false;
         }
-        // 各補助メソッドは担当タグなら処理して true を返す。担当タグ集合は互いに素
-        // なので、順に試しても元の単一 match と同じ挙動になる。
         if self.start_root(tag, a)? {
             return Ok(());
         }
@@ -328,7 +309,6 @@ impl StbParser {
             "StbNode" => {
                 self.raw_nodes.push(RawNode {
                     file_id: get_u32(a, "id")?,
-                    // 座標は ST-Bridge 標準の大文字 `X`/`Y`/`Z`。
                     coord: [get_f64(a, "X")?, get_f64(a, "Y")?, get_f64(a, "Z")?],
                 });
             }
@@ -339,9 +319,6 @@ impl StbParser {
                     elevation: get_f64(a, "height")?,
                     node_ids: Vec::new(),
                 });
-                // 直下の StbNodeIdList/StbNodeId をこの階へ集める窓を開く
-                // （空の <StbStory/> でも害はない。StbNodeId はスラブ・壁を優先し、
-                // かつ階は通常部材より前に現れるため誤取り込みしない）。
                 self.in_story = true;
             }
             "StbMaterial" => {
@@ -365,7 +342,6 @@ impl StbParser {
     /// 開始要素を処理する。担当タグなら true。
     fn start_section(&mut self, tag: &str, a: &Attrs) -> Result<bool, StbError> {
         match tag {
-            // --- 断面: 物性直持ち（Raw） ---
             "StbSecRaw" => {
                 self.pending_secs.push(PendingSec {
                     file_id: get_u32(a, "id")?,
@@ -383,19 +359,15 @@ impl StbParser {
                     grades: Default::default(),
                 });
             }
-            // --- 断面: 標準要素（鋼。柱・梁・ブレース） ---
             "StbSecColumn_S" | "StbSecBeam_S" | "StbSecBrace_S" => {
                 self.cur = CurSec::Steel {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
                     floor: floor_of(a),
                     shape_name: None,
-                    // 鋼種は形鋼参照（下）に付くことが多いが、要素側にあれば拾う。
                     grade: a.get("strength_main").cloned(),
                 };
             }
-            // 鋼／CFT／SRC 断面の図形参照（`*_Same` / `*_Straight`）。`shape` 系属性から
-            // 形鋼名を、`strength_main` から鋼種を取り、現在の断面種別へ格納する。
             t if t.starts_with("StbSecSteelColumn_")
                 || t.starts_with("StbSecSteelBeam_")
                 || t.starts_with("StbSecSteelBrace_") =>
@@ -423,7 +395,6 @@ impl StbParser {
                     _ => {}
                 }
             }
-            // --- 断面: 標準要素（RC） ---
             "StbSecColumn_RC" | "StbSecBeam_RC" => {
                 self.cur = CurSec::Rc {
                     file_id: get_u32(a, "id")?,
@@ -465,7 +436,6 @@ impl StbParser {
                     }
                 }
             }
-            // --- 断面: 標準要素（CFT） ---
             "StbSecColumn_CFT" => {
                 self.cur = CurSec::Cft {
                     file_id: get_u32(a, "id")?,
@@ -475,7 +445,6 @@ impl StbParser {
                     mat: sec_mat_ref_of(a),
                 };
             }
-            // --- 断面: 標準要素（SRC） ---
             "StbSecColumn_SRC" | "StbSecBeam_SRC" => {
                 self.cur = CurSec::Src {
                     file_id: get_u32(a, "id")?,
@@ -514,9 +483,6 @@ impl StbParser {
                     }
                 }
             }
-            // 配筋コンテナ（`StbSecBarArrangement*`）。実 ST-Bridge はかぶり
-            // （`depth_cover_*`）を配置コンテナ側に、本数・径を子の `*_Same` 側に持つ。
-            // 本数・径は下の `*_Same` 分岐で拾うため、ここではかぶりのみを控える。
             t if t.starts_with("StbSecBarArrangement") => {
                 if let Ok(c) = get_f64_any(
                     a,
@@ -539,7 +505,6 @@ impl StbParser {
                     }
                 }
             }
-            // 配筋（RC / SRC の StbSecBar{Column,Beam}_*_Same 子要素）。現在の断面種別へ格納。
             t if t.starts_with("StbSecBarColumn_") || t.starts_with("StbSecBarBeam_") => {
                 match &mut self.cur {
                     CurSec::Rc {
@@ -563,7 +528,6 @@ impl StbParser {
                     _ => {}
                 }
             }
-            // --- 形鋼ライブラリ ---
             t if t.starts_with("StbSecRoll-")
                 || t.starts_with("StbSecBuild-")
                 || t == "StbSecPipe" =>
@@ -572,8 +536,6 @@ impl StbParser {
                     self.steel_lib.entry(nm).or_insert(shape);
                 }
             }
-            // --- スラブ断面: RC（StbSecSlab_RC）／デッキ合成（StbSecSlabDeck）。
-            //     厚さ（コンクリート部せい）を図形の子要素から集める。 ---
             "StbSecSlab_RC" | "StbSecSlabDeck" => {
                 self.cur = CurSec::Slab {
                     file_id: get_u32(a, "id")?,
@@ -586,19 +548,16 @@ impl StbParser {
                         .filter(|v| !v.is_empty()),
                 };
             }
-            // スラブ断面の図形（厚さ = `depth`）。RC・デッキ双方の図形要素を受ける。
             "StbSecSlab_RC_Straight"
             | "StbSecFigureSlab_RC"
             | "StbSecSlabDeckStraight"
             | "StbSecFigureSlabDeck" => {
                 if let CurSec::Slab { thickness, .. } = &mut self.cur {
-                    // 厚さ属性を持つ図形要素なら更新、なければ既存値を保持。
                     *thickness = get_f64_any(a, &["depth", "thickness", "t", "D"])
                         .ok()
                         .or(*thickness);
                 }
             }
-            // --- 壁断面（StbSecWall_RC）: 厚さを子要素から集める ---
             "StbSecWall_RC" => {
                 self.cur = CurSec::Wall {
                     file_id: get_u32(a, "id")?,
@@ -632,8 +591,6 @@ impl StbParser {
                 self.pending_members
                     .push(make_member(a, st, en, PendingMemberKind::Beam)?);
             }
-            // 小梁（StbBeam）は二次部材: 全体解析の対象外とし、床荷重・自重を
-            // 大梁へ CMQ（中間集中荷重）として伝達する部材として取り込む。
             "StbBeam" => {
                 let st = get_u32(a, "id_node_start")?;
                 let en = get_u32(a, "id_node_end")?;
@@ -644,8 +601,6 @@ impl StbParser {
                     squid_n_core::model::SecondaryMemberKind::Joist,
                 ));
             }
-            // 間柱（StbPost）も二次部材（鉛直材。柱と同じく bottom/top を持つ。
-            // start/end も許容）。
             "StbPost" => {
                 let bot = get_u32(a, "id_node_bottom").or_else(|_| get_u32(a, "id_node_start"))?;
                 let top = get_u32(a, "id_node_top").or_else(|_| get_u32(a, "id_node_end"))?;
@@ -659,8 +614,6 @@ impl StbParser {
             "StbBrace" => {
                 let st = get_u32(a, "id_node_start")?;
                 let en = get_u32(a, "id_node_end")?;
-                // `feature_brace`（既定 TENSION）。TENSIONANDCOMPRESSION のみ
-                // 引張圧縮両用、それ以外（TENSION・未指定）は引張専用。
                 let tension_only = a
                     .get("feature_brace")
                     .map(|v| v != "TENSIONANDCOMPRESSION")
@@ -711,10 +664,7 @@ impl StbParser {
     /// 集める）。担当タグなら true。
     fn start_slab_wall(&mut self, tag: &str, a: &Attrs) -> bool {
         match tag {
-            // --- スラブ（StbSlab）: 境界節点ループを StbNodeIdOrder から集める ---
             "StbSlab" => {
-                // 自己終了 <StbWall/> 等で残った兄弟状態をクリアし、境界ノードの
-                // 取り違えを防ぐ（StbSlab/StbWall は入れ子にならない）。
                 self.cur_wall = None;
                 self.cur_slab = Some(RawSlab {
                     section_fid: match get_i64(a, "id_section") {
@@ -724,7 +674,6 @@ impl StbParser {
                     boundary: Vec::new(),
                 });
             }
-            // --- 壁（StbWall）: 境界節点ループを StbNodeIdOrder から集める ---
             "StbWall" => {
                 self.cur_slab = None;
                 self.cur_wall = Some(RawWall {
@@ -747,10 +696,6 @@ impl StbParser {
     /// 通り芯（`StbAxes` とその子）の開始要素を処理する。担当タグなら true。
     fn start_axes(&mut self, tag: &str, a: &Attrs) -> bool {
         match tag {
-            // --- 通り芯（StbAxes）---
-            // 平行芯は原点・方向角ごと取り込む。円弧芯・放射芯・作図芯は
-            // 幾何を表す型を持たないため `Other` とし、通り名と所属節点だけを
-            // 取り込む（通り芯は識別用のデータなので、所属が残れば用を成す）。
             "StbAxes" => {}
             "StbParallelAxes" | "StbArcAxes" | "StbRadialAxes" | "StbDrawingAxes" => {
                 if let Some(g) = self.cur_axis_group.take() {
@@ -793,8 +738,6 @@ impl StbParser {
             "StbNodeIdOrder" => {
                 self.in_node_id_order = true;
             }
-            // 節点ループを子要素形式（<StbNodeId id="…"/>）で持つ方言に対応。
-            // スラブ・壁のうち現在開いている方の境界へ追加する。
             "StbNodeId" => {
                 if let Ok(id) = get_u32(a, "id") {
                     if let Some(slab) = self.cur_slab.as_mut() {
@@ -824,7 +767,6 @@ impl StbParser {
     /// 未対応のものは、リスト外の未知要素であっても「取り込み対象外」として拾う。
     /// グループコンテナ自体（StbColumns 等）や StbMembers は入れ物なので拾わない。
     fn record_unsupported(&mut self, tag: &str) {
-        // この要素の直属の親（未知の部材/断面/荷重の検出に使う）。
         let parent = self.container_stack.last().map(|s| s.as_str());
         let is_group_container = tag == "StbMembers" || MEMBER_GROUP_CONTAINERS.contains(&tag);
         let parent_is_member_group = parent.is_some_and(|p| MEMBER_GROUP_CONTAINERS.contains(&p));
@@ -858,7 +800,6 @@ impl StbParser {
 
     /// 終了イベントを処理する（開いていた断面・階・通り芯・スラブ・壁を閉じる）。
     fn on_end(&mut self, tag: &str) {
-        // 対応する開始要素をスタックから降ろす。
         self.container_stack.pop();
         if self.end_section(tag) {
             return;
@@ -926,9 +867,7 @@ impl StbParser {
                 {
                     match geom {
                         Some(geom) => {
-                            // 配筋がない（幾何のみの）ファイルは無筋相当の既定配筋で補う。
                             let mut rebar = rebar.unwrap_or_else(default_rebar);
-                            // かぶりが配筋要素側になければ配置コンテナ側の値を採る。
                             if rebar.cover == 0.0 {
                                 if let Some(c) = rebar_cover {
                                     rebar.cover = c;
@@ -1006,7 +945,6 @@ impl StbParser {
                                 grades: super::SecGrades {
                                     main_rebar: rebar_grades.main,
                                     shear_rebar: rebar_grades.shear,
-                                    // SRC の内蔵鉄骨の鋼種。断面の材料として結ぶ。
                                     steel: (!grade.is_empty()).then(|| grade.clone()),
                                 },
                                 kind: PendingSecKind::SrcRef {
@@ -1024,7 +962,6 @@ impl StbParser {
                 }
             }
             "StbSecSlab_RC" | "StbSecSlabDeck" => {
-                // 厚さが取れたスラブ断面のみ登録する（cur は必ず None へ戻す）。
                 if let CurSec::Slab {
                     file_id,
                     thickness: Some(thickness),
@@ -1088,9 +1025,7 @@ fn make_member(
         Some(m) if m >= 0 => Some(m as u32),
         _ => None,
     };
-    // 断面回転角（`rotate`、既定 0）。ref_vector は構築時に軸から算出する。
     let rotate = get_f64(a, "rotate").unwrap_or(0.0);
-    // 端部接合条件（柱は bottom/top、大梁・小梁は start/end。既定は FIX）。
     let end_cond = [
         end_condition_of(a, &["condition_bottom", "condition_start"]),
         end_condition_of(a, &["condition_top", "condition_end"]),

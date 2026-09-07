@@ -49,7 +49,7 @@ pub fn nodal_disp_batch(node_ids: &[u32], disp: &[[f64; 6]]) -> arrow::error::Re
 pub fn member_force_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("elem_id", DataType::UInt32, false),
-        Field::new("pos", DataType::Float64, false), // 評価位置 0..1
+        Field::new("pos", DataType::Float64, false),
         Field::new("n", DataType::Float64, false),
         Field::new("qy", DataType::Float64, false),
         Field::new("qz", DataType::Float64, false),

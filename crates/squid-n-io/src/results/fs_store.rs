@@ -17,28 +17,21 @@ use super::{
 /// `ResultWriter::finish` は `Box<Self>` を consume するため、ライタ単体からは
 /// ストア本体(`&mut FsResultStore`)へ直接書き戻すことができない。そこで:
 /// - ライタは `Arc<Mutex<Vec<ResultEntry>>>`(`pending`)の clone を保持し、
-///   `finish` 時にはそこへエントリを push するだけに留める(`Mutex` は `Send` なので
-///   `ResultStore: Send` 制約はそのまま満たせる)。
+///   `finish` 時にはそこへエントリを push するだけに留める。
 /// - ストア本体は `pending` を drain して `ResultManifest` 本体へ吸収し、
-///   manifest.json へ永続化する `sync(&mut self)` を持つ。**`sync()` は
-///   呼び出し側(MCP サーバ)がジョブの全書き込み成功後に明示的に呼ぶ
-///   コミット点であり、`writer()` は自動で `sync()` しない**。かつては
-///   `writer()` 先頭で自動同期していたが、複数種別を書くジョブの 2 種別目の
-///   `writer()` 取得時に 1 種別目の保留エントリが manifest へ吸収されてしまい、
-///   その後の書き込み失敗時に [`Self::discard_pending`] で巻き戻せない
-///   (＝失敗ジョブの部分結果が照会可能になる)穴があった。
+///   manifest.json へ永続化する `sync(&mut self)` を持つ。`sync()` は
+///   呼び出し側がジョブの全書き込み成功後に明示的に呼ぶコミット点であり、
+///   `writer()` は自動で `sync()` しない。
 /// - 途中失敗したジョブは `sync()` を呼ばず [`Self::discard_pending`] で
 ///   保留分を破棄すること。
 ///
 /// ## query の対応範囲(素朴な実装)
 /// - `NodalDisp` / `MemberForce` / `Modal`: 全行読み出し後にフィルタを適用する。
-///   `NodalDisp` は `node_filter`(node_id 列)、`MemberForce` は `member_filter`
-///   (elem_id 列)に対応する。`Modal` には node/member の概念がないためフィルタは
-///   無視する。
+///   `Modal` には node/member の概念がないためフィルタは無視する。
 /// - `TimeHistory`: 既存の `read_time_history_range` を利用し、`step_range` /
 ///   `node_filter` に対応する(`member_filter` は概念がないため無視)。
 /// - `Story` はスキーマ関数が未実装のため `writer()` / `query()` ともに
-///   `Err(Unsupported)` を返す。MCP サーバはこの kind を使わない前提。
+///   `Err(Unsupported)` を返す。
 /// - `query` はマニフェストに該当エントリがない場合・IO 失敗時に `Err` を返す
 ///   (panic しない)。
 pub struct FsResultStore {
@@ -75,12 +68,7 @@ impl FsResultStore {
     /// finish 済みライタが積んだ保留エントリを manifest 本体へ吸収し、manifest.json
     /// へ永続化する。同一 case+kind のエントリは上書きする。
     ///
-    /// 永続化(manifest.json 書き込み)に**成功したときだけ**メモリ上の manifest へ
-    /// 反映する。失敗時は drain した保留エントリを pending へ戻して Err を返す
-    /// (メモリ上 manifest はディスクと一致したまま)。かつては先にメモリへ反映して
-    /// から書き込んでいたため、ディスクフル等で書き込みが失敗するとジョブは
-    /// Failed になる一方、in-memory manifest 経由の `query` からは失敗ジョブの
-    /// 結果が照会できてしまった。
+    /// 永続化に成功したときだけメモリ上の manifest へ反映する。失敗時は保留へ戻して Err を返す。
     pub fn sync(&mut self) -> std::io::Result<()> {
         let drained: Vec<ResultEntry> = {
             let mut pending = self
@@ -106,9 +94,6 @@ impl FsResultStore {
         }
         let data = serde_json::to_string_pretty(&new_manifest).map_err(std::io::Error::other)?;
         if let Err(e) = std::fs::write(&self.manifest_path, data) {
-            // 失敗時は保留へ戻す(呼び出し側が discard_pending すればまとめて破棄
-            // できる)。ロック取得に失敗した場合はエントリを落とすが、manifest へ
-            // 吸収されない方向の失敗のため「失敗ジョブの結果が見える」ことはない。
             if let Ok(mut pending) = self.pending.lock() {
                 for entry in drained {
                     pending.push(entry);
@@ -121,17 +106,6 @@ impl FsResultStore {
     }
 
     /// finish 済みライタが積んだ保留エントリを、manifest へ吸収せずに破棄する。
-    ///
-    /// 複数種別を書き込むジョブが途中で失敗した場合、それまでに finish した
-    /// エントリが保留のまま残り、後続の `sync()` で manifest へ採用されて
-    /// **失敗ジョブの部分結果が照会可能になる**。失敗時は本メソッドで保留分を
-    /// 破棄すること。
-    ///
-    /// 書き込み済みの Parquet ファイル自体は削除しない。同じ case+kind の
-    /// 成功済みエントリが manifest に残っている場合、そのファイルは
-    /// [`Self::writer`] の時点で既に上書きされており、削除するとかえって既存
-    /// エントリの読み出しまで壊すためである（manifest に載らないエントリは
-    /// `query` から参照されない）。
     pub fn discard_pending(&mut self) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
@@ -207,10 +181,6 @@ impl ResultWriter for FsResultWriter {
 
 impl ResultStore for FsResultStore {
     fn writer(&mut self, case: CaseId, kind: ResultKind) -> std::io::Result<Box<dyn ResultWriter>> {
-        // ここで自動 sync() はしない(冒頭のモジュールコメント参照)。同一ジョブ内の
-        // 2 種別目の writer 取得で 1 種別目の保留エントリが manifest へ吸収されると、
-        // 以降の書き込み失敗時に discard_pending で巻き戻せなくなるため、manifest への
-        // 反映は呼び出し側が全書き込み成功後に呼ぶ sync() だけが行う。
         let path = self.file_path(case, kind);
         let path_str = path.to_string_lossy().into_owned();
         let schema = match kind {
@@ -237,10 +207,6 @@ impl ResultStore for FsResultStore {
     }
 
     fn query(&self, q: &ResultQuery) -> std::io::Result<ResultBatch> {
-        // manifest 内に該当エントリが存在することのみを確認する。実ファイルパスは
-        // manifest に記録された `path` を信用せず case/kind から再計算する。
-        // （manifest.json はユーザーが書換え可能で、`../` や絶対パスを混入させると
-        //   任意ファイル読み出しに悪用され得るため。書込み側も常に file_path を使う。）
         if !self
             .manifest
             .entries
@@ -291,7 +257,6 @@ impl ResultStore for FsResultStore {
                 Ok(ResultBatch { batch })
             }
             ResultKind::Modal => {
-                // モーダル結果に node/member の概念はないため node_filter/member_filter は無視する。
                 let batches = read_all(&path).map_err(std::io::Error::other)?;
                 let batch = arrow::compute::concat_batches(&modal_schema(), &batches)
                     .map_err(std::io::Error::other)?;
