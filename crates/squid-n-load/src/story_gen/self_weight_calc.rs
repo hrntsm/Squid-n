@@ -155,19 +155,10 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
         crate::wall_expand::expand_wall_elements(model);
     let model = &expanded;
     let mut items = Vec::new();
-    // 柱脚探索（`has_column_below`/`max_depth`）・壁の辺→柱梁対応付け
-    // （`wall_clear_area_factor`）を要素数分の走査から索引参照へ落とすため、
-    // 主ループの前に 1 回だけ構築する（性能。走査順・判定条件は変更しない）。
     let node_adj = node_adjacency(model);
     let beam_pairs = beam_pair_map(model);
-    // 柱フェース距離は `RigidZone::face_i/face_j` のキャッシュを当てにせず、
-    // 幾何から直接求める。キャッシュは剛域の自動算定が走るまで未算定（None）で、
-    // 以前はそれを 0 とみなして節点間距離で自重を算定していたため、準備計算の
-    // 1 回目だけ固定荷重が 9.6% 過大になっていた（申し送り「実モデル統合テスト」4.1）。
     let faces = squid_n_core::face_distance::face_distances(model);
     for (elem_idx, elem) in model.elements.iter().enumerate() {
-        // ダンパー自重（§ダンパー自重）: 対象部材は断面からの自重計算をスキップし、
-        // 装置重量＋支持部断面積×(節点間距離−装置長さ)×鋼材単位体積重量で置き換える。
         if matches!(elem.kind, ElementKind::Beam | ElementKind::Brace { .. })
             && elem.nodes.len() >= 2
         {
@@ -183,7 +174,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
             }
         }
 
-        // 材料は断面が持つ（`Model::element_material`）。
         let (Some(sec), Some(mat)) = (model.element_section(elem), model.element_material(elem))
         else {
             continue;
@@ -197,8 +187,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let len = dist3(ci, cj);
                 let is_vertical = is_vertical_pair(ci, cj);
                 let is_concrete = mat.fc.is_some();
-                // §1.8: 柱面間距離の控除は水平材（梁）のみ。鉛直材（柱）は
-                // 床上面から床上面（＝節点間距離）で算定する。
                 let mut eff_len = if is_concrete && !is_vertical {
                     let [fi, fj] = faces[elem_idx];
                     (len - fi - fj).max(0.0)
@@ -206,8 +194,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     len
                 };
 
-                // §柱の長さ: コンクリート造の柱で、下端節点から下に続く柱がない場合、
-                // 下端節点に取り付く梁（非鉛直 Beam）の最大せいを自重算定長へ加算する。
                 if is_concrete && is_vertical {
                     let bottom_local = if ci[2] <= cj[2] { 0 } else { 1 };
                     let bottom_id = elem.nodes[bottom_local];
@@ -259,9 +245,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 } else {
                     load_cfg.effective_steel_factor()
                 };
-                // §1.9: RC/SRC 梁（水平材）はスラブ厚分の断面積 b·t を控除する
-                // （w_c = γ·b(D−t)+…。スラブ重量が構造芯間の面積で別途計上される
-                // ための二重計上防止）。スラブがないモデルでは控除しない。
                 let self_weight_area = if is_concrete
                     && !is_vertical
                     && model.slab_thickness > 0.0
@@ -279,7 +262,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 {
                     w += lw * eff_len;
                 }
-                // §仕上げ荷重の自動換算: w_f × 仕上げ周長 φ を自重算定長に乗じて加算する。
                 if let Some(&(_, wf)) = load_cfg
                     .finish_area_weight
                     .iter()
@@ -300,35 +282,19 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     .iter()
                     .map(|n| model.nodes[n.index()].coord)
                     .collect();
-                // §壁自重: 耐震壁は周辺柱梁の内法寸法で面積を評価する。
                 let area =
                     polygon_area_3d(&pts) * wall_clear_area_factor(model, elem, &pts, &beam_pairs);
 
-                // §壁自重: 開口控除・開口重量。
                 let attr = model.wall_attrs.iter().find(|a| a.elem == elem.id);
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
                 let net_area = (area - opening_area).max(0.0);
-                // §壁自重: 仕上げ・増打ちの面荷重も躯体と同じ正味面積へ乗じる
-                // （`Model::wall_plate_self_weight` と同じ規約）。壁エレメントに
-                // なる壁版だけこれを落とすと、入力した重さが黙って消える。
                 let finish = attr.map(|a| a.finish_intensity).unwrap_or(0.0);
                 let w = ((mat.density * t * GRAVITY_MM_S2 + finish) * net_area + opening_weight)
                     .max(0.0);
 
-                // §壁自重: 自重は**縁が切れていない梁際の辺**へ伝える。
-                //
-                // 上下とも一体なら四隅へ等分する（壁の重量を階高の中央で上下階へ
-                // 分ける従来の扱い）。下辺だけが切れていれば全量を上辺の 2 節点へ、
-                // 上辺だけが切れていれば全量を下辺の 2 節点へ寄せる。柱際スリットは
-                // 自重の行き先を変えない（柱際の鉛直辺は壁の重量を受けないため）。
-                //
-                // 上下とも切れた壁は伝達先が無い。解析前チェックがエラーで止めるが、
-                // 準備計算はそこへ到達する前にも走るので、ここでは四隅へ等分して
-                // 重量を落とさない（黙って消すより、止まる側の判断へ委ねる）。
                 let slit = attr.map(|a| a.slit).unwrap_or_default();
                 let shares = wall_corner_shares(elem, &pts, w, slit);
-                // 躯体（密度）分だけを別に配る。理由は `SelfWeightItem::Panel` の doc。
                 let w_density =
                     (mat.density * t * GRAVITY_MM_S2 * net_area + opening_weight).max(0.0);
                 let density_shares = wall_corner_shares(elem, &pts, w_density, slit);
@@ -341,9 +307,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
         }
     }
 
-    // 二次部材（小梁・間柱）の自重: ρ·A·L·g（節点間距離。解析部材ではないため
-    // 柱面間控除・スラブ厚控除は行わない簡易則）。鋼材は鉄骨重量割増率を乗じる。
-    // 両端節点へ 1/2 ずつ帰属する（[`SelfWeightItem::SecondaryLine`]）。
     for sm in model.joists().chain(model.posts()) {
         let (Some(sec_id), Some(mat)) = (sm.section, model.secondary_material(sm)) else {
             continue;
@@ -408,7 +371,6 @@ fn wall_corner_shares(
             .collect()
     };
     let all: Vec<usize> = (0..pts.len()).collect();
-    // 上下いずれかだけが切れている場合にのみ寄せる。
     let (bottom_slit, top_slit) = (slit.beam_face[0], slit.beam_face[1]);
     if bottom_slit == top_slit {
         return equal(all);
@@ -428,7 +390,6 @@ fn wall_corner_shares(
             .filter(|&i| (pts[i][2] - z).abs() < LEVEL_TOL_MM)
             .collect()
     };
-    // 下辺が切れていれば上辺へ、上辺が切れていれば下辺へ。
     let idx = level(bottom_slit);
     if idx.is_empty() {
         return equal(all);
@@ -446,12 +407,12 @@ fn wall_clear_area_factor(
         return 1.0;
     }
     let n = 4usize;
-    let mut l_len = 0.0; // 水平辺（芯々長さ）の合計
+    let mut l_len = 0.0;
     let mut l_cnt = 0u32;
-    let mut h_len = 0.0; // 鉛直辺（芯々高さ）の合計
+    let mut h_len = 0.0;
     let mut h_cnt = 0u32;
-    let mut l_deduct = 0.0; // 側柱の半幅の和（長さ方向の控除）
-    let mut h_deduct = 0.0; // 上下梁の半せいの和（高さ方向の控除）
+    let mut l_deduct = 0.0;
+    let mut h_deduct = 0.0;
     for i in 0..n {
         let (a, b) = (elem.nodes[i], elem.nodes[(i + 1) % n]);
         let (pa, pb) = (pts[i], pts[(i + 1) % n]);
@@ -461,20 +422,17 @@ fn wall_clear_area_factor(
         if len <= 0.0 {
             continue;
         }
-        // 辺の節点対に一致する線材（柱・梁）の断面。
         let member_sec = beam_pairs
             .get(&ordered_pair(a, b))
             .and_then(|&idx| model.elements[idx].section)
             .and_then(|sid| model.sections.get(sid.index()));
         if dz > dh {
-            // 鉛直辺 = 側柱候補
             h_len += len;
             h_cnt += 1;
             if let Some(sec) = member_sec {
                 l_deduct += sec.width.min(sec.depth).max(0.0) / 2.0;
             }
         } else {
-            // 水平辺 = 上下梁候補
             l_len += len;
             l_cnt += 1;
             if let Some(sec) = member_sec {

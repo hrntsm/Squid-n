@@ -7,10 +7,6 @@
 use super::fem::fem_uniform;
 use super::types::{Cmq, LoadShape};
 
-// ---------------------------------------------------------------------------
-// 剛域考慮 CMQ（レビュー §1.13 ギャップ「剛域考慮 CMQ」対応）
-// ---------------------------------------------------------------------------
-
 const SIMPSON_N: usize = 2000;
 
 /// 合成シンプソン則による定積分（決定的・十分な分割数）。`n` は偶数に丸める。
@@ -219,19 +215,16 @@ pub fn cmq_with_rigid_zone(
         };
     }
 
-    // 1) 可撓部分の C'/Q'。
     let flex = cmq_flexible_span(shape, l_total, lam_i, l_flex);
 
-    // 2) 剛域片持ち梁として節点へ伝達。
     let mut c_i = flex.c_i + flex.q_i * lam_i;
     let mut c_j = flex.c_j - flex.q_j * lam_j;
     let mut q_i = flex.q_i;
     let mut q_j = flex.q_j;
 
-    // 3) 剛域内直接荷重。
     let (w_i, xbar_i) = zone_load_resultant(shape, l_total, 0.0, lam_i);
     let (w_j, xbar_j_from_start) = zone_load_resultant(shape, l_total, l_total - lam_j, lam_j);
-    let xbar_j = lam_j - xbar_j_from_start; // j端（節点）からの距離に変換
+    let xbar_j = lam_j - xbar_j_from_start;
 
     let mut column_loads = (0.0, 0.0);
     match mode {

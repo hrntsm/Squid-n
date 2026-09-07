@@ -1,8 +1,4 @@
 //! 階（Story）生成の本体。
-//!
-//! - [`StoryGenResult`] — 生成結果（呼び出し側が [`Model`] へ適用する）
-//! - [`generate_stories_multi`] — 複数重力荷重ケースを地震用重量に算入する階生成
-//! - [`generate_stories`] — 単一ケース指定の従来互換ラッパー
 
 use super::reactions::static_reactions;
 use super::*;
@@ -62,40 +58,7 @@ pub fn generate_stories_multi(
 }
 
 /// 剛床代表節点（マスター）の拘束を、スレーブが実際にその方向へ動けるかで決める。
-///
-/// マスターは要素の付かない浮遊節点で、水平剛性は剛床を通じてスレーブから写される。
-/// ところが拘束済みのスレーブ自由度には従属関係が張られない
-/// （`squid_n_solver` の拘束変換は非 active なスレーブ自由度を対象外にする）ため、
-/// **全スレーブがその方向へ拘束されている階ではマスターへ剛性が一切写らない**。
-/// 自由なままにすると剛性ゼロの独立自由度が残り、剛性行列が特異になる。
-///
-/// これが起きるのは基部の床（柱脚が固定・ピンで水平拘束される）である。
-/// 一方、支点ばね（[`Node::support_spring`]）で支持された基部は水平に動けるため、
-/// マスターも自由のままとし、基礎の質量が地盤ばねと連成して応答に効くようにする。
-///
-/// # 剛性を写すのは「構造節点」のスレーブだけ
-///
-/// 動けるかどうかは [`Node::restraint`] だけでは決まらない。床の境界・小梁の支持点
-/// のように**要素が 1 つも接続しない節点は非構造節点**であり、
-/// [`squid_n_core::dof::structural_nodes`] の判定によって解析自由度そのものを
-/// 持たない。拘束が無いので `restraint` の上では自由に見えるが、剛性は写らない。
-///
-/// 1FL が基部にある建物（柱脚がピン・固定）で 1FL の床に小梁があると、基部の階の
-/// スレーブは「水平拘束された柱脚」と「拘束の無い小梁支持点」の混在になる。
-/// `restraint` だけで判定するとマスターの Ux・Uy を自由と決めてしまい、剛性ゼロの
-/// 独立自由度が残って剛性行列が特異になる。このため**構造節点のスレーブだけ**を
-/// 可動性の判定対象とする。
-///
-/// **面内回転 Rz はスレーブの並進で決まる**（拘束変換はスレーブの Ux・Uy の行に
-/// マスター Rz を `-dy`・`dx` の係数で入れる）。したがって並進が 1 つも自由でない
-/// 階では、Rz を自由にしても剛床としての剛性は写らず、マスターの回転慣性 j だけが
-/// 残る。柱のねじり剛性 GJ/L しか支えがないため、開断面の鉄骨柱では周期が数十秒に
-/// なる**偽の低次モード**が生じ、精算の設計用固有周期 T を乗っ取って Rt を潰す。
-/// このため Rz は「スレーブの並進が 1 つでも自由なとき」だけ自由にする。
-///
-/// なお Rz を拘束したマスターに対しては、スレーブの Rz は従属先を失って独立自由度の
-/// まま残る（拘束変換はマスター側が非 active の行を張らない）。柱脚のねじりは
-/// 変更前と同じく各節点で独立に扱われる。
+/// 構造節点のスレーブだけを可動性の判定対象とする。Rz は並進が 1 つでも自由なときだけ自由にする。
 fn master_restraint(
     model: &Model,
     common: Dof6Mask,
@@ -126,21 +89,8 @@ fn master_restraint(
 }
 
 /// [`generate_stories_multi`] の自重算入方法を選べる版。
-///
-/// `include_density_self_weight`:
-/// - `true`: 従来どおり自重（柱梁・壁・ダンパー・フレーム外雑壁・取り付く壁版）を
-///   材料密度から直接算入する（自重が重力ケースに含まれないモデル向け）。
-/// - `false`: 密度からの自重・フレーム外雑壁・取り付く壁版の直接算入を行わず、
-///   `gravity_lcs` のケース内容だけを算入する。自重同期ケース
-///   （[`crate::self_weight::self_weight_case_content`] の内容を含む「DL」。
-///   取り付く壁版は [`crate::wall_attached`] 経由で DL に合流する）が
-///   重力ケースに含まれるモデル向け（直接算入すると二重計上になる）。
-///
-/// `mass_method`: 剛床代表節点（マスター）へ与える質点質量（[`Node::mass`]）の
-/// 算定方式（[`MassMethod`]）。`include_density_self_weight` の真偽によらず、
-/// `CorrectedLumped` は解析の質量行列に部材密度質量として計上される自重
-/// （主架構線材・壁エレメント）を地震用重量から控除した残りを、`LumpedOnly` は
-/// 地震用重量の全量をマスターの質点質量とする。
+/// `include_density_self_weight=false` は密度からの直接算入を行わず、
+/// `gravity_lcs` のケース内容だけを算入する（直接算入すると二重計上になる）。
 pub fn generate_stories_with_opts(
     model: &Model,
     gravity_lcs: &[LoadCaseId],
@@ -151,7 +101,6 @@ pub fn generate_stories_with_opts(
         return Err("節点がありません".into());
     }
 
-    // --- 0. 構造節点の抽出（前回生成分の剛床代表節点を除外） ---
     let generated: std::collections::HashSet<NodeId> =
         model.generated_masters.iter().copied().collect();
     let struct_nodes: Vec<&Node> = model
@@ -163,20 +112,8 @@ pub fn generate_stories_with_opts(
         return Err("節点がありません".into());
     }
 
-    // 解析自由度を持つ節点（[`master_restraint`] が剛床の可動性を判定するのに使う）。
-    // 剛床のスレーブに含まれる床の境界・小梁の支持点は要素が接続しないため
-    // 非構造節点で、拘束が無くても剛性を写さない。
     let structural = squid_n_core::dof::structural_nodes(model);
 
-    // --- 1. 階レベルの決定 ---
-    // 階（[`Story`]）は床であり、`Model::stories` は基部の床から屋根の床までの
-    // 床レベル列である。その先頭が基部レベルであることが不変条件
-    // （`squid_n_core::model::story` のモジュールドキュメント参照）であり、
-    // **それを成立させるのがここである**。
-    //
-    // 階レベルの正は利用者が定義する `elevation` であり本関数は書き換えないが、
-    // 基部レベルの階が無ければ先頭に補う。階が 1 つも定義されていないモデルに
-    // 限り、節点の Z 座標をクラスタリングして階レベルを初期化する。
     let base = model.base_elevation();
     let mut story_levels: Vec<f64> = if model.stories.is_empty() {
         let mut zs: Vec<f64> = struct_nodes.iter().map(|n| n.coord[2]).collect();
@@ -199,8 +136,6 @@ pub fn generate_stories_with_opts(
     } else {
         model.stories.iter().map(|s| s.elevation).collect()
     };
-    // 基部の床が無ければ補う。これが無いと最下層（基部〜その直上の床）が
-    // `Model::layers` から丸ごと落ち、層間変形角・層せん断力から静かに消える。
     if story_levels
         .first()
         .is_none_or(|&z| z > base + LEVEL_TOL_MM)
@@ -208,9 +143,6 @@ pub fn generate_stories_with_opts(
         story_levels.insert(0, base);
     }
 
-    // 階への帰属区間。最下階（基部の床）だけ下端を含む点区間、他は
-    // `(直下階のレベル, 当該階のレベル]`（規則は `Model::story_spans` と同一。
-    // ここでは生成中の階レベル列に対して同じ規則を適用する）。
     let spans: Vec<(f64, f64)> = story_levels
         .iter()
         .enumerate()
@@ -220,10 +152,6 @@ pub fn generate_stories_with_opts(
         })
         .collect();
 
-    // 各階の所属節点を 1 パスでグルーピングする（階ごとに全節点を
-    // 走査し直すと O(節点数×階数²) になるため）。区間に入らない節点
-    // （最上階より上の節点）はどの階にも属さない。基部レベルの節点（柱脚・基礎梁）は
-    // 最下階の点区間に入るため、基部の床に属する。
     let mut nodes_by_story: Vec<Vec<NodeId>> = vec![Vec::new(); story_levels.len()];
     for n in &struct_nodes {
         let z = n.coord[2];
@@ -236,12 +164,9 @@ pub fn generate_stories_with_opts(
         }
     }
 
-    // --- 2. 節点の重量配分 ---
     let mut node_weight = vec![0.0f64; model.nodes.len()];
     let load_cfg = model.load_cfg.clone().unwrap_or_default();
 
-    // K型ブレースの重量配分（§K型ブレース）に用いる「基準節点」判定。
-    // 基準節点＝ Brace 以外の要素が 1 つでも接続する節点。それ以外は「内部節点」。
     let mut is_base_node = vec![false; model.nodes.len()];
     for e in &model.elements {
         if !matches!(e.kind, ElementKind::Brace { .. }) {
@@ -253,10 +178,6 @@ pub fn generate_stories_with_opts(
         }
     }
 
-    // §K型ブレース（BaseNodesOnly）: 総重量（または部材荷重の両端反力）を
-    // 基準節点のみへ再配分する共通則。両端とも基準節点は各自の分をそのまま、
-    // 片端が内部節点ならその分も基準節点側へ全量、両端とも内部節点は
-    // フォールバックで元の配分のまま。
     let k_brace_redistribute =
         |node_weight: &mut Vec<f64>, ni: usize, nj: usize, wi: f64, wj: f64| match (
             is_base_node[ni],
@@ -270,24 +191,8 @@ pub fn generate_stories_with_opts(
             }
         };
 
-    // 自重（算定規則は enumerate_self_weight に一元化。§柱梁自重・§壁自重・§ダンパー自重）。
-    // - 線材: 総重量を両端に半分ずつ（対称等分布荷重の静定反力。
-    //   K型ブレースは §K型ブレースの規則で再配分）。
-    // - ダンパー: 両端節点へ 1/2 ずつ（鉛直配置は上下階へ、水平配置は同一階の
-    //   両節点へ、が節点標高から自然に成立する）。
-    // - 壁・シェル: 頂点配分（縁が切れていない梁際の辺へ。上下とも一体なら四隅へ等分）。
-    //
-    // CorrectedLumped のマスター補正質点算定（後段）が「解析の質量行列に部材密度
-    // 質量として計上される自重（線材・壁エレメント）」の節点配分を必要とするため、
-    // `include_density_self_weight` の真偽によらず列挙自体は常に行う。
     let self_weight_items = enumerate_self_weight(model, &load_cfg);
 
-    // 線材（柱梁・ブレース）・壁エレメントの自重を対象 Vec へ配分する（K型ブレースの
-    // 再配分規則込み）。node_weight（地震用重量の合算）と node_self_weight
-    // （解析質量行列に部材密度質量として計上される自重の控除用）の双方で使う。
-    // `panel_density_only` が真のとき、壁・シェルは躯体（密度）分だけを配る。
-    // `CorrectedLumped` の控除は解析の質量行列と対応させる必要があり、質量行列は
-    // 要素の密度からしか質量を作らないためである（`SelfWeightItem::Panel` の doc）。
     let distribute_line_panel =
         |target: &mut Vec<f64>, item: &SelfWeightItem, panel_density_only: bool| match item {
             SelfWeightItem::Line { elem_idx, total } => {
@@ -319,21 +224,11 @@ pub fn generate_stories_with_opts(
             SelfWeightItem::Damper { .. } | SelfWeightItem::SecondaryLine { .. } => {}
         };
 
-    // §CorrectedLumped の控除対象: 解析の質量行列に部材密度質量として計上される
-    // 要素（主架構の線材・壁エレメント）の自重のみ。ダンパー・二次部材（小梁・間柱）・
-    // 取り付く壁版は解析質量に算入されない（assemble_global_m がダンパーの
-    // mass_matrix を零で返し、二次部材・取り付く壁版は model.elements にすら
-    // 現れない）ため控除しない。
-    //
-    // 壁・シェルは**躯体（密度）分だけ**を控除する。仕上げ・増打ちの面荷重は要素の
-    // 密度に入らないため質量行列にも現れず、総重量で控除すると質量が黙って消える。
     let mut node_self_weight = vec![0.0f64; model.nodes.len()];
     for item in &self_weight_items {
         distribute_line_panel(&mut node_self_weight, item, true);
     }
 
-    // 自重が重力ケース（「DL」自動同期）側に含まれる場合は、地震用重量の合算
-    // (node_weight) への直接算入を行わない（include_density_self_weight = false）。
     if include_density_self_weight {
         for item in &self_weight_items {
             match item {
@@ -341,34 +236,20 @@ pub fn generate_stories_with_opts(
                     node_weight[*ni] += total / 2.0;
                     node_weight[*nj] += total / 2.0;
                 }
-                // 二次部材（小梁・間柱）: 両端節点へ 1/2 ずつ（節点は所属階の
-                // レベルでクラスタリングされるため、階重量へ自然に算入される）。
                 SelfWeightItem::SecondaryLine { ni, nj, total } => {
                     node_weight[*ni] += total / 2.0;
                     node_weight[*nj] += total / 2.0;
                 }
                 SelfWeightItem::Line { .. } | SelfWeightItem::Panel { .. } => {
-                    // 地震用重量は総重量（仕上げ・増打ちを含む）。
                     distribute_line_panel(&mut node_weight, item, false);
                 }
             }
         }
 
-        // §フレーム外雑壁: 部材としてモデル化しない壁の重量を近傍節点へ集計する。
-        // （false の場合は自重同期ケースの節点荷重に雑壁分が含まれるため行わない）
-        // 取り付く壁版（解析要素を持たない）も同様。false のときは DL 同期
-        // （`compute_gravity_auto_load_cases`）側に含まれる。
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);
-        // 解析要素にならない囲まれた壁版（間柱で分割された壁版・腰壁等）も同様に
-        // 要素経由では拾えないため、辺への分配と同じ規則で節点重量へ集計する。
         crate::wall_plate_load::accumulate_enclosed_wall_seismic_weight(model, &mut node_weight);
     }
 
-    // 指定荷重ケース（複数可）の鉛直下向き成分。
-    // §1.4: 部材荷重は単純梁の静定反力（`static_reactions`）で両端に配分する
-    // （令88条の実務的取扱い: 地震用節点重量 = 大梁の CMoQo 計算による梁せん断力 Q0）。
-    // 部材荷重 → 要素の解決は ID 添字マップで行う（荷重ごとの線形探索は
-    // O(部材荷重数×要素数) になり、DL 自動同期モデルでは要素数の 2 乗で悪化する）。
     let elem_idx_by_id: std::collections::HashMap<squid_n_core::ids::ElemId, usize> = model
         .elements
         .iter()
@@ -396,7 +277,6 @@ pub fn generate_stories_with_opts(
             else {
                 continue;
             };
-            // 全体座標系の作用方向（正規化済み）の鉛直下向き成分
             let dz = ml.dir[2];
             if dz >= 0.0 {
                 continue;
@@ -408,8 +288,6 @@ pub fn generate_stories_with_opts(
                 .sqrt();
             let (ri, rj) = static_reactions(&ml.kind, len);
             let scale = -dz;
-            // ブレースに載る鉛直荷重（自重同期ケースの等分布など）にも
-            // §K型ブレースの配分規則を適用する（密度直接算入と同じ規約）。
             if matches!(elem.kind, ElementKind::Brace { .. })
                 && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
             {
@@ -421,20 +299,15 @@ pub fn generate_stories_with_opts(
         }
     }
 
-    // --- 3. 階の構築（レベル 1 以上、下から順） ---
     let mut stories = Vec::new();
     let mut node_story = vec![None; model.nodes.len()];
     let mut constraints = Vec::new();
     let mut rep_nodes: Vec<Node> = Vec::new();
     let mut generated_masters: Vec<NodeId> = Vec::new();
 
-    // 既存の代表節点は昇順（下の階から順）に再利用し、足りない分は末尾連番で新規生成する。
     let mut reuse_masters = model.generated_masters.iter().copied();
     let mut next_new_id = model.nodes.len() as u32;
 
-    // 剛床代表節点の拘束の共通部分: 要素が接続しない浮遊節点のため、剛床が拘束
-    // しない 3 自由度（Uz, Rx, Ry）を固定しないと特異行列になる。
-    // 残る Ux, Uy, Rz は階ごとに `master_restraint` で決める。
     let mut rep_restraint_base = Dof6Mask::FREE;
     rep_restraint_base.set_fixed(Dof::Uz);
     rep_restraint_base.set_fixed(Dof::Rx);
@@ -444,11 +317,6 @@ pub fn generate_stories_with_opts(
         let story_id = StoryId(si as u32);
         let node_ids: Vec<NodeId> = std::mem::take(&mut nodes_by_story[si]);
 
-        // 利用者が決める欄（階名・階種別・重量の手入力）は、既存の階定義から
-        // そのまま引き継ぐ。階が未定義のモデルから生成した場合のみ既定名を付ける。
-        //
-        // 引き継ぎ元は**標高で照合する**。基部の床を先頭に補うと添字が 1 つずれ、
-        // 添字で引くと利用者が付けた階名・階種別が 1 つ下の階へずれて付く。
         let prev = model
             .stories
             .iter()
@@ -461,10 +329,6 @@ pub fn generate_stories_with_opts(
 
         let weight: f64 = node_ids.iter().map(|n| node_weight[n.index()]).sum();
 
-        // 剛床のスレーブは**この階の床面上にある節点だけ**とする。中間高さの節点
-        // （柱の分割点・階高の途中に取り付く梁）は階には属するが剛床には入らない。
-        // 面内剛体として拘束してよいのは同一床面の節点に限られ、中間節点を含めると
-        // 存在しない水平剛性が生じるためである。
         let slaves: Vec<NodeId> = node_ids
             .iter()
             .copied()
@@ -475,11 +339,7 @@ pub fn generate_stories_with_opts(
             node_story[n.index()] = Some(story_id);
         }
 
-        // 床面に節点がない階（利用者が定義しただけで部材がまだない階）は剛床を
-        // 作らない。その階の水平力は階の節点へ重量比で直接分配される
-        // （分配規則は `squid_n_solver` 側）。
         if !slaves.is_empty() {
-            // 慣性力重心（重量重み付き重心）。重量が算定できない場合は幾何重心へフォールバック。
             let (gx, gy) = if weight > 0.0 {
                 let gx = node_ids
                     .iter()
@@ -506,18 +366,12 @@ pub fn generate_stories_with_opts(
                 (gx, gy)
             };
 
-            // 剛床代表節点（慣性力重心に置く専用の仮想節点）の生成/再利用。
             let master = reuse_masters.next().unwrap_or_else(|| {
                 let id = NodeId(next_new_id);
                 next_new_id += 1;
                 id
             });
 
-            // マスターへ与える質点質量（mass_method による。§CorrectedLumped/LumpedOnly）。
-            // 控除後重量 net_i:
-            // - CorrectedLumped: 地震用重量から、解析の質量行列に部材密度質量として
-            //   計上される自重（線材・壁エレメント）を控除した残り（負にはしない）。
-            // - LumpedOnly: 控除せず地震用重量そのもの。
             let net_i = |idx: usize| -> f64 {
                 match mass_method {
                     MassMethod::CorrectedLumped => {
@@ -527,10 +381,8 @@ pub fn generate_stories_with_opts(
                 }
             };
             let mt_weight: f64 = node_ids.iter().map(|n| net_i(n.index())).sum();
-            // 質点質量が算定できる階のみ設定する（Σnet_i ≦ 0 は None のまま）。
             let mass = if mt_weight > 0.0 {
                 let mt = squid_n_core::units::to_internal::weight_n_to_mass(mt_weight);
-                // 回転慣性 j = Σ(net_i/g)·r_i²（r_i はマスター座標 (gx,gy) からの平面距離）。
                 let j: f64 = node_ids
                     .iter()
                     .map(|n| {
@@ -570,8 +422,6 @@ pub fn generate_stories_with_opts(
             name,
             elevation: elev,
             node_ids,
-            // 手入力の地震用重量があればそれを優先する（解析・設計側は
-            // `seismic_weight` だけを読めばよいという規約を保つ）。
             seismic_weight: Some(weight_override.unwrap_or(weight)),
             weight_override,
             structure: Default::default(),
@@ -583,11 +433,8 @@ pub fn generate_stories_with_opts(
         return Err("階を構成する節点が見つかりませんでした。".into());
     }
 
-    // 主要構造種別は断面形状から自動判定する（利用者の入力項目ではない）。
     assign_story_structures(model, &node_story, &mut stories);
 
-    // 階数が減って余った旧代表節点は不活性化する（拘束固定・所属階なし）が、
-    // `generated_masters` には残して次回再生成時に再利用できるようにする。
     for id in reuse_masters {
         rep_nodes.push(Node {
             id,
@@ -625,21 +472,15 @@ pub fn generate_stories_with_opts(
 /// - 階の種別: 対象部材の種別ごとの本数の最多（[`StoryStructure::majority`]）。
 fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], stories: &mut [Story]) {
     use squid_n_core::model::StoryStructure;
-    // 階ごとの (RC, S, SRC) 本数。`node_story` が持つのは `StoryId` であり、
-    // それが `stories` 内の位置と一致する保証（`Model::validate` の
-    // 「id == 添字」不変条件）に依存しないよう、`StoryId` をキーに集計する。
     let mut counts: std::collections::HashMap<StoryId, (usize, usize, usize)> =
         std::collections::HashMap::with_capacity(stories.len());
     for e in &model.elements {
         if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
             continue;
         }
-        // 断面が未割当の部材は構造種別を判定できないため集計から除く
-        // （材料は断面が持つ）。
         if e.section.is_none() {
             continue;
         }
-        // 材端節点のうち最も高い節点の所属階へ計上する。
         let top = e
             .nodes
             .iter()
@@ -663,10 +504,8 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
     }
 }
 
-/// 節点 Z 座標から階を自動生成する（重力荷重ケース単一指定・従来互換の薄いラッパー）。
-///
-/// 詳細は [`generate_stories_multi`] を参照。`gravity_lc` を `Some` で渡した場合は
-/// その 1 ケースのみを地震用重量に算入する（`None` は自重のみ）。
+/// 節点 Z 座標から階を自動生成する。
+/// `gravity_lc` を渡した場合はその 1 ケースのみを地震用重量に算入する。
 pub fn generate_stories(
     model: &Model,
     gravity_lc: Option<LoadCaseId>,

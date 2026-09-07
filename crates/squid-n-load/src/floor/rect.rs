@@ -76,7 +76,6 @@ pub(crate) fn distribute_rect(
             if let Some(dir) = slab.one_way() {
                 distribute_one_way_dir(coords, dir, w, loads);
             } else {
-                // 従来互換（`one_way` 未指定）: 辺0・2負担（＝辺1方向スパン）。
                 let w_line = w * ly / 2.0;
                 for i in 0..4 {
                     let l = if i % 2 == 0 { lx } else { ly };
@@ -92,7 +91,6 @@ pub(crate) fn distribute_rect(
             }
         }
         DistributionMethod::TributaryArea => {
-            // 45°負担面積を等価等分布へ換算（総和保存）。
             let short = lx.min(ly);
             let long = lx.max(ly);
             for i in 0..4 {

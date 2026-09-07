@@ -15,11 +15,8 @@ pub struct AiDistribution {
     pub qi: Vec<f64>,
     pub pi: Vec<f64>,
     pub t_used: f64,
-    /// Pi (層の水平外力) の算定過程で、数値誤差の範囲を超える負値
-    /// （閾値 `-1e-9・Q1`、Q1=最下層のせん断力=基部せん断力）が現れ、
-    /// 0 へクランプしたかどうか。`true` の場合は重量分布（Wi の並び）が
-    /// 単調に積み上がっていない等、入力異常のシグナルである可能性が高い
-    /// （レビュー §1.12：従来は `p.max(0.0)` でサイレントにクランプしていた）。
+    /// Pi (層の水平外力) の算定過程で、数値誤差の範囲を超える負値が現れ、
+    /// 0 へクランプしたかどうか。
     pub clamped_negative_pi: bool,
 }
 
@@ -48,7 +45,6 @@ fn pi_from_qi(qi: &[f64]) -> (Vec<f64>, bool) {
     let n = qi.len();
     let mut pi = Vec::with_capacity(n);
     let mut clamped_negative = false;
-    // Q1（基部せん断力）＝最下層の Qi。閾値の基準に用いる。
     let q1 = qi.first().copied().unwrap_or(0.0);
     for i in 0..n {
         let p = if i < n - 1 { qi[i] - qi[i + 1] } else { qi[i] };
@@ -90,8 +86,6 @@ pub fn ai_distribution(
     let mut cumulative = 0.0;
     for i in (0..n).rev() {
         cumulative += stories_weight_bottom_to_top[i];
-        // 総重量 0 のモデル（解析前チェックが弾く入力不備）で 0/0 の NaN を
-        // 生まないよう、αi を 0 に倒す。以降の Ai・Qi はすべて 0 になる。
         alpha.push(if total_w > 0.0 {
             cumulative / total_w
         } else {
@@ -103,16 +97,11 @@ pub fn ai_distribution(
     let t_factor = 2.0 * t / (1.0 + 3.0 * t);
     let ai: Vec<f64> = alpha.iter().map(|a| ai_of_alpha(*a, t_factor)).collect();
     let ci: Vec<f64> = ai.iter().map(|a| z * rt_val * a * c0).collect();
-    // 層せん断力 Qi = Ci · Wi（Wi＝当該層以上の累積重量＝令88条）。
-    // αi = Wi/total_w なので Wi = αi・total_w。
-    // （旧実装は Ci·単層重量 で、Pi=Qi[i]-Qi[i+1] が下層で負になり max(0) で 0 に
-    //   潰れ、地震力が最上層にしか載らない重大なバグだった。）
     let qi: Vec<f64> = ci
         .iter()
         .zip(alpha.iter())
         .map(|(c, a)| c * a * total_w)
         .collect();
-    // 各層の水平外力 Pi = Qi − Qi+1（最上層は Pi = Qi）。
     let (pi, clamped_negative_pi) = pi_from_qi(&qi);
 
     AiDistribution {
@@ -176,7 +165,6 @@ pub fn seismic_shear_distribution(
 ) -> AiDistribution {
     let n = stories_bottom_to_top.len();
 
-    // 全階が一般階かつ副剛床の重量除外がなければ ai_distribution と厳密一致（委譲）。
     if stories_bottom_to_top
         .iter()
         .all(|s| matches!(s.level_kind, StoryLevelKind::Normal) && s.ci_weight == s.weight)
@@ -204,7 +192,6 @@ pub fn seismic_shear_distribution(
         );
     }
 
-    // α・Ai・Ci 用（階全体の重量。副剛床の Ci 直接入力があっても全剛床分を含む）。
     let total_ph_ci_weight: f64 = stories_bottom_to_top
         .iter()
         .filter(|s| matches!(s.level_kind, StoryLevelKind::Penthouse { .. }))
@@ -216,7 +203,6 @@ pub fn seismic_shear_distribution(
         .map(|s| s.ci_weight)
         .sum();
     let total_above_ground_ci = total_normal_ci_weight + total_ph_ci_weight;
-    // Qi 用（主系統の重量）。
     let total_ph_weight: f64 = stories_bottom_to_top
         .iter()
         .filter(|s| matches!(s.level_kind, StoryLevelKind::Penthouse { .. }))
@@ -230,8 +216,6 @@ pub fn seismic_shear_distribution(
     let mut ci = vec![0.0; n];
     let mut qi = vec![0.0; n];
 
-    // 一般階: α・Ai・Ci は階全体の重量（ci_weight）から求め、
-    // Qi = Ci・Wi の Wi は主系統重量（weight）の累積 + PH階主系統重量とする。
     let mut cum_normal_ci = 0.0;
     let mut cum_normal = 0.0;
     for i in (0..n).rev() {
@@ -254,7 +238,6 @@ pub fn seismic_shear_distribution(
         }
     }
 
-    // PH階: Qi = k・ΣWj（j はその階以上、PH同士の累積を含む）。
     let mut cum_ph = 0.0;
     for i in (0..n).rev() {
         if let StoryLevelKind::Penthouse { k } = stories_bottom_to_top[i].level_kind {
@@ -264,8 +247,6 @@ pub fn seismic_shear_distribution(
         }
     }
 
-    // 地下階: Qi = Q(i+1) + Ki・Wi。直上の層（i+1）が先に確定している必要が
-    // あるため、上（大きい index）から下（小さい index）へ処理する。
     for i in (0..n).rev() {
         if let StoryLevelKind::Basement { depth_m } = stories_bottom_to_top[i].level_kind {
             let q_above = if i + 1 < n { qi[i + 1] } else { 0.0 };

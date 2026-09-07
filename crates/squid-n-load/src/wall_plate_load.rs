@@ -199,7 +199,6 @@ fn slit_edge_flags(
         return out;
     }
     let faces = plate.column_face_nodes(model);
-    // 辺の中点標高が低いほうを下辺とする。
     let mid_z = |i: usize| (coords[i][2] + coords[(i + 1) % n][2]) / 2.0;
     let horizontal: Vec<usize> = (0..n)
         .filter(|&i| is_horizontal(coords[i], coords[(i + 1) % n]))
@@ -211,7 +210,6 @@ fn slit_edge_flags(
     for i in 0..n {
         let (a, b) = (coords[i], coords[(i + 1) % n]);
         if is_vertical(a, b) {
-            // 柱際。辺の下端の節点で左右を引き当てる。
             let lower = if a[2] <= b[2] {
                 boundary[i]
             } else {
@@ -227,7 +225,6 @@ fn slit_edge_flags(
                 }
             }
         } else if is_horizontal(a, b) {
-            // 梁際。もっとも低い水平な辺を下辺、それ以外を上辺とする。
             let is_bottom = lowest == Some(i);
             out[i] = plate.slit.beam_face[usize::from(!is_bottom)];
         }
@@ -235,20 +232,12 @@ fn slit_edge_flags(
     out
 }
 
-/// 壁版 1 枚の自重を辺へ配る（モジュール doc「一方向版として配る」）。
-///
-/// 荷重の分配と地震用重量の集計が同じ規則を見るよう、辺への配分はこの関数 1 つに置く。
+/// 壁版 1 枚の自重を辺へ配る。
 fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShare> {
     let model = index.model;
     let WallPlateShape::Enclosed { boundary } = &plate.shape else {
-        return Vec::new(); // 取り付く壁版は `wall_attached` が受け持つ。
+        return Vec::new();
     };
-    // 壁エレメントになる壁版の自重は要素の頂点へ配られるので、ここでは扱わない。
-    //
-    // 判定に `wall_plate_covers_region` ではなく `wall_plate_becomes_element` を
-    // 使う。壁領域を覆っていても断面が無ければ要素にならず、要素経由の自重算定を
-    // 通らない。仕上げ・増打ちの面荷重は断面に依らず重さを持つため、`covers_region`
-    // で落とすとその重さが**どちらの経路も通らずに消える**。
     if model.wall_plate_becomes_element(plate) {
         return Vec::new();
     }
@@ -266,8 +255,6 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
         return Vec::new();
     };
 
-    // 支持部材のある鉛直な辺を集める。**縁が切れている辺は集めない。**
-    // スリットを入れた辺は周辺部材と縁が切れており、自重を伝えられないためである。
     let n = boundary.len();
     let slit_edge = slit_edge_flags(model, plate, boundary, &coords);
     let mut vertical: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
@@ -301,13 +288,6 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
             .collect();
     }
 
-    // 鉛直辺が受けない壁は、**支持部材のある水平な辺のうちもっとも低いもの**が全量を受ける。
-    //
-    // 支持部材の有無を見ずにもっとも低い水平な辺へ載せると、その下に大梁も間柱も無い壁
-    // （宙に浮いた腰壁など）の自重が、どの部材にも解決されない節点荷重として残り、
-    // `DofMap::build` に非構造節点として無視されて黙って消える（申し送り §3.4 F10 と
-    // 同じ穴）。行き先が決まらない壁版はここでは何も配らず、解析前チェック
-    // （[`wall_plates_without_load_path`]）がエラーで止める。
     let mut supported: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
     for &i in &horizontal {
         let (a, b) = (coords[i], coords[(i + 1) % n]);
@@ -371,7 +351,6 @@ fn push_post_share(
     ) else {
         return;
     };
-    // 壁版の辺を間柱の材軸へ写す（辺が間柱の一部しか覆わない腰壁等に対応する）。
     let (Some(s0), Some(s1)) = (
         project_on_segment(e0, pa, pb),
         project_on_segment(e1, pa, pb),

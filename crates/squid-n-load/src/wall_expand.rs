@@ -183,8 +183,6 @@ pub fn expand_wall_elements_owned(
         .max()
         .map_or(0, |m| m + 1);
 
-    // 生成対象を先に集めてから `elements` / `wall_attrs` へ追記する
-    // （領域・壁版の走査中にモデルを可変借用できないため）。
     let mut jobs: Vec<(WallPlateId, ElementData, WallAttr)> = Vec::new();
     for region in &expanded.wall_regions {
         for &plate_id in &region.wall_plate_ids {
@@ -192,13 +190,8 @@ pub fn expand_wall_elements_owned(
                 continue;
             };
             let WallPlateShape::Enclosed { boundary } = &plate.shape else {
-                // 取り付く壁版（パラペット等）は耐震壁要素の対象外。
                 continue;
             };
-            // 生成の可否は `Model::wall_plate_becomes_element` が単独で決める。
-            // 内訳カウンタのためにここで理由も分けるが、**可否そのものを
-            // ここで組み立て直さない**（同じ問いを 2 か所で実装すると、
-            // 3D ビューの壁版描画・「解析要素」列と食い違う）。
             if !expanded.wall_plate_becomes_element(plate) {
                 if expanded.wall_plate_covers_region(plate) {
                     report.skipped_no_section += 1;
@@ -240,11 +233,6 @@ pub fn expand_wall_elements_owned(
     for (plate_id, elem, attr) in jobs {
         index.0.insert(elem.id, plate_id);
         expanded.elements.push(elem);
-        // 既存の壁消費者（自重算定・開口低減剛性・偏心率の雑壁剛性・数量拾い等）は
-        // いずれも `model.wall_attrs` を `elem` で引く同じ形の参照を持つ。
-        // 壁展開モデルだけに、由来する壁版の開口・スリットを写した合成
-        // `WallAttr` を積み、それらの消費者を無改修のまま動かす
-        // （モジュール doc「wall_attrs の合成」参照）。
         expanded.wall_attrs.push(attr);
     }
 

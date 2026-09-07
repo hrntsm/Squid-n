@@ -3,47 +3,16 @@
 //! 二次部材（小梁・間柱）は解析要素ではないため、受け持った荷重は単純梁の両端反力に
 //! 変えて支持相手へ渡す。支持相手が主架構（大梁）なら、そこで終端して梁の中間集中荷重
 //! （CMQ）になる。**支持相手が別の二次部材のときは、その相手の集中荷重として渡し、
-//! 相手が主架構へ行き着くまで同じ操作を繰り返す。** これを「二次部材の反力の逐次伝達」
-//! と呼ぶ（`dev_docs/specs/用語集.md`）。
+//! 相手が主架構へ行き着くまで同じ操作を繰り返す。**
 //!
-//! # なぜ必要か
-//!
-//! 逐次伝達がないと、二次部材に支持された二次部材の反力は行き先のない節点荷重として
-//! 残り、`DofMap::build` が非構造節点として無視するため**黙って解析から消える**
-//! （申し送り §3.4 F10）。荷重タブには見えるので、総和を眺めても気づけない。
-//!
-//! # 交点は常にピン受け・架け
-//!
-//! 剛接十字（交点で曲げ連続）は扱わない（§3.4 F2）。両端ピンならば各段が静定に
-//! なり、逐次伝達は近似ではなく厳密解になる。一律ピン扱いは交点の曲げ連続による
-//! 低減を無視するため、架け側のモーメント・たわみを過大に見る**安全側**の扱いである。
-//!
-//! # 受け側・架け側は幾何で決まる
-//!
-//! 二次部材 B の**端点**が二次部材 A の**内部**に載っていれば、B が架け側・A が受け側で
-//! 一意に決まる（§3.4 F4）。相手を指す参照フィールドは持たない。決められない形
-//! （節点を共有しない交差・支持関係の循環・どこにも載らない端部）は診断で知らせる。
-//!
-//! # 反力の分配則
-//!
-//! 部材の向きで荷重の扱いを変えることはしない（§3.4 F3）。鉛直荷重に対する**鉛直反力**は、
-//! 支点まわりのモーメントつり合いで決まる。てこの腕は**水平投影**の距離であり、荷重の
-//! 材軸上の位置は水平投影へ線形に写るので、**水平投影が 0 でない限り、鉛直反力は材軸上の
-//! 按分（単純梁の反力）と厳密に一致する**。傾斜した二次部材でも成分へ分ける必要はない。
-//!
-//! 例外は**水平投影が 0 になる部材**（鉛直な間柱）である。このときモーメントのつり合いが
-//! 退化し、荷重は軸力として流れるため、両端への配分は不静定になって仮定が要る。ここでは
-//! 従来の扱いに合わせて**両端へ 1/2 ずつ**とする。
-//!
-//! この 1/2 ずつは**現時点の仮定**である。長期の鉛直荷重としては下側の支点へ全量が流れるのが
-//! 自然で、現行は下の梁を半分だけ軽く見る危険側の可能性がある（§3.4 F8 の残課題）。
-//! 本モジュールは従来の扱いを引き継ぐにとどめる。
+//! 交点は常にピン受け・架けとする（剛接十字は扱わない）。受け側・架け側は幾何で決まる。
+//! 反力の分配則は支点まわりのモーメントつり合いによる。鉛直な間柱はつり合いが退化する
+//! ため両端へ 1/2 ずつとする（仮定。§3.4 F8 の残課題）。
 
 use std::collections::{HashMap, HashSet};
 
-use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
-// 2 点間の距離 [mm]。算定の情報源は `squid-n-core` に置く。
 use squid_n_core::geom::vec3::dist as dist3;
+use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{
     ElementKind, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
@@ -226,12 +195,11 @@ fn support_of(
     {
         return SupportAt::Primary;
     }
-    let mut best: Option<(SecondaryKey, f64, f64)> = None; // (相手, 位置 a, 材軸距離)
+    let mut best: Option<(SecondaryKey, f64, f64)> = None;
     for other in axes {
         if other.key == self_key {
             continue;
         }
-        // 相手の端点そのものは「載っている」に当たらない（互いを支持しない）。
         if other.nodes.contains(&node) {
             continue;
         }
@@ -239,7 +207,7 @@ fn support_of(
             continue;
         };
         if a <= MEMBER_AXIS_TOL_MM || a >= other.len - MEMBER_AXIS_TOL_MM {
-            continue; // 端部近傍は内部ではない。
+            continue;
         }
         let d = {
             let t = a / other.len;
@@ -260,11 +228,7 @@ fn support_of(
     }
 }
 
-/// 節点を共有せず交差している二次部材の組を返す（§3.4 F5）。
-///
-/// 既存の交差診断（`region_gen::floor::crossing_beams`）は `model.elements` しか
-/// 走査しないため、解析要素ではない二次部材どうしの交差を見ていない。受け側・架け側を
-/// 幾何から決められない形なので、逐次伝達と同じ判定をここに置く。
+/// 節点を共有せず交差している二次部材の組を返す。
 fn crossings(axes: &[Axis]) -> Vec<(SecondaryKey, SecondaryKey)> {
     let mut out = Vec::new();
     for (i, p) in axes.iter().enumerate() {
@@ -272,7 +236,6 @@ fn crossings(axes: &[Axis]) -> Vec<(SecondaryKey, SecondaryKey)> {
             if p.nodes.iter().any(|n| q.nodes.contains(n)) {
                 continue; // 節点を共有する取り付きは交差ではない。
             }
-            // 端点が相手の内部に載る形（T 字）は支持関係が決まるので交差ではない。
             let touches = [
                 (p.a, q.a, q.b, q.len),
                 (p.b, q.a, q.b, q.len),
@@ -308,7 +271,7 @@ fn segments_cross(p: &Axis, q: &Axis) -> bool {
     let uv = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
     let den = 1.0 - uv * uv;
     if den.abs() < 1e-9 {
-        return false; // 平行。
+        return false;
     }
     let wu = w[0] * u[0] + w[1] * u[1] + w[2] * u[2];
     let wv = w[0] * v[0] + w[1] * v[1] + w[2] * v[2];
@@ -316,7 +279,7 @@ fn segments_cross(p: &Axis, q: &Axis) -> bool {
     let t = (uv * wu - wv) / den;
     let tol = MEMBER_AXIS_TOL_MM;
     if s <= tol || s >= p.len - tol || t <= tol || t >= q.len - tol {
-        return false; // 端点近傍・区間外。
+        return false;
     }
     let cp = [p.a[0] + s * u[0], p.a[1] + s * u[1], p.a[2] + s * u[2]];
     let cq = [q.a[0] + t * v[0], q.a[1] + t * v[1], q.a[2] + t * v[2]];
@@ -353,7 +316,6 @@ pub fn solve(
 ) -> SecondaryTransfer {
     let axes = axes(model);
     if axes.is_empty() {
-        // 二次部材がなくても、床領域分配の辺荷重はそのまま主架構へ渡す必要がある。
         let (_, leftover) = secondary_joist_distribution_split(model, w_of);
         return SecondaryTransfer {
             leftover_region_loads: leftover,
@@ -361,11 +323,8 @@ pub fn solve(
         };
     }
     let connected = crate::secondary::node_connected_flags(model);
-    // 大梁候補は 1 回だけ構築して使い回す。端部ごとに `beam_span_position` を呼ぶと
-    // 呼び出しのたびに全要素を走査し直し、部材数に対して超線形になる。
     let beams = crate::secondary::beam_span_candidates(model);
 
-    // --- 支持関係を幾何から決める ---
     let mut supports: HashMap<SecondaryKey, [SupportAt; 2]> = HashMap::new();
     for ax in &axes {
         let s0 = support_of(ax.key, ax.nodes[0], ax.a, &axes, &connected, &beams);
@@ -373,17 +332,13 @@ pub fn solve(
         supports.insert(ax.key, [s0, s1]);
     }
 
-    // --- 床分配の辺荷重（小梁）と、壁版の自重の分配（間柱） ---
     let (distribution, leftover_region_loads) = secondary_joist_distribution_split(model, w_of);
-    // 壁版の自重は固定荷重なので、二次部材自身の自重と同じ条件で載せる
-    // （積載荷重のケースには載せない）。
     let wall_loads = if include_self_weight {
         crate::wall_plate_load::distribute_enclosed_wall_plates(model).posts
     } else {
         HashMap::new()
     };
 
-    // 自重の引き当ても索引経由にする（キーごとに全二次部材を線形探索しない）。
     let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
         .joists()
         .chain(model.posts())
@@ -432,7 +387,6 @@ pub fn solve(
         base.insert(ax.key, loads);
     }
 
-    // --- 伝達順序（架け側から先に解く）と循環の検出 ---
     let (order, cyclic) = transfer_order(&axes, &supports);
 
     let mut members: HashMap<SecondaryKey, TransferredMember> = HashMap::new();
@@ -444,7 +398,6 @@ pub fn solve(
         let mut loads = base.remove(key).unwrap_or_default();
         loads.extend(extra.remove(key).unwrap_or_default());
 
-        // 水平投影の有無で分ける（鉛直材だけが不静定になる）。許容差は材軸判定と同じ。
         let horizontal = {
             let (dx, dy) = (ax.b[0] - ax.a[0], ax.b[1] - ax.a[1]);
             (dx * dx + dy * dy).sqrt() > MEMBER_AXIS_TOL_MM
@@ -456,7 +409,6 @@ pub fn solve(
             r[1] += rj;
         }
 
-        // 受け側が二次部材の端部は、その反力を受け側の集中荷重として渡す。
         let sup = supports
             .get(key)
             .copied()
@@ -487,9 +439,6 @@ pub fn solve(
         );
     }
 
-    // 行き先のない端部は、**そこへ実際に反力が生じるときだけ**問題になる。荷重を持たない
-    // 二次部材（断面・材料未割当で自重が出ず、床分配も載らない）は何も失わないため、
-    // 解析を止めない（形だけ置かれた支持点で解析が止まるのを避ける）。
     let mut unresolved: Vec<SecondaryKey> = members
         .values()
         .filter(|m| {
@@ -533,7 +482,6 @@ fn transfer_order(
     axes: &[Axis],
     supports: &HashMap<SecondaryKey, [SupportAt; 2]>,
 ) -> (Vec<SecondaryKey>, Vec<SecondaryKey>) {
-    // 受け側 → 架け側の依存数（架け側を先に解く＝入次数は「自分に載る本数」）。
     let mut pending: HashMap<SecondaryKey, usize> = axes.iter().map(|a| (a.key, 0)).collect();
     let mut onto: HashMap<SecondaryKey, Vec<SecondaryKey>> = HashMap::new();
     for ax in axes {
@@ -549,7 +497,6 @@ fn transfer_order(
             }
         }
     }
-    // 決定性のため、キー順に走査する（`HashMap` の反復順に依存しない）。
     let mut keys: Vec<SecondaryKey> = axes.iter().map(|a| a.key).collect();
     keys.sort();
     let mut ready: Vec<SecondaryKey> = keys
