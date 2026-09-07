@@ -680,10 +680,6 @@ fn slab_floor_attr(sec: &squid_n_core::model::Section) -> String {
 }
 
 /// 断面の主材料の名前を `strength_concrete` 属性へ（未割当は属性ごと省く）。
-///
-/// ST-Bridge は材料をグレード名で表すため、材料の名前をそのまま出す。かつては
-/// スラブ・壁だけ `Fc21` 決め打ちだったが、断面が材料を持つようになったため
-/// 根拠のない既定値は置かない。
 fn concrete_attr(model: &Model, sec: &squid_n_core::model::Section) -> String {
     match sec
         .material

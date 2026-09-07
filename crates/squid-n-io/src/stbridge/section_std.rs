@@ -181,12 +181,8 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
     (name, body)
 }
 
-/// 角形鋼管の形鋼図形名と `StbSecSteel` エントリ（鋼断面・CFT 角形で共用）。
-///
-/// `corner_r` は断面入力の角部外半径 [mm]。`corner_r > 0` ならその値を r 属性に
-/// 出力する。`corner_r <= 0`（未入力、または角部半径を持たない CftBox 由来）は
-/// ST-Bridge スキーマ上 r（length）に 0 以下を許さないため、従来通り板厚を
-/// 便宜値として与える（取り込み側では r 属性は無視されるため実害はない）。
+/// 角形鋼管の形鋼図形名と `StbSecSteel` エントリ。
+/// `corner_r > 0` ならその値を r 属性に出力し、そうでなければ板厚を出力する。
 fn box_figure(height: f64, width: f64, thick: f64, corner_r: f64) -> (String, String) {
     let name = if corner_r > 0.0 {
         format!(

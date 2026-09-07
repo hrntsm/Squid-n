@@ -68,12 +68,7 @@ impl FsResultStore {
     /// finish 済みライタが積んだ保留エントリを manifest 本体へ吸収し、manifest.json
     /// へ永続化する。同一 case+kind のエントリは上書きする。
     ///
-    /// 永続化(manifest.json 書き込み)に**成功したときだけ**メモリ上の manifest へ
-    /// 反映する。失敗時は drain した保留エントリを pending へ戻して Err を返す
-    /// (メモリ上 manifest はディスクと一致したまま)。かつては先にメモリへ反映して
-    /// から書き込んでいたため、ディスクフル等で書き込みが失敗するとジョブは
-    /// Failed になる一方、in-memory manifest 経由の `query` からは失敗ジョブの
-    /// 結果が照会できてしまった。
+    /// 永続化に成功したときだけメモリ上の manifest へ反映する。失敗時は保留へ戻して Err を返す。
     pub fn sync(&mut self) -> std::io::Result<()> {
         let drained: Vec<ResultEntry> = {
             let mut pending = self
