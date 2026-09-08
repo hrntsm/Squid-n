@@ -97,13 +97,9 @@ pub fn default_fiber_concrete_hysteresis(kind: AnalysisKind) -> HysteresisModel 
     }
 }
 
-/// 部材の履歴則の指定（要素 ID と履歴則の対。`Model::member_hysteresis_attrs`）。
-/// 各履歴則の原典による履歴特性。既定（Auto）と異なる履歴則を
-/// 部材個別に指定する場合に用いる。
-///
+/// 部材の履歴則の指定。
 /// 増分解析用（`rule`）と時刻歴応答解析用（`rule_th`）を別々に指定できる。
-/// `rule_th = None` は「時刻歴も増分用と同じ指定に従う」（旧形式のファイルは
-/// この解釈で読み込まれ、従来と同じ挙動になる）。
+/// `rule_th = None` は「時刻歴も増分用と同じ指定に従う」。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemberHysteresisAttr {
     pub elem: ElemId,

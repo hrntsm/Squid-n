@@ -6,8 +6,6 @@
 //! 壁（[`wall`]）がそれぞれ「対象部材の絞り込み」と「2 次元への射影」を用意して
 //! 同じ走査に載せる。
 //!
-//! 設計の経緯は `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` を参照。
-//!
 //! # 面走査エンジン（[`scan_faces`]）
 //!
 //! 1. **半辺**（有向辺）の一覧を作る。同じ節点対に複数の部材があっても、最初の 1 本だけを採る
@@ -21,7 +19,7 @@
 //!    床と同じ絶対符号の規則を機械的に流用できるとは限らないため、[`wall`] が自身で
 //!    判別方法を持つ（[`wall`] のモジュールドキュメント参照）。
 //!
-//! `proj` が `None` を返す節点（節点が引けない陳腐化した参照）を含む閉路は捨てる。
+//! `proj` が `None` を返す節点を含む閉路は捨てる。
 
 use crate::ids::{ElemId, NodeId};
 use std::collections::HashMap;
@@ -63,8 +61,6 @@ pub(crate) fn scan_faces<P>(edges: &[Edge], proj: P) -> (Vec<Face>, usize)
 where
     P: Fn(NodeId) -> Option<[f64; 2]>,
 {
-    // 半辺（有向辺）の一覧。同じ節点対に複数の部材があっても、最初の 1 本だけを採る
-    // （重複部材は面を増やさない）。
     let mut half: HashMap<(NodeId, NodeId), ElemId> = HashMap::new();
     for e in edges {
         if e.a == e.b {
@@ -74,7 +70,6 @@ where
         half.entry((e.b, e.a)).or_insert(e.elem);
     }
 
-    // 各節点まわりの接続先を方位角の昇順に並べる。
     let mut around: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for &(from, to) in half.keys() {
         around.entry(from).or_default().push(to);
@@ -91,7 +86,6 @@ where
     let mut faces = Vec::new();
     let mut unclosed = 0;
     let mut starts: Vec<(NodeId, NodeId)> = half.keys().copied().collect();
-    // 走査順を安定させる（HashMap の反復順に依存しない）。
     starts.sort_by_key(|(a, b)| (a.0, b.0));
 
     for start in starts {
@@ -102,7 +96,6 @@ where
         let mut face_edges = Vec::new();
         let mut cur = start;
         let mut closed = false;
-        // 閉路をたどる。半辺の総数を超えたら異常として打ち切る（無限ループ防止）。
         for _ in 0..=half.len() {
             if visited.insert(cur, true).is_some() {
                 break;
@@ -119,7 +112,6 @@ where
             }
         }
         if !closed {
-            // 各半辺の後続は一意なので、ここへ来るのはグラフの構築に誤りがある場合だけ。
             unclosed += 1;
             continue;
         }

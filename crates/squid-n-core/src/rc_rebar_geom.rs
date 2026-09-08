@@ -1,16 +1,8 @@
-//! RC 配筋幾何の共通算定（断面検定・非線形解析・終局検定・MN／ファイバ配置の単一情報源）。
-//!
-//! - [`rebar_layer_clear`] — 段間あき k'
-//! - [`rebar_layer_spacing`] — 段の中心間距離 s
-//! - [`rebar_layer_depth_from_edge`] — 縁 → 第 n 段中心までの距離
-//! - [`tension_dt`] — 引張縁 → 引張筋重心までの距離 dt
-//! - [`rebar_tension_dt`] — せい方向主筋（`main_x`）の dt
-//! - [`tension_effective_depth`] — 有効せい d_eff = D − dt
-//! - [`pw_ratio`] — せん断補強筋比 pw
+//! RC 配筋幾何の共通算定。
 
 use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
-/// 多段配筋の段間あき k' [mm]（RC 配筋指針: `max(25, 1.5・dia)`）。
+/// 多段配筋の段間あき k' [mm]（`max(25, 1.5・dia)`）。
 pub fn rebar_layer_clear(main: &BarSet) -> f64 {
     25.0_f64.max(1.5 * main.dia)
 }
@@ -21,10 +13,6 @@ pub fn rebar_layer_spacing(main: &BarSet) -> f64 {
 }
 
 /// 縁から第 `layer` 段（0 始まり）の主筋中心までの距離 [mm]。
-///
-/// 1 段目（layer=0）は k1 = cover + shear.dia + main.dia/2。
-/// 2 段目以降は中心間距離 [`rebar_layer_spacing`] だけ内側へ進む。
-/// MN 曲面・非線形ファイバの主筋点配置と、検定用 [`tension_dt`] が同じ座標規約を使う。
 pub fn rebar_layer_depth_from_edge(cover: f64, shear_dia: f64, main: &BarSet, layer: u32) -> f64 {
     let k1 = cover + shear_dia + main.dia / 2.0;
     if layer == 0 {
@@ -34,10 +22,6 @@ pub fn rebar_layer_depth_from_edge(cover: f64, shear_dia: f64, main: &BarSet, la
 }
 
 /// 引張縁 → 引張筋重心までの距離 dt [mm]。
-///
-/// 各段の本数が等しいと仮定し、[`rebar_layer_depth_from_edge`] で置いた各段中心の
-/// 平均とする。1 段なら k1、2 段なら (k1+k2)/2、一般に
-/// `dt = k1 + (layers-1)/2・s`（RC 配筋指針の 2 段式に一致）。
 pub fn tension_dt(cover: f64, shear_dia: f64, main: &BarSet) -> f64 {
     let layers = main.layers.max(1);
     if layers == 1 {
@@ -53,17 +37,17 @@ pub fn rebar_tension_dt(rebar: &RcRebar) -> f64 {
     tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x)
 }
 
-/// 有効せい d_eff = D − dt [mm]（dt は [`tension_dt`] と同規約）。
+/// 有効せい d_eff = D − dt [mm]。
 pub fn tension_effective_depth(d: f64, cover: f64, shear_dia: f64, main: &BarSet) -> f64 {
     (d - tension_dt(cover, shear_dia, main)).max(0.0)
 }
 
-/// 有効せい d_eff = D − dt [mm]（dt は [`rebar_tension_dt`] と同規約）。
+/// 有効せい d_eff = D − dt [mm]。
 pub fn rebar_effective_depth(d: f64, rebar: &RcRebar) -> f64 {
     (d - rebar_tension_dt(rebar)).max(0.0)
 }
 
-/// せん断補強筋比 pw = (legs・π/4・dia²) / (b・pitch)。pitch<=0 のときは 0。
+/// せん断補強筋比 pw。pitch<=0 のときは 0。
 pub fn pw_ratio(shear: &ShearBar, b: f64) -> f64 {
     if shear.pitch <= 0.0 || b <= 0.0 {
         return 0.0;

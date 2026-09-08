@@ -152,8 +152,6 @@ impl AxisGroup {
         if self.kind == AxisGroupKind::Other {
             return;
         }
-        // 離れを持たない通りは末尾へ寄せる（平行芯では通常は起こらないが、
-        // `distance` を欠いた ST-Bridge ファイルでも順序を決められるようにする）。
         self.axes.sort_by(|a, b| match (a.distance, b.distance) {
             (Some(x), Some(y)) => x.total_cmp(&y),
             (Some(_), None) => std::cmp::Ordering::Less,

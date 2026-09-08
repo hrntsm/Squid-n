@@ -23,8 +23,6 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-// tests は `use super::*` 経由で `SectionId(0)` を参照する（非テストビルドでは
-// 未使用となるため cfg(test) でゲートする）。
 #[cfg(test)]
 use crate::ids::SectionId;
 

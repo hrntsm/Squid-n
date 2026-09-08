@@ -1,8 +1,4 @@
 //! 部材の曲げ降伏モーメント My の共通算定。
-//!
-//! プッシュオーバー曲げヒンジ判定（`squid_n_solver::nonlinear::pushover::hinge`）と
-//! 材端曲げバネ（`squid_n_element::factory::springs`）が同じ My を使うため、
-//! 算定の情報源を 1 つに保つ。
 
 use crate::material_grade::rebar_yield_strength;
 use crate::model::{ElementData, Material, Model, Section};
@@ -11,9 +7,6 @@ use crate::rc_rebar_geom::rebar_effective_depth;
 use crate::section_shape::{bar_set_area, SectionShape};
 
 /// 曲げ降伏 My 算定に用いる材料強度係数。
-///
-/// 公称値解析では `(1.0, 1.0)`、保有水平耐力計算では鋼材・主筋それぞれの
-/// 材料強度割増係数を与える。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlexuralStrengthFactors {
     /// 鋼材（部材材料）の σy 倍率。
@@ -30,7 +23,7 @@ impl FlexuralStrengthFactors {
     };
 }
 
-/// 断面の弾性断面係数 Ze [mm³]（強軸 I とせい D から `Ze = I / (D/2)`）。
+/// 断面の弾性断面係数 Ze [mm³]。
 pub fn section_elastic_modulus(sec: &Section) -> f64 {
     let depth = sec.depth.max(sec.width);
     let i_gross = sec.iz.max(sec.iy);
@@ -46,9 +39,6 @@ pub fn section_elastic_modulus(sec: &Section) -> f64 {
 /// - RC 配筋形状（`RcRect` / `RcCircle`）: `0.9·at·σy·j`（[`rc_mu_simple`]）
 /// - 塑性断面係数を持つ形状: `Zp·σy`（全塑性 Mp）
 /// - それ以外: `σy·Ze`（弾性断面係数フォールバック）
-///
-/// 分岐順序は材端曲げバネ（`squid_n_element::factory::springs`）と同一。
-/// 曲げヒンジ判定も本関数を My の情報源とする。
 pub fn member_flexural_yield_moment(
     elem: &ElementData,
     model: &Model,

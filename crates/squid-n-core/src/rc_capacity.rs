@@ -1,26 +1,6 @@
 //! RC 矩形断面の簡易終局耐力算定（部材ランク判定・プッシュオーバーせん断降伏判定用）。
-//!
-//! squid-n-skeleton のファイバ解析（`build_rc_member_skeleton`）は Mu を精算できるが、
-//! 保有水平耐力の部材ランク自動判定（RC 部材の脆性破壊判定 Qsu/Qmu）
-//! は毎フレーム実行されるため重すぎる。また `squid_n_solver::nonlinear::pushover` のせん断降伏判定
-//! （`compute_shear_yield_qy`）も同様に軽量な閉形式解を必要とする。本モジュールは
-//! 閉形式の簡易式で Mu・Qsu・Qmu を算定し、両者の入力とする。係数は靭性指針・
-//! 技術基準解説書等の略算式に基づく代表値であり、全て要・原典照合
-//! （dev_docs/specs/原典照合リスト.md）。
-//!
-//! squid-n-solver（Layer 4）が squid-n-design-jp（Layer 5）に依存できない
-//! （循環依存になる）ため、本体は Layer 0 の squid-n-core に置き、
-//! `squid_n_design_jp::secondary::rc_capacity` は本モジュールの再エクスポートとする
-//! （既存呼び出し
-//! `squid_n_design_jp::secondary::rc_capacity::{rc_qsu_simple, RcCapacityInput}` 等は
-//! 無修正で動作する）。
 
 /// RC 矩形断面の簡易終局耐力算定用の入力一式。
-///
-/// `Clone, Copy` はプッシュオーバー解析（`squid_n_solver::nonlinear::pushover`）が σ0 を
-/// 除く入力一式を保持し、各ステップで σ0 のみ差し替えて `rc_qsu_simple` を
-/// 呼び直す用途（`DirThreshold::RcArakawa`）のために付与する。全フィールドが
-/// f64 のみのため、値のコピーは軽量。
 #[derive(Clone, Copy)]
 pub struct RcCapacityInput {
     /// 断面幅 b \[mm\]
@@ -47,15 +27,8 @@ pub struct RcCapacityInput {
     pub sigma_0: f64,
 }
 
-/// 曲げ終局モーメント Mu = 0.9・at・σy・d（引張鉄筋降伏型の略算式、d = 有効せい）。
-///
-/// 2007年版建築物の構造関係技術基準解説書 P.623 の略算式。係数 0.9 が応力中心間
-/// 距離のせい比（j/d 相当）を既に織り込んでいるため、d には有効せい d_e を
-/// そのまま用いる（さらに j = 7d/8 を乗じていた従来実装は Mu を 12.5%
-/// 過小評価する誤りだった）。
-///
-/// 不正入力（at, d_eff, σy のいずれかが 0 以下）は 0.0 を返す（呼び出し側の
-/// 部材ランク判定は qmu<=0 を判定不能＝最不利側として扱う）。
+/// 曲げ終局モーメント Mu = 0.9・at・σy・d（引張鉄筋降伏型の略算式）。
+/// 不正入力（at, d_eff, σy のいずれかが 0 以下）は 0.0 を返す。
 pub fn rc_mu_simple(inp: &RcCapacityInput) -> f64 {
     if inp.at <= 0.0 || inp.d_eff <= 0.0 || inp.sigma_y <= 0.0 {
         return 0.0;
@@ -73,8 +46,7 @@ pub fn rc_qmu_simple(inp: &RcCapacityInput) -> f64 {
     2.0 * rc_mu_simple(inp) / inp.clear_span
 }
 
-/// RC 柱の曲げ終局モーメント Mu \[N·mm\]（軸力を考慮した略算式。
-/// 2007年版建築物の構造関係技術基準解説書 付録1-3 の閉形式、要・原典照合）。
+/// RC 柱の曲げ終局モーメント Mu \[N·mm\]（軸力を考慮した略算式。要・原典照合）。
 ///
 /// ```text
 /// Nmax = b・D・Fc + ag・σy
@@ -131,7 +103,7 @@ pub fn rc_column_mu_simple(inp: &RcCapacityInput, ag: f64, n_axial: f64) -> f64 
 ///   0〜0.4Fc にクランプする（負の σ0（引張）は 0 とみなし、Qsu を低減しない
 ///   安全側の扱いとする）。
 ///
-/// 全係数は要・原典照合（靭性指針/技術基準解説書等）。
+/// 全係数は要・原典照合。
 /// 不正入力（b, d_eff, at, Fc, clear_span のいずれかが 0 以下）は 0.0 を返す。
 pub fn rc_qsu_simple(inp: &RcCapacityInput) -> f64 {
     if inp.b <= 0.0 || inp.d_eff <= 0.0 || inp.at <= 0.0 || inp.fc <= 0.0 || inp.clear_span <= 0.0 {
@@ -143,7 +115,6 @@ pub fn rc_qsu_simple(inp: &RcCapacityInput) -> f64 {
     let pw = inp.pw.clamp(0.0, 0.012);
     let concrete_term = 0.068 * pt.powf(0.23) * (inp.fc + 18.0) / (shear_span_ratio + 0.12);
     let hoop_term = 0.85 * (pw * inp.sigma_wy).max(0.0).sqrt();
-    // 軸力項: 適用範囲 0〜0.4Fc にクランプ（荒川式の適用範囲、要・原典照合）。
     let sigma_0 = inp.sigma_0.clamp(0.0, 0.4 * inp.fc);
     let axial_term = 0.1 * sigma_0;
     (concrete_term + hoop_term + axial_term) * inp.b * j
@@ -160,7 +131,7 @@ pub fn rc_qsu_simple(inp: &RcCapacityInput) -> f64 {
 /// - `d_over_full`: 有効せい/全せい d/D
 /// - `n`: ヤング係数比 Es/Ec
 ///
-/// 出典: 梅村魁『鉄筋コンクリート建物の動的耐震設計法』P.106-108（要・原典照合）。
+/// 要・原典照合。
 /// トリリニア骨格の降伏点変形（θy=θe/αy）に用いる剛性低下率で、0〜1 に収まる想定。
 /// 負となる異常入力は 0 にクランプする（1 超は補正しない＝呼び出し側で扱う）。
 pub fn rc_alpha_y_sugano(pt: f64, a_over_d: f64, d_over_full: f64, n: f64) -> f64 {
@@ -173,18 +144,17 @@ pub fn rc_alpha_y_sugano(pt: f64, a_over_d: f64, d_over_full: f64, n: f64) -> f6
     (base * d_over_full * d_over_full).max(0.0)
 }
 
-/// ひび割れ強度の係数 κ（技術基準解説書 P.621-623）。
+/// ひび割れ強度の係数 κ。
 ///
 /// 曲げひび割れ `Mc = κ·√Fc·Ze`、引張ひび割れ `Nct = κ·√Fc·Ac` の双方に用いる。
 pub const RC_CRACK_COEF: f64 = 0.56;
 
-/// RC 断面の曲げひび割れモーメント Mc \[N·mm\]（技術基準解説書 P.621-623）。
+/// RC 断面の曲げひび割れモーメント Mc \[N·mm\]。
 ///
 /// `Mc = κ·√Fc·Ze`（κ=[`RC_CRACK_COEF`]、Fc \[N/mm²\]、Ze=引張側断面係数 \[mm³\]）。
 /// 不正入力（Fc・Ze のいずれかが 0 以下）は 0.0 を返す。
 ///
-/// 材端曲げバネ・プッシュオーバーのヒンジ閾値・RC 梁のトリリニア骨格が
-/// 共通で用いる（算定の情報源を 1 つに保つ）。Mc を降伏モーメント My との
+/// Mc を降伏モーメント My との
 /// 関係でクランプするかどうかは用途ごとに異なるため、**呼び出し側**で行う。
 pub fn rc_crack_moment(fc: f64, ze: f64) -> f64 {
     if fc <= 0.0 || ze <= 0.0 {

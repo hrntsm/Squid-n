@@ -23,13 +23,7 @@ pub struct StressAnalysisCfg {
     /// 著しい損傷の恐れがない場合は 120（1/120）へ緩和できる。
     #[serde(default = "default_drift_limit_denom")]
     pub drift_limit_denom: f64,
-    /// 線形（弾性）応力解析で引張専用ブレースを active-set 反復で扱うか。
-    ///
-    /// `false`（既定）: 引張専用ブレースは「引張・圧縮が対で存在する」とみなし、
-    /// 弾性剛性を 1/2 にした一括解析で1回だけ解く（従来挙動）。
-    /// `true`: 圧縮側に入ったブレースを無効化しながら収束するまで再解析する
-    /// 真の引張専用解析を行う（active な引張ブレースは全剛性 EA/L を負担し、
-    /// 圧縮ブレースは軸力を負担しない）。
+    /// 線形（弾性）応力解析で引張専用ブレースを active-set 反復で扱うか（既定 `false`）。
     #[serde(default)]
     pub tension_only_iteration: bool,
     /// 剛域の算定で、部材フェース・部材せいに取り付く壁を考慮するか（技術基準

@@ -84,15 +84,11 @@ impl SectionShape {
             return None;
         }
         let core = self.cft_core_props()?;
-        // 内法が消える（板厚が過大な）断面は充填コンクリートを累加できないため、
-        // 鋼管のみの既定値へフォールバックする。
         if core.area <= 0.0 {
             return None;
         }
         let n = es / ec;
         let ngs = n * (1.0 + NU_CONCRETE) / (1.0 + nu_s);
-        // 鋼管のせん断有効断面積: 角形は加力方向に平行な 2 枚の板、
-        // 円形は全断面の 1/2（薄肉円管の慣用）。
         let (s_as_y, s_as_z) = match *self {
             SectionShape::CftBox { thick: t, .. } => {
                 (2.0 * t * core.inner_width, 2.0 * t * core.inner_height)
@@ -101,7 +97,6 @@ impl SectionShape {
                 let a = self.calc_area() / 2.0;
                 (a, a)
             }
-            // `cft_core_props` が Some を返すのは CFT 断面のみ。
             _ => unreachable!("cft_core_props が Some を返した非 CFT 断面"),
         };
         Some(CompositeProps {
@@ -171,7 +166,6 @@ impl SectionShape {
                     area: std::f64::consts::PI * di * di / 4.0,
                     iy: i,
                     iz: i,
-                    // 中実円のねじり定数は極断面二次モーメント Ip = 2·I。
                     j: std::f64::consts::PI * di.powi(4) / 32.0,
                 })
             }

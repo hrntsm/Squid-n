@@ -144,8 +144,6 @@ fn plan_lines(model: &Model, dir: AxisPlanDir) -> Vec<GridLine> {
         else {
             continue;
         };
-        // 離れを測る向きは、この分岐ではグローバル軸に沿っている（plan_dir が Some）。
-        // したがって成分は ±1 で、原点＋離れ×向き の該当成分がそのまま座標になる。
         let (o, d) = match dir {
             AxisPlanDir::X => (origin[0], off[0]),
             AxisPlanDir::Y => (origin[1], off[1]),
@@ -312,11 +310,9 @@ impl FrameSpec {
         let nx = self.x_spans.len() + 1;
         let ny = self.y_spans.len() + 1;
         let n_story = self.story_heights.len();
-        // レベル数 ＝ 階高の数 + 1（基部を含む）。
         let n_level = n_story + 1;
         let columns = nx * ny * n_story;
         let per_level = self.x_spans.len() * ny + self.y_spans.len() * nx;
-        // 基部レベルの基礎梁は常に生成し、上のレベルの大梁は `with_girders` に従う。
         let girders = per_level * if self.with_girders { n_level } else { 1 };
         let slabs = if self.with_slabs {
             self.x_spans.len() * self.y_spans.len() * n_level
@@ -408,7 +404,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
     let zs = spec.levels();
     let (nx, ny, nz) = (xs.len(), ys.len(), zs.len());
 
-    // 節点 ID は X → Y → レベルの順の連番。格子の添字から ID を引けるようにする。
     let nid = |ix: usize, iy: usize, iz: usize| NodeId(((ix * ny + iy) * nz + iz) as u32);
 
     let mut nodes = Vec::with_capacity(nx * ny * nz);
@@ -437,9 +432,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             id: ElemId(elements.len() as u32),
             kind: ElementKind::Beam,
             nodes: [a, b].into_iter().collect(),
-            // 柱は材軸が鉛直なので、局所 y 軸の基準ベクトルに鉛直を使えない。
-            // 柱はグローバル X、梁はグローバル Z を基準とする（線材の局所座標系の
-            // 一般的な取り方）。
             local_axis: LocalAxis {
                 ref_vector: default_local_ref_vector(vertical),
             },
@@ -452,7 +444,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         });
     };
 
-    // 柱（各格子点で上下に隣り合うレベルを結ぶ）。
     for ix in 0..nx {
         for iy in 0..ny {
             for iz in 0..nz - 1 {
@@ -460,9 +451,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             }
         }
     }
-    // 水平材（各レベルで隣り合う通りを結ぶ）。基部レベル（iz == 0）は基礎梁で、
-    // 日本の建築構造では必ず設けるため常に生成する。基部より上の大梁は
-    // `with_girders` に従う。
     for iz in 0..nz {
         if iz > 0 && !spec.with_girders {
             continue;
@@ -479,7 +467,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         }
     }
 
-    // 通り芯。X 方向グループは離れを +X 向きに測る（方向角 270°）。
     let x_group = AxisGroup {
         name: spec.x_group_name.clone(),
         kind: AxisGroupKind::Parallel {
@@ -519,8 +506,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             .collect(),
     };
 
-    // 階（全レベル。先頭が基部の床）。階は床であり、基部の床も階として作る
-    // （`squid_n_core::model::story` の不変条件）。
     let stories = zs
         .iter()
         .enumerate()
@@ -544,9 +529,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         })
         .collect();
 
-    // 床（全レベルで、隣り合う通りに囲まれた格子区画 1 枚ずつ）。
-    // 板厚と自重は断面と材料からしか解決できないため、床を作るなら断面とコンクリートも
-    // あわせて作る（モジュールドキュメント参照）。
     let mut sections = Vec::new();
     let mut materials = Vec::new();
     let mut floor_regions = Vec::new();
@@ -554,7 +536,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
     if spec.with_slabs && nx >= 2 && ny >= 2 {
         let sec_id = SectionId(0);
         let mat_id = MaterialId(0);
-        // `validate` が名称を確かめているため、ここでプリセットは必ず見つかる。
         let preset = spec
             .slab_concrete_preset()
             .expect("床のコンクリートは validate で検査済み");
@@ -580,7 +561,6 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         for iz in 0..nz {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
-                    // 境界は反時計回り（面積算定の巻き方向をそろえる）。
                     let boundary = vec![
                         nid(ix, iy, iz),
                         nid(ix + 1, iy, iz),

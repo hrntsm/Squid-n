@@ -1,50 +1,26 @@
 //! 壁領域（`WallRegion`）。柱・梁が囲む鉛直構面内の閉領域。
 //!
-//! 床領域（[`super::FloorRegion`]、[`super::region`]）と対になる型で、位置づけは同じ
-//! ([`super::region`] のモジュール doc 参照)。壁領域は「柱・梁が囲む鉛直構面内の
-//! 閉領域ごとに 1 つ」（D1）であり、境界は [`crate::region_gen::wall`] の面走査から
-//! 作る。版の仕様は持たない（[`super::WallPlate`] が持つ）。
-//!
-//! # 壁領域と壁版の違い
-//!
-//! - **壁領域**（本モジュール）: 柱・梁が囲む鉛直構面内の閉領域そのもの。境界は
-//!   柱・梁の閉路（節点列）で、[`crate::region_gen::wall`] の面走査から作る。
-//!   **1 つの閉領域につき 1 つ**とする（D1）。版の仕様は持たない。間柱
-//!   （[`WallRegion::posts`]）と、壁領域内の壁版一覧（[`WallRegion::wall_plate_ids`]）
-//!   を持つ。
-//! - **壁版**（[`super::WallPlate`]）: 柱・梁で囲まれた版、または主架構・床領域に
-//!   取り付く版（パラペット・腰壁・垂れ壁・自立壁）。断面（板厚・材料）・開口は
-//!   ここが持つ。1 つの壁領域は複数の壁版を持ちうる（E5。壁領域内が間柱でさらに
-//!   細かい壁パネルに分かれている場合）。取り付く壁版はどの壁領域からも参照
-//!   されない独立した壁版として存在する。
-//!
-//! `region_gen::wall` の出力から組み立てる経路（[`crate::wall_region_rebuild`]）は
-//! 準備計算・ST-Bridge 取り込みへ結線済み（`wall_plate_ids` へ壁版を割り当てる経路
-//! 含む）。**未結線（2026-08-26 時点）**なのは、壁版の ST-Bridge 取り込み・要素生成
-//! （D5）・断面力/保有水平耐力の参照張り替え。ST-Bridge 書き出しは壁版が正。詳細は
-//! `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10・§5.13。
+//! 版の仕様は持たない（[`super::WallPlate`] が持つ）。
 
 use super::*;
 
-/// 壁領域。柱・梁が囲む鉛直構面内の閉領域（D1）。版の仕様は持たない
+/// 壁領域。柱・梁が囲む鉛直構面内の閉領域。版の仕様は持たない
 /// （[`WallPlate`] が持つ）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WallRegion {
     /// 壁領域 ID（`Model::wall_regions` の配列インデックスと一致すること）。
     pub id: WallRegionId,
-    /// 表示名（ナビゲータ・診断で領域を指し示すために用いる）。空文字は名前なし。
+    /// 表示名。空文字は名前なし。
     #[serde(default)]
     pub name: String,
     /// 境界の節点列（柱・梁の閉路。反時計回り、始点は繰り返さない）。
     #[serde(default)]
     pub boundary: Vec<NodeId>,
-    /// この壁領域に属する壁版（[`WallPlate`]）の ID リスト。壁領域内が間柱で複数の
-    /// 壁パネルに分かれている場合、複数持ちうる（E5）。順序は任意。重複・他領域との
-    /// 共有は許さない（[`Model::validate`] が確認）。版なし壁領域（間柱のみの
-    /// 雑壁領域等）は空のままでよい。
+    /// この壁領域に属する壁版（[`WallPlate`]）の ID リスト。順序は任意。重複・他領域との
+    /// 共有は許さない。版なし壁領域は空のままでよい。
     #[serde(default)]
     pub wall_plate_ids: Vec<WallPlateId>,
-    /// この壁領域に属する間柱（`SecondaryMember::Post`）の実体。
+    /// この壁領域に属する間柱の実体。
     #[serde(default)]
     pub posts: Vec<SecondaryMember>,
 }
@@ -61,7 +37,7 @@ impl WallRegion {
         }
     }
 
-    /// 境界多角形の座標列 [mm]。節点が引けない（陳腐化した参照）場合は `None`。
+    /// 境界多角形の座標列 [mm]。節点が引けない場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
         self.boundary
             .iter()
@@ -80,8 +56,7 @@ impl WallRegion {
         self.boundary.first().copied()
     }
 
-    /// 境界の面積 [mm²]（[`crate::geom::polygon::area_3d`]。ニューエルの公式による
-    /// 3 次元面積。理想平面への投影を経由しない。§3.2 E3）。座標が引けない場合は 0。
+    /// 境界の面積 [mm²]。座標が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         self.boundary_coords(model)
             .map(|pts| crate::geom::polygon::area_3d(&pts))

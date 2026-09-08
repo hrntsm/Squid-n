@@ -90,9 +90,6 @@ fn build_axis_frame(model: &Model, gi: usize, ai: usize) -> Option<Frame> {
         })
         .collect();
 
-    // 法線: 平行芯は幾何から厳密に決まる（離れを測る向き＝面の法線で、厳密に鉛直な面
-    // になる）。平行芯以外（円弧芯・放射芯・作図芯）は幾何を持たないため、所属節点群へ
-    // 平面を当てはめて求める。
     let normal = match group.kind.offset_dir() {
         Some(d) => [d[0], d[1], 0.0],
         None => {
@@ -120,13 +117,10 @@ fn build_story_frame(model: &Model, id: StoryId) -> Option<Frame> {
     let node_on: Vec<bool> = node_stories.iter().map(|s| *s == Some(id)).collect();
 
     let mut elem_on = elements_fully_on(model, &node_on);
-    // 上端節点がその階に属する柱を加える（伏図の柱位置）。
     for (i, e) in model.elements.iter().enumerate() {
         if elem_on[i] || !is_column(model, e) {
             continue;
         }
-        // 柱の所属階＝材端節点のうち最も高い節点の所属階（`Model::member_story`
-        // と同じ規則）。ここでも幾何から引いた `node_stories` を情報源とする。
         let top = e
             .nodes
             .iter()

@@ -233,18 +233,14 @@ pub fn best_fit_plane_normal(pts: &[[f64; 3]]) -> Option<[f64; 3]> {
         }
     }
     let (vals, vecs) = jacobi_eigen_sym3(cov);
-    // 固有値の降順で並べ替えたときの添字（λ0 ≧ λ1 ≧ λ2）。
     let mut order = [0usize, 1, 2];
     order.sort_by(|&a, &b| vals[b].total_cmp(&vals[a]));
     let (l0, l1) = (vals[order[0]], vals[order[1]]);
     if l0 <= 1e-12 {
-        // すべて同一点。
         return None;
     }
-    // λ1 が λ0 に対して無視できるほど小さい ＝ 点が一直線に並ぶ（平面が定まらない）。
     if l1 <= 1e-9 * l0 {
         let line = [vecs[0][order[0]], vecs[1][order[0]], vecs[2][order[0]]];
-        // その直線と鉛直軸を含む平面の法線 ＝ 直線 × Z。
         return unit(cross(line, [0.0, 0.0, 1.0])).or(Some([1.0, 0.0, 0.0]));
     }
     let normal = [vecs[0][order[2]], vecs[1][order[2]], vecs[2][order[2]]];
@@ -259,7 +255,6 @@ pub fn best_fit_plane_normal(pts: &[[f64; 3]]) -> Option<[f64; 3]> {
 fn jacobi_eigen_sym3(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..24 {
-        // 非対角の最大成分を消す回転を掛ける。
         let (mut p, mut q, mut max) = (0usize, 1usize, 0.0f64);
         for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
             if a[i][j].abs() > max {

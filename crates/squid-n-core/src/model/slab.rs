@@ -132,7 +132,6 @@ impl Slab {
                     if len <= f64::EPSILON {
                         return None;
                     }
-                    // 取付き線の左向き単位法線（符号つき張り出し量の正の向き）。
                     let n = [-dy / len, dx / len];
                     Some(vec![
                         p0,
@@ -150,9 +149,6 @@ impl Slab {
                         [p[0], p[1] + extent[1], p[2]],
                     ])
                 }
-                // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
-                // 参照。壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、
-                // 床板では到達しない）。
                 RegionAnchor::FloorRegion { .. } => None,
             },
         }
@@ -173,7 +169,6 @@ impl Slab {
             SlabShape::Attached { anchor, .. } => match anchor {
                 RegionAnchor::Line { nodes, .. } if k == 0 => Some(*nodes),
                 RegionAnchor::Line { .. } | RegionAnchor::Point(_) => None,
-                // 床板では到達しない（`boundary_coords` と同じ理由）。
                 RegionAnchor::FloorRegion { .. } => None,
             },
         }
@@ -187,7 +182,6 @@ impl Slab {
             SlabShape::Attached { anchor, .. } => match anchor {
                 RegionAnchor::Line { nodes, .. } => Some(nodes[0]),
                 RegionAnchor::Point(n) => Some(*n),
-                // 床板では到達しない（`boundary_coords` と同じ理由）。
                 RegionAnchor::FloorRegion { .. } => None,
             },
         }
@@ -382,8 +376,6 @@ pub enum SlabUsage {
 impl SlabUsage {
     /// 用途別の積載荷重 [N/mm²]（令別表第1）。
     pub fn live_load(self, purpose: LoadPurpose) -> f64 {
-        // プリセットは令別表第1／国交省営繕基準の [N/m²]。内部単位 N/mm² へ ×1e-6。
-        // 返り値の並びは (床用, 骨組用, 地震用)。
         let (floor, frame, seismic) = match self {
             SlabUsage::Residential => (1800.0, 1300.0, 600.0),
             SlabUsage::Office => (2900.0, 1800.0, 800.0),
@@ -407,7 +399,6 @@ impl SlabUsage {
             SlabUsage::RoofStore => (2900.0, 2400.0, 1300.0),
             SlabUsage::RoofUnused => (980.0, 600.0, 400.0),
             SlabUsage::RoofSteelGym => (980.0, 0.0, 0.0),
-            // Custom は内部単位 N/mm² をそのまま返す（×1e-6 しない）。
             SlabUsage::Custom {
                 floor,
                 frame,

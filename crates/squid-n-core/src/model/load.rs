@@ -105,10 +105,7 @@ impl MemberLoad {
     }
 }
 
-/// 荷重ケースの種別。地震用重量の集計（固定＋地震用積載）や
-/// 荷重組合せの自動生成（長期・短期・多雪区域の係数）に用いる。
-/// 旧スキーマ・種別未指定は `Other`（従来の「先頭ケースを重力とみなす」
-/// フォールバック規則の対象）。
+/// 荷重ケースの種別。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadCaseKind {
     /// 固定荷重（自重・仕上げ）
@@ -128,11 +125,8 @@ pub enum LoadCaseKind {
 }
 
 impl LoadCaseKind {
-    /// 長期応力解析の対象となる荷重ケース種別か（令82条の応力解析）。
-    ///
-    /// 固定・積載・積雪（多雪区域の 0.7S 相当を含む常時荷重として登録される想定）と、
-    /// 種別未指定 `Other`（従来の「先頭ケースを重力とみなす」フォールバック）を長期として扱う。
-    /// 地震用積載（`LiveSeismic`。重量集計専用）・風・地震は短期側なので対象外。
+    /// 長期応力解析の対象となる荷重ケース種別か。
+    /// 固定・積載・積雪と種別未指定 `Other` を長期として扱う。
     pub fn is_long_term(&self) -> bool {
         matches!(
             self,
@@ -146,10 +140,10 @@ pub struct LoadCase {
     pub id: LoadCaseId,
     pub name: String,
     pub nodal: Vec<NodalLoad>,
-    /// 部材（梁）荷重。既存データとの後方互換のため `#[serde(default)]`。
+    /// 部材（梁）荷重。
     #[serde(default)]
     pub member: Vec<MemberLoad>,
-    /// 荷重種別。旧スキーマは `Other`。
+    /// 荷重種別。フィールド無しは `Other`。
     #[serde(default)]
     pub kind: LoadCaseKind,
 }
@@ -264,11 +258,8 @@ pub struct LoadCombination {
 /// - 短期地震: `DL + LL + EX`／`DL + LL - EX`／`DL + LL + EY`／`DL + LL - EY`
 ///
 /// 長期には架構用の積載（令85条1項の長期骨組解析用）を用いる。
-/// 生成規則そのものは令82条の一般実装と**同一の関数**であり、両者が食い違う
-/// 余地はない（かつては本関数が組合せを手書きしており、一致はテストによる
-/// 手動同期でのみ担保していた）。
+/// 生成規則は令82条の一般実装と同一の関数である。
 pub fn default_combinations() -> Vec<LoadCombination> {
-    // ID は default_load_cases() の並びに対応する。
     crate::load_combo::standard_combinations(&crate::load_combo::ComboInput {
         dl: LoadCaseId(0),
         ll: LoadCaseId(1),

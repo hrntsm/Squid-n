@@ -39,7 +39,6 @@ impl NodeAdjacency {
             if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
                 continue;
             }
-            // 中間節点を持つ要素でも、隣接するのは両端だけとする。
             for n in e.nodes.iter().take(2) {
                 let list = by_node.entry(n.index()).or_default();
                 if !list.contains(&ei) {

@@ -187,14 +187,14 @@ pub struct Story {
     pub seismic_weight: Option<f64>,
     /// 地震用重量の手入力値 [N]。`Some` のときは準備計算で階を再生成しても
     /// 保持され、[`Self::seismic_weight`] へ優先して反映される。`None` は
-    /// 自動算定値をそのまま用いる。旧スキーマは手入力なし扱い。
+    /// 自動算定値をそのまま用いる。フィールド無しは手入力なし扱い。
     #[serde(default)]
     pub weight_override: Option<f64>,
     /// 主要構造種別（略算周期の鉄骨造比 α 算定用）。断面形状からの自動判定値。
-    /// 旧スキーマは RC 扱い。
+    /// フィールド無しは RC 扱い。
     #[serde(default)]
     pub structure: StoryStructure,
-    /// 階の種別（一般/PH/地下）。旧スキーマは一般階扱い。
+    /// 階の種別（一般/PH/地下）。フィールド無しは一般階扱い。
     #[serde(default)]
     pub level_kind: StoryLevelKind,
 }
@@ -349,10 +349,8 @@ impl Model {
     /// 区間列は標高の昇順で連続しているため二分探索で引く（伏図の描画が毎フレーム
     /// 全節点に対して呼ぶため、線形探索では階数に比例して重くなる）。
     pub fn story_at(&self, spans: &[(f64, f64)], z: f64) -> Option<StoryId> {
-        // 上端が z 以上になる最初の区間を探す。区間は上端の昇順に並ぶ。
         let i = spans.partition_point(|&(_, top)| top < z);
         let &(bottom, top) = spans.get(i)?;
-        // 最下階だけは下端を含む点区間（[基部, 基部]）。
         let above_bottom = if i == 0 { z >= bottom } else { z > bottom };
         if !above_bottom || z > top {
             return None;

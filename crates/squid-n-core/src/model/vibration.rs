@@ -1,10 +1,8 @@
 //! 振動荷重ケース（立体時刻歴・質点系時刻歴）。
-//!
-//! 静的荷重ケース（[`LoadCase`]）とは別系統で、解析実行時にのみ生成する。
 
 use crate::ids::{LumpedVibrationCaseId, VibrationCaseId};
 
-/// 立体時刻歴の入力方向（[`squid_n_job::settings::ThDir`] と同値だが core 単体で完結させる）。
+/// 立体時刻歴の入力方向。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VibrationThDir {
     X,
@@ -28,7 +26,7 @@ pub enum LumpedVibrationDim {
     Spatial,
 }
 
-/// 立体時刻歴応答解析の振動ケース（実行時にモデルへ upsert する）。
+/// 立体時刻歴応答解析の振動ケース。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VibrationCase {
     pub id: VibrationCaseId,
@@ -79,7 +77,7 @@ fn dim_label(dim: LumpedVibrationDim) -> &'static str {
     }
 }
 
-/// 立体時刻歴振動ケースの表示名（規約 B）。
+/// 立体時刻歴振動ケースの表示名。
 pub fn spatial_vibration_case_name(
     wave_name: &str,
     dir: VibrationThDir,

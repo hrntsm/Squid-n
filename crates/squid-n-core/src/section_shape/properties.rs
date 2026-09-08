@@ -76,7 +76,6 @@ impl SectionShape {
             }
             SectionShape::RcRect { b, d, .. } => b * d,
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d * d / 4.0,
-            // SRC: 質量算定への影響を避けるためコンクリート全断面とする（doc 参照）。
             SectionShape::SrcRect { b, d, .. } => b * d,
             SectionShape::CftBox {
                 height,
@@ -88,7 +87,6 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI * (r * r - ri * ri)
             }
-            // 壁・スラブ: 名目値（1m 幅相当の板断面。解析剛性は要素実装側の課題）。
             SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
                 thickness * 1000.0
             }
@@ -126,11 +124,8 @@ impl SectionShape {
             SectionShape::SteelPipe { outer_dia, thick } => {
                 Some((outer_dia.powi(3) - (outer_dia - 2.0 * thick).powi(3)) / 6.0)
             }
-            // 中実丸鋼: Zp = D³/6。
             SectionShape::SteelRoundBar { dia } => Some(dia.powi(3) / 6.0),
-            // 平鋼: せい t の中実矩形。Zp = B·t²/4。
             SectionShape::SteelFlatBar { width, thick } => Some(width * thick * thick / 4.0),
-            // 溝形鋼: 強軸まわりの鉛直方向の分布は H 形と同じ（上下対称）。
             SectionShape::SteelChannel {
                 height,
                 width,
@@ -141,7 +136,6 @@ impl SectionShape {
                 (flange_thick, height - flange_thick, web_thick),
                 (height - flange_thick, height, width),
             ])),
-            // T 形鋼: フランジが上端のみの非対称断面（`calc_iy` と同じ配置）。
             SectionShape::SteelTee {
                 height,
                 width,
@@ -151,7 +145,6 @@ impl SectionShape {
                 (0.0, height - flange_thick, web_thick),
                 (height - flange_thick, height, width),
             ])),
-            // 非対称組立 H 形: 上下フランジの寸法が異なる。
             SectionShape::SteelBuiltH {
                 height,
                 upper_width,
@@ -164,8 +157,6 @@ impl SectionShape {
                 (lower_thick, height - upper_thick, web_thick),
                 (height - upper_thick, height, upper_width),
             ])),
-            // リップ溝形鋼: ウェブ／上下フランジ／上下リップの 5 枚（上下対称）。
-            // 分解は `lip_channel_centroid_z` の doc と同一。
             SectionShape::SteelLipChannel {
                 height,
                 width,
@@ -178,8 +169,6 @@ impl SectionShape {
                 (thick, lip, thick),
                 (height - lip, height - thick, thick),
             ])),
-            // 山形鋼: 鉛直脚（幅 t×せい leg_a）＋水平脚（幅 leg_b−t×せい t）。
-            // `calc_iy` と同じ幾何 y 軸まわり（主軸ではない）。
             SectionShape::SteelAngle {
                 leg_a,
                 leg_b,
@@ -256,10 +245,8 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 4.0 * (r.powi(4) - ri.powi(4))
             }
-            // 平鋼は中実矩形（せい d=thick、幅 b=width）。iy は b·d³/12。
             SectionShape::SteelFlatBar { width, thick } => width * thick.powi(3) / 12.0,
             SectionShape::SteelRoundBar { dia } => std::f64::consts::PI * dia.powi(4) / 64.0,
-            // リップ溝形: 強軸（せい方向 y=H/2 まわり）。矩形分解＋平行軸。上下対称。
             SectionShape::SteelLipChannel {
                 height,
                 width,
@@ -267,19 +254,15 @@ impl SectionShape {
                 thick,
             } => {
                 let t = thick;
-                // ウェブ（幅 t×せい H、図心 y=H/2 でオフセット 0）。
                 let i_web = t * height.powi(3) / 12.0;
-                // フランジ（幅 (B−t)×厚 t、図心 y=H−t/2 → オフセット (H−t)/2）。2 枚。
                 let a_f = (width - t) * t;
                 let off_f = (height - t) / 2.0;
                 let i_f = (width - t) * t.powi(3) / 12.0 + a_f * off_f.powi(2);
-                // リップ（幅 t×せい (C−t)、図心 y=H−(C+t)/2 → オフセット (H−C−t)/2）。2 枚。
                 let a_l = t * (lip - t);
                 let off_l = (height - lip - t) / 2.0;
                 let i_l = t * (lip - t).powi(3) / 12.0 + a_l * off_l.powi(2);
                 i_web + 2.0 * i_f + 2.0 * i_l
             }
-            // 非対称組立 H: 強軸（図心 y_bar まわり）。上下フランジ＋ウェブの平行軸。
             SectionShape::SteelBuiltH {
                 height,
                 upper_width,
@@ -395,7 +378,6 @@ impl SectionShape {
                 } else {
                     0.0
                 };
-                // 上下フランジは同一寄与（左右対称）。2 枚分をまとめて計上する。
                 let i_f = flange_thick * width.powi(3) / 12.0 + a_f * (width / 2.0 - z_bar).powi(2);
                 let i_w = hw * web_thick.powi(3) / 12.0 + a_w * (web_thick / 2.0 - z_bar).powi(2);
                 2.0 * i_f + i_w
@@ -411,10 +393,8 @@ impl SectionShape {
                 iz + iz_w
             }
             SectionShape::SteelPipe { .. } => self.calc_iy(),
-            // 平鋼は中実矩形。iz は d·b³/12（b=width、d=thick）。
             SectionShape::SteelFlatBar { width, thick } => thick * width.powi(3) / 12.0,
             SectionShape::SteelRoundBar { .. } => self.calc_iy(),
-            // リップ溝形: 弱軸（幅方向 z=z_bar まわり）。矩形分解＋平行軸（Z へ偏心）。
             SectionShape::SteelLipChannel {
                 height,
                 width,
@@ -423,20 +403,16 @@ impl SectionShape {
             } => {
                 let t = thick;
                 let (z_bar, _) = lip_channel_centroid_z(height, width, lip, thick);
-                // ウェブ（z 方向厚 t、y 方向せい H、z 図心 t/2）。
                 let a_web = t * height;
                 let i_web = height * t.powi(3) / 12.0 + a_web * (t / 2.0 - z_bar).powi(2);
-                // フランジ（z 方向 (B−t)、y 方向 t、z 図心 (t+B)/2）。2 枚。
                 let a_f = (width - t) * t;
                 let z_f = (t + width) / 2.0;
                 let i_f = t * (width - t).powi(3) / 12.0 + a_f * (z_f - z_bar).powi(2);
-                // リップ（z 方向厚 t、y 方向 (C−t)、z 図心 B−t/2）。2 枚。
                 let a_l = t * (lip - t);
                 let z_l = width - t / 2.0;
                 let i_l = (lip - t) * t.powi(3) / 12.0 + a_l * (z_l - z_bar).powi(2);
                 i_web + 2.0 * i_f + 2.0 * i_l
             }
-            // 非対称組立 H: 弱軸（z=0、左右対称なので各板の自己慣性のみ）。
             SectionShape::SteelBuiltH {
                 height,
                 upper_width,
@@ -477,7 +453,6 @@ impl SectionShape {
                 (height * width.powi(3) - (height - 2.0 * thick) * wi.powi(3)) / 12.0
             }
             SectionShape::CftPipe { .. } => self.calc_iy(),
-            // 壁・スラブ: 面外は薄いため名目的に iy と同値の板剛性を返す。
             SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => self.calc_iy(),
         }
     }
@@ -531,10 +506,8 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 2.0 * (r.powi(4) - ri.powi(4))
             }
-            // 平鋼は中実矩形のねじり定数（RC 矩形と同じ閉形式）。
             SectionShape::SteelFlatBar { width, thick } => rect_torsion_j(width, thick),
             SectionShape::SteelRoundBar { dia } => std::f64::consts::PI * dia.powi(4) / 32.0,
-            // リップ溝形（薄肉開断面）: J = (1/3)Σ l·t³。矩形分解の板長で近似。
             SectionShape::SteelLipChannel {
                 height,
                 width,
@@ -544,7 +517,6 @@ impl SectionShape {
                 let len = height + 2.0 * (width - thick) + 2.0 * (lip - thick);
                 len * thick.powi(3) / 3.0
             }
-            // 非対称組立 H（開断面）: J = (1/3)Σ b·t³（各板）。
             SectionShape::SteelBuiltH {
                 height,
                 upper_width,
@@ -561,8 +533,6 @@ impl SectionShape {
             }
             SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
-            // ねじりは RC 矩形と同じ扱い（内蔵鉄骨の寄与は無視。
-            // 各種合成構造設計指針の J=(sG/cG)·sJ+cJ 複合換算は Material 依存のため今後の課題）。
             SectionShape::SrcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::CftBox {
                 height,
@@ -588,7 +558,7 @@ impl SectionShape {
     ///
     /// SRC は各種合成構造設計指針の
     /// An = rcAn + sAn·(ns−1) に従い鉄骨の等価換算断面を累加する
-    /// （ns は暫定的に `N_S_EQ`）。質量算定用の断面積（`calc_area` は
+    /// （ns は `N_S_EQ`）。質量算定用の断面積（`calc_area` は
     /// コンクリート全断面）とは区別して用いること。他形状は `calc_area` と同値。
     pub fn calc_axial_stiffness_area(&self) -> f64 {
         match *self {
