@@ -45,9 +45,7 @@ pub struct Model {
     /// 構造節点と区別するために保持し、再生成時に再利用する。
     #[serde(default)]
     pub generated_masters: Vec<NodeId>,
-    /// 動的解析の質量モデルの方式（[`MassMethod`]）。階の自動生成が剛床マスターへ
-    /// 与える質点質量の算定と、質量行列組立での部材密度質量の要否を規定する。
-    /// 旧スキーマは補正質点方式（従来の密度質量＋節点質量と同じ組立）扱い。
+    /// 動的解析の質量モデルの方式（[`MassMethod`]）。
     #[serde(default)]
     pub mass_method: MassMethod,
     /// 剛性計算用の床スラブ厚 [mm]（建物全体で一律。スラブ協力幅による梁剛性
@@ -119,29 +117,28 @@ pub struct Model {
     #[serde(default)]
     pub damper_defs: Vec<DamperDef>,
     /// 梁（水平材）のねじり剛性の扱い（建物一律。既定は i 端ねじれ解放）。
-    /// 旧スキーマ（フィールド無し）は既定＝`ReleaseIEnd` で補完される。
+    /// フィールド無しは既定＝`ReleaseIEnd` で補完される。
     #[serde(default)]
     pub beam_torsion: BeamTorsionMode,
     /// 仕口パネル（柱梁接合部パネル）のモデル化（建物一律。既定はモデル化する）。
-    /// 旧スキーマ（フィールド無し）は既定＝`Model` で補完されるため、旧ファイルも
-    /// パネルをモデル化した状態で開く。
+    /// フィールド無しは既定＝`Model` で補完される。
     #[serde(default)]
     pub panel_zone: PanelZoneMode,
-    /// 壁領域（壁版と付属間柱のグループ）。旧スキーマは空として補完。
+    /// 壁領域（壁版と付属間柱のグループ）。フィールド無しは空として補完。
     #[serde(default)]
     pub wall_regions: Vec<WallRegion>,
     /// 床板（版）。大梁または小梁で囲まれた版、または主架構に取り付く版
     /// （片持ち・バルコニー・出隅）ごとに 1 つ。`floor_regions` が「大梁の1スパン区画」
     /// であるのに対し、こちらが版の仕様（厚さ・材料・仕上げ荷重・室用途）を持つ
     /// （[`Slab`]）。取り付く床板はどの `FloorRegion` からも参照されないことがある。
-    /// 旧スキーマ（フィールド無し）は空として補完。
+    /// フィールド無しは空として補完。
     #[serde(default)]
     pub slabs: Vec<Slab>,
     /// 壁版（版仕様。断面・開口。[`WallPlate`]）。柱・梁が囲む鉛直構面内の版、
     /// または主架構・床領域に取り付く版（パラペット・腰壁・垂れ壁・自立壁）ごとに 1 つ。
     /// `wall_regions` が「柱・梁が囲む鉛直構面内の閉領域」であるのに対し、こちらが
     /// 版の仕様を持つ（床の `floor_regions`/`slabs` と同じ関係）。取り付く壁版は
-    /// どの `WallRegion` からも参照されないことがある。旧スキーマは空として補完。
+    /// どの `WallRegion` からも参照されないことがある。フィールド無しは空として補完。
     #[serde(default)]
     pub wall_plates: Vec<WallPlate>,
     #[serde(skip)]
@@ -187,8 +184,6 @@ fn slab_node_refs(slab: &Slab) -> Vec<NodeId> {
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::Point(n) => vec![*n],
-            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント参照。
-            // 壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、床板では到達しない）。
             RegionAnchor::FloorRegion { .. } => Vec::new(),
         },
     }
@@ -248,7 +243,6 @@ impl Model {
             }
         }
 
-        // 断面が参照する材料が実在すること（材料は断面が持つ）。
         for sec in &self.sections {
             for (role, mid) in [
                 ("Material", sec.material),
@@ -275,9 +269,6 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
-        // 階は標高の昇順に並ぶこと。階への帰属区間は直下階のレベルで決まる
-        // （[`Model::story_spans`]）ため、並びが崩れると区間が反転し、節点が
-        // 無言で別の階へ入る・どの階にも入らないという壊れ方をする。
         for pair in self.stories.windows(2) {
             if pair[1].elevation < pair[0].elevation {
                 return Err(CoreError::DanglingRef(format!(
@@ -287,8 +278,6 @@ impl Model {
                 )));
             }
         }
-        // 通り芯が参照する節点が実在すること（陳腐化した参照の検出）。通り芯は
-        // 計算に用いないが、節点の削除で参照が壊れたまま保存されるのを防ぐ。
         for group in &self.axes {
             for axis in &group.axes {
                 for &nid in &axis.nodes {
@@ -308,7 +297,6 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
-        // 床領域の境界が参照する節点が実在すること（陳腐化した参照の検出）。
         for region in &self.floor_regions {
             for &nid in &region.boundary {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -327,8 +315,6 @@ impl Model {
                 }
             }
         }
-        // 床領域は、同じ境界（大梁の区画）を持つものが 2 つあってはならない（D1）。
-        // 2 つあると、その床領域の小梁・床板の帰属が二重になる。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for region in &self.floor_regions {
@@ -346,10 +332,7 @@ impl Model {
                 }
             }
         }
-        // 床板 ID は「配列添字と一致」かつ「複数の床領域から共有されない」こと。
         check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
-        // 壁版 ID は「配列添字と一致」かつ「複数の壁領域から共有されない」こと
-        // （床板と同じ規約）。
         check_id_consistency(
             &self.wall_plates,
             "wall_plates",
@@ -395,7 +378,6 @@ impl Model {
                 }
             }
         }
-        // 壁領域の境界が参照する節点が実在すること（陳腐化した参照の検出）。
         for region in &self.wall_regions {
             for &nid in &region.boundary {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -406,7 +388,6 @@ impl Model {
                 }
             }
         }
-        // 壁領域は、同じ境界（柱・梁の閉路）を持つものが 2 つあってはならない（D1）。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for region in &self.wall_regions {
@@ -447,7 +428,6 @@ impl Model {
                 }
             }
         }
-        // 床板の境界・取付き先が参照する節点・断面が実在すること（陳腐化した参照の検出）。
         for slab in &self.slabs {
             for nid in slab_node_refs(slab) {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -466,7 +446,6 @@ impl Model {
                 }
             }
         }
-        // 壁版の境界・取付き先が参照する節点・断面・床領域が実在すること（同上）。
         for plate in &self.wall_plates {
             for nid in wall_plate_node_refs(plate) {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -484,10 +463,6 @@ impl Model {
                     )));
                 }
             }
-            // 自立壁（`RegionAnchor::FloorRegion`）が荷重を渡す床領域は保存しない
-            // （壁の位置から都度解決する。`RegionAnchor::FloorRegion` のドキュメント）。
-            // 検査すべき床領域参照は存在しない。荷重を流せる床領域に載っているかは
-            // 幾何の問題であり、解析前チェック（`model_issues`）が見る。
         }
         check_id_consistency(
             &self.sections,
@@ -504,7 +479,6 @@ impl Model {
             |m| m.id.0,
         )?;
 
-        // 二次部材（小梁・間柱）の参照整合（D6: 領域内または未割当リストに実体を保持）。
         for (ri, region) in self.floor_regions.iter().enumerate() {
             for (ji, sm) in region.secondary_joists.iter().enumerate() {
                 Self::validate_secondary_member(
@@ -564,7 +538,6 @@ impl Model {
             }
         }
 
-        // 同じ種別・同じ端点の二次部材は 1 本だけ（床をまたいだ手編集の重複を止める）。
         {
             use std::collections::HashSet;
             let mut seen = HashSet::new();
@@ -580,10 +553,6 @@ impl Model {
             }
         }
 
-        // 取付き線の無次元区間 `span`（[t_i, t_j]）は 0.0〜1.0 の範囲で始端 < 終端でなければ
-        // ならない。荷重は `squid_n_load::floor::distribute_cantilever` が `span` から引いた
-        // 部分区間へ幾何解決で載せる（`squid_n_load::floor::LoadTarget::Span::t`）。
-        // 逆順・範囲外・非有限は取付き線上に定義できないため弾く。
         for slab in &self.slabs {
             if let SlabShape::Attached {
                 anchor: RegionAnchor::Line { span, .. },
@@ -598,8 +567,6 @@ impl Model {
                 }
             }
         }
-        // 壁版の取付き線の無次元区間も同じ規約（`RegionAnchor::FloorRegion` は
-        // `span` を持たないため対象外。壁版自体の始点・終点全長を使う）。
         for plate in &self.wall_plates {
             if let WallPlateShape::Attached {
                 anchor: RegionAnchor::Line { span, .. },
@@ -614,11 +581,6 @@ impl Model {
                 }
             }
         }
-        // 立ち上がり高さの未指定（＝階高いっぱい）を許すのは自立壁だけである。
-        // 取付き線に取り付く全高の壁は、囲む柱梁が高さを決めるので囲まれた壁版
-        // （`WallPlateShape::Enclosed`）で表す。線アンカーで未指定を許すと、
-        // `squid_n_element::wall::misc_wall` が階高分の腰壁せいを取付き先の梁 1 本へ
-        // 丸ごと算入し、梁の剛性を過大に、変形を過小に見る危険側の評価になる。
         for plate in &self.wall_plates {
             if let WallPlateShape::Attached {
                 anchor,
@@ -636,13 +598,11 @@ impl Model {
             }
         }
 
-        // 大梁または小梁で囲まれた床板は、同じ境界を持つものが 2 つあってはならない。
-        // 2 つあると、その床領域の荷重が二重に分配される。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for slab in &self.slabs {
                 let SlabShape::Enclosed { boundary } = &slab.shape else {
-                    continue; // 取り付く床板は数の制限を置かない。
+                    continue;
                 };
                 if boundary.is_empty() {
                     continue;
@@ -658,12 +618,11 @@ impl Model {
                 }
             }
         }
-        // 柱・梁が囲む壁版も、同じ境界を持つものが 2 つあってはならない（同上）。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for plate in &self.wall_plates {
                 let WallPlateShape::Enclosed { boundary } = &plate.shape else {
-                    continue; // 取り付く壁版は数の制限を置かない。
+                    continue;
                 };
                 if boundary.is_empty() {
                     continue;
@@ -680,8 +639,6 @@ impl Model {
             }
         }
 
-        // 一本部材指定（beam_groups）の参照整合。検定の採用応力がグループの要素を
-        // 直接引くため、ダングリングすると無関係な部材の応力を合成してしまう。
         for (gi, group) in self.beam_groups.iter().enumerate() {
             for &eid in group {
                 if eid.index() >= self.elements.len() || self.elements[eid.index()].id != eid {
@@ -756,7 +713,7 @@ impl Model {
     ///
     /// 大半は [`Model::node_referenced_by_regions_or_plates`] へ委譲し、ここでは
     /// それに含まれない `stories`（利用者の節点削除を防ぐ目的では見る必要があるが、
-    /// D21 の判定である `region_rebuild::node_has_structural_ref` は準備計算のたびに
+    /// `region_rebuild::node_has_structural_ref` は準備計算のたびに
     /// 埋め直されるため意図的に除外している）だけを追加で見る。
     fn node_referenced_outside_elements(&self, id: NodeId) -> bool {
         self.stories.iter().any(|s| s.node_ids.contains(&id))
@@ -767,17 +724,13 @@ impl Model {
     /// いずれかから参照されているか。
     ///
     /// [`Model::node_referenced_outside_elements`]（squid-n-edit の節点削除ガード）と
-    /// [`crate::region_rebuild::node_has_structural_ref`]（D21 の節点削除判定）が
+    /// [`crate::region_rebuild::node_has_structural_ref`]（節点削除判定）が
     /// この判定を共有する。両者が異なるのは、前者が追加で見る `stories`
     /// （利用者の節点削除を防ぐ）と、後者が追加で見る節点自身の支点・質量・
     /// 剛床マスター（`stories`/`axes` は意図的に除外）だけである。
     ///
     /// **`NodeId` を持つフィールドを `Model` へ新設したら、まず [`Model::visit_node_ids`]
-    /// を更新し、次に該当フィールドがここでも参照有無を判定できることを確認すること**
-    /// （壁領域（`wall_regions`）を追加し忘れて `visit_node_ids`・本関数の双方が
-    /// `wall_regions` を見ていなかったことが敵対的レビューで発覚した前例がある。
-    /// 床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重を1箇所へ集約したのは
-    /// この事故を踏まえた是正である）。
+    /// を更新し、次に該当フィールドがここでも参照有無を判定できることを確認すること**。
     pub(crate) fn node_referenced_by_regions_or_plates(&self, id: NodeId) -> bool {
         self.load_cases
             .iter()
@@ -900,10 +853,7 @@ impl Model {
     /// 節点の削除・挿入に伴う ID 繰り上げ／繰り下げ（squid-n-edit）で用いる。
     ///
     /// **`NodeId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**
-    /// （`validate`・`eq_ignoring_dofmap` と同様）。かつては走査が編集側に散在して
-    /// おり、`secondary_members` の追随漏れが「節点削除後に二次部材が別の節点へ
-    /// 張り付く」ダングリング参照を生んでいた。フィールド定義と同じクレートに
-    /// 走査を置くことで、追加時の抜けを構造的に防ぐ。
+    /// （`validate`・`eq_ignoring_dofmap` と同様）。
     pub fn visit_node_ids(&mut self, mut f: impl FnMut(&mut NodeId)) {
         for node in &mut self.nodes {
             f(&mut node.id);
@@ -952,7 +902,6 @@ impl Model {
                         }
                     }
                     RegionAnchor::Point(n) => f(n),
-                    // 床板では到達しない（`slab_node_refs` と同じ理由）。
                     RegionAnchor::FloorRegion { .. } => {}
                 },
             }
@@ -975,7 +924,6 @@ impl Model {
                             f(n);
                         }
                     }
-                    // 壁の取付き先としては使わない（`wall_plate_node_refs` と同じ理由）。
                     RegionAnchor::Point(_) => {}
                 },
             }
@@ -1097,7 +1045,6 @@ impl Model {
         for mat in &mut self.materials {
             f(&mut mat.id);
         }
-        // 材料参照は断面が持つ（部材・二次部材は持たない）。
         for sec in &mut self.sections {
             for mid in [
                 &mut sec.material,
@@ -1124,8 +1071,6 @@ impl Model {
                 f(&mut ml.elem);
             }
         }
-        // WallRegion/WallPlate は ElemId を持たない（壁の解析要素は準備計算からの
-        // 生成物であり、モデルには残さない。D4・D5）。
         self.shift_elem_attr_refs(&mut f);
     }
 
@@ -1325,7 +1270,7 @@ impl Model {
         }
     }
 
-    /// 二次部材 1 件の節点・断面参照が実在することを検証する（D6）。
+    /// 二次部材 1 件の節点・断面参照が実在することを検証する。
     pub fn validate_secondary_member(
         sm: &SecondaryMember,
         label: &str,
@@ -1438,7 +1383,7 @@ impl Model {
         }
     }
 
-    /// 旧スキーマの自動生成荷重ケース名を標準ケース名へ移行する（読込時の後方互換）。
+    /// 自動生成荷重ケース名を標準ケース名へ移行する。
     ///
     /// - 「床荷重(自動)」→「DL」、「床積載(自動)」→「LL(架構用)」、
     ///   「床地震用積載(自動)」→「LL(地震用)」に改名する
@@ -1484,12 +1429,10 @@ impl Model {
             .map(|lc| lc.id)
         {
             None => {
-                // DL がなければ「自重(自動)」を DL として引き継ぐ。
                 self.load_cases[sw_idx].name = DL_CASE_NAME.to_string();
                 self.load_cases[sw_idx].kind = LoadCaseKind::Dead;
             }
             Some(dl_id) => {
-                // 組合せの参照を DL へ付け替え（既に DL を含む組合せでは項を除去）。
                 for combo in &mut self.combinations {
                     let has_dl = combo.terms.iter().any(|(id, _)| *id == dl_id);
                     if has_dl {
@@ -1502,7 +1445,6 @@ impl Model {
                         }
                     }
                 }
-                // ケースを削除し、id == 添字の規約を保つよう後続 ID を詰める。
                 self.load_cases.remove(sw_idx);
                 for lc in &mut self.load_cases {
                     if lc.id.0 > sw_id.0 {

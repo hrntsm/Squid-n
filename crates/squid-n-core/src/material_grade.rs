@@ -46,15 +46,9 @@ fn bucket3(t: f64, le40: f64, le75: f64, gt75: f64) -> f64 {
 /// 鋼材グレード一覧（前方一致の探索対象。`SN490B` のような接尾辞付き名称を
 /// 解決するため、[`steel_f_value_prefix`] は最長一致のグレードを選ぶ）。
 pub const STEEL_GRADES: &[&str] = &[
-    // JIS 規格品
     "SS400", "SS490", "SM400", "SM490", "SM520", "SN400", "SN490", "STK400", "STK490", "STKN400",
-    "STKN490", "STKR400", "STKR490", "SNR400", "SNR490", "SSC400", "SWH400",
-    // 冷間成形角形鋼管（大臣認定品。BCR235 は旧グレードの互換）
-    "BCR235", "BCR295", "BCP235", "BCP325",
-    // 建築構造用 TMCP 鋼材（HBL 等の大臣認定品の一般名。板厚 40mm 超でも F 低減なし）
-    "TMCP325", "TMCP355", "TMCP385", "TMCP440",
-    // 建築構造用高性能 590N/mm² 鋼材・建築構造用低降伏点鋼材
-    "SA440", "LY100", "LY225",
+    "STKN490", "STKR400", "STKR490", "SNR400", "SNR490", "SSC400", "SWH400", "BCR235", "BCR295",
+    "BCP235", "BCP325", "TMCP325", "TMCP355", "TMCP385", "TMCP440", "SA440", "LY100", "LY225",
 ];
 
 /// 鋼材の基準強度 F [N/mm²]（完全一致、板厚 [mm] 区分対応。H12 建告第2464号ほか）。
@@ -68,30 +62,22 @@ pub const STEEL_GRADES: &[&str] = &[
 /// 長期許容せん断 `fs = F/(1.5·√3)`。短期は長期の 1.5 倍（=F, F/√3）。
 pub fn steel_f_value(grade: &str, thickness: f64) -> Option<f64> {
     match grade {
-        // 400 N/mm² 級（F=235/215）
         "SS400" | "SM400" | "SN400" | "STK400" | "STKN400" | "STKR400" | "SNR400" | "SSC400"
         | "SWH400" => Some(bucket2(thickness, 235.0, 215.0)),
-        // SS490（F=275/255）
         "SS490" => Some(bucket2(thickness, 275.0, 255.0)),
-        // 490 N/mm² 級（F=325/295）
         "SM490" | "SN490" | "STK490" | "STKN490" | "STKR490" | "SNR490" => {
             Some(bucket2(thickness, 325.0, 295.0))
         }
-        // 520 N/mm² 級（F=355/335/325）
         "SM520" => Some(bucket3(thickness, 355.0, 335.0, 325.0)),
-        // 冷間成形角形鋼管（大臣認定品。板厚区分なし）
         "BCR295" => Some(295.0),
         "BCR235" => Some(235.0),
         "BCP235" => Some(235.0),
         "BCP325" => Some(325.0),
-        // 建築構造用 TMCP 鋼材（板厚 40mm 超 100mm 以下でも F 低減なし）
         "TMCP325" => Some(325.0),
         "TMCP355" => Some(355.0),
         "TMCP385" => Some(385.0),
         "TMCP440" => Some(440.0),
-        // 建築構造用高性能 590N/mm² 鋼材
         "SA440" => Some(440.0),
-        // 建築構造用低降伏点鋼材（基準強度 F: 100N 級=80、225N 級=205）
         "LY100" => Some(80.0),
         "LY225" => Some(205.0),
         _ => None,
@@ -129,7 +115,6 @@ pub fn steel_material_strength_factor(name: &str) -> f64 {
         return 1.0;
     };
     match *grade {
-        // 590N 級（建築構造用高性能 590N/mm² 鋼材・TMCP 590N 級）は 1.05 倍
         "SA440" | "TMCP440" => 1.05,
         _ => 1.1,
     }

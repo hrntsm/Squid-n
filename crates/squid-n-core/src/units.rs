@@ -1,7 +1,7 @@
 pub const GRAVITY_MM_S2: f64 = 9_806.65;
 
 /// コンクリートの種類（単位体積重量表の行。固定荷重の自重算定に用いる）。
-/// 許容応力度低減（軽量1種・2種は普通コンクリートの 0.9 倍。技術基準解説書）にも用いる。
+/// 許容応力度低減（軽量1種・2種は普通コンクリートの 0.9 倍）にも用いる。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConcreteClass {
     #[default]
@@ -47,7 +47,6 @@ pub fn concrete_unit_weight_kn_m3(fc: f64, class: ConcreteClass, comp: ConcreteC
         }
         ConcreteClass::Lightweight2 => 17.0,
     };
-    // 軽量1種 27<Fc≦36 は γRC=22.0（+2.0）と表の増分が他と異なるため個別に扱う。
     match (class, comp) {
         (ConcreteClass::Lightweight1, ConcreteComposition::Rc) if fc > 27.0 => 22.0,
         (ConcreteClass::Lightweight1, ConcreteComposition::Src) if fc > 27.0 => 23.0,

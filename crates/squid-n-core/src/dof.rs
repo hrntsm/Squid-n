@@ -13,14 +13,7 @@ pub enum Dof {
 pub const DOF_PER_NODE: usize = 6;
 
 /// 仕口パネルが設けられた節点が追加で持つ自由度の数。
-///
-/// せん断変形角 `γX`・`γY`（基準座標系。X'-Z' 平面と Y'-Z' 平面のパネルせん断
-/// 変形角）の 2 個。標準の 6 自由度とは別枠で、[`DofMap`] のグローバル自由度
-/// 空間の末尾（`節点数 × DOF_PER_NODE` の後ろ）へ払い出す。
-///
-/// この置き方にすることで、`節点番号 × DOF_PER_NODE + 成分` でグローバル自由度を
-/// 求める既存コードは追加自由度に一切触れず、パネルを持たないモデルでは追加
-/// 自由度が 1 つも払い出されないため剛性行列・独立自由度数が従来と完全に一致する。
+/// せん断変形角 `γX`・`γY` の 2 個。グローバル自由度空間の末尾へ払い出す。
 pub const PANEL_DOF_PER_NODE: usize = 2;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -78,7 +71,6 @@ pub fn structural_nodes(model: &Model) -> Vec<bool> {
                     *slot = true;
                 }
             }
-            // MPC は `master` フィールドがスレーブ節点、`terms` がマスター側。
             Constraint::Mpc { terms, .. } => {
                 for (n, _, _) in terms {
                     if let Some(slot) = structural.get_mut(n.index()) {
@@ -127,21 +119,13 @@ pub struct DofMap {
 
 impl DofMap {
     pub fn build(model: &Model) -> Self {
-        // 構造節点（解析自由度を持つ節点）以外は全自由度を不活性にする
-        // （解析上は存在しない扱い。変位は 0 で出力され、そこへの節点荷重は
-        // 無視される。荷重は同期側で主架構へ変換する規約）。判定規則は
-        // [`structural_nodes`] を参照。
         let structural = structural_nodes(model);
         let is_panel = panel_zone_nodes(model);
 
-        // 仕口パネル自由度は標準自由度の後ろへ連続して並べる。パネルが 1 つも
-        // なければ `n_panel_slots == 0` となり、以降は従来と完全に同一の写像になる。
         let n_node_global = model.nodes.len() * DOF_PER_NODE;
         let mut panel_slot_of = vec![None; model.nodes.len()];
         let mut panel_node_of = Vec::new();
         for (ni, &p) in is_panel.iter().enumerate() {
-            // 構造節点でない節点にパネルは付かない（パネル要素が接続していれば
-            // その節点は必ず構造節点になるため、通常この分岐は成立しない）。
             if p && structural[ni] {
                 panel_slot_of[ni] = Some(panel_node_of.len() as u32);
                 panel_node_of.push(ni as u32);
@@ -173,9 +157,6 @@ impl DofMap {
                 }
             }
         }
-        // 仕口パネル自由度は `Node::restraint`（6 成分のマスク）の対象外であり、
-        // 拘束する手段を持たない。パネル要素が必ず剛性 `Kxp`・`Kyp` を与えるため
-        // 零剛性にはならず、常に活性としてよい。
         for (ni, slot) in panel_slot_of.iter().enumerate() {
             let Some(s) = slot else { continue };
             let _ = ni;

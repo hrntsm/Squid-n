@@ -1,28 +1,11 @@
 //! 柱フェース距離（節点から部材フェースまでの距離）の算定。
-//!
-//! フェース距離は「その端で直交する部材の最大せいの半分」で、接合関係と断面せい
-//! だけから一意に決まる**幾何量**である。剛域長のようなモデル化の設定には
-//! 左右されない。危険断面位置・RC/SRC 梁の自重の内法長・数量積算の鉄筋長さなど、
-//! 剛域とは無関係な用途がこの値を読む。
-//!
-//! # なぜ core にあるか
-//!
-//! 以前はこの算定が `squid_n_element` の剛域算定（`apply_auto_rigid_zones`）の
-//! 中だけにあり、結果を `RigidZone::face_i/face_j` へキャッシュしていた。
-//! そのため「剛域を算定する前に読むと 0 になる」という順序依存があり、
-//! 実際に固定荷重が 9.6% 過大になる不具合を生んだ（`dev_docs/handoff/`
-//! 「実モデル統合テスト」4.1 節）。
-//!
-//! 幾何量は幾何から求めれば順序に依存しない。そこで算定を core へ置き、
-//! 上位クレート（`squid_n_load` の自重算定など）がキャッシュを当てにせず
-//! [`face_distances`] で直接求められるようにしている。
 
 use crate::adjacency::NodeAdjacency;
 use crate::geom::{element_axis as elem_axis, vec3, ORTHOGONAL_DOT_MAX};
 use crate::model::{ElementKind, Model};
 
 /// 節点 `node` で対象部材と概ね直交する Beam 要素の最大せいの半分 [mm]。
-/// 直交材がない端は 0.0。構造種別は問わない（幾何量のため）。
+/// 直交材がない端は 0.0。
 fn face_at(
     model: &Model,
     node: crate::ids::NodeId,
@@ -53,9 +36,7 @@ fn face_at(
 /// モデルの全要素について、両端の柱フェース距離 `[i 端, j 端]` [mm] を求める。
 ///
 /// 添字は `model.elements` の並びと一致する。Beam 以外の要素と、節点が 2 つ
-/// 未満の要素は `[0.0, 0.0]`。計算量は O(要素数)。
-///
-/// キャッシュ（`RigidZone::face_i/face_j`）を当てにできない場所から使う。
+/// 未満の要素は `[0.0, 0.0]`。
 pub fn face_distances(model: &Model) -> Vec<[f64; 2]> {
     let adjacency = NodeAdjacency::build(model);
     model

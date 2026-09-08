@@ -328,7 +328,6 @@ pub fn resolve_panel_joint<'a>(
         if !e.nodes.iter().take(2).any(|n| *n == node) {
             continue;
         }
-        // 斜材はパネル自由度と連成しないため、種別判定の対象にもしない。
         match member_orientation(model, e) {
             Some(MemberOrientation::Column) => columns.push(e),
             Some(MemberOrientation::Beam) => beams.push(e),
@@ -338,9 +337,6 @@ pub fn resolve_panel_joint<'a>(
     if columns.is_empty() || beams.is_empty() {
         return None;
     }
-    // 取り付く柱・はりがすべて S/CFT 系であること。1 本でも RC/SRC が混じる
-    // 接合部は、コンクリートが接合部全体を拘束するため鋼部材だけの実効体積
-    // では挙動を表せない。
     if columns
         .iter()
         .chain(beams.iter())
@@ -362,8 +358,6 @@ pub fn resolve_panel_joint<'a>(
     let geometry_of = |e: &&ElementData| section_of(e).and_then(PanelGeometry::from_column);
     let has_filled_column = columns.iter().filter_map(geometry_of).any(|g| g.filled);
 
-    // 柱が複数取り付く場合は Ve が最小になる柱を採る。要素の並び順に依存せず
-    // 決定的で、かつ剛性・耐力とも安全側になる。
     let (column, geometry, ve) = columns
         .iter()
         .filter_map(|e| {

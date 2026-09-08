@@ -3,9 +3,8 @@
 //! 大梁の区画（[`crate::region_gen::RegionBoundary`]）から床領域（[`FloorRegion`]、
 //! 大梁の 1 スパン区画）を再生成し、既存の床領域と重心・レベルで対応付けて
 //! 名前を引き継ぐ。**床板（[`Slab`]）は畳まない**。
-//! 各床板の帰属（どの床領域に属すか）を、床板の重心が入る床領域へ付け替えるだけである
-//! （申し送り Step 3 改訂 / D7・D10・D20・D21）。取り付く床板（片持ち・バルコニー等）は
-//! どの床領域からも参照されない独立した床板のまま、素通しする。
+//! 各床板の帰属（どの床領域に属すか）を、床板の重心が入る床領域へ付け替えるだけである。
+//! 取り付く床板（片持ち・バルコニー等）はどの床領域からも参照されない独立した床板のまま、素通しする。
 
 use crate::dof::Dof6Mask;
 use crate::geom::polygon::{self, BOUNDARY_TOL_MM};
@@ -41,22 +40,19 @@ pub struct FloorRegionRebuildReport {
 }
 
 /// 床領域を大梁の区画から作り直し、名前を引き継ぎ、床板の帰属を
-/// 付け替え、小梁を D7 で入れ直し、参照 0 節点を削除する。
+/// 付け替え、小梁を入れ直し、参照 0 節点を削除する。
 ///
 /// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は、
-/// 1 辺が大梁に全長覆われていれば取り付く床板へ変換し（D20）、それもできなければ
+/// 1 辺が大梁に全長覆われていれば取り付く床板へ変換し、それもできなければ
 /// 帰属なしのまま残す（警告。落とさない）。
 pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let scan = scan_region_boundaries(model);
-    // 床領域を作り直す前に、領域内小梁を未割当へ集約する（assign_joists が再配分する）。
     for r in &mut model.floor_regions {
         model.unassigned_joists.append(&mut r.secondary_joists);
     }
     let old_regions = std::mem::take(&mut model.floor_regions);
     let mut report = FloorRegionRebuildReport::default();
 
-    // 1. 新しい床領域を床領域ごとに作り、旧床領域と重心・レベルで対応付けて
-    //    名前を引き継ぐ（D10）。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<FloorRegion> = Vec::with_capacity(scan.boundaries.len());
     for rb in &scan.boundaries {
@@ -88,13 +84,11 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     report.regions = new_regions.len();
     report.unmatched_old_regions = matched_old.iter().filter(|m| !**m).count();
 
-    // 2. 床板の帰属を、重心が入る床領域へ付け替える。収まらない床板は、1 辺が大梁に
-    //    全長覆われていれば取り付く床板へ変換し（D20）、それもできなければ帰属なしのまま残す。
     let beams = horizontal_girders(model);
     let mut owner: Vec<Option<usize>> = vec![None; model.slabs.len()];
     for (si, slab) in model.slabs.iter().enumerate() {
         let SlabShape::Enclosed { boundary } = &slab.shape else {
-            continue; // 取り付く床板は素通し（どの床領域にも属さない）。
+            continue;
         };
         let Some((cxy, z, _)) = boundary_centroid_area(model, boundary) else {
             continue;
@@ -110,9 +104,6 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
         }
     }
     let mut converted = Vec::new();
-    // 片持ちへ変換すると、旧境界の先端節点が Attached の取付き線 2 点だけに
-    // 縮む（D15）。参照 0 になりうるのはこの縮んだぶんの節点だけであり、
-    // それ以外（他の理由で未使用の既存節点）まで削除対象にしてはならない（D21）。
     let mut discarded_by_conversion: Vec<NodeId> = Vec::new();
     for (si, slab) in model.slabs.iter().enumerate() {
         if owner[si].is_some() || slab.is_attached() {
@@ -143,12 +134,8 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     }
     model.floor_regions = new_regions;
 
-    // 3. 小梁を D7（中点の厳密内包＋レベル一致）で入れ直す。
     report.unassigned_joists = assign_joists(model);
 
-    // 4. 片持ち変換で縮んだ境界の先端節点のうち、参照が 0 になったものを削除する
-    // （D21）。それ以外の既存節点は、たとえ現状どこからも参照されていなくても
-    // このリビルドの対象外（利用者が別の理由で置いた節点かもしれない）。
     report.deleted_nodes = delete_unref_nodes(model, &discarded_by_conversion);
 
     report
@@ -218,7 +205,7 @@ fn region_area(model: &Model, region: &FloorRegion) -> f64 {
         .unwrap_or(f64::MAX)
 }
 
-/// 水平な大梁の 1 本ぶん（XY 線分 ＋ レベル）。壁側の D20 相当判定
+/// 水平な大梁の 1 本ぶん（XY 線分 ＋ レベル）。壁側の相当判定
 /// （[`crate::wall_region_rebuild`]）も同じ「同一レベルの大梁に全長覆われているか」を
 /// 使うため `pub(crate)` にしている。
 pub(crate) struct GirderSeg {
@@ -252,7 +239,7 @@ pub(crate) fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
 }
 
 /// 大梁または小梁で囲まれた床板の境界のうち、1 辺だけが大梁に全長覆われていれば、
-/// その辺を取付き線とする取り付く床板の形へ変換する（D20）。変換できなければ `None`。
+/// その辺を取付き線とする取り付く床板の形へ変換する。変換できなければ `None`。
 fn try_convert_cantilever(
     model: &Model,
     boundary: &[NodeId],
@@ -294,7 +281,6 @@ fn try_convert_cantilever(
     }
     let ux = dx / len;
     let uy = dy / len;
-    // 取付き線の左側が正。
     let nx = -uy;
     let ny = ux;
 
@@ -440,9 +426,7 @@ fn assign_joists(model: &mut Model) -> usize {
 ///
 /// 床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重の判定は
 /// [`Model::node_referenced_by_regions_or_plates`] へ委譲する（`Model::node_in_use`
-/// の削除ガードと共有。**`NodeId` を持つフィールドを `Model` へ新設したときに
-/// 更新すべき箇所を1箇所へ集約する**のが狙いで、敵対的レビューで見つかった
-/// 「`wall_regions` を一切見ていなかった」回帰を踏まえた是正である）。
+/// の削除ガードと共有）。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;
@@ -465,7 +449,7 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
 /// `candidates` に挙がった節点のうち、参照が 0 になったものだけを削除する。
 ///
 /// `candidates` 以外の節点は、たとえ現状どこからも参照されていなくても対象外とする
-/// （D21。このリビルドが縮めた境界の先端節点だけを削除し、利用者が別の理由で
+/// （このリビルドが縮めた境界の先端節点だけを削除し、利用者が別の理由で
 /// 置いた既存の未使用節点まで巻き込まない）。
 pub(crate) fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
     let n = model.nodes.len();

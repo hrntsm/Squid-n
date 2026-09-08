@@ -73,11 +73,9 @@ impl WallOpening {
         let (Some(a), Some(b)) = (self.rect(), other.rect()) else {
             return false;
         };
-        // 開口間距離 l: 各方向の純間隔（重なっていれば 0）の合成
         let gap_x = (a[0].max(b[0]) - a[2].min(b[2])).max(0.0);
         let gap_z = (a[1].max(b[1]) - a[3].min(b[3])).max(0.0);
         let l = (gap_x * gap_x + gap_z * gap_z).sqrt();
-        // 包絡開口とした場合の高さ h
         let h = a[3].max(b[3]) - a[1].min(b[1]);
         l < 1.5 * h || l < 1000.0
     }
@@ -97,23 +95,13 @@ pub struct WallAttr {
     /// 開口部（サッシ等）の重量 [N]。控除後に加算する。
     #[serde(default)]
     pub opening_weight: f64,
-    /// 耐震スリット。由来する壁版の [`super::WallPlate::slit`] を写したもので、
-    /// 意味も添字の規則も同じである。いずれかの辺が切れていれば耐震壁として
-    /// 成立しない。
+    /// 耐震スリット。
     #[serde(default)]
     pub slit: super::WallSlit,
-    /// 個別開口の寸法リスト。非空の場合、開口の面積評価（自重控除・
-    /// 開口周比 r0・開口低減率 r）と耐震壁検定の開口供給はこのリストを
-    /// 優先する。空の場合は従来どおり `opening_area`（合計面積のみ）で評価する。
+    /// 個別開口の寸法リスト。非空の場合、開口の面積評価に用いる。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
-    /// 仕上げ・増打ちの面荷重強度 [N/mm²]。由来する壁版の
-    /// [`super::WallPlate::finish_intensity`] を写したもので、意味も同じである。
-    /// **躯体の自重は含まない。**
-    ///
-    /// 壁エレメントになる壁版もこの重さを持つため、要素経由の自重算定
-    /// （`squid_n_load::story_gen::self_weight_calc`）が読む。写し忘れると、
-    /// 入力された仕上げ・増打ちが壁エレメントの壁だけ黙って落ちる。
+    /// 仕上げ・増打ちの面荷重強度 [N/mm²]。**躯体の自重は含まない。**
     #[serde(default)]
     pub finish_intensity: f64,
 }
@@ -407,17 +395,11 @@ pub struct DamperProps {
     /// 第2剛性比 k2/k1（履歴型のみ）。
     #[serde(default = "default_damper_k2_ratio")]
     pub k2_ratio: f64,
-    /// リリーフ速度 Vr [mm/s]（マクスウェルのみ。オイルダンパーのリリーフ機構）。
-    /// `None`（既定）はリリーフ特性なし（従来どおり `Fc=C0·sign(V)·|V|^α` を
-    /// 全域に適用）。`Some(vr)`（vr>0）の場合、|V|≤vr は従来どおり、|V|>vr は
-    /// `c2_ratio` による減衰係数比で頭打ちにした折れ線特性となる
-    /// （式は `c2_ratio` の docs、および `maxwell.rs` 参照）。
+    /// リリーフ速度 Vr [mm/s]（マクスウェルのみ）。
+    /// `None`（既定）はリリーフ特性なし。
     #[serde(default)]
     pub relief_velocity: Option<f64>,
-    /// リリーフ後の減衰係数比 C2/C1（C1 はリリーフ速度 Vr における接線減衰係数
-    /// `C1=C0·α·Vr^(α−1)`）。`relief_velocity` が `Some` の場合のみ意味を持つ
-    /// （`None`＝リリーフなし）。既定 `None`（リリーフ無効時は未使用のため
-    /// 0 でも同義だが、意図を明確にするため未指定を表す）。
+    /// リリーフ後の減衰係数比 C2/C1。`relief_velocity` が `Some` の場合のみ意味を持つ。
     #[serde(default)]
     pub c2_ratio: Option<f64>,
 }

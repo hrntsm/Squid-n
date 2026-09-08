@@ -13,21 +13,19 @@
 //! **床側との違い**: 床は「同じレベル Z」で新旧の床領域を対応付けるが、壁は構面
 //! （直線）ごとに閉領域が現れるため、候補の全頂点が「同じ構面上にあるか」
 //! （[`WallRegionBoundary::is_same_plane`]）で絞り込んでから、構面内の局所座標 `(s, z)`
-//! で多角形重心・内包を判定する。間柱は D7 により毎回入れ直す。
+//! で多角形重心・内包を判定する。間柱は毎回入れ直す。
 //!
-//! **床側 D20 に相当する自動変換**: どの壁領域にも収まらない、柱・梁で囲まれた
+//! **どの壁領域にも収まらない壁版の自動変換**: 柱・梁で囲まれた
 //! 壁版（`WallPlateShape::Enclosed`）のうち、**水平な辺（上辺・下辺）がちょうど 1 つ**
 //! 同一レベルの大梁に全長覆われていれば、その辺を取付き線とする取り付く壁版
 //! （`Attached`／`RegionAnchor::Line`）へ変換する（パラペット・腰壁・垂れ壁）。
-//! 判定対象は水平な辺のみで、鉛直な辺（柱沿い）は対象外とする（D13/D14 に
-//! 「柱だけに取り付く壁」の用例がないため）。張り出し量 `extent` は取付き辺からの
+//! 判定対象は水平な辺のみで、鉛直な辺（柱沿い）は対象外とする。張り出し量 `extent` は取付き辺からの
 //! 鉛直方向の高さ差で、符号つき（下方向が負）である。`RegionAnchor::FloorRegion`
 //! （自立壁）は自動検出しない。ST-Bridge から自立壁を判別できる情報源がなく、
-//! 手動作成専用とする（利用者との dig で確定。
-//! `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §9）。
+//! 手動作成専用とする。
 //!
 //! 変換で境界が取付き線 2 点だけに縮んだぶん、参照が 0 になった節点は削除する
-//! （D21。床側と同じ規約で、このリビルドが縮めた境界の先端節点だけを対象とし、
+//! （床側と同じ規約で、このリビルドが縮めた境界の先端節点だけを対象とし、
 //! 他の理由で未使用の既存節点は対象外とする）。
 //! 自由端は取付き辺上にない頂点が 1〜2 点のときに限り変換する。同じ高さでも
 //! 辺から外れた頂点は自由端に数える。変換後の取り付く壁版は解析要素にせず、
@@ -83,15 +81,12 @@ pub fn unassigned_post_count(model: &Model) -> usize {
 /// （警告。落とさない。モジュール doc 参照）。
 pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     let scan = scan_wall_region_boundaries(model);
-    // 壁領域を作り直す前に、領域内間柱を未割当へ集約する（assign_posts が再配分する）。
     for r in &mut model.wall_regions {
         model.unassigned_posts.append(&mut r.posts);
     }
     let old_regions = std::mem::take(&mut model.wall_regions);
     let mut report = WallRegionRebuildReport::default();
 
-    // 1. 新しい壁領域を床領域ごとに作り、旧壁領域と構面・重心・面積で対応付けて
-    //    名前を引き継ぐ（D10 と同じ方針）。間柱は後段で D7 により入れ直す。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<WallRegion> = Vec::with_capacity(scan.boundaries.len());
     for rb in &scan.boundaries {
@@ -120,14 +115,11 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     report.regions = new_regions.len();
     report.unmatched_old_regions = matched_old.iter().filter(|m| !**m).count();
 
-    // 2. 壁版の帰属を、重心が入る壁領域へ付け替える。収まらない壁版は、水平な辺が
-    //    1 つだけ大梁に全長覆われていれば取り付く壁版へ変換し（床側 D20 に相当。
-    //    モジュール doc 参照）、それもできなければ帰属なしのまま残す。
     let beams = horizontal_girders(model);
     let mut owner: Vec<Option<usize>> = vec![None; model.wall_plates.len()];
     for (pi, plate) in model.wall_plates.iter().enumerate() {
         let WallPlateShape::Enclosed { boundary } = &plate.shape else {
-            continue; // 取り付く壁版は素通し（どの壁領域にも属さない）。
+            continue;
         };
         if let Some((ri, _)) = scan
             .boundaries
@@ -141,8 +133,6 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
         }
     }
     let mut converted = Vec::new();
-    // 変換すると、旧境界のうち取付き線 2 点以外の節点が参照 0 になりうる
-    // （D21・床側と同じ理由）。それ以外の既存節点は削除対象にしない。
     let mut discarded_by_conversion: Vec<NodeId> = Vec::new();
     for (pi, plate) in model.wall_plates.iter().enumerate() {
         if owner[pi].is_some() {
@@ -182,7 +172,7 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
 
 /// 柱・梁で囲まれた壁版の境界のうち、**水平な辺（両端の Z が一致する辺）**が
 /// ちょうど 1 つだけ同一レベルの大梁に全長覆われていれば、その辺を取付き線とする
-/// 取り付く壁版の形へ変換する（床側 D20 に相当。モジュール doc 参照）。
+/// 取り付く壁版の形へ変換する。
 /// 鉛直な辺（柱沿い）は判定対象にしない。変換できなければ `None`。
 fn try_convert_wall_attached(
     model: &Model,
@@ -202,7 +192,7 @@ fn try_convert_wall_attached(
         let a = pts[i];
         let b = pts[(i + 1) % n];
         if (a[2] - b[2]).abs() > LEVEL_TOL_MM {
-            continue; // 鉛直な辺（柱沿い）は対象外。
+            continue;
         }
         let z = (a[2] + b[2]) / 2.0;
         if edge_fully_covered([a[0], a[1]], [b[0], b[1]], z, beams) {
@@ -227,9 +217,6 @@ fn try_convert_wall_attached(
     let ux = dx / len;
     let uy = dy / len;
 
-    // 取付き辺上の点（分割点）だけを自由端から除く。同じ高さでも辺から外れた
-    // 頂点は自由端に数える（床側 D20 の辺までの距離判定と同じ。高さだけで
-    // 除外すると、梁レベルに折れ曲がった頂点を持つ輪郭を誤って変換する）。
     let mut free = Vec::new();
     for p in &pts {
         let on_edge = (p[2] - edge_z).abs() <= LEVEL_TOL_MM
@@ -259,8 +246,6 @@ fn try_convert_wall_attached(
             span: [0.0, 1.0],
             transfer: LoadTransfer::Anchor,
         },
-        // 取付き線に取り付く壁版なので、高さは必ず明示する（`WallPlateShape::Attached`
-        // のドキュメント参照）。ここでは輪郭の自由端から幾何的に決まる。
         extent: Some(extent),
     })
 }
@@ -271,8 +256,8 @@ fn try_convert_wall_attached(
 /// 判定は 2 段階: (1) `candidate` の全頂点が `rb` と同じ構面上にあること
 /// （[`WallRegionBoundary::is_same_plane`]）、(2) `candidate` の多角形重心
 /// （`rb` の局所座標 `(s, z)` へ射影したもの）が `rb` の内部にあること
-/// （[`WallRegionBoundary::contains`]）。面積は実座標（3 次元）から求める（§3.2 E3。
-/// 局所座標への射影はトポロジー判定にのみ使う近似であり、面積には使わない）。
+/// （[`WallRegionBoundary::contains`]）。面積は実座標（3 次元）から求める
+/// （局所座標への射影はトポロジー判定にのみ使う近似であり、面積には使わない）。
 fn match_candidate(
     model: &Model,
     rb: &WallRegionBoundary,

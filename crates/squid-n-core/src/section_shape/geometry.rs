@@ -116,7 +116,6 @@ pub(crate) fn tee_centroid(height: f64, width: f64, web_thick: f64, flange_thick
 ///
 /// 退化した入力（総面積 0）は 0.0 を返す。
 pub(crate) fn plastic_modulus_strips(strips: &[(f64, f64, f64)]) -> f64 {
-    // y 方向の重なりを解くため、全境界で区切って各区間の合計幅を求める。
     let mut ys: Vec<f64> = strips
         .iter()
         .flat_map(|&(lo, hi, _)| [lo, hi])
@@ -147,7 +146,6 @@ pub(crate) fn plastic_modulus_strips(strips: &[(f64, f64, f64)]) -> f64 {
         return 0.0;
     }
 
-    // 等面積軸 y_p を下から積み上げて求める（跨る帯の中で線形に解く）。
     let half = total / 2.0;
     let mut acc = 0.0;
     let mut y_p = bands[0].0;
@@ -161,7 +159,6 @@ pub(crate) fn plastic_modulus_strips(strips: &[(f64, f64, f64)]) -> f64 {
         y_p = hi;
     }
 
-    // Zp = Σ ∫|y − y_p| dA。帯が y_p を跨ぐ場合は上下へ分けて積分する。
     bands
         .iter()
         .map(|&(lo, hi, w)| {

@@ -12,8 +12,6 @@ fn dim(v: f64) -> String {
     if v.is_finite() && v.fract() == 0.0 {
         format!("{}", v as i64)
     } else {
-        // 冷間成形材の板厚 3.2 のように小数第 1 位までで足りるが、
-        // 丸めで別寸法が同じ表記になるのを避けるため 3 桁まで許し末尾 0 を落とす。
         let s = format!("{v:.3}");
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
@@ -57,8 +55,6 @@ impl SectionShape {
                     *web_thick,
                 ])
             ),
-            // 角部外半径 r は表記に含めない（断面性能ではなくせん断有効断面積の
-            // 補正にのみ用いる寸法で、表記に入れると列が長くなるため）。
             SectionShape::SteelBox {
                 height,
                 width,

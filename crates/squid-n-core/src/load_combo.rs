@@ -56,8 +56,7 @@ fn push_gp(combos: &mut Vec<LoadCombination>, dl: LoadCaseId, ll: LoadCaseId) {
 /// - 短期地震: `DL+LL±EX`・`DL+LL±EY`（±両方向）。多雪区域はさらに
 ///   `DL+LL+0.35SL±EX`（X・Y 各方向）。
 ///
-/// 各ケースは `seismic_x`/`seismic_y`/`snow` が `Some` の場合のみ生成される
-/// （レビュー §1.10）。
+/// 各ケースは `seismic_x`/`seismic_y`/`snow` が `Some` の場合のみ生成される。
 ///
 /// 風荷重は算定・生成の対象外のため、暴風の組合せは作らない。風荷重ケースを
 /// 定義しても、そのケースを含む組合せは自動生成されない。
@@ -67,10 +66,8 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
     let ll = input.ll;
     let sf = input.snow_factors.unwrap_or_default();
 
-    // 長期: DL+LL
     push_gp(&mut combos, dl, ll);
 
-    // 多雪区域の長期: DL+LL+δ1・SL
     if input.heavy_snow_zone {
         if let Some(snow) = input.snow {
             combos.push(LoadCombination {
@@ -80,7 +77,6 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
         }
     }
 
-    // 短期積雪: DL+LL+SL
     if let Some(snow) = input.snow {
         combos.push(LoadCombination {
             name: "DL + LL + SL".into(),
@@ -88,7 +84,6 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
         });
     }
 
-    // 短期地震（±両方向、多雪区域は δ3・SL 付きも追加）。
     push_directional(
         &mut combos,
         dl,
@@ -158,7 +153,7 @@ fn push_directional(
     }
 }
 
-/// 旧API（後方互換）。断面検定などから使う単純版
+/// 断面検定などから使う単純版
 /// （長期 DL+LL / 短期積雪 DL+LL+SL / 短期地震 DL+LL±EX/EY の正負両加力）。
 /// 内部では [`standard_combinations`] に委譲する。多雪区域の係数付き組合せが
 /// 必要な場合は [`standard_combinations`] を直接使う。
@@ -193,12 +188,9 @@ pub fn auto_combinations(
 /// 含む組合せを保存データが持つ場合に長期と誤判定しないためである。
 pub fn is_short_term_combo(name: &str) -> bool {
     let upper = name.to_uppercase();
-    // 地震（記号 E。旧名の K も含む）・風（W）を含めば短期。
     if upper.contains('K') || upper.contains('E') || upper.contains('W') {
         return true;
     }
-    // 多雪区域の長期積雪 δ1・S（係数 <1.0 の S 項。例 "0.7SL"・"0.65SL"）は
-    // 長期（令82条一号）。係数なしの S（DL+LL+SL）は短期積雪。
     if let Some(pos) = upper.find('S') {
         let coef: String = upper[..pos]
             .chars()

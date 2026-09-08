@@ -1,12 +1,4 @@
 //! 断面形状の型定義。
-//!
-//! - [`BarSet`] — RC 主筋セット
-//! - [`ShearBar`] — せん断補強筋
-//! - [`RcRebar`] — RC 配筋情報
-//! - [`SectionShape`] — パラメトリック断面形状の列挙
-//! - [`bar_set_area`] — 主筋セットの総断面積
-//! - [`one_bar_area`] — 主筋 1 本あたりの断面積
-//! - [`shear_legs_area`] — せん断補強筋 1 組の断面積
 
 /// RC 配筋の主筋セット（方向別）。
 ///
@@ -64,8 +56,7 @@ pub enum SectionShape {
         height: f64,
         width: f64,
         thick: f64,
-        /// 角部外半径 r [mm]（せん断有効断面積の算定に用いる）。
-        /// 0 は角部を直角とみなす（未入力・溶接組立箱形相当）。
+        /// 角部外半径 r [mm]。0 は角部を直角とみなす。
         #[serde(default)]
         corner_r: f64,
     },
@@ -90,19 +81,17 @@ pub enum SectionShape {
     /// Steel flat bar / plate (平鋼・鋼板). 中実矩形。
     ///
     /// `width`: 幅 B [mm]（Z 方向）、`thick`: 板厚 t [mm]（Y 方向＝せい）。
-    /// 断面性能は中実矩形として算定する（配筋はない）。部材のせい/幅の向きは
-    /// 局所座標（`ref_vector`）で与える。薄板だが幅厚比検定の対象外（板要素ではない）。
+    /// 部材のせい/幅の向きは局所座標（`ref_vector`）で与える。
     SteelFlatBar { width: f64, thick: f64 },
     /// Steel solid round bar (中実丸鋼).
     ///
-    /// `dia`: 直径 D [mm]。断面性能は中実円として算定する。
+    /// `dia`: 直径 D [mm]。
     SteelRoundBar { dia: f64 },
     /// Steel welded built-up H with unequal flanges (非対称組立 H 形鋼). `StbSecBuild-H`。
     ///
     /// 上下フランジの幅・厚が異なる溶接組立断面。`height`: せい H（外〜外）、
     /// `upper_width`/`upper_thick`: 上フランジ、`lower_width`/`lower_thick`: 下フランジ、
-    /// `web_thick`: ウェブ厚。上下フランジ＋ウェブの矩形分解＋平行軸で断面性能を算定する
-    /// （図心は Y 方向に偏心。左右対称）。上下同一寸法なら通常の `SteelH` と等価。
+    /// `web_thick`: ウェブ厚。
     SteelBuiltH {
         height: f64,
         upper_width: f64,
@@ -115,8 +104,6 @@ pub enum SectionShape {
     ///
     /// `height`: せい H [mm]（Y 方向）、`width`: フランジ幅 B [mm]（Z 方向。ウェブ外面〜
     /// フランジ先端）、`lip`: リップ長 C [mm]（Y 方向）、`thick`: 板厚 t [mm]（全要素一様）。
-    /// 薄肉開断面としてウェブ・上下フランジ・上下リップの矩形分解で断面性能を算定する
-    /// （図心は Z 方向に偏心。冷間成形材の有効断面・局部座屈は別途検討）。
     SteelLipChannel {
         height: f64,
         width: f64,
@@ -127,14 +114,9 @@ pub enum SectionShape {
     RcRect { b: f64, d: f64, rebar: RcRebar },
     /// Reinforced concrete circle column (RC 円形).
     RcCircle { d: f64, rebar: RcRebar },
-    /// SRC 矩形断面（RC 矩形 + 内蔵 H 形鉄骨、SRC 規準 1987）。
+    /// SRC 矩形断面（RC 矩形 + 内蔵 H 形鉄骨）。
     ///
-    /// 内蔵鉄骨の鋼種・コンクリート強度・主筋の材質は、いずれも断面が材料として
-    /// 持つ（`crate::model::Section` の `steel_material`・`material`・`rebar_material`）。
-    ///
-    /// 解析用断面性能（`to_section`）は、コンクリート断面にヤング係数比
-    /// `N_S_EQ`（=15、暫定既定）による鉄骨の等価換算剛性を加えて算定する。
-    /// 断面積は質量算定への影響を避けるためコンクリート全断面 `b·d` とする。
+    /// 内蔵鉄骨の鋼種・コンクリート強度・主筋の材質は、いずれも断面が材料として持つ。
     SrcRect {
         b: f64,
         d: f64,
@@ -144,29 +126,18 @@ pub enum SectionShape {
         steel_web_thick: f64,
         steel_flange_thick: f64,
     },
-    /// CFT 角形（角形鋼管 + 充填コンクリート）。
-    ///
-    /// 解析用断面性能は鋼管部分のみ（充填コンクリートの剛性は暫定的に無視、
-    /// 剛性計算編での複合換算は今後の課題）。検定では `Material.fc` の
-    /// 充填コンクリート強度を用いる。
+    /// CFT 角形（角形鋼管 + 充填コンクリート）。検定では `Material.fc` の充填コンクリート強度を用いる。
     CftBox { height: f64, width: f64, thick: f64 },
-    /// CFT 円形（円形鋼管 + 充填コンクリート）。扱いは `CftBox` と同じ。
+    /// CFT 円形（円形鋼管 + 充填コンクリート）。
     CftPipe { outer_dia: f64, thick: f64 },
     /// RC 耐震壁（壁エレメント用）。
     ///
     /// `thickness`: 壁板厚 [mm]、`ps`: 壁板の直交する各方向のせん断補強筋比の
-    /// うち小さい方（小数。例 0.0025）。壁の平面寸法は要素の節点座標から得る
-    /// ため形状には持たない。`to_section` の断面性能は名目値（壁は暫定的に
-    /// 等価梁でモデル化されており、実剛性の評価は要素実装側の課題）。
+    /// うち小さい方（小数。例 0.0025）。
     RcWall { thickness: f64, ps: f64 },
     /// RC スラブ（床）。
     ///
-    /// `thickness`: 板厚 [mm]。スラブの平面形状は境界節点から得るため形状には
-    /// 持たない。スラブは解析部材ではなく荷重を分配する面のため、断面性能
-    /// （`A`・`I`・`As`）は幅 1 m の帯としての名目値であり、剛性計算には用いない。
-    ///
-    /// 配筋は持たない。スラブ配筋の設計は板厚とかぶり厚から算定しており
-    /// （`design_slab_oneway`）、断面にも配筋を置くと入力の持ち主が二重になる。
+    /// `thickness`: 板厚 [mm]。
     RcSlab { thickness: f64 },
 }
 
@@ -183,11 +154,6 @@ impl SectionShape {
     }
 
     /// コンクリート系（RC / SRC / CFT）の断面形状か。
-    ///
-    /// 断面耐力（曲げひび割れ \\(M_c\\)・曲げ降伏 \\(M_y\\)・せん断終局 \\(Q_{su}\\)）の
-    /// 算定にコンクリート強度 \\(F_c\\) を要する形状を真とする。既定履歴則の判定
-    /// （`squid_n_element::factory::resolve_member_hysteresis`）と、非線形解析の
-    /// 入力チェック（`squid_n_element::factory::nonlinear_input_issues`）が共有する。
     pub fn is_concrete_like(&self) -> bool {
         matches!(
             self,
@@ -202,13 +168,13 @@ impl SectionShape {
     }
 }
 
-/// 主筋 1 本あたりの断面積 [mm²]（πr²）。
+/// 主筋 1 本あたりの断面積 [mm²]。
 pub fn one_bar_area(dia: f64) -> f64 {
     let r = dia / 2.0;
     std::f64::consts::PI * r * r
 }
 
-/// 主筋セットの総断面積 [mm²]（本数×πr²。配筋検定・ファイバー生成用）。
+/// 主筋セットの総断面積 [mm²]。
 pub fn bar_set_area(bs: &BarSet) -> f64 {
     bs.count as f64 * one_bar_area(bs.dia)
 }

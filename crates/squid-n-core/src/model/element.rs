@@ -125,27 +125,14 @@ pub enum BeamTorsionMode {
 /// 仕口パネル（柱梁接合部パネル）のモデル化（建物一律のモデル化方針）。
 ///
 /// 有効にすると、S 造（CFT を除く）の柱梁接合節点へ仕口パネル要素を設け、
-/// 接合部のせん断変形を解析へ反映する。パネルが設けられた節点はせん断変形角
-/// `γX`・`γY` の 2 自由度を追加で持ち、その節点へ取り付く部材はパネル寸法分の
-/// オフセット位置で接合する。
-///
-/// 対象を S 造に限るのは、S 造の接合部が剛域長 0（`squid_n_element::frame::beam` の
-/// 剛域自動算定は RC/SRC の直交材のみを探す）であり、パネルのせん断変形を
-/// 明示的に評価しても剛域と二重計上にならないため。RC・SRC の接合部は
-/// 従来どおり剛域で接合部の有限寸法を評価する。
-///
-/// CFT も対象外とする。充填コンクリートと通しダイアフラムが接合部のせん断挙動へ
-/// 関与し、鋼管のみの実効体積による弾性せん断パネルでは剛性を表せないため
-/// （`squid_n_core::panel_zone::PanelJoint::has_filled_column`）。
-///
-/// 検定（S 造パネルゾーンの断面検定）は本設定によらず常に実行し、**CFT も
-/// 検定の対象に含める**（モデル化と検定で対象範囲が異なる）。
+/// 接合部のせん断変形を解析へ反映する。
+/// 対象は S 造（CFT を除く）。検定は本設定によらず常に実行する。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PanelZoneMode {
     /// 仕口パネルをモデル化する（既定）。
     #[default]
     Model,
-    /// 仕口パネルをモデル化しない（接合部を剛節点として扱う従来のモデル化）。
+    /// 仕口パネルをモデル化しない。
     None,
 }
 
@@ -296,12 +283,10 @@ pub struct ElementData {
     pub local_axis: LocalAxis,
     pub end_cond: [EndCondition; 2],
     pub force_regime: ForceRegime,
-    /// 部材端の剛域。旧スキーマ（無し）は既定値（剛域長 0）で補完される。
+    /// 部材端の剛域。
     #[serde(default)]
     pub rigid_zone: RigidZone,
-    /// 塑性化領域長さ Lp [mm]（None = 塑性化域を考慮しない従来モデル）。
-    /// ファイバー要素では端部 Lp 区間に非線形断面を配置し中央を弾性とする
-    /// モデル化（材端剛塑性ばねと適合するファイバーモデル化）に用いる。
+    /// 塑性化領域長さ Lp [mm]（None = 塑性化域を考慮しない）。
     #[serde(default)]
     pub plastic_zone: Option<f64>,
     /// 節点バネ要素（`ElementKind::NodalSpring`）の局所軸バネ定数

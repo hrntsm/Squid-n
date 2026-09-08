@@ -152,7 +152,6 @@ pub fn structure_kind_of(
     }
     match category {
         Some(category) => material_structure_kind(category),
-        // 材料が解決できない場合は断面形状の系統で補い、形状もなければ RC とする。
         None => shape.map_or(StructureKind::Rc, shape_default_kind),
     }
 }

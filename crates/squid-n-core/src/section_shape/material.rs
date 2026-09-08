@@ -26,8 +26,7 @@ pub fn concrete_young_modulus_gamma(fc: f64, gamma_kn_m3: f64) -> f64 {
 /// κ = 3(1+ξ)/(5·(1−ξ³(1−η))²)·[η + ξ(1−η)·((15/8)(1−ξ²)² − ξ⁴·η)]
 ///
 /// ξ・η の定義は原典ページに明示がないため、
-/// ξ=壁板内法長さ/全長（側柱外面間）、η=壁厚/側柱幅 と仮定する
-/// （式の読み・記号定義とも dev_docs/specs/原典照合リスト.md に要照合として登録）。
+/// ξ=壁板内法長さ/全長（側柱外面間）、η=壁厚/側柱幅 と仮定する（要照合）。
 /// ξ=1（側柱なし＝矩形断面）で κ=1.2（=`KAPPA_RC`）に一致する。
 /// 退化（非有限・非正）時は矩形の 1.2 にフォールバックする。
 /// 平面 I 形断面（壁板＝ウェブ、両端の側柱＝フランジ）の**厳密な**せん断形状係数
@@ -40,14 +39,6 @@ pub fn concrete_young_modulus_gamma(fc: f64, gamma_kn_m3: f64) -> f64 {
 /// - `t`: 壁板厚（ウェブ幅）
 ///
 /// 一様矩形（`dc_each = 0` または `bc == t`）では厳密に 1.2（=`KAPPA_RC`）を返す。
-/// 側柱が大きくなるほど κ は増大し、極限では A/A_web に漸近する（せん断をウェブが
-/// ほぼ全負担する I 形断面の性質）。
-///
-/// 従来の閉形式 [`wall_shear_shape_factor`] は記号定義が原典で確認できず、
-/// η=1（＝側柱幅が壁厚に等しい＝一様矩形）でも ξ に依存して 0.6(1+ξ) を返すなど
-/// 内部整合性を満たさなかった（側柱が大きいほど κ が 1.2 から**減少**し、
-/// せん断断面積が総断面積を超える非物理な値を与えていた）。本関数はその代替。
-///
 /// 退化入力（非正・非有限）では 1.2 を返す。
 pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: f64) -> f64 {
     if !(d_total.is_finite() && dc_each.is_finite() && bc.is_finite() && t.is_finite())
@@ -58,10 +49,8 @@ pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: 
         return KAPPA_RC;
     }
     let c = d_total / 2.0;
-    // 側柱せいは全長の半分を超えない（超える指定はウェブ無しとみなす）。
     let dc = dc_each.clamp(0.0, c);
-    let a = c - dc; // ウェブの半せい
-                    // フランジ幅がウェブ幅以下なら実質一様矩形。
+    let a = c - dc;
     if dc <= 0.0 || bc <= t {
         return KAPPA_RC;
     }
@@ -72,23 +61,18 @@ pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: 
             t
         }
     };
-    // 断面積・断面二次モーメント（矩形 bc×D から、ウェブ部の (bc−t) を控除）。
     let area = 2.0 * dc * bc + 2.0 * a * t;
     let i = bc * d_total.powi(3) / 12.0 - (bc - t) * (2.0 * a).powi(3) / 12.0;
     if i <= 0.0 || area <= 0.0 {
         return KAPPA_RC;
     }
-    // Q(y): y より上の断面一次モーメント。
     let q_of = |y: f64| -> f64 {
         if y >= a {
-            // フランジ内
             bc * (c * c - y * y) / 2.0
         } else {
             bc * (c * c - a * a) / 2.0 + t * (a * a - y * y) / 2.0
         }
     };
-    // ∫_{-c}^{c} Q²/b dy を Simpson 則で数値積分する（フランジ/ウェブ境界 ±a で
-    // 幅が不連続なため、区間を分割して各々で積分する）。対称なので 0..c を 2 倍。
     let integrate = |lo: f64, hi: f64, n: usize| -> f64 {
         if hi <= lo {
             return 0.0;
@@ -98,7 +82,6 @@ pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: 
         let mut s = 0.0;
         for k in 0..=n {
             let y = lo + dx * k as f64;
-            // 境界の幅の曖昧さを避けるため、区間内部の幅で評価する。
             let yy = y.clamp(lo + dx * 1e-9, hi - dx * 1e-9);
             let v = q_of(y).powi(2) / width(yy);
             let w = if k == 0 || k == n {

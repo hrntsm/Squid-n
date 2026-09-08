@@ -149,9 +149,6 @@ pub fn crossing_beams(model: &Model) -> Vec<(ElemId, ElemId)> {
 fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
     let coords = |n: NodeId| model.nodes.get(n.index()).map(|x| [x.coord[0], x.coord[1]]);
 
-    // 総当たりは梁の本数の 2 乗になる（実測で 32,800 本・約 530ms）。準備計算と
-    // 解析前チェックの両方から毎回呼ばれるため、まず境界矩形が重なる組だけに絞る。
-    // X の下限で並べ、X 区間が離れた時点で内側の走査を打ち切る（走査線法）。
     struct Box {
         idx: usize,
         min: [f64; 2],
@@ -180,14 +177,14 @@ fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
     for (i, bi) in boxes.iter().enumerate() {
         for bj in boxes.iter().skip(i + 1) {
             if bj.min[0] > bi.max[0] {
-                break; // 以降は X 区間が離れる（下限の昇順に並んでいる）。
+                break;
             }
             if bj.min[1] > bi.max[1] || bi.min[1] > bj.max[1] {
-                continue; // Y 区間が離れている。
+                continue;
             }
             let (e1, e2) = (&edges[bi.idx], &edges[bj.idx]);
             if e1.a == e2.a || e1.a == e2.b || e1.b == e2.a || e1.b == e2.b {
-                continue; // 節点を共有する組は交差ではない。
+                continue;
             }
             let (Some(p1), Some(p2), Some(q1), Some(q2)) =
                 (coords(e1.a), coords(e1.b), coords(e2.a), coords(e2.b))
@@ -217,7 +214,6 @@ fn segments_touch(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64; 2]) -> boo
     if ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0)) {
         return true;
     }
-    // 端点が相手の線分上に載る（節点を共有しない T 字・重なり）。
     let on = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
         polygon::point_segment_dist(c, a, b) <= MEMBER_AXIS_TOL_MM
     };
@@ -238,7 +234,7 @@ fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
             continue;
         };
         if (na.coord[2] - nb.coord[2]).abs() > LEVEL_TOL_MM {
-            continue; // 段差部の梁・傾斜梁は水平面に属さない。
+            continue;
         }
         if vec3::dist(na.coord, nb.coord) < MIN_EDGE_LEN_MM {
             continue;
@@ -271,7 +267,6 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<RegionBound
     };
     let (faces, unclosed) = scan_faces(edges, proj);
 
-    // 外周面は符号付き面積が負になる。行き止まりの辺だけを往復した閉路は面積 0。
     let mut boundaries: Vec<RegionBoundary> = faces
         .into_iter()
         .filter(|f| f.signed_area > 0.0)

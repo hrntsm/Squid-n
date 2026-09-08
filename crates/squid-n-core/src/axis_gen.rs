@@ -43,7 +43,6 @@ const Y_GROUP: (&str, f64) = ("Y", 0.0);
 /// モデルは変更しない（呼び出し側が編集コマンド経由で適用する）。
 /// 生成規則はモジュールドキュメントを参照。
 pub fn generate_axes(model: &Model) -> Vec<AxisGroup> {
-    // 柱の材端節点（平面位置つき）。同じ位置に上下階の柱が積まれるため節点は重複し得る。
     let mut column_nodes: Vec<NodeId> = Vec::new();
     for e in &model.elements {
         if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() != 2 {
@@ -64,7 +63,6 @@ pub fn generate_axes(model: &Model) -> Vec<AxisGroup> {
     column_nodes.sort();
     column_nodes.dedup();
 
-    // 既存の自動生成分を捨てる（手動・取り込み由来は保持）。
     let mut groups: Vec<AxisGroup> = model.axes.clone();
     for g in &mut groups {
         g.axes.retain(|a| a.source == AxisSource::Manual);
@@ -109,7 +107,6 @@ fn unused_group_name(groups: &[AxisGroup], base: &str) -> String {
 
 /// 1 つのグループへ、柱位置から作った通りを追加する。
 fn add_generated_axes(group: &mut AxisGroup, model: &Model, column_nodes: &[NodeId]) {
-    // 柱の材端節点を、このグループの原点・方向角で測った離れへ写す。
     let mut by_distance: Vec<(f64, NodeId)> = column_nodes
         .iter()
         .filter_map(|&id| {
@@ -120,8 +117,6 @@ fn add_generated_axes(group: &mut AxisGroup, model: &Model, column_nodes: &[Node
         .collect();
     by_distance.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
-    // 離れの昇順にクラスタリングする（代表値はクラスタ先頭の離れ。
-    // 階生成の Z レベル判定と同じく、代表値との差で判定して連鎖的な流れを防ぐ）。
     let mut clusters: Vec<(f64, Vec<NodeId>)> = Vec::new();
     for (d, id) in by_distance {
         match clusters.last_mut() {
@@ -130,7 +125,6 @@ fn add_generated_axes(group: &mut AxisGroup, model: &Model, column_nodes: &[Node
         }
     }
 
-    // 既存の通り（Manual）と同じ位置は作らない（既存優先）。
     clusters.retain(|(d, _)| {
         !group
             .axes

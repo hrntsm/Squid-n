@@ -3,7 +3,7 @@
 //! 壁領域（[`WallRegion`]、[`super::wall`]）は柱・梁が囲む鉛直構面内の閉領域そのもので、
 //! 版の仕様は持たない。版の仕様（断面・開口）は本モジュールの `WallPlate` が持つ。
 //! 1 つの壁領域は、壁領域内が間柱でさらに細かい壁パネルに分かれていれば複数の
-//! `WallPlate` を持ちうる（[`WallRegion::wall_plate_ids`]。E5。床側の `FloorRegion`/
+//! `WallPlate` を持ちうる（[`WallRegion::wall_plate_ids`]。床側の `FloorRegion`/
 //! [`super::Slab`] と同じ関係）。パラペット・腰壁・垂れ壁・自立壁はどの壁領域からも
 //! 参照されない、独立した `WallPlate` として存在する。
 //!
@@ -11,9 +11,9 @@
 //!
 //! 壁が解析にどう参入するか（4 節点要素として剛性・保有水平耐力に算入する「構造壁」、
 //! n倍法で偏心率にのみ寄与する「雑壁剛性」、自重のみの「重量のみ」）は、`WallPlate`
-//! 自身に列挙型を持たせて利用者に選ばせるのではなく、既存の暗黙規則をそのまま踏襲する
-//! （dig Q4=B）。**`section` の有無と、所属する `WallRegion` の種別（囲まれた領域か
-//! 取り付き領域か）の組み合わせで、生成ロジック（Step 8・D5）側が決める。**
+//! 自身に列挙型を持たせて利用者に選ばせるのではなく、既存の暗黙規則をそのまま踏襲する。
+//! **`section` の有無と、所属する `WallRegion` の種別（囲まれた領域か
+//! 取り付き領域か）の組み合わせで、生成ロジック側が決める。**
 //!
 //! # 躯体の自重は必ず断面参照から求める
 //!
@@ -38,12 +38,12 @@ pub enum WallPlateShape {
     Enclosed { boundary: Vec<NodeId> },
     /// 主架構・床領域に取り付く領域（パラペット・腰壁・垂れ壁・自立壁）。
     ///
-    /// [`RegionAnchor::Line`] の場合、`extent` は D15 の「立ち上がり高さ」
+    /// [`RegionAnchor::Line`] の場合、`extent` は「立ち上がり高さ」
     /// `[d_i, d_j]`（区間の始端側・終端側の高さ [mm]）で、床側（跳ね出し長さ）とは
     /// 張り出す向きが異なる（床は取付き線の左向き法線方向、壁は鉛直上向き）。
     /// [`RegionAnchor::FloorRegion`] の場合も同じ意味（`extent` は高さ、`nodes` は
     /// 壁自体の平面上の始点・終点）。[`RegionAnchor::Point`] は壁の取付き先としては
-    /// 使わない（D14 の対応表に壁の用例がなく、出隅スラブ専用のため。
+    /// 使わない（出隅スラブ専用のため。
     /// [`WallPlate::boundary_coords`] はこの組み合わせで `None` を返す）。
     ///
     /// **`extent` が `None` のときは階高いっぱいの壁である**
@@ -155,21 +155,13 @@ impl WallPlate {
         matches!(self.shape, WallPlateShape::Attached { .. })
     }
 
-    /// 柱・梁で囲まれた壁版（`Enclosed`）の境界が、壁エレメント（壁柱＋剛梁変換に
-    /// よる4節点24自由度モデル。`docs/calc_basis/04_要素剛性/05_壁エレメントモデル.md`
-    /// 参照）を組み立てられる形か。境界がちょうど4節点のときだけ `true`。
+    /// 柱・梁で囲まれた壁版（`Enclosed`）の境界が、壁エレメントを組み立てられる形か。
+    /// 境界がちょうど4節点のときだけ `true`。
     ///
-    /// 5節点以上（T字取り付き等。他の梁・壁が境界の辺の途中に接続することで
-    /// 生じる）や3節点以下は要素を生成しない（Q6=C）。壁エレメントは下辺2節点・
+    /// 5節点以上や3節点以下は要素を生成しない。壁エレメントは下辺2節点・
     /// 上辺2節点を前提とした剛体変換の定式化であり、任意の多角形へ一般化する
-    /// ことは定式化そのものを崩すため行わない（実データによる検証ができないまま
-    /// 「按分」等で無理に4節点へ落とし込むと、根拠不明な近似を耐力評価へ持ち込む
-    /// ことになる。dev_docs/handoff/床領域・壁領域の再設計_申し送り.md §9 参照）。
+    /// ことは定式化そのものを崩すため行わない。
     /// 取り付く壁版（`Attached`）は境界を持たないため常に `false`。
-    ///
-    /// 解析要素生成（`squid_n_load::wall_expand`）・解析前診断
-    /// （`squid-n-solver::precheck`）・ST-Bridge 取り込み（`squid-n-io`）が
-    /// 判定を共有する（重複実装の統合）。
     pub fn has_quad_boundary(&self) -> bool {
         matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
     }
@@ -196,7 +188,6 @@ impl WallPlate {
             .collect::<Option<_>>()?;
         let mut order: Vec<usize> = (0..4).collect();
         order.sort_by(|&a, &b| z[a].total_cmp(&z[b]));
-        // 低い方の 2 点を取り、境界の並び順へ戻す。
         let mut bottom = [order[0], order[1]];
         bottom.sort_unstable();
         Some([boundary[bottom[0]], boundary[bottom[1]]])
@@ -250,7 +241,6 @@ impl WallPlate {
                         let b = coord_of(nodes[1])?;
                         Self::extrude_up(a, b, [0.0, 1.0], extent)
                     }
-                    // 壁の取付き先としては使わない（モジュール doc 参照）。
                     RegionAnchor::Point(_) => None,
                 }
             }
@@ -355,7 +345,7 @@ impl Model {
     /// （`squid_n_element`）が同じ答えを見る必要があるためである。
     pub fn wall_plate_covers_region(&self, plate: &WallPlate) -> bool {
         let Some(boundary) = plate.boundary_nodes() else {
-            return false; // 取り付く壁版は壁領域に属さない。
+            return false;
         };
         if boundary.len() != 4 {
             return false;
@@ -430,9 +420,6 @@ impl Model {
         let RegionAnchor::FloorRegion { nodes } = anchor else {
             return None;
         };
-        // 壁が載るレベルは下端線分の平均標高とする
-        // （[`Model::self_standing_wall_coverage`] と同じ規約。両端の標高が違う壁で
-        // 帰属レベルの求め方が 2 通りに割れないようにする）。
         let a = self.nodes.get(nodes[0].index())?.coord[2];
         let b = self.nodes.get(nodes[1].index())?.coord[2];
         let h = self.story_height_above((a + b) / 2.0)?;
@@ -485,9 +472,9 @@ impl Model {
     }
 
     /// 自立壁（[`RegionAnchor::FloorRegion`] の取り付く壁版）が、どの床領域の上に
-    /// どれだけ載っているかを求める（D17 の分配先の解決）。
+    /// どれだけ載っているかを求める。
     ///
-    /// 床領域は主架構から作り直される派生的な入力（D10）で `FloorRegionId` が
+    /// 床領域は主架構から作り直される派生的な入力で `FloorRegionId` が
     /// 面走査順に振り直されるため、**分配先は保存せず常にここで解決する**
     /// （[`RegionAnchor::FloorRegion`] のドキュメント参照）。
     ///
@@ -503,7 +490,7 @@ impl Model {
     /// 線形。符号が反転するときは高さ 0 で折れる）が全体に占める割合とする。
     /// 端点の絶対値を結んだ台形にすると、符号反転時に分母が過大になり重量比の
     /// 合計が 1 を下回る（危険側）。開口は総重量のスケールにだけ効き、開口位置は
-    /// 見ない（§5.25 の既知の近似と同じ）。
+    /// 見ない。
     ///
     /// # 戻り値
     ///
@@ -526,15 +513,10 @@ impl Model {
         let b = self.nodes.get(nodes[1].index())?.coord;
         let (p0, p1) = ([a[0], a[1]], [b[0], b[1]]);
         if (p1[0] - p0[0]).hypot(p1[1] - p0[1]) <= crate::geom::MEMBER_AXIS_TOL_MM {
-            // 長さのない壁は面積 0。分配するものが無い。
             return Some(SelfStandingWallCoverage::default());
         }
-        // 壁の載るレベルは下端線分の平均標高。床領域のレベル一致判定は
-        // `region_rebuild` と同じ `LEVEL_TOL_MM` を用いる。
         let z = (a[2] + b[2]) / 2.0;
 
-        // 荷重を流せる床領域だけを候補にする（床板を 1 枚も持たない床領域、
-        // および床板の XY 面積が 0 の床領域は、等価面荷重へならす先が無い）。
         let candidates: Vec<(FloorRegionId, Vec<[f64; 2]>)> = self
             .floor_regions
             .iter()
@@ -553,7 +535,6 @@ impl Model {
             })
             .collect();
 
-        // 区間の切れ目: 線分と全候補多角形の辺との交点パラメータ。
         let mut cuts: Vec<f64> = vec![0.0, 1.0];
         for (_, poly) in &candidates {
             for i in 0..poly.len() {
@@ -569,7 +550,6 @@ impl Model {
         cuts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
 
         let lerp = |t: f64| [p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t];
-        // 立ち上がり高さは始端から終端へ線形。重量比は ∫|h|（符号反転はゼロ交差で折る）。
         let (h0, h1) = (extent[0], extent[1]);
         if h0 * h1 < 0.0 && h0.abs() > 1e-15 && h1.abs() > 1e-15 {
             cuts.push((-h0 / (h1 - h0)).clamp(0.0, 1.0));
@@ -587,7 +567,6 @@ impl Model {
             let frac = if total_area > 0.0 {
                 crate::geom::abs_lerp_integral(h0, h1, t0, t1) / total_area
             } else {
-                // 高さ 0 の壁は重量 0。長さ比で持たせても総和は 0 のまま。
                 t1 - t0
             };
             let mid = lerp((t0 + t1) / 2.0);
@@ -614,9 +593,6 @@ impl Model {
             .filter_map(|&id| self.slab(id))
             .filter_map(|s| s.boundary_coords(self))
             .map(|pts| {
-                // 床の分配と同じ XY 投影面積（`squid-n-load` の `floor::polygon_area`
-                // と同じ規約）。3 次元面積で測ると、面荷重強度を掛ける側が XY 面積を
-                // 使うため総重量が縮み、傾斜床で危険側になる。
                 let xy: Vec<[f64; 2]> = pts.iter().map(|c| [c[0], c[1]]).collect();
                 crate::geom::polygon::area(&xy)
             })
@@ -655,7 +631,7 @@ fn segment_intersection_t(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]
     let s = [q1[0] - q0[0], q1[1] - q0[1]];
     let denom = r[0] * s[1] - r[1] * s[0];
     if denom.abs() <= f64::EPSILON {
-        return None; // 平行または縮退（重なりは区間の中点判定側で拾う）。
+        return None;
     }
     let qp = [q0[0] - p0[0], q0[1] - p0[1]];
     let t = (qp[0] * s[1] - qp[1] * s[0]) / denom;
