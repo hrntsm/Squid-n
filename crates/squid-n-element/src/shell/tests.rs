@@ -152,16 +152,9 @@ fn test_bending_b_constant_curvature() {
     let kap_y = 2e-5;
     let kap_xy = 0.5e-5;
 
-    // For constant curvature: θ_x = -kap_y * y, θ_y = kap_x * x + kap_xy * y,
-    // w = 0.5*(kap_x*x² + kap_xy*x*y - kap_xy*x*y? no, that's complex)
-    // Actually for bending: κ_x = dθ_y/dx, κ_y = -dθ_x/dy, κ_xy = dθ_y/dy - dθ_x/dx
-    // So set: θ_x = -kap_y * y,  θ_y = kap_x * x
-    // Then κ_x = kap_x, κ_y = kap_y, κ_xy = 0 + 0 = 0
-    // But κ_xy is missing. Let's use a more complete field:
-    // θ_x = -kap_y * y,  θ_y = kap_x * x + kap_xy * y
-    // κ_x = dθ_y/dx = kap_x  ✓
-    // κ_y = -dθ_x/dy = kap_y  ✓
-    // κ_xy = dθ_y/dy - dθ_x/dx = kap_xy - 0 = kap_xy  ✓
+    // 定曲率場の変位則: θ_x = -kap_y * y, θ_y = kap_x * x + kap_xy * y
+    // （κ_x = dθ_y/dx = kap_x、κ_y = -dθ_x/dy = kap_y、
+    //   κ_xy = dθ_y/dy - dθ_x/dx = kap_xy）。
 
     let coords = &shell.coords;
     let nodes_disp: Vec<f64> = (0..4)
@@ -558,11 +551,6 @@ fn test_mitc4_constant_shear_patch_skewed() {
     // MITC4 は任意形状で一定横せん断場を厳密に再現しなければならない。
     // w=0・θx=0・θy=a（一定）は γ_xz = ∂w/∂x + θy = a, γ_yz = ∂w/∂y − θx = 0 の
     // 一定せん断場に相当する。平行四辺形（ヤコビアン非対称）で検証する。
-    //
-    // 回帰: 共変→デカルト射影 γ = J⁻¹·e_cov を、従来は jit(=J⁻ᵀ) の行アクセスで
-    // (J⁻ᵀ)·e として適用していた（正: 列アクセス ＝ J⁻¹·e）。ヤコビアンが
-    // 非対称な歪んだ四辺形でのみ顕在化し（矩形では jit が対角のため一致）、
-    // 一定せん断パッチテストが破れていた。
     let coords = [
         [0.0, 0.0, 0.0],
         [100.0, 0.0, 0.0],

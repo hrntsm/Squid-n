@@ -479,7 +479,6 @@ impl WallElement {
 
     /// 耐震壁の面内せん断終局強度 Qu [N]（荒川mean式系）。
     /// 開口低減は耐力用 r2 = 1−max(r0, l0/lw, h0/h)（剛性用 r1 = 1−1.25·r0 とは別式）。
-    /// 主な仮定は要・原典照合。
     /// 算定できない場合（Fc 未設定など）は 0.0 を返す。
     fn shear_capacity(inp: &WallShearGeometry) -> f64 {
         let &WallShearGeometry {
