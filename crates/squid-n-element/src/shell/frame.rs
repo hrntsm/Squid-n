@@ -7,7 +7,6 @@
 
 use crate::behavior::LocalMat;
 
-/// Element-local orthonormal frame for a 4-node shell.
 #[derive(Clone, Copy)]
 pub struct ShellFrame {
     pub e1: [f64; 3],
@@ -19,10 +18,6 @@ impl ShellFrame {
     pub fn from_nodes(p: [[f64; 3]; 4]) -> Self {
         use squid_n_core::geom::vec3;
 
-        // 面法線は対角線の外積で採る（平面でない 4 節点でも中立的な向きになる）。
-        // 正規化の除算を `vec3::unit` へ寄せないのは、`unit` の縮退判定が mm 座標
-        // 前提の `ZERO_TOL`（1e-9）で、ここで測る対角線外積・辺ベクトルとは
-        // 判定値 1e-12 の意味が違うためである。
         let n = vec3::cross(vec3::sub(p[2], p[0]), vec3::sub(p[3], p[1]));
         let nl = vec3::norm(n);
         let n = if nl > 1e-12 {
@@ -92,8 +87,6 @@ impl ShellFrame {
                 }
             }
         }
-        // 標準規約: R=[e1 e2 n]（列＝ローカル基底）が local→global。
-        // K_global = R · K_local · Rᵀ。
         let mut tmp = vec![0.0; n * n];
         for i in 0..n {
             for j in 0..n {
@@ -117,7 +110,6 @@ impl ShellFrame {
         kg
     }
 
-    /// Rotate a 24-vector from local to global: v_g = R v_l（R=[e1 e2 n]列）。
     pub fn rotate_to_local_24(&self, v_global: &[f64; 24]) -> [f64; 24] {
         let rt = self.rot_6x6_transpose();
         let n = 24;

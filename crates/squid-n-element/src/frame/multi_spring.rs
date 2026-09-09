@@ -2,34 +2,20 @@ use crate::frame::fiber::FiberBeam;
 use squid_n_core::ids::MaterialId;
 use squid_n_core::model::Model;
 
-/// 軸ばね1本：断面内の位置と材料を保持（P5.5 §3）
+/// 軸ばね1本。
 pub struct AxialSpring {
     pub y: f64,
     pub z: f64,
     pub material: MaterialId,
 }
 
-/// MS（マルチスプリング）要素（P5.5 §3）
-///
-/// 部材端の塑性化領域（長さ Lp）の断面を少数の軸方向バネ群（2×5 = 10本の
-/// 2次元配置）で置換し、中央は弾性材で連結する。軸バネ群の合力が N、
-/// 図心まわりの偶力が M となるため、N-M 相関を自然に表現できる（P5.5 §6.2）。
-///
-/// 実体は塑性化域考慮ファイバー要素（`FiberBeam::build_plastic_zone`）と
-/// 同一の定式化で、端部断面の分割数だけが粗い（バネ=粗いファイバ）。
-/// これにより trial/commit/rollback・チェックポイントも FiberBeam と
-/// 同じ機構に乗る（P5 §6）。
-///
-/// 注: 旧実装の1次元バネ配置（y 軸上 10 本）は一軸曲げ専用だったため、
-/// 2次元配置（2列×5段）へ一般化した。
+/// MS（マルチスプリング）梁要素。
 pub struct MultiSpringElement {
-    /// 軸バネ配置（両端共通。断面内座標と負担面積は `inner` の端部断面が保持）
+    /// 軸バネ配置（両端共通）。
     pub springs: Vec<AxialSpring>,
-    /// 実体: 端部バネ断面 + 中央弾性 + せん断バネ
     pub inner: FiberBeam,
 }
 
-/// MS 要素の端部バネ断面の分割数（幅方向 × せい方向 = 10 本）
 const MS_NW: usize = 2;
 const MS_ND: usize = 5;
 
@@ -40,13 +26,10 @@ impl MultiSpringElement {
         basis: crate::factory::StrengthBasis,
         kind: squid_n_core::model::AnalysisKind,
     ) -> Self {
-        // 塑性化領域長さ: 入力があればそれを、なければ断面せいの 0.5 倍
-        // （ファイバー要素と共通の既定。[`crate::factory::plastic_zone_length`]）
         let lp = crate::factory::plastic_zone_length(data, model);
 
         let inner = FiberBeam::build_plastic_zone(data, model, lp, MS_NW, MS_ND, basis, kind);
 
-        // 互換用のバネ配置情報（端部断面のファイバ位置と同一）
         let springs = inner
             .gauss_points
             .first()
@@ -78,7 +61,6 @@ crate::behavior::forward_element_behavior!(MultiSpringElement, inner, {
     update_state: forward,
     mass_matrix: forward,
     recover_forces: forward,
-    // 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
     state_member_forces: forward,
     geometric_stiffness: forward,
     snapshot_state: forward,
@@ -177,13 +159,7 @@ mod tests {
         }
     }
 
-    /// ヒンジ詳細ウィンドウのファイバー断面の塑性化マップは、
-    /// `fiber_section_states` が返す状態から描く（`pushover::driver` が全要素から
-    /// 収集する）。MS 要素の実体は `FiberBeam` なので、`Fiber` 要素と同じように
-    /// 状態を返さなければならない。
-    ///
-    /// 手書きの委譲実装はこのメソッドを流し忘れており、内側が状態を持っているのに
-    /// トレイト既定の `None` が返って、MS 要素でだけ塑性化マップが空になっていた。
+    /// MS 要素も `fiber_section_states` でファイバー断面の状態を返すこと。
     #[test]
     fn fiber_section_states_are_delegated_to_inner_fiber_beam() {
         let model = make_model(Some(295.0), None);
@@ -218,7 +194,6 @@ mod tests {
             AnalysisKind::Incremental,
         );
         assert_eq!(elem.springs.len(), 10);
-        // 2次元配置: y も z も複数の異なる座標を持つ（一軸曲げ専用でない）
         let mut ys: Vec<i64> = elem.springs.iter().map(|s| s.y as i64).collect();
         let mut zs: Vec<i64> = elem.springs.iter().map(|s| s.z as i64).collect();
         ys.sort();
@@ -236,7 +211,6 @@ mod tests {
     #[test]
     fn test_ms_phi_positive_objectivity_and_tangent_consistency() {
         let mut model = make_model(Some(295.0), None);
-        // shear: Some(0.0) → None にして G = E/(2(1+ν)) > 0（φ>0）にする
         model.materials[0].shear = None;
         let ctx = Ctx { model: &model };
         let build = || {
@@ -248,10 +222,8 @@ mod tests {
             )
         };
 
-        // φ>0 になっていること（前提の自己検証）
         assert!(build().inner.phi_y > 0.0 && build().inner.phi_z > 0.0);
 
-        // 剛体回転の客観性
         let theta = 1.0e-4;
         let l = 3000.0;
         let mut ms = build();
@@ -277,7 +249,6 @@ mod tests {
             assert!(v.abs() < 1.0, "MS+φ>0 で客観性違反: dof {i} = {v}");
         }
 
-        // FD 整合（弾性域の代表変形状態）
         let h = 1e-6;
         let u0: [f64; 12] = [
             0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
@@ -318,17 +289,13 @@ mod tests {
 
     #[test]
     fn test_ms_axial_force_reduces_moment_capacity() {
-        // N-M 相関: 軸圧縮を与えた状態では端部モーメントの頭打ちが下がる
         let model = make_model(Some(295.0), None);
         let ctx = Ctx { model: &model };
 
-        // i端の端部断面で最外縁ひずみ ≈ 10εy となる回転角
-        // （κ(ξ=-1) = (4/L)·θ、εmax = κ·d/2）
         let eps_y = 295.0 / 205000.0;
         let kappa = 20.0 * eps_y / 500.0;
         let theta = kappa * 3000.0 / 4.0;
 
-        // ケース1: 純曲げ
         let mut elem1 = MultiSpringElement::new(
             &model.elements[0],
             &model,
@@ -342,11 +309,6 @@ mod tests {
         let f1 = elem1.internal_force(&ctx);
         let m1 = f1.data[4].abs();
 
-        // ケース2: 同じ回転 + 軸ひずみ −15εy。塑性増分ヒンジモデルでは端部断面の
-        // 平衡曲率が旧 B 行列運動学より深く（外縁ひずみ ≈ 27εy）まで進むため、
-        // 中立軸シフト比 n ≈ 15/27 ≈ 0.55（N/Npl 相当）となる軸ひずみを与える。
-        // 軸バネと曲げが非連成のモデルなら軸変位は DOF4 のモーメントに一切影響しない
-        // ため、m2 < m1 が N-M 連成の直接の証拠になる。
         let mut elem2 = MultiSpringElement::new(
             &model.elements[0],
             &model,
@@ -363,8 +325,6 @@ mod tests {
         let f2 = elem2.internal_force(&ctx);
         let m2 = f2.data[4].abs();
 
-        // バネ群の全塑性モーメント Mp ≈ Σa·|z|·fy = 2列×25000mm²×(200+100+0+100+200)×295
-        // ≈ 8.85e9 N·mm。N/Npl=0.5 相当の低減(≈25%)の一部が現れれば連成は機能している。
         assert!(
             m1 - m2 > 1.0e9,
             "高軸圧縮下で曲げ耐力が低下するはず: m1={m1}, m2={m2}"
@@ -382,16 +342,12 @@ mod tests {
             AnalysisKind::Incremental,
         );
 
-        // 降伏させてコミット
         let du = LocalVec {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         elem.update_state(&du, true, &ctx);
         let f_committed = elem.internal_force(&ctx);
 
-        // さらに trial を進めてから revert → コミット状態の内力へ戻る
-        // （revert 後の応力キャッシュはソルバ契約どおり次の update_state で更新される
-        //   ため、ゼロ増分を与えて再評価してから比較する）
         let du2 = LocalVec {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
@@ -435,7 +391,6 @@ mod tests {
             AnalysisKind::Incremental,
         );
         elem2.deserialize_checkpoint(&cp).unwrap();
-        // 復元後、同じ増分に対する応答が一致する
         let du2 = LocalVec {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };

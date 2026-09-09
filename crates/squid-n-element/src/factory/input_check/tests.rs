@@ -58,7 +58,6 @@ fn steel_grade_material(grade: &str) -> Material {
 
 fn rc_section() -> Section {
     let mut sec = rc_section_shape();
-    // 材料は断面が持つ。主筋・せん断補強筋は `MaterialId(1)`。
     sec.rebar_material = Some(MaterialId(1));
     sec.shear_rebar_material = Some(MaterialId(1));
     sec
@@ -282,7 +281,7 @@ fn test_no_issue_for_steel_shape_with_fy() {
 fn test_issue_when_steel_shape_has_no_fy() {
     let mut mat = steel_material();
     mat.fy = None;
-    mat.fc = Some(24.0); // fc があっても鋼材形状は fy が必須
+    mat.fc = Some(24.0);
     let model = beam_model(steel_h_section(), mat);
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);

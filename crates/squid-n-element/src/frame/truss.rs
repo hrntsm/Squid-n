@@ -6,30 +6,22 @@ use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementData, Model};
 
-/// 一般ブレース要素（材料力学。トラス要素の軸剛性 KB = E·A/L）。
-///
-/// 剛性 KB = E·A/L（L: 芯々間の長さ、A: 降伏部の断面積）。
-/// 軸剛性のみを持ち、曲げ・せん断・ねじりはゼロ（トラス要素）。
-///
-/// 引張専用ブレースは要素側では特別扱いせず、線形応力解析の active-set 反復
-/// （`squid-n-solver` の `solve_tension_only_iterative`）で圧縮側ブレースを
-/// 無効化することによって扱う。
+/// 一般ブレース要素。軸剛性のみを持ち、曲げ・せん断・ねじりはゼロ。
 #[derive(Clone)]
 pub struct TrussElement {
     pub id: ElemId,
     pub e: f64,
     /// 軸剛性用断面積（降伏部の断面積）。
     pub a: f64,
-    /// 質量算定用の断面積（既定は `a` と同じ。将来 SRC 等価換算が必要になれば分離）。
+    /// 質量算定用の断面積。
     pub a_mass: f64,
     pub length: f64,
     pub density: f64,
     pub nodes: [NodeId; 2],
     pub axis: LocalFrame,
-    /// 確定変位（グローバル座標系）。commit_state で trial_disp から確定される。
+    /// 確定変位（グローバル座標系）。
     pub committed_disp: [f64; 12],
-    /// トライアル変位（グローバル座標系）。Newton 反復中も蓄積され、
-    /// internal_force はこちらを参照する（beam/behavior.rs と同じ規約）。
+    /// トライアル変位（グローバル座標系）。
     pub trial_disp: [f64; 12],
 }
 
@@ -58,7 +50,6 @@ impl TrussElement {
     }
 
     /// 局所座標系での 12×12 剛性行列。軸方向（ux, ux_j）成分のみ非ゼロ。
-    /// k = E·A/L（材料力学。トラス要素の軸剛性 KB = E·A/L）。
     pub fn local_stiffness(&self) -> LocalMat {
         let mut k = LocalMat::zeros(12);
         if self.length < 1e-12 {
@@ -83,9 +74,6 @@ impl ElementBehavior for TrussElement {
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
-        // ElementBehavior::tangent_stiffness は全体系を返す契約（beam.rs 参照）。
-        // 部材軸方向ベクトル t による K = k·(t·tᵀ) 展開は、ローカル軸剛性を
-        // 回転行列で全体系へ回すことと等価（t = axis.rot[0]）。
         self.axis.to_global(&self.local_stiffness())
     }
 
@@ -96,15 +84,12 @@ impl ElementBehavior for TrussElement {
         let mut mm = LocalMat::zeros(12);
         match opt {
             MassOption::Lumped => {
-                // 並進 3 成分が等しい対角行列は回転不変のため全体系変換は不要。
                 for d in [0, 1, 2, 6, 7, 8] {
                     mm.set(d, d, m / 2.0);
                 }
                 mm
             }
             MassOption::Consistent => {
-                // 軸方向のみ整合質量（m/6·[2,1;1,2]）。並進の他成分（uy, uz）は
-                // Lumped と同等（節点集中）で足りる（beam.rs のブロック分割方針を踏襲）。
                 let c1 = m / 6.0;
                 mm.set(0, 0, 2.0 * c1);
                 mm.set(0, 6, 1.0 * c1);
@@ -113,8 +98,6 @@ impl ElementBehavior for TrussElement {
                 for d in [1, 2, 7, 8] {
                     mm.set(d, d, m / 2.0);
                 }
-                // 軸方向と直交方向で係数が異なり回転不変ではないため、
-                // 剛性行列と同様に要素局所系から全体系へ回す。
                 self.axis.to_global(&mm)
             }
         }
@@ -124,7 +107,6 @@ impl ElementBehavior for TrussElement {
         let f_local = self
             .axis
             .local_end_forces(&self.local_stiffness(), u_elem)?;
-        // 軸力 N（引張正）のみ。他要素の慣習（beam.rs）に合わせ i 端側は -f_local[0]。
         let n = -f_local[0];
         Some(crate::frame::beam::MemberForces {
             at: vec![
@@ -134,8 +116,6 @@ impl ElementBehavior for TrussElement {
         })
     }
 
-    /// トラス（ブレース）は非線形解析でも弾性軸材のため、蓄積した trial 変位から
-    /// 復元する（`recover_forces` と同じ結果）。
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         self.recover_forces(&self.trial_disp)
     }
@@ -250,7 +230,6 @@ mod tests {
         let t = [3000.0 / l, 0.0, 4000.0 / l];
         let k = truss.e * truss.a / l;
 
-        // ii ブロック（0..3, 0..3）= k·t·tᵀ
         for i in 0..3 {
             for j in 0..3 {
                 let expected = k * t[i] * t[j];
@@ -260,13 +239,10 @@ mod tests {
                     k_global.get(i, j),
                     expected
                 );
-                // jj ブロック（6..9, 6..9）も同じ
                 assert!((k_global.get(i + 6, j + 6) - expected).abs() < 1e-6);
-                // ij ブロック（0..3, 6..9）は符号反転
                 assert!((k_global.get(i, j + 6) + expected).abs() < 1e-6);
             }
         }
-        // 回転・せん断自由度はゼロ
         for i in 3..6 {
             for j in 0..12 {
                 assert_eq!(k_global.get(i, j), 0.0);
@@ -296,7 +272,6 @@ mod tests {
     fn test_rigid_body_translation_gives_zero_force() {
         let (model, data) = make_model([0.0, 0.0, 0.0], [3000.0, 4000.0, 0.0]);
         let mut truss = TrussElement::new(&data, &model);
-        // 両端に同一の並進変位を与える（剛体移動）
         let du = LocalVec {
             data: SmallVec::from_vec(vec![
                 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0,

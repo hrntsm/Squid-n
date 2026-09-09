@@ -1,8 +1,4 @@
-//! モデルデータからの [`BeamElement`] 構築（断面性能の組み立て）。
-//!
-//! 危険断面リスト算定、SRC/CFT 等価換算、スラブ協力幅・合成梁・壁エレメント上下
-//! 大梁の剛性倍率適用（[`super::stiffness_factors`]）、フレーム内雑壁の断面性能算入
-//! を行う。
+//! モデルデータからの [`BeamElement`] 構築。
 
 use super::element::BeamElement;
 use super::stiffness_factors::{breakdown_with, composite_props_with};
@@ -10,16 +6,13 @@ use crate::frame::section_lookup::{get_material, get_section, sec_material};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::Model;
 
-/// 危険断面位置（§6.2.3）を正規化座標 \[0,1\] で算定する。
+/// 危険断面位置を正規化座標 \[0,1\] で算定する。
 ///
 /// 節点芯 0.0/1.0・部材中央 0.5 に加え、柱フェース位置
 /// （`rigid_zone.face_i` / `face_j` を部材長で正規化。xi_i は \[0,0.5)、
-/// xi_j は (0.5,1\] へクランプ）を含める。face=0（直交材がない端）では
+/// xi_j は (0.5,1\] へクランプ）を含める。face=0 の端では
 /// 節点芯と一致するため \[0.0, 0.5, 1.0\] になる。
-/// 部材付帯情報（ハンチ端・継手位置。剛性には影響しない）があれば
-/// その追加検定位置も含める（§6.2.3「位置はユーザが追加・変更可能」）。
-///
-/// 弾性梁とファイバー梁（非線形）で内力の評価断面を揃えるため共有する。
+/// 部材付帯情報（ハンチ端・継手位置）があればその追加検定位置も含める。
 pub(crate) fn eval_sections_of(
     data: &squid_n_core::model::ElementData,
     model: &Model,
@@ -28,9 +21,6 @@ pub(crate) fn eval_sections_of(
     if length <= 1e-12 {
         return vec![0.0, 0.5, 1.0];
     }
-    // 危険断面位置は要素組立のたびに全部材ぶん引かれるため、ここではキャッシュを
-    // 読む（未算定の端は節点芯に落ちる）。キャッシュは解析前に
-    // `apply_auto_rigid_zones` が埋める。
     let xi_i = (data.rigid_zone.face_i_or_zero() / length).clamp(0.0, 0.5 - 1e-9);
     let xi_j = (1.0 - data.rigid_zone.face_j_or_zero() / length).clamp(0.5 + 1e-9, 1.0);
     let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
@@ -54,7 +44,6 @@ impl BeamElement {
         let mat = get_material(model, sec_material(model, data));
         let g = mat.shear_modulus();
 
-        // 危険断面位置（§6.2.3、既定は柱フェース＋節点芯＋中央）。
         let eval_sections = eval_sections_of(data, model, len);
 
         let as_y = if sec.as_y != 0.0 {
@@ -68,19 +57,12 @@ impl BeamElement {
             squid_n_core::model::rect_shear_area(sec.area)
         };
 
-        // SRC/CFT の複合換算断面性能（SRC規準の考え方・ヤング係数比による等価換算）。
-        // 要素材料からヤング係数比を算定して剛性用の断面性能を上書きする。
-        // - SRC: 材料=コンクリート（fc あり）のとき ns=Es/Ec で累加。
-        // - CFT: 材料=鋼管の young と充填コンクリート強度 fc から 1/n 換算で累加。
-        // 算定不能（fc 無し・Ec≤0 等）なら to_section の既定値
-        // （SRC: N_S_EQ 固定、CFT: 鋼管のみ）のまま。質量用 a_mass は常に幾何断面。
         use squid_n_core::section_shape::SectionShape;
         let composite = sec
             .shape
             .as_ref()
             .and_then(|shape| composite_props_with(shape, &mat));
 
-        // SRC で材料から算定できない場合も、軸剛性だけは既定 N_S_EQ の累加を維持する。
         let a_stiff = match (&composite, &sec.shape) {
             (Some(p), _) => p.area_ax,
             (None, Some(shape @ SectionShape::SrcRect { .. })) => shape.calc_axial_stiffness_area(),
@@ -91,28 +73,8 @@ impl BeamElement {
             None => (sec.iy, sec.iz, sec.j, as_y, as_z),
         };
 
-        // 断面レイヤ→要素座標系のクロス変換。
-        // 断面レイヤの規約（P1 §2.3・builder.rs）は「iy=強軸（せい方向 D³ 系）、
-        // as_z=強軸曲げ用せん断面積（ウェブ）」だが、要素座標系はせい方向＝ローカル y
-        // のため、強軸曲げは z 軸まわり（Mz 面、たわみ y 方向、(uy,rz) ブロック）に
-        // 対応する（stiffness.rs は iz・as_y をこのブロックに用いる）。
-        //   要素 iz（Mz 面）  ← 断面 iy（強軸）    要素 as_y（yせん断）← 断面 as_z（ウェブ）
-        //   要素 iy（My 面）  ← 断面 iz（弱軸）    要素 as_z（zせん断）← 断面 as_y（フランジ）
-        // このクロスを行わないと、梁の鉛直曲げが弱軸剛性・水平曲げが強軸剛性で
-        // 解かれてしまう（軸名の取り違え）。
         let (iy, iz, as_y, as_z) = (sec_iz, sec_iy, sec_as_z, sec_as_y);
 
-        // 断面性能の割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）。
-        // 準備計算の確認表示（`stiffness_breakdown`）と同じ算定を通す。
-        //
-        // - スラブ協力幅／合成梁: RC 矩形梁は T 形断面の Ie/I0、H 形鋼梁は合成梁の
-        //   平均剛性 (I+sI)/(2·sI)。囲まれ＋版ありのみ。t は領域板厚（控えが
-        //   `Model::slab_thickness`、既定 0）。t≤0・版なし・取り付きは 1.0。
-        //   強軸（鉛直曲げ）＝要素座標系では iz（Mz 面）へ乗じる。
-        // - 壁エレメント上下大梁: 対象は水平材（協力幅判定と同様、勾配 5% までは
-        //   水平とみなす）かつ両端節点が四隅を持つ Wall 要素の節点集合に含まれる場合。
-        //   剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
-        //   幾何断面のまま変更しない。
         let lp = ((p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2)).sqrt();
         let is_horizontal = lp > 1e-9 && (p1[2] - p0[2]).abs() <= 0.05 * lp;
         let factors = breakdown_with(model, data, &sec, mat.young, is_horizontal);
@@ -126,14 +88,6 @@ impl BeamElement {
         let mut as_y = as_y * wall_girder_factor;
         let mut as_z = as_z * wall_girder_factor;
 
-        // フレーム内雑壁（耐震壁不成立）の周辺部材への断面性能算入
-        // （フレーム内雑壁のモデル化）。柱（鉛直材）には袖壁を、
-        // 梁（水平材）には腰壁/垂壁を、平行軸の定理で剛性用断面性能へ合成する。
-        // 対象は不成立壁のみ（成立壁は上下大梁100倍で別途考慮済み・排他）。
-        // 合成は「腰壁・垂壁のヤング係数は母材と同じと仮定」の規定に基づく
-        // 同材累加であり、コンクリート系（RC/SRC、`mat.fc` あり）の部材のみ対象。
-        // S 造部材へ無換算（ヤング係数比なし）で壁断面を合成すると壁寄与を
-        // 1 桁近く過大評価するため適用しない。
         let is_concrete_member = mat.fc.is_some();
         let misc_walls = if is_concrete_member {
             crate::wall::misc_wall::collect_misc_walls(model)
@@ -141,16 +95,11 @@ impl BeamElement {
             Vec::new()
         };
         if !misc_walls.is_empty() {
-            // 全クレート共通の 45° 余弦基準（|ez| > 0.707）で柱系/梁系を分ける。
             let is_vertical_member = squid_n_core::geom::is_vertical_axis(p0, p1);
 
-            // 自部材の両端節点集合が節点対 b と一致するか（順序不問）
             let same_pair = |a: [NodeId; 2], b: (NodeId, NodeId)| -> bool {
                 (a[0] == b.0 && a[1] == b.1) || (a[0] == b.1 && a[1] == b.0)
             };
-            // 平行軸の定理による合成: contrib = (合成断面積 Aw, 部材中心からの
-            // 符号付き距離 e, 合成断面の自身回りの断面2次モーメント)。
-            // 図心 g = Σ(Aw·e)/(Ac+ΣAw) を求めた上で I を再合成する。
             let compose = |i0: f64, ac: f64, contrib: &[(f64, f64, f64)]| -> f64 {
                 let sum_aw: f64 = contrib.iter().map(|c| c.0).sum();
                 if sum_aw <= 0.0 {
@@ -166,17 +115,13 @@ impl BeamElement {
             };
 
             if is_vertical_member {
-                // 柱（鉛直材）: 袖壁の算入。面内せいは近似として断面の大きい方の
-                // 辺（sec.depth.max(sec.width)）を用いる。
                 let d_col = sec.depth.max(sec.width);
                 let ac = a_stiff;
-                let mut contrib_y: Vec<(f64, f64, f64)> = Vec::new(); // iz・as_y を増強
-                let mut contrib_z: Vec<(f64, f64, f64)> = Vec::new(); // iy・as_z を増強
+                let mut contrib_y: Vec<(f64, f64, f64)> = Vec::new();
+                let mut contrib_z: Vec<(f64, f64, f64)> = Vec::new();
                 let mut a_add = 0.0;
 
                 for wall in &misc_walls {
-                    // 上下いずれかの辺に主架構が無い壁（梁に載る腰壁・梁から垂れる
-                    // 垂壁）は鉛直辺が柱と一致しえないため、袖壁としては効かない。
                     let (Some(bottom), Some(top)) = (wall.bottom_pair, wall.top_pair) else {
                         continue;
                     };
@@ -189,11 +134,7 @@ impl BeamElement {
                         if lww <= 0.0 {
                             continue;
                         }
-                        // 壁下辺方向の水平単位ベクトルと柱の局所 ey・ez との内積で
-                        // 面内たわみ方向（iz↔as_y か iy↔as_z か）を判定する。
                         let e_wall = wall.bottom_dir;
-                        // 符号付き内積。面内たわみ方向の選択には絶対値を、袖壁の
-                        // 偏心 e の符号には**符号付きの射影**を用いる。
                         let dot_ey_signed = axis.rot[1][0] * e_wall[0]
                             + axis.rot[1][1] * e_wall[1]
                             + axis.rot[1][2] * e_wall[2];
@@ -204,14 +145,6 @@ impl BeamElement {
                         let dot_ez = dot_ez_signed.abs();
 
                         let aw = wall.t * lww;
-                        // 袖壁は柱節点（`bottom_pair[s]`）から壁のもう一方の節点へ
-                        // 向かって伸びる。s=0 なら +e_wall、s=1 なら −e_wall 方向。
-                        // 偏心 e は、その向きを柱の局所曲げ軸へ射影して**符号付き**で
-                        // 与える。従来は `s` だけで符号を決め、`e_wall` の向き
-                        // （＝壁の節点入力順で反転しうる）を `.abs()` で捨てていたため、
-                        // 柱の両側に壁があり 2 枚の向きが逆の場合に**左右の袖壁が柱の
-                        // 同じ側に載る**評価となり、図心・合成断面二次モーメントを
-                        // 誤っていた（同じモデルでも節点入力順で剛性が変わる非決定性）。
                         let sign_s = if s == 0 { 1.0 } else { -1.0 };
                         let arm = d_col / 2.0 + lww / 2.0;
                         let self_i = wall.t * lww.powi(3) / 12.0;
@@ -234,8 +167,6 @@ impl BeamElement {
                 }
                 a_stiff += a_add;
             } else if is_horizontal {
-                // 梁（水平材）: 腰壁（下辺の梁に載る壁）・垂壁（上辺の梁から垂れる壁）の
-                // 算入。鉛直曲げ（要素座標系では iz・as_y＝Mz 面）へ合成する。
                 let d_beam = sec.depth;
                 let ac = a_stiff;
                 let mut contrib: Vec<(f64, f64, f64)> = Vec::new();
@@ -245,7 +176,6 @@ impl BeamElement {
                     let on = |pair: Option<[NodeId; 2]>| -> bool {
                         pair.is_some_and(|p| same_pair([n0, n1], (p[0], p[1])))
                     };
-                    // 下辺の梁なら壁は上に載る（腰壁）、上辺の梁なら壁は下に垂れる（垂壁）。
                     let (matched, hw_raw, sign) = if on(wall.bottom_pair) {
                         (true, wall.strip_height(false), 1.0)
                     } else if on(wall.top_pair) {
@@ -292,8 +222,6 @@ impl BeamElement {
             axis,
             rigid: data.rigid_zone,
             end_cond: data.end_cond,
-            // 梁のねじり剛性は設計上期待しない（日本の一貫計算の通例）。既定で
-            // i 端のねじれを解放する（判定・例外は `beam::torsion` 参照）。
             torsion_release: [super::torsion::i_end_torsion_release(data, model), false],
             eval_sections,
             section: data.section,

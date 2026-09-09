@@ -1,24 +1,15 @@
 //! 剛域（材端の剛体アーム）の運動学変換。
 //!
-//! 部材端の剛域を扱うため、可撓長 \\( L' = L - \lambda_i - \lambda_j \\) で組んだ
-//! 12×12 の剛性・内力を、可撓端自由度から節点自由度へ剛体アームで写す。
+//! 可撓長で組んだ 12×12 の剛性・内力を、可撓端自由度から節点自由度へ写す。
 //!
 //! ```text
 //! u_flex = Tr · u_node,   K_node = Trᵀ · K_flex · Tr,   f_node = Trᵀ · f_flex
 //! ```
 //!
-//! `Tr` は単位行列に、剛体アームによる並進-回転結合の非零成分を加えたものである。
-//! 可撓端は i 端で節点から材軸内側へ +λi·ex、j 端で −λj·ex にあるため、
-//! 運動学 `u_flex = u_node + θ_node × r`（r_i = (+λi,0,0), r_j = (−λj,0,0)）を
-//! 成分展開すると次になる（回転・軸方向自由度は不変）。
-//!
 //! ```text
 //! i 端: uy' = uy + λi·rz,  uz' = uz − λi·ry
 //! j 端: uy' = uy − λj·rz,  uz' = uz + λj·ry
 //! ```
-//!
-//! 弾性梁（[`crate::frame::beam`]）とファイバー梁（[`crate::frame::fiber`]）が同じ剛域の扱いを
-//! 共有するため、変換をここへ一元化する。
 
 use crate::behavior::LocalMat;
 
@@ -62,7 +53,6 @@ pub fn transform_stiffness(k_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
             data: k_flex.data.clone(),
         };
     }
-    // Tr（単位行列＋剛体アームの並進-回転結合項）。
     let mut tr = LocalMat::zeros(12);
     for i in 0..12 {
         tr.set(i, i, 1.0);
@@ -72,7 +62,6 @@ pub fn transform_stiffness(k_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
     tr.set(7, 11, -lj);
     tr.set(8, 10, lj);
 
-    // K_node = Trᵀ · K_flex · Tr
     let mut tmp = LocalMat::zeros(12);
     for i in 0..12 {
         for j in 0..12 {
@@ -96,13 +85,7 @@ pub fn transform_stiffness(k_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
     kn
 }
 
-/// 節点自由度の材端力を可撓端（剛域フェイス）の材端力へ戻す
-/// （[`to_node_force`] の逆写像 `f_flex = (Trᵀ)⁻¹ f_node`）。
-///
-/// 並進成分は剛体アームで変わらない。回転成分からは剛体アームのモーメント
-/// （アーム長 × 材端せん断）を差し引くため、**剛域フェイスでの材端モーメント**が
-/// 得られる。断面の降伏判定・設計用応力は危険断面＝剛域フェイスで評価するため、
-/// 節点位置のモーメント（アーム分だけ大きい）ではなくこちらを用いる。
+/// 節点自由度の材端力を可撓端（剛域フェイス）の材端力へ戻す。
 pub fn to_flex_force(f_node: &[f64; 12], li: f64, lj: f64) -> [f64; 12] {
     let mut f = *f_node;
     if is_identity(li, lj) {
@@ -117,9 +100,8 @@ pub fn to_flex_force(f_node: &[f64; 12], li: f64, lj: f64) -> [f64; 12] {
 
 /// 剛域長 `li`・`lj` を可撓長が正になる範囲へ解決する。
 ///
-/// 剛域長の合計が節点間長 `length` 以上になる病的な入力（自動算定が想定しない
-/// 極端に短い部材など）では、可撓長がゼロ以下となり要素が構成できない。その場合は
-/// 剛域なし `(0, 0)` として扱い、要素が退化しないようにする。負値は 0 に丸める。
+/// 剛域長の合計が節点間長 `length` 以上になる場合は剛域なし `(0, 0)` として扱う。
+/// 負値は 0 に丸める。
 pub fn resolve_lengths(li: f64, lj: f64, length: f64) -> (f64, f64) {
     let (li, lj) = (li.max(0.0), lj.max(0.0));
     if length > 0.0 && length - li - lj > 1e-9 * length {
@@ -147,17 +129,13 @@ mod tests {
     fn 剛体回転で可撓端は剛体的に動く() {
         let (li, lj, l) = (300.0, 200.0, 3000.0);
         let theta = 1.0e-4;
-        // 節点 i を原点として θz 回転: uy_i=0, rz_i=θ, uy_j=l·θ, rz_j=θ
         let mut u = [0.0_f64; 12];
         u[5] = theta;
         u[7] = l * theta;
         u[11] = theta;
         let uf = to_flex_disp(&u, li, lj);
-        // 可撓端 i は x=λi にあるので uy = λi·θ
         assert!((uf[1] - li * theta).abs() < 1e-12);
-        // 可撓端 j は x=L−λj にあるので uy = (L−λj)·θ
         assert!((uf[7] - (l - lj) * theta).abs() < 1e-12);
-        // 可撓長ぶんの相対たわみは生じない（剛体回転）
         let chord = (uf[7] - uf[1]) / (l - li - lj);
         assert!((chord - theta).abs() < 1e-12);
     }
@@ -178,7 +156,6 @@ mod tests {
     #[test]
     fn 剛性変換は対称性を保つ() {
         let (li, lj) = (300.0, 200.0);
-        // 対称な適当行列
         let mut k = LocalMat::zeros(12);
         for i in 0..12 {
             for j in 0..12 {

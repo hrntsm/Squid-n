@@ -25,8 +25,6 @@ fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
         g: 78846.15,
         a: 20000.0,
         a_mass: 20000.0,
-        // 要素座標系のフィールド値: せい 200（ローカル y 方向）× 幅 100 の矩形。
-        // iz（Mz 面、∫y²dA）=強軸 100·200³/12、iy（My 面、∫z²dA）=弱軸 200·100³/12。
         iy: 16666666.66666667,
         iz: 66666666.66666667,
         j: 0.0,
@@ -115,8 +113,6 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             density: 0.0,
             shear: shear_mod,
             fc: None,
-            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する
-            // （fy 未設定の鋼材ファイバは契約違反として panic する）。
             fy: Some(1e20),
         }],
         ..Default::default()
@@ -189,7 +185,6 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             density: 0.0,
             shear: Some(0.0),
             fc: None,
-            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する。
             fy: Some(1e20),
         }],
         ..Default::default()
@@ -300,9 +295,6 @@ fn test_fiber_steel_yields_with_fy() {
     let ctx = Ctx {
         model: &Model::default(),
     };
-    // 端部 ry に十分大きな逆対称回転を与え、曲げで降伏させる。
-    // My 面の縁距離は幅/2=50mm（ファイバ座標は要素座標系: y=せい・z=幅）のため、
-    // 降伏後モーメントが弾性値の 1/2 を明確に下回るだけの曲率倍率を確保する。
     let big = 0.2;
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, big, 0.0, 0.0, 0.0, 0.0, 0.0, -big, 0.0],
@@ -316,7 +308,6 @@ fn test_fiber_steel_yields_with_fy() {
     elastic.update_state(&du, true, &ctx);
     let f_e = elastic.internal_force(&ctx);
 
-    // 曲げモーメント DOF(ry_i = index 4) で比較。降伏材は弾性材より明確に小さいこと。
     assert!(
         f_e.data[4].abs() > 1.0,
         "elastic bending moment must be non-trivial (test sanity): {}",
@@ -342,20 +333,15 @@ fn test_global_rotation_vertical_column() {
     let zero_du = LocalVec {
         data: SmallVec::from_elem(0.0, 12),
     };
-    // X 整列（ref [0,1,0] で恒等フレーム）: local x = global X(軸), local y = global Y(曲げ)
     let mut fx = make_oriented_fiber([0.0, 0.0, 0.0], [l, 0.0, 0.0], [0.0, 1.0, 0.0]);
-    fx.update_state(&zero_du, false, &ctx); // 初期接線（弾性係数）をキャッシュへ
+    fx.update_state(&zero_du, false, &ctx);
     let kx = fx.tangent_stiffness(&ctx);
-    // Z 整列（鉛直柱, ref [1,0,0]）: local x = global Z(軸), local y = global X(曲げ)
     let mut fz = make_oriented_fiber([0.0, 0.0, 0.0], [0.0, 0.0, l], [1.0, 0.0, 0.0]);
     fz.update_state(&zero_du, false, &ctx);
     let kz = fz.tangent_stiffness(&ctx);
 
-    // 軸剛性: X 整列の ux_i (DOF0) == Z 整列の uz_i (DOF2)
     assert_relative_eq!(kz.get(2, 2), kx.get(0, 0), epsilon = 1.0);
-    // 曲げ剛性: X 整列の uy_i (DOF1, local 曲げ) == Z 整列の ux_i (DOF0, local 曲げ)
     assert_relative_eq!(kz.get(0, 0), kx.get(1, 1), epsilon = 1.0);
-    // 鉛直柱の水平 DOF は曲げ剛性（小）であって軸剛性（大）ではないこと
     assert!(
         kz.get(0, 0) < kz.get(2, 2),
         "vertical column horizontal DOF must be bending (small), not axial (large): ux={}, uz={}",
@@ -617,8 +603,6 @@ fn test_yield_progression() {
                 density: 0.0,
                 shear: Some(0.0),
                 fc: None,
-                // 実際に降伏させるため現実的な fy を明示する
-                // （fy 未設定の鋼材ファイバは契約違反として panic する）。
                 fy: Some(235.0),
             }],
             ..Default::default()
@@ -636,8 +620,6 @@ fn test_yield_progression() {
     };
 
     let eps_y = 235.0 / 205000.0;
-    // My 面（κy）の縁距離はファイバ座標の |z| 最大 = 幅/2 = 50mm
-    // （ファイバ座標は要素座標系: y=せい・z=幅）。
     let z_max = 50.0;
     let ky_y = eps_y / z_max;
     let ky_final = ky_y * 3.0;
@@ -821,7 +803,6 @@ fn test_torsional_stiffness() {
     let ctx = Ctx {
         model: &build_test_model(Some(g)),
     };
-    // 接線キャッシュを初期化（ゼロ変位で update_state）
     let zero_du = LocalVec {
         data: SmallVec::from_elem(0.0, 12),
     };
@@ -892,7 +873,6 @@ fn test_torsional_internal_force() {
 
 /// 鉛直柱（Z整列）でねじり剛性 GJ 追加後、グローバル rz DOF (index 5, 11) が
 /// 特異でない（非ゼロの対角成分を持つ）ことを確認する回帰テスト。
-/// 以前は rz 拘束がないと特異化していた。
 #[test]
 fn test_vertical_column_rz_nonsingular() {
     let g = 78846.0;
@@ -900,7 +880,6 @@ fn test_vertical_column_rz_nonsingular() {
     let l = 3000.0;
     let expected_kt = g * j / l;
 
-    // Z 整列（鉛直柱）: local x = global Z
     let model = Model {
         nodes: vec![
             Node {
@@ -965,7 +944,6 @@ fn test_vertical_column_rz_nonsingular() {
             density: 0.0,
             shear: Some(g),
             fc: None,
-            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する。
             fy: Some(1e20),
         }],
         ..Default::default()
@@ -986,8 +964,6 @@ fn test_vertical_column_rz_nonsingular() {
     fiber.update_state(&zero_du, false, &ctx);
 
     let k = fiber.tangent_stiffness(&ctx);
-    // 鉛直柱では local rx が global rz に回転される。
-    // global rz は節点自由度 index 5 (i端) と index 11 (j端)。
     let k55 = k.get(5, 5);
     let k11_11 = k.get(11, 11);
     assert!(
@@ -1000,19 +976,13 @@ fn test_vertical_column_rz_nonsingular() {
         "global rz_j (k[11][11]) must be > 0 with torsion stiffness, got {}",
         k11_11
     );
-    // ねじり剛性が回転後も正しく伝わっていることの緩い確認
     let _ = expected_kt;
 }
 
 /// 回帰テスト: 剛体回転（両端に同じ回転角 θ、曲率ゼロ）だけを与えても
-/// 内力が発生しないこと（客観性）。かつて曲げ剛性へ並列加算していた独立
-/// せん断ばねは、端部並進差 uy_j−uy_i=θ・L を誤ってせん断変形とみなし
-/// 偽の内力を出していた（GAs/L・θL のオーダー、有効せん断断面積が大きい
-/// 断面ほど顕著）。
+/// 内力が発生しないこと（客観性）。
 #[test]
 fn test_fiber_rigid_rotation_produces_no_force() {
-    // 有効せん断断面積を大きく取り、旧実装ならせん断ばね寄与が支配的に
-    // なる条件（矩形断面 500x500 相当）で検証する。
     let mut model = build_test_model(Some(78846.15));
     model.sections[0].as_y = 208333.0;
     model.sections[0].as_z = 208333.0;
@@ -1050,9 +1020,6 @@ fn test_fiber_rigid_rotation_produces_no_force() {
     };
     fiber.update_state(&du, false, &ctx);
     let f = fiber.internal_force(&ctx);
-    // 許容値 1.0 の根拠: 旧実装の偽せん断力は GAs/L・θL ≈ 1.6e6 N、正常時は
-    // 丸め誤差（~1e-7）で、判定は 6 桁以上の余裕を持つ。並進 [N]・回転 [N·mm]
-    // の単位混在は、双方とも「ほぼゼロ vs 1e6 以上」の判別であり問題にならない。
     for (i, v) in f.data.iter().enumerate() {
         assert!(
             v.abs() < 1.0,
@@ -1062,8 +1029,7 @@ fn test_fiber_rigid_rotation_produces_no_force() {
 }
 
 /// 回帰テスト: 弾性状態の初期横剛性が Timoshenko 理論値と一致すること。
-/// かつての並列せん断ばね（GAs/L を並進 DOF へ直接加算）は片持ち先端剛性を
-/// 理論値の数十倍にしていた。本テストは i 端固定の片持ち縮約剛性
+/// 本テストは i 端固定の片持ち縮約剛性
 /// k = 1/(L³/3EI + L/GAs)（先端モーメントフリー、曲げ＋せん断の直列）を
 /// 照合し、GAs/L オーダーの過大剛性の再混入と、せん断柔性の欠落
 /// （Euler 化 = 理論比 1+φ/... の過大）の両方を検出する。
@@ -1088,11 +1054,9 @@ fn test_fiber_initial_lateral_stiffness_matches_timoshenko_theory() {
     let zero = LocalVec {
         data: SmallVec::from_elem(0.0, 12),
     };
-    fiber.update_state(&zero, false, &ctx); // 初期弾性接線をキャッシュへ
+    fiber.update_state(&zero, false, &ctx);
     let k = fiber.tangent_stiffness(&ctx);
 
-    // 片持ち（i端固定）の j 端 [uy, rz] 2x2 ブロックを縮約し、
-    // 先端モーメントフリーの並進剛性 k_tip = det/K(rz,rz) を求める。
     let a = k.get(7, 7);
     let b = k.get(7, 11);
     let c = k.get(11, 11);
@@ -1104,10 +1068,6 @@ fn test_fiber_initial_lateral_stiffness_matches_timoshenko_theory() {
     let ei = e * 5.2083333e9;
     let gas = g * 208333.0;
     let k_timo = 1.0 / (l.powi(3) / (3.0 * ei) + l / gas);
-    // ファイバー離散化（12x20 格子の図心集中）による EI の僅かな目減り
-    // （1−1/nd² ≈ 0.9975）を含めて 1% 以内で一致すること。
-    // 旧実装の並列せん断ばね混入時は k_tip ≈ GAs/L ≈ 47×k_timo で大きく外れ、
-    // せん断柔性の欠落（Euler 化）時は約 +9% 外れる（いずれも許容 1% 超）。
     approx::assert_relative_eq!(k_tip, k_timo, max_relative = 0.01);
 }
 
@@ -1127,22 +1087,16 @@ fn test_fiber_elastic_stiffness_matches_timoshenko_beam_element() {
     let (b_w, d_h): (f64, f64) = (300.0, 600.0);
     let (nw, nd) = (12.0, 20.0);
     let area = b_w * d_h;
-    // 格子の離散断面二次モーメント（要素座標系。格子は 90° 回転され
-    // 要素 y=せい方向・z=幅方向となるため、強軸＝要素 z 軸まわり（∫y²dA）は
-    // せい方向分割 nd、弱軸＝要素 y 軸まわり（∫z²dA）は幅方向分割 nw が効く）
-    let iz_elem = b_w * d_h.powi(3) / 12.0 * (1.0 - 1.0 / (nd * nd)); // 強軸 (uy,rz)
-    let iy_elem = d_h * b_w.powi(3) / 12.0 * (1.0 - 1.0 / (nw * nw)); // 弱軸 (uz,ry)
-                                                                      // 要素座標系のせん断有効断面積（意図的に非対称）
-    let as_y_elem = 120000.0; // (uy,rz) 面
-    let as_z_elem = 80000.0; // (uz,ry) 面
+    let iz_elem = b_w * d_h.powi(3) / 12.0 * (1.0 - 1.0 / (nd * nd));
+    let iy_elem = d_h * b_w.powi(3) / 12.0 * (1.0 - 1.0 / (nw * nw));
+    let as_y_elem = 120000.0;
+    let as_z_elem = 80000.0;
     let j = 1.0e6;
 
     let mut model = build_test_model(Some(g));
     model.sections[0].depth = d_h;
     model.sections[0].width = b_w;
     model.sections[0].area = area;
-    // 断面レイヤ諸元（クロス変換で要素座標系に対応: iy_sec→要素(uy,rz)、
-    // as_z_sec→要素(uy,rz)。BeamElement 側は要素座標系の値を直接持たせる）
     model.sections[0].iy = iz_elem;
     model.sections[0].iz = iy_elem;
     model.sections[0].as_z = as_y_elem;
@@ -1223,7 +1177,6 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         )
     };
 
-    // (1) 剛体回転の客観性
     let theta = 1.0e-4;
     let l = 3000.0;
     let mut fb = build();
@@ -1249,7 +1202,6 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         assert!(v.abs() < 1.0, "塑性化域+φ>0 で客観性違反: dof {i} = {v}");
     }
 
-    // (2) FD 整合（弾性域の代表変形状態）
     let h = 1e-6;
     let u0: [f64; 12] = [
         0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
@@ -1290,7 +1242,6 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         }
     }
 
-    // (3) 片持ち先端剛性が Timoshenko 理論値の近傍（端点則の過大を許容）
     let mut fb2 = build();
     let zero = LocalVec {
         data: SmallVec::from_elem(0.0, 12),
@@ -1321,7 +1272,6 @@ fn test_fiber_tangent_consistent_with_internal_force() {
     let model = build_test_model(Some(78846.15));
     let ctx = Ctx { model: &model };
     let h = 1e-6;
-    // 弾性域の代表的な変形状態（並進 [mm]・回転 [rad] 混在）
     let u0: [f64; 12] = [
         0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
     ];
@@ -1419,7 +1369,6 @@ fn make_plastic_zone_fiber(lp: f64, fy: Option<f64>) -> FiberBeam {
 
 #[test]
 fn test_plastic_zone_axial_stiffness_exact() {
-    // 軸剛性は端部ファイバ(2Lp) + 中央弾性(L-2Lp) の合成で EA/L に厳密一致する
     let fb = make_plastic_zone_fiber(300.0, Some(1e20));
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
@@ -1431,9 +1380,6 @@ fn test_plastic_zone_axial_stiffness_exact() {
 
 #[test]
 fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
-    // Lp が小さければ弾性剛性は全長ファイバー積分（=弾性梁）に漸近する。
-    // 端部の1点矩形則による誤差は O(Lp/L)（曲率分布の勾配×区間幅）で、
-    // Lp = L/20 なら数%以内に収まる。
     let model = build_test_model(Some(0.0));
     let ctx = Ctx { model: &model };
     let full = FiberBeam::new(
@@ -1444,7 +1390,7 @@ fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
     );
     let k_full = full.tangent_stiffness(&ctx);
 
-    let pz = make_plastic_zone_fiber(150.0, Some(1e20)); // Lp = L/20
+    let pz = make_plastic_zone_fiber(150.0, Some(1e20));
     let k_pz = pz.tangent_stiffness(&ctx);
     for (i, j) in [(1usize, 1usize), (2, 2), (4, 4), (5, 5), (1, 5), (2, 4)] {
         assert_relative_eq!(k_pz.get(i, j), k_full.get(i, j), max_relative = 5e-2);
@@ -1469,26 +1415,23 @@ fn test_plastic_zone_k_el_strong_axis_in_mz_plane() {
         .k_el;
     let sec = &model.sections[0];
     let ratio = k_el.get(1, 1) / k_el.get(2, 2);
-    let expected = sec.iy / sec.iz; // 強軸（Mz 面）/ 弱軸（My 面）
+    let expected = sec.iy / sec.iz;
     assert!(
         (ratio - expected).abs() / expected < 1e-12,
         "k_el(1,1)/k_el(2,2)={} expected sec.iy/sec.iz={}",
         ratio,
         expected
     );
-    // 鉛直曲げ（Mz 面）の方が剛であること（せい 200 > 幅 100 の断面）
     assert!(k_el.get(1, 1) > k_el.get(2, 2));
 }
 
 #[test]
 fn test_plastic_zone_yield_reduces_stiffness() {
-    // 端部断面が降伏すると接線剛性が低下する（中央は弾性のまま）
     let mut fb = make_plastic_zone_fiber(300.0, Some(235.0));
     let model = build_test_model(Some(0.0));
     let ctx = Ctx { model: &model };
     let k0 = fb.tangent_stiffness(&ctx);
 
-    // i端に大回転 → 端部断面降伏
     let du = LocalVec {
         data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
     };
@@ -1500,7 +1443,6 @@ fn test_plastic_zone_yield_reduces_stiffness() {
         k0.get(4, 4),
         k1.get(4, 4)
     );
-    // 中央弾性部があるため完全にゼロにはならない
     assert!(k1.get(4, 4) > 0.0);
 }
 
@@ -1530,8 +1472,7 @@ fn test_plastic_zone_checkpoint_roundtrip() {
 }
 
 /// RC 断面（RcRect＋配筋）のファイバー柱は、コンクリート格子に加えて主筋が
-/// 点ファイバーとして分離配置される（構造力学のファイバーモデルにおける鉄筋分離）。
-/// 従来は均質コンクリート断面で引張鉄筋を無視していた。
+/// 点ファイバーとして分離配置される。
 /// RC 断面（RcRect＋配筋、500 角・Fc30）のファイバー柱モデル。
 fn rc_fiber_model() -> Model {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
@@ -1558,7 +1499,6 @@ fn rc_fiber_model() -> Model {
             },
         },
     };
-    // 材料は断面が持つ。主材料 = コンクリート（0）、主筋・せん断補強筋 = SD345（1）。
     let mut sec = shape.to_section(SectionId(0), "C500".into());
     sec.material = Some(MaterialId(0));
     sec.rebar_material = Some(MaterialId(1));
@@ -1639,7 +1579,6 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         AnalysisKind::Incremental,
     );
     let gp = &fb.gauss_points[0];
-    // コンクリート格子 12×20=240 に主筋（main_x 4×上下2=8 + main_y 4×側面2=8 = 16 本）が加算。
     assert!(
         gp.section.fibers.len() > 240,
         "主筋ファイバーが分離配置されていない: {}",
@@ -1647,7 +1586,6 @@ fn test_rc_fiber_section_includes_separated_rebar() {
     );
     let rebar_count = gp.section.fibers.iter().filter(|f| f.material == 1).count();
     assert_eq!(rebar_count, 16, "主筋本数（上下8＋側面8）: {rebar_count}");
-    // 主筋は最外縁近く（かぶり50・径25 → z0=500/2-50-12.5=187.5）に配置される。
     let max_abs_z = gp
         .section
         .fibers
@@ -1670,8 +1608,6 @@ fn test_rc_fiber_section_includes_separated_rebar() {
 fn test_all_fiber_materials_return_initial_tangent_at_zero_strain() {
     use squid_n_core::model::HysteresisModel;
 
-    // コンクリート: 除荷則 3 種 × NewRC 適用内外（fc≤60 / fc>60）の全分岐。
-    // 期待値は各骨格の定義そのもの（NewRC 式の Ec ／ 放物線モデルの 2fc/|εc0|）。
     for rule in [
         HysteresisModel::Retrograde,
         HysteresisModel::OriginOriented,
@@ -1690,7 +1626,6 @@ fn test_all_fiber_materials_return_initial_tangent_at_zero_strain() {
         }
     }
 
-    // 鋼材・主筋。
     let mut steel = steel_fiber_material(205000.0, Some(345.0));
     let (s, t) = steel.trial(0.0);
     assert_eq!(s, 0.0);
@@ -1718,8 +1653,6 @@ fn test_rc_plastic_zone_fiber_tangent_stays_positive_in_elastic_range() {
         AnalysisKind::Incremental,
     );
 
-    // 断面の弾性曲げ剛性の基準 `sec_ei` は、ひずみ 0 の断面接線と一致する。
-    // RC 断面（コンクリート格子＋主筋）なので公称 E·I よりやや大きい程度に収まる。
     let h = fb.hinge.as_ref().expect("塑性化域ヒンジが構築されていない");
     let d0 = fb.gauss_points[0].cached_stiff;
     assert_relative_eq!(h.sec_ei[0][1], d0[2][2], max_relative = 1e-12);
@@ -1731,7 +1664,6 @@ fn test_rc_plastic_zone_fiber_tangent_stays_positive_in_elastic_range() {
         nominal_eiz
     );
 
-    // 弾性域に収まる微小変形（j 端に 0.2mm の並進）を与えても接線剛性は正定値。
     let du = LocalVec {
         data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0]),
     };
@@ -1745,8 +1677,6 @@ fn test_rc_plastic_zone_fiber_tangent_stays_positive_in_elastic_range() {
         );
     }
 }
-
-// ===== 剛域（材端剛体アーム）=====
 
 /// 剛域長 λi・λj を与えたテストモデル（節点間長 3000mm、500 角・せん断断面付き）。
 fn build_rigid_zone_model(li: f64, lj: f64) -> Model {
@@ -1778,9 +1708,8 @@ fn 剛域ありの弾性剛性は軸以外が弾性梁と厳密一致する() {
     let (b_w, d_h): (f64, f64) = (500.0, 500.0);
     let (nw, nd) = (12.0, 20.0);
     let area = b_w * d_h;
-    // ファイバー格子の離散 EI（要素座標系。図心集中による目減りを反映）
-    let iz_elem = b_w * d_h.powi(3) / 12.0 * (1.0 - 1.0 / (nd * nd)); // 強軸 (uy,rz)
-    let iy_elem = d_h * b_w.powi(3) / 12.0 * (1.0 - 1.0 / (nw * nw)); // 弱軸 (uz,ry)
+    let iz_elem = b_w * d_h.powi(3) / 12.0 * (1.0 - 1.0 / (nd * nd));
+    let iy_elem = d_h * b_w.powi(3) / 12.0 * (1.0 - 1.0 / (nw * nw));
     let as_y_elem = 208333.0;
     let as_z_elem = 150000.0;
     let j = 1.0e6;
@@ -1824,7 +1753,6 @@ fn 剛域ありの弾性剛性は軸以外が弾性梁と厳密一致する() {
         .flat_map(|i| (0..12).map(move |j| (i, j)))
         .map(|(i, j)| k_be.get(i, j).abs())
         .fold(0.0_f64, f64::max);
-    // 軸自由度（0, 6）以外は厳密一致
     for i in 0..12 {
         for j in 0..12 {
             if [0, 6].contains(&i) || [0, 6].contains(&j) {
@@ -1839,11 +1767,9 @@ fn 剛域ありの弾性剛性は軸以外が弾性梁と厳密一致する() {
             );
         }
     }
-    // 軸剛性: 弾性梁は EA/L、ファイバーは EA/L'
     let ea = 205000.0 * area;
     assert_relative_eq!(k_be.get(0, 0), ea / l, max_relative = 1e-9);
     assert_relative_eq!(k_fb.get(0, 0), ea / l_flex, max_relative = 1e-9);
-    // ねじりは両者とも節点間長基準
     assert_relative_eq!(k_fb.get(3, 3), g * j / l, max_relative = 1e-9);
     assert_relative_eq!(k_be.get(3, 3), g * j / l, max_relative = 1e-9);
 }
@@ -1875,7 +1801,6 @@ fn 剛域は片持ち先端の曲げ剛性を増大させる() {
             &ctx,
         );
         let k = fb.tangent_stiffness(&ctx);
-        // j 端 [uy, rz] の 2×2 を縮約した先端モーメントフリー剛性
         let (a, b, c) = (k.get(7, 7), k.get(7, 11), k.get(11, 11));
         (a * c - b * b) / c
     };
@@ -1902,7 +1827,6 @@ fn 剛域ありでも剛体回転で内力が生じない() {
         AnalysisKind::Incremental,
     );
 
-    // 節点 i まわりの θz 剛体回転（節点自由度で与える）
     let theta = 1.0e-4;
     let l = 3000.0;
     let du = LocalVec {
@@ -2013,7 +1937,6 @@ fn 剛域ありの塑性化域は可撓長基準になる() {
     assert_eq!(fb.gauss_points.len(), 2);
     for gp in &fb.gauss_points {
         assert_relative_eq!(gp.xi.abs(), 1.0, max_relative = 1e-12);
-        // 重み w·(L'/2) = Lp → w = 2Lp/L'
         assert_relative_eq!(gp.weight, 2.0 * lp / l_flex, max_relative = 1e-12);
     }
     assert!(fb.hinge.is_some(), "塑性増分ヒンジが構築されていない");
@@ -2023,7 +1946,7 @@ fn 剛域ありの塑性化域は可撓長基準になる() {
 /// （可撓長ゼロで要素が退化するのを防ぐ）。
 #[test]
 fn 可撓長が残らない剛域は無視される() {
-    let model = build_rigid_zone_model(2000.0, 1500.0); // 合計 3500 > L=3000
+    let model = build_rigid_zone_model(2000.0, 1500.0);
     let fb = FiberBeam::new(
         &model.elements[0],
         &model,
@@ -2034,8 +1957,6 @@ fn 可撓長が残らない剛域は無視される() {
     assert_eq!(fb.rigid_j, 0.0);
     assert_relative_eq!(fb.flex_length, fb.length, max_relative = 1e-12);
 }
-
-// ===== 材端解放（ピン・半剛）=====
 
 /// 指定した端条件のテストモデル（節点間長 3000mm、500 角・せん断断面付き）。
 fn build_release_model(end_cond: [EndCondition; 2]) -> Model {
@@ -2078,7 +1999,6 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
     let as_z_elem = 150000.0;
     let j = 1.0e6;
 
-    // i 端ピン・j 端剛接
     let mut model = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
     model.sections[0].depth = d_h;
     model.sections[0].width = b_w;
@@ -2111,7 +2031,7 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
     for i in 0..12 {
         for j in 0..12 {
             if [0, 6].contains(&i) || [0, 6].contains(&j) {
-                continue; // 軸は 4.9.5 のとおり弾性梁と定義が異なる（剛域なしなら一致）
+                continue;
             }
             let diff = (k_fb.get(i, j) - k_be.get(i, j)).abs();
             assert!(
@@ -2121,7 +2041,6 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
                 k_be.get(i, j)
             );
         }
-        // ピン端（i 端）の回転自由度は剛性を持たない
         for r in [3usize, 4, 5] {
             assert!(
                 k_fb.get(r, i).abs() < 1e-6 * kmax.max(1.0),
@@ -2130,7 +2049,6 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
             );
         }
     }
-    // 剛接端（j 端）は曲げ剛性を持つ
     assert!(k_fb.get(11, 11) > 0.0);
 }
 
@@ -2140,7 +2058,6 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
 fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
     let pinned = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
     let fixed = build_release_model([EndCondition::Fixed, EndCondition::Fixed]);
-    // j 端に並進 uy を与える（片持ち的な変形）。
     let du = |uy: f64| LocalVec {
         data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, uy, 0.0, 0.0, 0.0, 0.0]),
     };
@@ -2165,19 +2082,16 @@ fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
     fb_f.update_state(&du(1.0), false, &ctx_f);
     let f_f = fb_f.internal_force(&ctx_f);
 
-    // 剛接端は i 端に大きなモーメントを持つ
     assert!(
         f_f.data[5].abs() > 1.0e6,
         "剛接端の Mz が小さすぎる: {}",
         f_f.data[5]
     );
-    // ピン端は Mz ≈ 0（剛接端の値に対して 1e-9 未満）
     assert!(
         f_p.data[5].abs() < 1e-9 * f_f.data[5].abs(),
         "ピン端に曲げモーメントが残っている: {}",
         f_p.data[5]
     );
-    // ピンにより横剛性は下がる（片持ち: 3EI/L³ vs 12EI/L³ のオーダー）
     assert!(
         f_p.data[7].abs() < f_f.data[7].abs(),
         "ピン解放で横剛性が下がっていない"
@@ -2188,8 +2102,6 @@ fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
 /// ばね剛性 →∞ で剛接、→0 でピンに漸近する。
 #[test]
 fn 半剛端は剛接とピンの中間になる() {
-    // j 端（剛接）の回転剛性 K(rz_j, rz_j) を指標にする。i 端の条件により
-    // 剛接なら 4EI/L'、ピンなら 3EI/L'（いずれもせん断補正を含む）へ変わる。
     let rot_stiffness = |end_cond: [EndCondition; 2]| -> f64 {
         let model = build_release_model(end_cond);
         let ctx = Ctx { model: &model };
@@ -2198,7 +2110,6 @@ fn 半剛端は剛接とピンの中間になる() {
     };
     let k_fixed = rot_stiffness([EndCondition::Fixed, EndCondition::Fixed]);
     let k_pin = rot_stiffness([EndCondition::Pinned, EndCondition::Fixed]);
-    // 6EI/L' 程度の中間的なばね剛性
     let k_theta = 6.0 * 205000.0 * 5.2083333e9 / 3000.0;
     let k_semi = rot_stiffness([EndCondition::SemiRigid { k_theta }, EndCondition::Fixed]);
 
@@ -2206,13 +2117,11 @@ fn 半剛端は剛接とピンの中間になる() {
         k_pin < k_semi && k_semi < k_fixed,
         "半剛が剛接とピンの中間になっていない: pin={k_pin:.4e}, semi={k_semi:.4e}, fixed={k_fixed:.4e}"
     );
-    // i 端ピンは剛接の 3/4 倍（3EI/L' vs 4EI/L'）へ近い値になる
     assert!(
         (k_pin / k_fixed - 0.75).abs() < 0.05,
         "ピン端の回転剛性比が 3/4 から外れている: {:.4}",
         k_pin / k_fixed
     );
-    // ばね剛性を十分大きく／小さくすると剛接／ピンへ漸近する
     let k_stiff = rot_stiffness([
         EndCondition::SemiRigid {
             k_theta: k_theta * 1.0e8,
@@ -2242,7 +2151,6 @@ fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
         ],
     ] {
         let mut model = build_release_model(end_cond);
-        // 剛域も併用して、剛体アーム変換との整合も同時に検証する。
         model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
             length_i: 400.0,
             length_j: 250.0,
@@ -2361,7 +2269,6 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
         AnalysisKind::Incremental,
     );
 
-    // 段階的に大変形を与えて降伏させる。
     for _ in 0..40 {
         let du = LocalVec {
             data: SmallVec::from_slice(&[
@@ -2371,7 +2278,6 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
         fb.update_state(&du, true, &ctx);
     }
     let f = fb.internal_force(&ctx);
-    // 剛接端（j 端）のモーメントを基準に、ピン端（i 端）は無視できる大きさ
     let m_fixed = f.data[11].abs().max(1.0);
     assert!(
         f.data[5].abs() < 1e-8 * m_fixed,
@@ -2379,7 +2285,6 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
         f.data[5],
         f.data[11]
     );
-    // 実際に降伏していること（弾性なら接線剛性が初期値のまま）
     let k = fb.tangent_stiffness(&ctx);
     let k0 = elastic_fiber(&build_release_model([
         EndCondition::Pinned,
@@ -2411,10 +2316,8 @@ fn ねじり剛性がない部材はrxを解放しない() {
         "J=0 で rx が解放された: {:?}",
         fb.releases
     );
-    // 曲げ回転（ry, rz）は両端とも解放される
     assert_eq!(fb.releases.len(), 4);
 
-    // J>0 なら rx も解放される
     model.sections[0].j = 1.0e6;
     let fb = FiberBeam::new(
         &model.elements[0],
@@ -2476,7 +2379,6 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     let ctx = Ctx {
         model: &Model::default(),
     };
-    // 端部 rz（強軸曲げ面）に大きな逆対称回転を与えて降伏させる。
     let big = 0.2;
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, big, 0.0, 0.0, 0.0, 0.0, 0.0, -big],
@@ -2487,12 +2389,10 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     let mf = elem
         .state_member_forces(&ctx)
         .expect("ファイバー梁は状態から内力を返す");
-    // 評価断面は弾性梁と同じ規則（剛域なし → 節点芯・中央）。
     assert!(mf.at.iter().any(|(xi, _)| xi.abs() < 1e-12));
     assert!(mf.at.iter().any(|(xi, _)| (xi - 0.5).abs() < 1e-12));
     assert!(mf.at.iter().any(|(xi, _)| (xi - 1.0).abs() < 1e-12));
 
-    // i 端（xi=0）の Mz は復元力の f[5] と符号反転で一致する（断面内力の規約）。
     let f = elem.internal_force(&ctx);
     let mz_i = mf
         .at
@@ -2503,7 +2403,6 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     assert_relative_eq!(mz_i, -f.data[5], epsilon = 1e-6);
     assert!(f.data[5].abs() > 1.0, "前提: 曲げが有意であること");
 
-    // 接線剛性 × 全変位で組んだ内力は降伏後に過小評価となり、状態由来の値と一致しない。
     let k = elem.tangent_stiffness(&ctx);
     let mut f_tangent = 0.0;
     for j in 0..12 {
@@ -2527,12 +2426,8 @@ fn test_state_member_forces_field_is_continuous() {
     let ctx = Ctx {
         model: &Model::default(),
     };
-    // 曲げ・軸・弱軸曲げが同時に生じる一般的な変位を与えて降伏させる。
     let du = LocalVec {
-        data: smallvec::smallvec![
-            0.5, 0.0, 0.0, 0.0, 0.05, 0.2, //
-            -0.5, 0.0, 0.0, 0.0, -0.03, -0.1
-        ],
+        data: smallvec::smallvec![0.5, 0.0, 0.0, 0.0, 0.05, 0.2, -0.5, 0.0, 0.0, 0.0, -0.03, -0.1],
     };
     let mut elem = make_steel_fiber_with_fy(Some(235.0));
     elem.eval_sections = vec![0.0, 0.25, 0.5, 0.75, 1.0];
@@ -2552,12 +2447,10 @@ fn test_state_member_forces_field_is_continuous() {
     assert!(a[5].abs() > 1.0, "前提: 強軸曲げが有意であること");
     for &xi in &[0.25, 0.5, 0.75, 1.0] {
         let v = at(xi);
-        // N・Qy・Qz・Mx は部材内で一定
         assert_relative_eq!(v[0], a[0], max_relative = 1e-9, epsilon = 1e-6);
         assert_relative_eq!(v[1], a[1], max_relative = 1e-9, epsilon = 1e-6);
         assert_relative_eq!(v[2], a[2], max_relative = 1e-9, epsilon = 1e-6);
         assert_relative_eq!(v[3], a[3], max_relative = 1e-9, epsilon = 1e-6);
-        // dMz/dx = Qy, dMy/dx = -Qz（スパン内荷重なし）
         assert_relative_eq!(
             v[5],
             a[5] + a[1] * xi * l,
@@ -2575,10 +2468,6 @@ fn test_state_member_forces_field_is_continuous() {
 
 /// 角形鋼管（SteelBox、中空断面）のファイバ配置が管壁のみで、断面積・断面二次
 /// モーメントが理論値と一致することを検証する回帰テスト。
-///
-/// 従来は形状によらず width×depth の中実矩形格子でファイバを生成しており、
-/// □-400×400×12 では断面積を約 8.6 倍（160000/18624 mm²）に過大評価し、
-/// 剛性・全塑性耐力も同様に過大だった（保有水平耐力の過大評価＝危険側）。
 #[test]
 fn test_steel_box_fibers_are_hollow() {
     let shape = squid_n_core::section_shape::SectionShape::SteelBox {
@@ -2606,18 +2495,14 @@ fn test_steel_box_fibers_are_hollow() {
     );
     assert_eq!(sec.fibers.len(), mats.len());
 
-    // 断面積: A = 400² − 376²（角部直角）。板分割は端数なく厳密一致する。
     let a_sum: f64 = sec.fibers.iter().map(|f| f.area).sum();
     let a_exact = 400.0_f64 * 400.0 - 376.0 * 376.0;
     assert_relative_eq!(a_sum, a_exact, max_relative = 1e-9);
 
-    // 断面二次モーメント（回転後座標: せい方向=y）: I = (400⁴ − 376⁴)/12。
-    // ファイバ離散化（板厚 2 分割・板長 16 分割程度）の打切り誤差 2% 以内。
     let i_sum: f64 = sec.fibers.iter().map(|f| f.area * f.y * f.y).sum();
     let i_exact = (400.0_f64.powi(4) - 376.0_f64.powi(4)) / 12.0;
     assert_relative_eq!(i_sum, i_exact, max_relative = 0.02);
 
-    // 材料区分はすべて鋼材（2）で、管内側（|y|,|z| < 376/2 の中央部）にファイバがない。
     assert!(sec.fibers.iter().all(|f| f.material == 2));
     assert!(sec
         .fibers
@@ -2627,7 +2512,6 @@ fn test_steel_box_fibers_are_hollow() {
 
 /// RC 円形断面のファイバ配置が円形（極座標リング）で、コンクリート断面積が
 /// π·d²/4 と一致し、主筋が材料区分 1 で分離配置されることを検証する。
-/// 従来は d×d の中実矩形格子で断面積を 4/π ≒ 1.27 倍に過大評価していた。
 #[test]
 fn test_rc_circle_fibers_match_circle_area() {
     let rebar = squid_n_core::section_shape::RcRebar {
@@ -2676,7 +2560,6 @@ fn test_rc_circle_fibers_match_circle_area() {
     let circle = std::f64::consts::PI * 600.0_f64 * 600.0 / 4.0;
     assert_relative_eq!(conc_area, circle, max_relative = 1e-9);
 
-    // 主筋 8 本が材料区分 1 の点ファイバとして分離されていること。
     let n_rebar = sec.fibers.iter().filter(|f| f.material == 1).count();
     assert_eq!(n_rebar, 8);
 }

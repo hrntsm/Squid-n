@@ -1,16 +1,6 @@
 //! 直線材（等断面の線材）が共有する定式化。
 //!
-//! 弾性梁（[`super::beam`]）・ファイバー梁（[`super::fiber`]）・材端集中ばね梁
-//! （[`super::concentrated`]）は、要素の内部構成こそ違うが、次の 3 つについては
-//! 同一の式を用いる。要素ごとに書き分ける理由がなく、片方だけを直すと解析結果が
-//! 静かに食い違うため、ここへ集約する。
-//!
-//! - [`condense_end_releases`] — 材端解放（ピン・半剛・ねじれ解放）の静縮約
-//! - [`geometric_stiffness`] —  P-δ の幾何剛性
-//! - [`lumped_mass`] / [`consistent_mass`] — 質量行列
-//!
-//! いずれも要素局所系（節点自由度 12）で返す。全体系への回転（`axis.to_global`）は
-//! 要素ごとに座標系が異なるため呼び出し側の責務とする。
+//! いずれも要素局所系（節点自由度 12）で返す。全体系への回転は呼び出し側の責務とする。
 
 use crate::behavior::LocalMat;
 use crate::linalg::invert_small;
@@ -18,20 +8,14 @@ use crate::linalg::invert_small;
 /// 材端解放を静縮約した局所剛性 12×12。
 ///
 /// `releases` は解放する要素端回転自由度と、節点回転との間に挟む回転ばね剛性
-/// `k_s` [N·mm/rad] の組。ピンは `k_s = 0`（厳密なモーメント解放）、半剛は
-/// 接合部回転剛性を与える。空なら剛接として `k_elem` をそのまま返す
-/// （ペナルティ近似を用いない厳密な扱い）。
+/// `k_s` [N·mm/rad] の組。ピンは `k_s = 0`、空なら `k_elem` をそのまま返す。
 ///
 /// 内部並びは \[外部 0..11（節点 ux,uy,uz,rx,ry,rz ×2）, 内部 12..（解放した
-/// 要素端回転を `releases` の順に並べる）\] とし、内部自由度を静縮約する
-/// （K\* = Kaa − Kab·Kbb⁻¹·Kba）。
+/// 要素端回転を `releases` の順に並べる）\] とし、内部自由度を静縮約する。
 ///
-/// 解放できるのは両端の回転 3 成分ずつであるため `releases` は最大 6 個、
-/// 系の大きさは n ≤ 18 に収まる。作業配列をスタックに置くのはこのため。
+/// `releases` は最大 6 個。
 ///
-/// 縮約行列 Kbb が特異（解放自由度が機構化）な場合は、もっともらしい剛性を作らず
-/// 補正項を省略した Kaa を返す。解放回転の外部行はばね剛性を除きゼロのため、
-/// 全体求解が特異を検出して自由度名指しの診断で停止する。
+/// 縮約行列 Kbb が特異な場合は補正項を省略した Kaa を返す。
 pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]) -> LocalMat {
     const NA: usize = 12;
 
@@ -48,8 +32,6 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         n <= 18,
         "condense_end_releases: 解放自由度は両端の回転 6 まで"
     );
-    // 解放自由度は要素の 12 自由度の中を指し、重複しない。破ると写像 `map` が
-    // 上書きされ、もっともらしい別の剛性が無言でできあがる。
     debug_assert!(
         releases.iter().all(|&(r, _)| r < NA),
         "condense_end_releases: 解放自由度が要素自由度の範囲外"
@@ -61,10 +43,8 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
             .all(|(i, &(r, _))| releases[..i].iter().all(|&(q, _)| q != r)),
         "condense_end_releases: 解放自由度が重複している"
     );
-    // n ≤ 18 なので n*n ≤ 324。反復のたびのヒープ確保を避けて固定長配列で扱う。
     let mut k = [0.0_f64; 324];
 
-    // 要素 DOF → 組立 DOF 写像。解放回転は内部（12..）へ、それ以外は同位置。
     let mut map = [0usize; NA];
     for (i, m) in map.iter_mut().enumerate() {
         *m = i;
@@ -73,14 +53,12 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         map[r] = NA + idx;
     }
 
-    // 要素剛性を配置（解放回転の行・列は内部自由度へ移る）
     for i in 0..NA {
         for j in 0..NA {
             k[map[i] * n + map[j]] += k_elem.get(i, j);
         }
     }
 
-    // 回転ばね: 節点回転 r ↔ 内部の要素端回転 (12+idx)
     for (idx, &(r, ks)) in releases.iter().enumerate() {
         let ir = NA + idx;
         k[r * n + r] += ks;
@@ -89,7 +67,6 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         k[ir * n + r] -= ks;
     }
 
-    // 内部 DOF (12..n) を静縮約: K* = Kaa − Kab·Kbb⁻¹·Kba
     let mut kaa = [0.0_f64; NA * NA];
     let mut kab = [0.0_f64; NA * 6];
     let mut kba = [0.0_f64; 6 * NA];
@@ -120,7 +97,6 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         return kstar;
     };
 
-    // kab_kbbinv = Kab · Kbb⁻¹
     let mut kab_kbbinv = [0.0_f64; NA * 6];
     for i in 0..NA {
         for j in 0..nb {
@@ -145,16 +121,12 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
     kstar
 }
 
-/// 軸力 `n_axial` による幾何剛性（P-δ）を、剛体アーム変換まで済ませた
-/// 局所 12×12 で返す。
+/// 軸力 `n_axial` による幾何剛性を局所 12×12 で返す。
 ///
-/// 弾性剛性と整合させるため、可撓長 `flex_len`（= L − λi − λj）で組み、
-/// 可撓端自由度を剛体アームで節点自由度へ写す。剛域があれば P-δ は可撓部でのみ
-/// 生じ、剛域は剛体アームとして働く。剛域なし（λi = λj = 0）では全長の
-/// 幾何剛性に一致する。可撓長が実質ゼロの部材はゼロ行列を返す。
+/// 可撓長 `flex_len`（= L − λi − λj）で組み、可撓端自由度を剛体アームで節点自由度へ写す。
+/// 可撓長が実質ゼロの部材はゼロ行列を返す。
 ///
-/// 局所系の規約（§4.1）により、xz 面（uz・ry）では並進-回転の結合項の符号が
-/// xy 面（uy・rz）と逆になる。
+/// xz 面（uz・ry）では並進-回転の結合項の符号が xy 面（uy・rz）と逆になる。
 pub(crate) fn geometric_stiffness(
     n_axial: f64,
     flex_len: f64,
@@ -174,7 +146,6 @@ pub(crate) fn geometric_stiffness(
                 kg.set(j, i, v);
             }
         };
-        // xy 面（uy=1, rz=5 / uy_j=7, rz_j=11）
         s(1, 1, c * 6.0 / 5.0);
         s(7, 7, c * 6.0 / 5.0);
         s(1, 7, -c * 6.0 / 5.0);
@@ -185,7 +156,6 @@ pub(crate) fn geometric_stiffness(
         s(5, 5, c * 2.0 * l * l / 15.0);
         s(11, 11, c * 2.0 * l * l / 15.0);
         s(5, 11, -c * l * l / 30.0);
-        // xz 面（uz=2, ry=4 / uz_j=8, ry_j=10）
         s(2, 2, c * 6.0 / 5.0);
         s(8, 8, c * 6.0 / 5.0);
         s(2, 8, -c * 6.0 / 5.0);
@@ -212,43 +182,35 @@ pub(crate) fn lumped_mass(mass: f64) -> LocalMat {
     mm
 }
 
-/// 整合質量（Hermite 梁の一貫質量）の局所 12×12。
+/// 整合質量の局所 12×12。
 ///
-/// `torsion_term` は部材軸まわりの回転慣性 ρ·J·l/6 [t·mm²]。0 を渡すと
+/// `torsion_term` は部材軸まわりの回転慣性 [t·mm²]。0 を渡すと
 /// ねじれ自由度（rx）の質量を持たない行列になる。
 ///
-/// DOF は連続ではないためインデックス配列で指定する。
 ///   Uy-Rz 面: \[Uy_i=1, Rz_i=5, Uy_j=7, Rz_j=11\]
 ///   Uz-Ry 面: \[Uz_i=2, Ry_i=4, Uz_j=8, Ry_j=10\]（回転符号は逆）
 ///
-/// 整合質量は軸方向（m/3 系）と曲げ方向（156m/420 系）で係数が異なり回転不変では
-/// ないため、呼び出し側で要素局所系から全体系へ回すこと（M_global = Rᵀ M_local R）。
-/// これを欠くと鉛直柱・斜材で質量が誤った全体軸へ配分される。
+/// 呼び出し側で要素局所系から全体系へ回すこと。
 pub(crate) fn consistent_mass(mass: f64, l: f64, torsion_term: f64) -> LocalMat {
     let mut mm = LocalMat::zeros(12);
     let c1 = mass / 6.0;
     let c2 = mass / 420.0;
     let l2 = l * l;
-    // 軸（Ux): index 0, 6
     mm.set(0, 0, 2.0 * c1);
     mm.set(0, 6, 1.0 * c1);
     mm.set(6, 0, 1.0 * c1);
     mm.set(6, 6, 2.0 * c1);
-    // ねじれ（Rx): index 3, 9
     let ct = torsion_term;
     mm.set(3, 3, 2.0 * ct);
     mm.set(3, 9, 1.0 * ct);
     mm.set(9, 3, 1.0 * ct);
     mm.set(9, 9, 2.0 * ct);
-    // 曲げ: Hermite 梁の一貫質量（4×4 ブロック）。
     let b4 = |mm: &mut LocalMat, idx: [usize; 4], sign: f64| {
         let [d0, r0, d1, r1] = idx;
-        // 並進-並進
         mm.set(d0, d0, 156.0 * c2);
         mm.set(d0, d1, 54.0 * c2);
         mm.set(d1, d0, 54.0 * c2);
         mm.set(d1, d1, 156.0 * c2);
-        // 並進-回転
         mm.set(d0, r0, 22.0 * l * c2 * sign);
         mm.set(r0, d0, 22.0 * l * c2 * sign);
         mm.set(d0, r1, -13.0 * l * c2 * sign);
@@ -257,7 +219,6 @@ pub(crate) fn consistent_mass(mass: f64, l: f64, torsion_term: f64) -> LocalMat 
         mm.set(r0, d1, 13.0 * l * c2 * sign);
         mm.set(d1, r1, -22.0 * l * c2 * sign);
         mm.set(r1, d1, -22.0 * l * c2 * sign);
-        // 回転-回転
         mm.set(r0, r0, 4.0 * l2 * c2);
         mm.set(r0, r1, -3.0 * l2 * c2);
         mm.set(r1, r0, -3.0 * l2 * c2);
@@ -319,7 +280,6 @@ mod tests {
         let releases = [(5usize, 0.0_f64), (11usize, 2.0e7_f64)];
         let kstar = condense_end_releases(&k, &releases);
 
-        // 縮約前の 14×14 を同じ規則で組み直す。
         let (na, nb) = (12usize, releases.len());
         let n = na + nb;
         let mut full = vec![0.0; n * n];
@@ -341,7 +301,6 @@ mod tests {
         }
 
         for col in 0..na {
-            // ua = e_col、ub は Kbb·ub = −Kba·ua を 2×2 で直接解く。
             let kbb = [
                 full[(na) * n + na],
                 full[(na) * n + na + 1],
@@ -398,7 +357,6 @@ mod tests {
         let sum: f64 = [0usize, 6].iter().map(|&d| lumped.get(d, d)).sum();
         assert!((sum - M).abs() < 1e-12, "集中質量の軸方向総和 {sum}");
 
-        // 曲げ面の並進自由度 Uy_i=1・Uy_j=7 の 4 成分（156+54+54+156 = 420）。
         let cm = consistent_mass(M, 3000.0, 0.0);
         let mut total = 0.0;
         for i in [1usize, 7] {

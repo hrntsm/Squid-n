@@ -11,57 +11,35 @@ pub enum SpringModel {
     TwoComponent,
 }
 
-/// 端バネの N-M 相関パラメータ（2バネ連成の線形相関）。
-/// 現在軸力 N に応じて回転バネの降伏モーメントを
-/// M_lim = my0 · (1 − |N|/n_allow) で更新する（下限 0.02·my0）。
+/// 端バネの N-M 相関パラメータ。
 #[derive(Clone, Copy, Debug)]
 pub struct MnInteraction {
-    /// N=0 での降伏モーメント My0 [N·mm]
+    /// N=0 での降伏モーメント [N·mm]。
     pub my0: f64,
-    /// 軸許容耐力 [N]（正値。引張・圧縮共通）
+    /// 軸許容耐力 [N]（正値）。
     pub n_allow: f64,
 }
 
-/// 材端集中ばね梁（one-component モデル）。
-///
-/// 節点回転 θn と可撓端回転 θb（内部自由度）を材端曲げばねが接続し、
-/// ばね変形（相対回転）γ = θn − θb に履歴則を適用する。各トライアルで
-/// 「可撓部端モーメント（`K_flex·û` の回転行）＝ばねモーメント M_s(γ)」の
-/// 内部平衡を要素内 Newton（2 自由度）で解き、復元力はばねの履歴力と
-/// 弾性可撓部の `K_flex·û` から経路整合に評価する。
-///
-/// 従来は (1) 復元力を「接線剛性 × 全変位」で評価し降伏後に履歴力と乖離する、
-/// (2) ばね変形量に節点回転そのものを用いるため固定端（節点回転 0）で
-/// 柱脚ヒンジが形成されず、回転する接合部ではモーメントと無関係に降伏扱いに
-/// なる、という定式化上の欠陥があり、増分解析で剛性低下が生じなかった
-/// （`dev_docs/v_and_v/` の該当項目参照）。
+/// 材端集中ばね梁。
 pub struct ConcentratedSpringBeam {
     pub elastic: crate::frame::beam::BeamElement,
     pub spring_i: Box<dyn UniaxialMaterial>,
     pub spring_j: Box<dyn UniaxialMaterial>,
     pub model: SpringModel,
-    /// N-M 相関（None = 従来どおり降伏モーメント一定）
+    /// N-M 相関。
     pub mn: Option<MnInteraction>,
-    /// ばね変形（相対回転 γ = 節点回転 − 可撓端回転）の確定値。
+    /// ばね変形の確定値。
     rot_i: f64,
     rot_j: f64,
-    /// ばね変形のトライアル値（内部平衡の解）。
+    /// ばね変形のトライアル値。
     trial_rot_i: f64,
     trial_rot_j: f64,
-    /// 可撓端回転（内部自由度）の確定値。
+    /// 可撓端回転の確定値。
     thb_i: f64,
     thb_j: f64,
     /// 可撓端回転のトライアル値。
     trial_thb_i: f64,
     trial_thb_j: f64,
-    /// [`crate::frame::beam::BeamElement::local_stiffness_flex`] の結果キャッシュ
-    /// （可撓部の局所剛性 12×12、剛域変換・材端塑性ばねの静縮約の**手前**）。
-    /// 幾何・断面・材端条件は要素生成後不変のため、初回計算値を使い回してよい
-    /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
-    /// 3 箇所から要素内 Newton・グローバル Newton の毎回呼ばれるため、
-    /// 再構築コスト（`BeamElement::clone()` を含む）を避ける）。
-    /// 派生値のため snapshot_state / restore_state の対象には含めない
-    /// （restore 後も幾何が変わらない限り正しい値のまま使い続けられる）。
     flex_stiffness_cache: std::sync::OnceLock<LocalMat>,
 }
 
@@ -98,7 +76,6 @@ impl ConcentratedSpringBeam {
         Self::new(elastic, spring_i, spring_j, SpringModel::OneComponent)
     }
 
-    /// N-M 相関を有効化する（ビルダー）。
     pub fn with_mn_interaction(mut self, my0: f64, n_allow: f64) -> Self {
         self.mn = Some(MnInteraction {
             my0,
@@ -107,9 +84,7 @@ impl ConcentratedSpringBeam {
         self
     }
 
-    /// 現在の軸力 [N]（引張正）。トライアル変位（＋任意の増分）から
-    /// 弾性部の軸ひずみを取り出して評価する。Newton 反復中の累積修正量も
-    /// 反映される（トライアル追従）。
+    /// 現在の軸力 [N]（引張正）。
     fn current_axial_force(&self, du_local: Option<&[f64; 12]>) -> f64 {
         let ul = self.elastic.axis.rotate_to_local(&self.elastic.trial_disp);
         let mut d = ul[6] - ul[0];
@@ -119,7 +94,6 @@ impl ConcentratedSpringBeam {
         self.elastic.e * self.elastic.a / self.elastic.length.max(1.0) * d
     }
 
-    /// N-M 相関が有効なら、現在軸力に応じて両端バネの降伏モーメントを更新する。
     fn apply_mn_interaction(&mut self, du_local: Option<&[f64; 12]>) {
         let Some(mn) = self.mn else {
             return;
@@ -130,29 +104,17 @@ impl ConcentratedSpringBeam {
         self.spring_j.set_yield(m_lim);
     }
 
-    /// 可撓部の局所剛性 12×12（[`crate::frame::beam::BeamElement::local_stiffness_flex`]）。
-    /// 幾何・断面・材端条件は要素生成後不変なので初回計算値をキャッシュして返す
-    /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
-    /// 毎呼び出しで `BeamElement::clone()` を含む再構築を避ける）。
     fn k_flex(&self) -> &LocalMat {
         self.flex_stiffness_cache
             .get_or_init(|| self.elastic.local_stiffness_flex())
     }
 
-    /// 現在のトライアル節点変位を可撓端系の局所変位へ写す
-    /// （グローバル→局所回転→剛域変換。回転成分は剛域で変わらない）。
     fn u_flex_local(&self) -> [f64; 12] {
         let u_local = self.elastic.axis.rotate_to_local(&self.elastic.trial_disp);
         let (li, lj) = self.elastic.rigid_lengths();
         crate::frame::rigid_arm::to_flex_disp(&u_local, li, lj)
     }
 
-    /// 内部平衡（可撓端回転 θb）を解き、トライアルばね変形・可撓端回転を更新する。
-    ///
-    /// 一成分系: 各端で「可撓部端モーメント（`K_flex·û` の回転行）＝ばねモーメント
-    /// M_s(γ)、γ = θn − θb」を満たす θb を要素内 Newton で求める（2 自由度連成、
-    /// 履歴則は区分線形のため通常数回で収束する）。ばねはトライアル状態
-    /// （確定状態からの trial 評価）を保持したまま返す。
     fn solve_internal_equilibrium(&mut self) {
         let k_flex = self.k_flex();
         let u_flex = self.u_flex_local();
@@ -173,7 +135,6 @@ impl ConcentratedSpringBeam {
                 mb[k] = s;
             }
             let g = [thn[0] - thb[0], thn[1] - thb[1]];
-            // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
             let (ms_i, kt_i) = self.spring_i.probe(g[0]);
             let (ms_j, kt_j) = self.spring_j.probe(g[1]);
             let r = [mb[0] - ms_i, mb[1] - ms_j];
@@ -186,7 +147,6 @@ impl ConcentratedSpringBeam {
             if r[0].abs().max(r[1].abs()) < 1e-9 * scale {
                 break;
             }
-            // J = d r / d θb = [[K55+kt_i, K5,11], [K11,5, K11,11+kt_j]]
             let j00 = k_flex.get(er[0], er[0]) + kt_i;
             let j01 = k_flex.get(er[0], er[1]);
             let j10 = k_flex.get(er[1], er[0]);
@@ -208,37 +168,14 @@ impl ConcentratedSpringBeam {
     }
 }
 
-/// 材端曲げばねが作用する局所回転自由度（i 端, j 端）。
-///
-/// 要素局所系は「y 軸＝断面のせい方向」を規約とするため、強軸曲げ（せい方向の
-/// 曲げ。梁の鉛直曲げ）は **z 軸まわり＝`rz`（局所 DOF 5・11）** に対応する
-/// （`beam/construct.rs` の断面レイヤ→要素座標系クロス変換）。材端集中ばねは
-/// 一軸曲げ（`ForceRegime::UniaxialBendingShear`）のモデルであり、骨格の降伏
-/// モーメント（`flexural_yield_moment`＝強軸 Zp·σy）と初期剛性（6EI/l、
-/// I は強軸）も強軸で与えるため、ばねは `rz` へ入れる。
+/// 材端曲げばねが作用する局所回転自由度（局所 DOF 5・11）。
 const SPRING_ROT_DOFS: [usize; 2] = [5, 11];
 
 fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
-    // ばねを入れる回転自由度を内部自由度へ分離し、節点回転との間に材端ばねを
-    // 挟んで静縮約する（弾性梁の材端解放と同一の定式化）。
     let releases = [(SPRING_ROT_DOFS[0], k_i), (SPRING_ROT_DOFS[1], k_j)];
     crate::frame::prismatic::condense_end_releases(k_elem, &releases)
 }
 
-/// 材端曲げばねを直列接続した局所剛性（節点自由度 12×12）。
-///
-/// 組み立ての順序は弾性梁 [`crate::frame::beam::BeamElement::local_stiffness`] と同じ土台を
-/// 共有する:
-///
-/// 1. **可撓部**（剛域を除いた長さ `l − li − lj`）で生剛性を組み、端部条件
-///    （ピン・半剛）を静縮約する（`local_stiffness_flex`）。
-/// 2. 材端曲げばね（塑性ヒンジ）を強軸回転自由度へ直列に入れて静縮約する。
-/// 3. 剛域変換で節点自由度へ移す。
-///
-/// 従来は 1. を省いて節点間全長の生剛性へ直接 2.・3. を掛けており、
-/// (a) 剛域を持つ部材の可撓長が全長のままになる、(b) `end_cond` のピン・半剛が
-/// 反映されず両端剛接として解かれる（剛性の過大評価）という食い違いがあった。
-/// ばねは直列なので 1. の接合部ばねと 2. の塑性ばねの順序は結果に影響しない。
 fn compute_kstar(
     elastic: &crate::frame::beam::BeamElement,
     k_flex: &LocalMat,
@@ -246,8 +183,6 @@ fn compute_kstar(
     ktj: f64,
 ) -> LocalMat {
     let k_end = condense_springs(k_flex, kti, ktj);
-    // 剛域長は `local_stiffness_flex` と同じ規則で解決する（可撓長が残らない
-    // 病的な入力は剛域なし扱い。`BeamElement::rigid_lengths`）。
     let (li, lj) = elastic.rigid_lengths();
     elastic.apply_rigid_zone_transform(&k_end, li, lj)
 }
@@ -262,7 +197,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
-        // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
         let kti = self.spring_i.probe(self.trial_rot_i).1;
         let ktj = self.spring_j.probe(self.trial_rot_j).1;
 
@@ -272,16 +206,10 @@ impl ElementBehavior for ConcentratedSpringBeam {
                 "TwoComponent spring model is not yet implemented (P5 §3). Use OneComponent."
             ),
         };
-        // 静縮約済みローカル剛性をグローバル節点系へ回転
         self.elastic.axis.to_global(&k_local)
     }
 
     fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // 復元力は「弾性可撓部の K_flex·û（回転スロットは可撓端回転 θb）」と
-        // 「ばねの履歴モーメント M_s(γ)」から経路整合に評価する（トライアル追従。
-        // Newton 反復中の未確定変位も反映する）。節点の回転自由度にはばねを介して
-        // モーメントが伝わるため、回転スロットはばね側の履歴力で置き換える
-        // （内部平衡の解では両者は一致する）。
         let k_flex = self.k_flex();
         let u_flex = self.u_flex_local();
         let er = SPRING_ROT_DOFS;
@@ -297,7 +225,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
             }
             *f = s;
         }
-        // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
         let ms_i = self.spring_i.probe(self.trial_rot_i).0;
         let ms_j = self.spring_j.probe(self.trial_rot_j).0;
         f_flex[er[0]] = ms_i;
@@ -311,14 +238,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
         }
     }
 
-    /// 現在のばね履歴状態から部材内力分布を返す。
-    ///
-    /// 端部節点力は [`Self::internal_force`]（弾性可撓部の `K_flex·û` と
-    /// ばねの履歴モーメントから経路整合に評価した復元力）であり、接線剛性 ×
-    /// 全変位ではないため降伏後も正しい。これを釣合いで材軸方向へ分配する
-    /// （[`crate::frame::beam::member_forces_from_end_forces`]、ファイバー梁と同規約）。
-    /// 未実装のままトレイト既定の `None` に落ちると、時刻歴応答解析の部材応力
-    /// 履歴が全ステップ空になり、応力図・検定から当該部材が無言で欠落する。
     fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         let f_global = self.internal_force(ctx);
         let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
@@ -333,11 +252,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
         let du_global: [f64; 12] = std::array::from_fn(|i| du.data[i]);
         let du_local = self.elastic.axis.rotate_to_local(&du_global);
-        // N-M 相関: バネの trial より先に現在軸力で降伏モーメントを更新する
         self.apply_mn_interaction(Some(&du_local));
         self.elastic.update_state(du, commit, _ctx);
-        // 節点変位のトライアル更新後に内部平衡（可撓端回転）を解き直し、
-        // ばね変形（相対回転）のトライアル状態を確定する。
         self.solve_internal_equilibrium();
         if commit {
             self.spring_i.commit();
@@ -360,10 +276,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
     fn snapshot_state(&self) -> Box<dyn Any> {
         let materials: Vec<Box<dyn UniaxialMaterial>> =
             vec![self.spring_i.clone_box(), self.spring_j.clone_box()];
-        // 弾性梁部分の変位状態（committed/trial）もスナップショットへ含める。
-        // これを欠くと、非収束ステップのロールバック（restore_state）後に
-        // 弾性部のトライアル変位だけが失敗した反復の値のまま残ってしまう。
-        // 可撓端回転（内部自由度）も同じ理由で含める。
         Box::new((
             materials,
             [self.rot_i, self.rot_j, self.trial_rot_i, self.trial_rot_j],
@@ -414,9 +326,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
-        // 弾性梁部分の変位（committed/trial）もチェックポイントへ含める。
-        // これを欠くと、レジューム時に弾性部の内力が変位 0 から再計算されて
-        // 不整合になる（snapshot_state と同じ理由。FiberBeam の直列化と同規約）。
         let cp = ConcentratedSpringCheckpoint {
             rot_i: self.rot_i,
             rot_j: self.rot_j,
@@ -456,7 +365,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 }
 
-/// [`ConcentratedSpringBeam`] のチェックポイント形式（serialize/deserialize 共用）。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ConcentratedSpringCheckpoint {
     rot_i: f64,

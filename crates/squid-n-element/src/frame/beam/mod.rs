@@ -1,14 +1,4 @@
-//! 弾性梁要素（剛域・端条件・SRC 等価換算を含む）。
-//!
-//! 責務ごとにサブモジュールへ分割する:
-//! - [`element`] — データ型（`BeamElement`・`MemberForces`）
-//! - [`construct`] — モデルデータからの `BeamElement` 構築
-//! - [`stiffness_factors`] — スラブ協力幅・合成梁・壁エレメント上下大梁の剛性倍率
-//! - [`stiffness`] — 弾性剛性行列 12×12 の構築（剛域変換・端部ばね静縮約）
-//! - [`forces`] — 節点変位からの部材内力復元
-//! - [`behavior`] — `ElementBehavior` トレイト実装
-//! - [`rigid_zone`] — 剛域の自動算定
-//! - [`torsion`] — 部材のねじり剛性の既定モデル化（i 端ねじれ解放）
+//! 弾性梁要素。
 
 mod behavior;
 mod construct;

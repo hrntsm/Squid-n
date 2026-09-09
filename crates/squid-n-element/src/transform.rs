@@ -4,14 +4,7 @@ use squid_n_core::model::{ElementData, Model};
 
 /// 2 節点線材の端部幾何（節点 ID・節点座標・節点間距離）。
 ///
-/// 線材要素の構築は例外なく「2 節点を引く → 座標を得る → 節点間距離を測る →
-/// 局所座標系を組む」という順で始まる。前半 3 つは要素種別に依らないためここへ
-/// 集約する。局所座標系の組み方は零長要素の扱いが要素ごとに異なる（節点バネは
-/// 単位回転、免震支承は鉛直を既定とする）ため、[`Self::local_frame`] を使うか
-/// 各要素で `LocalFrame::from_nodes` を呼ぶかは呼び出し側が決める。
-///
-/// 節点 ID が範囲外のときは原点へ落とす。要素が壊れたモデルでも構築自体は通し、
-/// 検出は解析前チェックに委ねる（断面・材料の引き当てと同じ方針）。
+/// 節点 ID が範囲外のときは原点へ落とす。
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EndGeometry {
     /// 両端の節点 ID（i 端, j 端）。
@@ -40,8 +33,7 @@ impl EndGeometry {
         }
     }
 
-    /// i 端から j 端へ向かう局所座標系。零長要素を特別扱いしない要素向け
-    /// （`LocalFrame::from_nodes` が長さ 1 へ退避させる既定の扱いに従う）。
+    /// i 端から j 端へ向かう局所座標系。
     pub(crate) fn local_frame(&self, ref_vec: [f64; 3]) -> LocalFrame {
         LocalFrame::from_nodes(self.coords[0], self.coords[1], ref_vec)
     }
@@ -57,27 +49,18 @@ impl LocalFrame {
         use squid_n_core::geom::vec3;
 
         let d = vec3::sub(p_j, p_i);
-        // 零長要素（2 節点が同一座標）は材軸方向を定義できないため、長さ 1 の
-        // 退化しないスケールに置き換えて ex を全体 X 方向へ倒す。
         let l = vec3::norm(d);
         let l = if l < 1e-12 { 1.0 } else { l };
 
         let ex = vec3::scale(d, 1.0 / l);
 
-        // ref_vec から材軸成分を抜いた残差（グラム・シュミット）。ex は単位ベクトル
-        // なので、内積を係数にそのまま引けばよい。
         let reject_ex = |v: [f64; 3]| vec3::sub(v, vec3::scale(ex, vec3::dot(v, ex)));
 
-        // 正規化の除算は `vec3::unit` へ寄せない。`unit` の縮退判定は mm 座標を
-        // 前提とした `ZERO_TOL`（1e-9）だが、ここで測るのは無次元の残差ベクトルで
-        // あり、判定値 1e-12 の意味が違う。
         let mut ey = reject_ex(ref_vec);
         let eyl = vec3::norm(ey);
         if eyl > 1e-12 {
             ey = [ey[0] / eyl, ey[1] / eyl, ey[2] / eyl];
         } else {
-            // ref_vec が材軸と平行で残差が消えた場合は、材軸から最も傾いた
-            // 全体軸を代わりの基準に採る。
             let alt = reject_ex(if ex[0].abs() < 0.9 {
                 [1.0, 0.0, 0.0]
             } else {
@@ -128,7 +111,6 @@ impl LocalFrame {
         let n = 12;
         let rt = self.make_r12_transpose();
         let r = self.make_r12();
-        // K_global = R^T * K_local * R
         let mut tmp = vec![0.0; n * n];
         for i in 0..n {
             for j in 0..n {
@@ -180,12 +162,7 @@ impl LocalFrame {
 
     /// 全体座標系の要素変位から、局所座標系の材端力 `f_local = K_local·(R·u)` を返す。
     ///
-    /// 弾性要素（[`crate::springs::spring`] の節点バネ・[`crate::frame::truss`] の
-    /// トラス）が `recover_forces` で断面力を組み立てる前半部分。要素が返す断面力の
-    /// 形（バネは 6 成分すべて・トラスは軸力のみ）は要素ごとに違うため、共有できるのは
-    /// ここまでで、符号規約の適用は各要素に残る。
-    ///
-    /// `u_elem` が 12 成分に満たない場合は `None`（要素の自由度が揃っていない）。
+    /// `u_elem` が 12 成分に満たない場合は `None`。
     pub(crate) fn local_end_forces(&self, k_local: &LocalMat, u_elem: &[f64]) -> Option<[f64; 12]> {
         if u_elem.len() < 12 {
             return None;

@@ -1,4 +1,4 @@
-//! 免震支承材要素（各免震部材指針・製品技術資料。Category B）。
+//! 免震支承材要素。
 //!
 //! 2 節点要素。局所 x 軸（部材軸＝鉛直）は弾性軸ばね Kv、局所 y・z 軸（水平）は
 //! 非線形せん断ばねでモデル化する。回転自由度は剛（モーメントを剛に伝達）とする。
@@ -6,15 +6,12 @@
 //! ## 水平せん断ばねのモデル
 //! - **積層ゴム系（`IsolatorKind::LaminatedRubber`）**: 各水平方向を独立な
 //!   バイリニア（初期剛性 K1・二次剛性 K2・特性耐力 Qd）でモデル化する。
-//!   マルチシアスプリングの各方向独立性（一方向加力で直交方向は剛性を保持）に対応。
 //! - **弾性すべり支承（`IsolatorKind::ElasticSliding`）**: 摩擦ばね。滑り出しを
 //!   水平 2 方向の**合力ベクトル**で判定し（`|Q| ≥ Qmax=μ·N`）、滑り後は合力を
 //!   Qmax に保つ 2 次元摩擦モデル（曲げは伝達しない）。
 //!
 //! ## 座標系・状態
-//! 内部状態（`trial_disp`）は局所系で保持し、トレイト境界でグローバル系へ回転する
-//! （`FiberBeam` と同じ規約）。せん断バイリニアの履歴は `squid_n_material::Bilinear`
-//! （変位=ひずみ、力=応力とみなす）で追跡する。
+//! 内部状態（`trial_disp`）は局所系で保持し、トレイト境界でグローバル系へ回転する。
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
@@ -27,7 +24,7 @@ use std::any::Any;
 
 /// 回転自由度に与える剛剛性 [N·mm/rad]（免震支承はモーメントを剛に伝達）。
 const RIGID_ROT: f64 = 1.0e12;
-/// 摩擦ばねの滑り後（塑性域）の残留せん断剛性比（数値安定用の微小値）。
+/// 摩擦ばねの滑り後（塑性域）の残留せん断剛性比。
 const FRICTION_POST_SLIP_RATIO: f64 = 1.0e-4;
 /// 2 節点間距離が実質ゼロとみなす閾値 [mm]。
 const ZERO_LENGTH_EPS: f64 = 1e-9;
@@ -48,8 +45,8 @@ enum ShearModel {
         tr_fz: f64,
         tr_slip: bool,
     },
-    /// 歪依存積層ゴム系（LRB 統一型・高減衰ゴム）: 特性耐力 Qd(γ)・二次剛性 K2(γ) が
-    /// 歪 γ=|δ|/H に依存する各方向独立バイリニア。製品技術資料の歪依存特性（Category B）。
+    /// 歪依存積層ゴム系: 特性耐力 Qd(γ)・二次剛性 K2(γ) が
+    /// 歪 γ=|δ|/H に依存する各方向独立バイリニア。
     StrainDependent {
         sy: StrainBilinear,
         sz: StrainBilinear,
@@ -95,13 +92,12 @@ impl StrainBilinear {
     fn trial(&mut self, u: f64, qd: f64, k2: f64) {
         let qd = qd.max(1e-9);
         let k2 = k2.clamp(0.0, self.k1 * 0.999);
-        // 塑性係数 Hp: 降伏後接線 = k1·Hp/(k1+Hp) = k2 → Hp = k1·k2/(k1−k2)。
         let hp = if self.k1 > k2 {
             self.k1 * k2 / (self.k1 - k2)
         } else {
             1e18
         };
-        let alpha = hp * self.pl; // 背応力（kinematic hardening）。
+        let alpha = hp * self.pl;
         let f_tr = self.k1 * (u - self.pl);
         let phi = (f_tr - alpha).abs() - qd;
         if phi <= 0.0 {
@@ -151,7 +147,6 @@ impl IsolatorElement {
         let [p0, p1] = geom.coords;
         let len = geom.length;
         let axis = if len < ZERO_LENGTH_EPS {
-            // 零長支承は鉛直（局所 x=全体 z）を既定とする。
             LocalFrame::from_nodes(p0, [p0[0], p0[1], p0[2] + 1.0], data.local_axis.ref_vector)
         } else {
             LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector)
@@ -165,8 +160,6 @@ impl IsolatorElement {
             .unwrap_or_default();
 
         let shear = match props.kind {
-            // 積層ゴム系（天然・鉛・高減衰）。ゴム総厚 H>0 かつ歪依存係数が非自明なら
-            // 歪依存バイリニア、そうでなければ従来の定数バイリニア。
             IsolatorKind::LaminatedRubber
             | IsolatorKind::LeadRubber
             | IsolatorKind::HighDampingRubber => {
@@ -225,7 +218,6 @@ impl IsolatorElement {
         let uz = self.trial_disp[8] - self.trial_disp[2];
         match &self.shear {
             ShearModel::Laminated { sy, sz } => {
-                // Bilinear は committed 状態を保持するので、非破壊評価のため複製して trial。
                 let mut sy2 = sy.clone();
                 let mut sz2 = sz.clone();
                 let (fy, ty) = sy2.trial(uy);
@@ -255,7 +247,6 @@ impl IsolatorElement {
                 cqd,
                 ckd,
             } => {
-                // 非破壊評価: 複製して現在変位で試行。
                 let gamma = ((uy * uy + uz * uz).sqrt() / h.max(1e-9)).abs();
                 let qd = qd0 * poly3(cqd, gamma);
                 let k2 = k2_0 * poly3(ckd, gamma);
@@ -281,7 +272,6 @@ impl ElementBehavior for IsolatorElement {
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         let kv = self.props.kv.max(0.0);
         let (_, (ty, tz)) = self.shear_forces();
-        // 局所系ばね: 軸(0)=Kv、せん断(1,2)=接線、回転(3,4,5)=剛。
         let k_local = [kv, ty, tz, RIGID_ROT, RIGID_ROT, RIGID_ROT];
         let mut m = LocalMat::zeros(12);
         for (d, &kd) in k_local.iter().enumerate() {
@@ -299,13 +289,11 @@ impl ElementBehavior for IsolatorElement {
     fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         let kv = self.props.kv.max(0.0);
         let ((fy, fz), _) = self.shear_forces();
-        // 局所相対変位。
         let rel = |d: usize| self.trial_disp[d + 6] - self.trial_disp[d];
         let fx = kv * rel(0);
         let mrx = RIGID_ROT * rel(3);
         let mry = RIGID_ROT * rel(4);
         let mrz = RIGID_ROT * rel(5);
-        // 局所系内力（i 端 = −f, j 端 = +f）。
         let f_local = [-fx, -fy, -fz, -mrx, -mry, -mrz, fx, fy, fz, mrx, mry, mrz];
         let f_global = self.axis.rotate_to_global(&f_local);
         LocalVec {
@@ -314,9 +302,6 @@ impl ElementBehavior for IsolatorElement {
     }
 
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
-        // 現在状態の断面力を両評価点一定で返す（時刻歴・増分解析の記録用）。
-        // 符号規約は節点バネ（`spring.rs::recover_forces`）と同じ:
-        // N は引張正、せん断は i 端節点力そのまま、モーメントは i 端の符号反転。
         let kv = self.props.kv.max(0.0);
         let ((fy, fz), _) = self.shear_forces();
         let rel = |d: usize| self.trial_disp[d + 6] - self.trial_disp[d];
@@ -324,7 +309,6 @@ impl ElementBehavior for IsolatorElement {
         let mrx = RIGID_ROT * rel(3);
         let mry = RIGID_ROT * rel(4);
         let mrz = RIGID_ROT * rel(5);
-        // i 端局所節点力は [-fx, -fy, -fz, -mrx, -mry, -mrz]。
         let v = [fx, -fy, -fz, mrx, mry, mrz];
         Some(crate::frame::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
@@ -359,19 +343,16 @@ impl ElementBehavior for IsolatorElement {
                 tr_fz,
                 tr_slip,
             } => {
-                // 弾性予測（前回確定塑性変位から）。
                 let fy_pred = *k1 * (uy - *pl_y);
                 let fz_pred = *k1 * (uz - *pl_z);
                 let norm = (fy_pred * fy_pred + fz_pred * fz_pred).sqrt();
                 if norm <= *qmax || norm < 1e-12 {
-                    // 固着（弾性）。
                     *tr_fy = fy_pred;
                     *tr_fz = fz_pred;
                     *tr_pl_y = *pl_y;
                     *tr_pl_z = *pl_z;
                     *tr_slip = false;
                 } else {
-                    // 滑り: 合力を Qmax に射影し、塑性変位を更新。
                     let scale = *qmax / norm;
                     *tr_fy = fy_pred * scale;
                     *tr_fz = fz_pred * scale;
@@ -519,10 +500,6 @@ impl ElementBehavior for IsolatorElement {
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
         use squid_n_material::UniaxialMaterial;
-        // 免震装置は履歴（バイリニアの塑性変位・摩擦の滑り変位）を保持するため、
-        // チェックポイントに変位とせん断ばね状態の両方を含める。トレイト既定の
-        // 空バイト列のままではレジューム時に履歴が初期状態へ戻り、以降の応答が
-        // 別の履歴経路を辿ってしまう（他要素と同じ規約で明示的に直列化する）。
         let (laminated, friction, strain) = match &self.shear {
             ShearModel::Laminated { sy, sz } => (
                 Some((sy.serialize_state(), sz.serialize_state())),
@@ -555,7 +532,6 @@ impl ElementBehavior for IsolatorElement {
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
         use squid_n_material::UniaxialMaterial;
-        // 旧チェックポイント（状態未収録・空バイト列）は「状態なし」として許容する。
         if data.is_empty() {
             return Ok(());
         }

@@ -1,7 +1,4 @@
 //! 弾性剛性行列 12×12 の構築。
-//!
-//! Timoshenko 梁の raw 剛性、剛域変換、端部回転ばねの静縮約を経て節点自由度の
-//! 局所剛性 [`BeamElement::local_stiffness`] を組み立てる。
 
 use super::element::BeamElement;
 use crate::behavior::LocalMat;
@@ -67,8 +64,6 @@ impl BeamElement {
         k
     }
 
-    /// 可撓端自由度の剛性を剛体アームで節点自由度へ写す
-    /// （運動学と符号規約は [`crate::frame::rigid_arm`] を参照。ファイバー梁と共有する）。
     pub(crate) fn apply_rigid_zone_transform(
         &self,
         k_flex: &LocalMat,
@@ -78,28 +73,18 @@ impl BeamElement {
         crate::frame::rigid_arm::transform_stiffness(k_flex, li, lj)
     }
 
-    /// 端部条件（剛接・ピン・半剛）を要素剛性へ反映し、12×12（節点自由度のみ）を返す。
-    ///
-    /// 剛接（Fixed）は「節点回転 = 要素端回転」を厳密に満たすため、要素端回転を
-    /// そのまま節点回転自由度に残す（内部自由度・ばね不要）。全端剛接なら raw を
-    /// そのまま返す（ペナルティ近似を用いない厳密な扱い）。
+    /// 端部条件を要素剛性へ反映し、12×12（節点自由度のみ）を返す。
     ///
     /// ピン・半剛の端のみ、要素端回転を内部自由度へ分離し、節点回転との間に
-    /// 回転ばね k_s を挟んで静縮約する（K* = Kaa − Kab·Kbb⁻¹·Kba）。
-    ///   - ピン    (k_s = 0):        要素端回転が自由 → 厳密なモーメント解放
-    ///   - 半剛    (k_s = k_theta):  有限の接合部回転剛性 [N·mm/rad]
-    ///
-    /// ねじれ（rx）は上記に加え、[`BeamElement::torsion_release`] が立つ端でも解放する
-    /// （梁のねじり剛性を期待しない既定モデル化。`beam::torsion` 参照）。
+    /// 回転ばね k_s を挟んで静縮約する。
+    ///   - ピン    (k_s = 0)
+    ///   - 半剛    (k_s = k_theta [N·mm/rad])
     ///
     /// 内部並びは [外部 0..11（節点 ux,uy,uz,rx,ry,rz ×2）, 内部 12..（解放した
     /// 要素端回転を出現順に並べる）]。
     fn condense_end_springs(&self, k_elem: &LocalMat) -> LocalMat {
-        // 回転自由度（局所 index）と所属端（0=i, 1=j）
         const ROT_DOFS: [(usize, usize); 6] = [(3, 0), (4, 0), (5, 0), (9, 1), (10, 1), (11, 1)];
 
-        // Fixed は内部自由度を作らず節点回転に残す（厳密剛接）。
-        // Pinned/SemiRigid のみ内部自由度＋回転ばねを導入する。
         let released_spring = |cond: &EndCondition| -> Option<f64> {
             match cond {
                 EndCondition::Fixed => None,
@@ -108,19 +93,13 @@ impl BeamElement {
             }
         };
 
-        // ねじり剛性 GJ/L がない部材（J≤0・G≤0）の rx は解放しない。解放しても
-        // 縮約行列 Kbb が特異化して縮約の意味がないため（ファイバー梁
-        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb を
-        // `prismatic::condense_end_releases` が補正項の省略として扱う）。
         let has_torsion = self.j > 0.0 && self.g > 0.0;
 
-        // 解放（非剛接）する回転自由度: (要素回転 DOF, ばね剛性 k_s)
         let mut released: SmallVec<[(usize, f64); 6]> = SmallVec::new();
         for &(r, end) in ROT_DOFS.iter() {
             let is_torsion = r == 3 || r == 9;
             let spring = match released_spring(&self.end_cond[end]) {
                 Some(ks) => Some(ks),
-                // 端条件が剛接でも、ねじれ解放が指定された端の rx は解放する。
                 None if is_torsion && self.torsion_release[end] => Some(0.0),
                 None => None,
             };
@@ -136,9 +115,7 @@ impl BeamElement {
 
     /// 剛域長を可撓長が正に残る範囲へ解決した値 (λi, λj)。
     ///
-    /// 合計が部材長以上になる病的な入力（極端に短い部材など）は剛域なしとして扱う。
-    /// 可撓長がゼロ以下では要素が剛性ゼロに退化するためで、規則はファイバー梁と共通
-    /// （[`crate::frame::rigid_arm::resolve_lengths`]）。
+    /// 合計が部材長以上になる場合は剛域なしとして扱う。
     pub(crate) fn rigid_lengths(&self) -> (f64, f64) {
         crate::frame::rigid_arm::resolve_lengths(
             self.rigid.rigid_length_i(),
@@ -147,13 +124,6 @@ impl BeamElement {
         )
     }
 
-    /// 可撓部（剛域を除いた部分）の局所剛性 12×12。剛域変換の**手前**の状態で、
-    /// 端部条件（ピン・半剛）の静縮約まで済ませたもの。
-    ///
-    /// [`Self::local_stiffness`] はこれに剛域変換を掛けたものであり、材端集中ばね梁
-    /// （`concentrated::compute_kstar`）は「これ → 材端塑性ばねの静縮約 → 剛域変換」
-    /// の順で組む。両者が同じ土台を共有することで、剛域・端部条件の扱いが
-    /// 線形要素と非線形要素で食い違わないようにしている。
     pub(crate) fn local_stiffness_flex(&self) -> LocalMat {
         let (li, lj) = self.rigid_lengths();
         let l_flex = self.length - li - lj;
@@ -161,10 +131,6 @@ impl BeamElement {
             let mut beam = self.clone();
             beam.length = l_flex;
             beam.end_cond = [EndCondition::Fixed, EndCondition::Fixed];
-            // 軸・ねじり剛性は剛域で増大させない（断面性能の l0/l 補正）。可撓長 l0 で
-            // 組み立てるため A·(l0/l)・J·(l0/l) を用いると EA/l・GJ/l（いずれも節点間長
-            // 基準）となり、曲げ（せん断を含む）のみ剛域変換で剛とする扱いに揃う。
-            // 剛域なしでは補正 1。
             beam.a = self.a * (l_flex / self.length);
             beam.j = self.j * (l_flex / self.length);
             beam.local_stiffness_raw()
@@ -172,20 +138,13 @@ impl BeamElement {
             LocalMat::zeros(12)
         };
 
-        // 剛域を持たない可とう部で端部ばね静縮約 → 12×12
         self.condense_end_springs(&k_raw)
     }
 
     /// 節点自由度ベースの局所剛性 12×12（剛域変換・端部条件を適用済み）。
-    ///
-    /// 剛性を決めるフィールドは構築後不変のため、初回呼び出しの結果を
-    /// [`BeamElement::local_stiffness_cache`] にキャッシュして使い回す
-    /// （`recover_forces`／`tangent_stiffness`／`internal_force` から毎ステップ
-    /// 呼ばれるため、時刻歴解析での再構築コストを避ける）。
     pub fn local_stiffness(&self) -> LocalMat {
         self.local_stiffness_cache
             .get_or_init(|| {
-                // 剛域変換で節点自由度へ
                 let (li, lj) = self.rigid_lengths();
                 self.apply_rigid_zone_transform(&self.local_stiffness_flex(), li, lj)
             })

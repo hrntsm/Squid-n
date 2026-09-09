@@ -169,7 +169,6 @@ fn test_commit_revert() {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
 
-    // ばね変形は相対回転 γ = θn − θb（節点回転 0.001 がばねと可撓部に分配される）。
     elem.update_state(&du, false, &ctx);
     let g1 = elem.trial_rot_i;
     assert!(g1 > 0.0 && g1 < 0.001, "γ は節点回転の一部: {g1}");
@@ -312,7 +311,6 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
     restored.deserialize_checkpoint(&checkpoint).unwrap();
     let snap_after = restored.snapshot_state();
 
-    // スナップショットの型で比較（ばね変形・可撓端回転 + 弾性梁の committed/trial 変位）
     type Snap = (
         Vec<Box<dyn UniaxialMaterial>>,
         [f64; 4],
@@ -326,8 +324,6 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
         assert_relative_eq!(before.1[k], after.1[k], epsilon = 1e-12);
         assert_relative_eq!(before.2[k], after.2[k], epsilon = 1e-12);
     }
-    // 弾性梁部分の変位もチェックポイントを往復して保存されること
-    // （update_state で非零になっているため、欠落していればここで検出される）。
     assert!(
         before.3.iter().any(|v| v.abs() > 1e-15),
         "前提: committed が非零"
@@ -343,11 +339,10 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
 }
 #[test]
 fn test_mn_interaction_reduces_spring_yield() {
-    // 軸力 |N| = 0.5·n_allow で降伏モーメントが my0 の半分に更新される
     let my0 = 1.0e7;
-    let elastic = make_test_beam(); // E=205000, A=80000, L=3000 → EA/L=5.4667e6
+    let elastic = make_test_beam();
     let ea_over_l = 205000.0 * 80000.0 / 3000.0;
-    let n_allow = ea_over_l; // 軸変位 0.5mm で |N|/n_allow = 0.5 になるよう設定
+    let n_allow = ea_over_l;
     let spring_i = Box::new(Bilinear::new(1.0e12, my0, 0.01));
     let spring_j = Box::new(Bilinear::new(1.0e12, my0, 0.01));
     let mut elem = ConcentratedSpringBeam::new_one_component(elastic, spring_i, spring_j)
@@ -356,7 +351,6 @@ fn test_mn_interaction_reduces_spring_yield() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    // j端に軸方向（ローカルx=グローバルx）圧縮変位 0.5mm
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
@@ -364,15 +358,12 @@ fn test_mn_interaction_reduces_spring_yield() {
     assert_relative_eq!(spring_fy(&*elem.spring_i), 0.5 * my0, max_relative = 1e-9);
     assert_relative_eq!(spring_fy(&*elem.spring_j), 0.5 * my0, max_relative = 1e-9);
 
-    // トライアル追従化により反復中の増分は累積されるため、+0.5 を追加すると
-    // 累積軸変位は 0 に戻り、低減も解除される（Newton 反復として正しい挙動）。
     let du_t = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du_t, false, &ctx);
     assert_relative_eq!(spring_fy(&*elem.spring_i), my0, max_relative = 1e-9);
 
-    // 引張でも同じ低減（|N| 基準）: 新しい要素に引張変位 +0.5mm を与えて検証。
     let elastic_t = make_test_beam();
     let spring_ti = Box::new(Bilinear::new(1.0e12, my0, 0.01));
     let spring_tj = Box::new(Bilinear::new(1.0e12, my0, 0.01));
@@ -384,7 +375,6 @@ fn test_mn_interaction_reduces_spring_yield() {
 
 #[test]
 fn test_mn_interaction_disabled_keeps_yield() {
-    // mn 未設定なら軸力がかかっても降伏モーメントは変わらない
     let my0 = 1.0e7;
     let elastic = make_test_beam();
     let spring_i = Box::new(Bilinear::new(1.0e12, my0, 0.01));
@@ -402,7 +392,6 @@ fn test_mn_interaction_disabled_keeps_yield() {
 
 #[test]
 fn test_mn_interaction_floor_at_high_axial() {
-    // |N| が n_allow を超えても降伏モーメントは 0.02·my0 で下げ止まる
     let my0 = 1.0e7;
     let elastic = make_test_beam();
     let ea_over_l = 205000.0 * 80000.0 / 3000.0;
@@ -422,9 +411,6 @@ fn test_mn_interaction_floor_at_high_axial() {
 
 #[test]
 fn test_mn_interaction_yield_moment_in_response() {
-    // 降伏後のバネモーメント上限が M_lim に低減されることを応答で確認:
-    // 軸圧縮 0.5mm（M_lim = 0.5·my0）の状態で大回転を与えると、
-    // バネの trial モーメントは ≈ M_lim で頭打ちになる
     let my0 = 1.0e7;
     let elastic = make_test_beam();
     let ea_over_l = 205000.0 * 80000.0 / 3000.0;
@@ -435,12 +421,10 @@ fn test_mn_interaction_yield_moment_in_response() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    // 軸圧縮 + i端大回転を同時に与える
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.1, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du, false, &ctx);
-    // バネ i の trial 応力（モーメント）は M_lim = 0.5·my0 で飽和
     let (m, _) = elem.spring_i.clone_box().trial(0.1);
     assert_relative_eq!(m, 0.5 * my0, max_relative = 1e-6);
 }
@@ -455,14 +439,12 @@ fn test_mn_interaction_yield_moment_in_response() {
 #[test]
 fn test_spring_acts_on_strong_axis_rz() {
     let mut beam = make_test_beam();
-    // 要素 iz（Mz 面＝強軸）を iy（My 面＝弱軸）の 10 倍にする。
     beam.iz = 1.0e9;
     beam.iy = 1.0e8;
     let k_raw = beam.local_stiffness_raw();
     let k_stiff = condense_springs(&k_raw, 1e30, 1e30);
     let k_soft = condense_springs(&k_raw, 1.0, 1.0);
 
-    // 強軸（rz: DOF 5・11）はばねが柔らかいと大きく低下する。
     for &dof in &[5usize, 11] {
         assert!(
             k_soft.get(dof, dof) < k_stiff.get(dof, dof) * 0.5,
@@ -471,7 +453,6 @@ fn test_spring_acts_on_strong_axis_rz() {
             k_stiff.get(dof, dof)
         );
     }
-    // 弱軸（ry: DOF 4・10）はばねの影響を受けない。
     for &dof in &[4usize, 10] {
         assert_relative_eq!(k_soft.get(dof, dof), k_stiff.get(dof, dof), epsilon = 1.0);
     }
@@ -521,9 +502,6 @@ fn test_compute_kstar_matches_elastic_beam_with_rigid_zone_and_pin() {
         beam.end_cond = end_cond;
 
         let k_ref = beam.local_stiffness();
-        // ばね剛性を十分大きく取れば材端ばねは剛接と同等になる。ばね剛性を
-        // 梁の回転剛性（≒3e11）より極端に大きくすると静縮約 Kaa−Kab·Kbb⁻¹·Kba が
-        // 桁落ちするため、比 1e6〜1e7 程度に留める（直列剛性の誤差は 1e-7 以下）。
         let k = compute_kstar(&beam, &beam.local_stiffness_flex(), 1e18, 1e18);
         for i in 0..12 {
             for j in 0..12 {
@@ -540,9 +518,7 @@ fn test_compute_kstar_matches_elastic_beam_with_rigid_zone_and_pin() {
 }
 
 /// i 端ピンの部材では、材端ばねの有無に依らず i 端の強軸モーメント剛性が 0 に
-/// なること（`end_cond` が材端集中ばね梁でも反映されている）。
-/// 従来は `local_stiffness_raw()`（端部条件未反映）から組んでいたため、
-/// ピン端が両端剛接として解かれていた。
+/// なること。
 #[test]
 fn test_compute_kstar_respects_pinned_end() {
     use squid_n_core::model::EndCondition;
@@ -562,8 +538,6 @@ fn test_compute_kstar_respects_pinned_end() {
 }
 
 /// `state_member_forces` が復元力（`internal_force`）と整合した内力分布を返すこと。
-/// 従来はトレイト既定の `None` に落ち、非線形解析（時刻歴）の部材応力履歴が
-/// 全ステップ空のまま無言で欠落していた。
 #[test]
 fn test_state_member_forces_matches_internal_force() {
     let mut elem = make_test_element();
@@ -580,8 +554,6 @@ fn test_state_member_forces_matches_internal_force() {
         .expect("材端集中ばね梁は state_member_forces を実装しているはず");
     assert_eq!(mf.at.len(), 3, "評価断面数（0/0.5/1.0）と一致するはず");
 
-    // 端部の断面内力は復元力の端部節点力（局所系）と釣合いで対応する。
-    // i 端: Mz = -f5、j 端: Mz = +f11（member_forces_from_end_forces の規約）。
     let f = elem.internal_force(&ctx);
     let arr: [f64; 12] = std::array::from_fn(|i| f.data[i]);
     let f_local = elem.elastic.axis.rotate_to_local(&arr);

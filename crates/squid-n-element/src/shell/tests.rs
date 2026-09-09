@@ -67,7 +67,6 @@ fn test_local_stiffness_symmetric() {
 fn test_drilling_prevents_singularity() {
     let shell = make_flat_shell(10.0);
     let k = shell.local_stiffness();
-    // Check diagonal of drilling DOFs are non-zero
     for i in 0..4 {
         let idx = i * 6 + 5;
         assert!(k.get(idx, idx) > 0.0, "drilling DOF {i} diagonal is zero");
@@ -80,7 +79,6 @@ fn test_rigid_floor_disables_membrane() {
     shell.membrane_active = false;
     let mut k = shell.local_stiffness();
     shell.apply_rigid_floor_membrane_off(&mut k);
-    // Ux, Uy, Rz diagonals should be 1.0 (penalized)
     for i in 0..4 {
         let bo = i * 6;
         assert!((k.get(bo, bo) - 1.0).abs() < 1e-12, "Ux[{i}] should be 1.0");
@@ -154,16 +152,9 @@ fn test_bending_b_constant_curvature() {
     let kap_y = 2e-5;
     let kap_xy = 0.5e-5;
 
-    // For constant curvature: θ_x = -kap_y * y, θ_y = kap_x * x + kap_xy * y,
-    // w = 0.5*(kap_x*x² + kap_xy*x*y - kap_xy*x*y? no, that's complex)
-    // Actually for bending: κ_x = dθ_y/dx, κ_y = -dθ_x/dy, κ_xy = dθ_y/dy - dθ_x/dx
-    // So set: θ_x = -kap_y * y,  θ_y = kap_x * x
-    // Then κ_x = kap_x, κ_y = kap_y, κ_xy = 0 + 0 = 0
-    // But κ_xy is missing. Let's use a more complete field:
-    // θ_x = -kap_y * y,  θ_y = kap_x * x + kap_xy * y
-    // κ_x = dθ_y/dx = kap_x  ✓
-    // κ_y = -dθ_x/dy = kap_y  ✓
-    // κ_xy = dθ_y/dy - dθ_x/dx = kap_xy - 0 = kap_xy  ✓
+    // 定曲率場の変位則: θ_x = -kap_y * y, θ_y = kap_x * x + kap_xy * y
+    // （κ_x = dθ_y/dx = kap_x、κ_y = -dθ_x/dy = kap_y、
+    //   κ_xy = dθ_y/dy - dθ_x/dx = kap_xy）。
 
     let coords = &shell.coords;
     let nodes_disp: Vec<f64> = (0..4)
@@ -404,9 +395,6 @@ fn test_patch_membrane_constant_stress() {
     assert!((strain[2] - gam_xy).abs() < 1e-12, "γ_xy={}", strain[2]);
 }
 
-// -----------------------------------------------------------------------
-// 真のパッチテスト（歪みメッシュ・機械精度）— 仕様 §9.2（唯一の厳密ゲート）
-// -----------------------------------------------------------------------
 fn distorted_patch() -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
     // 中央節点を非対称に歪ませた 9 節点・4 要素パッチ。内部=節点4。
     let coords = vec![
@@ -563,11 +551,6 @@ fn test_mitc4_constant_shear_patch_skewed() {
     // MITC4 は任意形状で一定横せん断場を厳密に再現しなければならない。
     // w=0・θx=0・θy=a（一定）は γ_xz = ∂w/∂x + θy = a, γ_yz = ∂w/∂y − θx = 0 の
     // 一定せん断場に相当する。平行四辺形（ヤコビアン非対称）で検証する。
-    //
-    // 回帰: 共変→デカルト射影 γ = J⁻¹·e_cov を、従来は jit(=J⁻ᵀ) の行アクセスで
-    // (J⁻ᵀ)·e として適用していた（正: 列アクセス ＝ J⁻¹·e）。ヤコビアンが
-    // 非対称な歪んだ四辺形でのみ顕在化し（矩形では jit が対角のため一致）、
-    // 一定せん断パッチテストが破れていた。
     let coords = [
         [0.0, 0.0, 0.0],
         [100.0, 0.0, 0.0],
@@ -651,8 +634,6 @@ fn test_patch_bending_distorted() {
 
 /// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
 /// 反映され（内力 = 接線剛性·u と厳密に一致）、剛体並進では内力ゼロとなること。
-/// 従来は internal_force が恒常的にゼロを返しており、非線形解析でシェルが
-/// 復元力を負担していなかった。
 ///
 /// K·u 比較は「internal_force と tangent_stiffness が将来ズレない」ことの
 /// 回帰ガードであり、K の値そのものの正しさは本ファイルのパッチテスト群

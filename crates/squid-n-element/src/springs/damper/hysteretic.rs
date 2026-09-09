@@ -12,9 +12,8 @@ use squid_n_core::model::{ElementData, Model};
 use std::any::Any;
 
 /// 履歴型（弾塑性バイリニア）ダンパー要素（2 節点・軸方向）。
-/// 鋼材系ダンパー（SUB／アンボンドブレース／二重鋼管座屈補剛ブレース／鉛／U 型等、
-/// 制振部材の標準的な弾塑性バイリニア）。初期軸剛性 `k1`・降伏軸力 `qy`・第2剛性 `k2`
-/// の弾塑性軸ばね。変位依存のため静的・動的いずれの解析でも作用する（`dt` 不要）。
+/// 初期軸剛性 `k1`・降伏軸力 `qy`・第2剛性 `k2` の弾塑性軸ばね。
+/// 変位依存のため静的・動的いずれの解析でも作用する（`dt` 不要）。
 #[derive(Clone)]
 pub struct HystereticDamperElement {
     pub nodes: [NodeId; 2],
@@ -37,7 +36,6 @@ impl HystereticDamperElement {
         Self {
             nodes: [n0, n1],
             axis,
-            // Bilinear(e=k1, fy=qy, hardening=k2/k1) を軸力–伸びの弾塑性則として用いる。
             mat: squid_n_material::Bilinear::new(k1, qy, hardening),
             committed_elong: 0.0,
             trial_elong: 0.0,
@@ -45,7 +43,6 @@ impl HystereticDamperElement {
     }
 
     fn axial(&mut self, elong: f64) -> (f64, f64) {
-        // Bilinear::trial は (応力, 接線) を返すが、ここでは (軸力, 軸剛性) に相当。
         use squid_n_material::UniaxialMaterial;
         self.mat.trial(elong)
     }
@@ -70,7 +67,6 @@ impl ElementBehavior for HystereticDamperElement {
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
-        // trial を汚さないよう複製して接線のみ取得。
         use squid_n_material::UniaxialMaterial;
         let mut m = self.mat.clone();
         let (_f, k) = m.trial(self.trial_elong);
@@ -111,7 +107,6 @@ impl ElementBehavior for HystereticDamperElement {
 
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         use squid_n_material::UniaxialMaterial;
-        // trial を汚さないよう複製し、現在状態の復元力（引張正）を取り出す。
         let mut m = self.mat.clone();
         let (n, _k) = m.trial(self.trial_elong);
         let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -150,9 +145,6 @@ impl ElementBehavior for HystereticDamperElement {
         );
         self.committed_elong = *ce;
         self.trial_elong = *te;
-        // 同一プロセス内で serialize_state した信頼済みバイト列のため、復元失敗は
-        // snapshot_state との実装対応が崩れたプログラムエラー。無音で据え置くと
-        // ロールバック漏れの履歴汚染で解析が続行してしまうため診断付きで停止する。
         self.mat
             .deserialize_state(ms)
             .expect("HystereticDamperElement::restore_state: 材料状態の復元");
@@ -160,9 +152,6 @@ impl ElementBehavior for HystereticDamperElement {
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
         use squid_n_material::UniaxialMaterial;
-        // 弾塑性軸ばねの履歴（塑性変位）と伸びの確定/試行値をチェックポイントへ
-        // 含める。トレイト既定の空バイト列のままではレジューム時に履歴が初期状態へ
-        // 戻り、以降の応答が別の履歴経路を辿ってしまう。
         bincode::serialize(&(
             self.committed_elong,
             self.trial_elong,
@@ -176,7 +165,6 @@ impl ElementBehavior for HystereticDamperElement {
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
         use squid_n_material::UniaxialMaterial;
-        // 旧チェックポイント（状態未収録・空バイト列）は「状態なし」として許容する。
         if data.is_empty() {
             return Ok(());
         }
@@ -218,17 +206,15 @@ mod tests {
 
     #[test]
     fn test_hysteretic_bilinear_elastic_then_yield() {
-        // 弾性域: N=k1·elong。降伏後: N≈qy+k2·(elong−δy)。
         let k1 = 1000.0;
         let qy = 100.0;
         let mut d = hyst_damper(k1, qy, 0.02);
         let model = Model::default();
-        let dy = qy / k1; // 0.1
+        let dy = qy / k1;
         drive(&mut d, 0.5 * dy, &model);
         let ctx = Ctx { model: &model };
         let f_el = d.internal_force(&ctx).data[6];
         assert!((f_el - k1 * 0.5 * dy).abs() < 1e-6, "elastic: {f_el}");
-        // 降伏後（5δy）。
         drive(&mut d, 5.0 * dy, &model);
         let f_pl = d.internal_force(&ctx).data[6];
         let expect = qy + 0.02 * k1 * (5.0 * dy - dy);
@@ -240,7 +226,6 @@ mod tests {
 
     #[test]
     fn test_hysteretic_active_in_static_no_dt() {
-        // 履歴型は dt 不要（set_time_step を呼ばずとも力を発生＝静的で作用）。
         let mut d = hyst_damper(1000.0, 100.0, 0.02);
         let model = Model::default();
         let ctx = Ctx { model: &model };
@@ -253,7 +238,6 @@ mod tests {
 
     #[test]
     fn test_hysteretic_dissipates_energy() {
-        // 1 サイクルの履歴ループ面積（散逸エネルギー）が正。
         let k1 = 1000.0;
         let qy = 100.0;
         let mut d = hyst_damper(k1, qy, 0.02);
@@ -278,8 +262,6 @@ mod tests {
     }
 
     /// チェックポイントの往復で履歴（塑性変位）と伸びが完全復元されること。
-    /// 従来はトレイト既定（空バイト列）のままで、レジューム時に履歴ダンパーだけが
-    /// 初期状態へ戻っていた。
     #[test]
     fn test_checkpoint_roundtrip_restores_hysteresis() {
         let k1 = 1000.0;
@@ -287,7 +269,6 @@ mod tests {
         let mut d = hyst_damper(k1, qy, 0.02);
         let model = Model::default();
         let ctx = Ctx { model: &model };
-        // 降伏域まで押し込んで履歴（塑性変位）を作る。
         drive(&mut d, 3.0 * qy / k1, &model);
         let f_before = d.internal_force(&ctx).data[6];
 
@@ -304,7 +285,6 @@ mod tests {
             "復元後の内力が一致すべき: {f_before} vs {f_after}"
         );
 
-        // 空バイト列（旧チェックポイント）は「状態なし」として成功する。
         let mut fresh = hyst_damper(k1, qy, 0.02);
         assert!(fresh.deserialize_checkpoint(&[]).is_ok());
     }

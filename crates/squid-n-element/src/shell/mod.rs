@@ -34,13 +34,8 @@ pub use element::ShellElement;
 pub use frame::ShellFrame;
 pub use resultants::ShellResultants;
 
-// tests（shell::tests）が `use super::*` から直接参照する自由関数を供給。
 #[cfg(test)]
 pub(crate) use shape::{dshape_cart, shape_2d};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(non_snake_case)]

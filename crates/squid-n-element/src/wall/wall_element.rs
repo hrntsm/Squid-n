@@ -1,22 +1,4 @@
-//! 耐震壁（壁エレメントモデル）要素（RC規準の耐震壁）。
-//!
-//! 鉛直の梁要素（壁柱＝間柱）を両端ピンの剛梁ではさみ込んだ 4 節点 24 自由度要素。
-//! 剛梁と壁柱は剛接合、剛梁の両端はピン接合のため、四隅節点の並進のみが
-//! 壁柱端の並進（両隅の平均）と回転（剛梁の剛体回転＝両隅の変位差/剛梁長）に
-//! 伝達され、四隅節点の回転自由度には剛性を与えない（＝ピン）。
-//! 剛梁は実要素ではなく、この変換（剛域変換に相当）で表現する。
-//!
-//! 壁柱の断面性能:
-//! - 軸剛性: 壁板断面積 t·lw に鉄筋剛性を考慮（壁筋比 ps を縦横共通とみなし
-//!   (1+(n−1)·ps) を乗じる近似。n=Es/Ec）
-//! - 曲げ剛性: 壁板断面の面内断面2次モーメント t·lw³/12（側柱のローカル I は
-//!   不算入）に同係数を乗じる
-//! - せん断剛性: (壁板断面＋側柱断面)/κ に開口低減率 r を乗じる。
-//!   κ は側柱がある場合 I 形断面の形状係数（`wall_shear_shape_factor`、
-//!   ξ・η の定義は要原典照合）、ない場合は矩形の 1.2
-//!
-//! 上下大梁の剛性倍率（既定 100 倍）は梁要素側（`beam.rs`）で扱う。
-//! 側柱の面内両端ピン化は `side_column.rs`（方向別端部解放の静縮約）で扱う。
+//! 耐震壁（壁エレメントモデル）要素。
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::frame::beam::BeamElement;
@@ -42,12 +24,9 @@ pub struct WallElement {
     /// 確定変位（四隅 24 自由度、グローバル系）。commit_state で trial から確定。
     committed_disp: [f64; 24],
     /// トライアル変位（四隅 24 自由度、グローバル系）。Newton 反復中も蓄積され、
-    /// internal_force はこちらを参照する（beam/behavior.rs と同じトライアル追従規約）。
+    /// internal_force はこちらを参照する。
     trial_disp: [f64; 24],
-    /// 面内せん断の終局強度 Qu [N]。`0` 以下は**降伏しない**（線形弾性。許容応力度
-    /// 計算など弾性解析経路）。保有水平耐力（プッシュオーバー）では
-    /// [`crate::factory::build_nonlinear_behavior`] が耐震壁のせん断終局強度を与え、
-    /// 面内せん断を弾完全塑性として頭打ちにする。
+    /// 面内せん断の終局強度 Qu [N]。`0` 以下は降伏しない（線形弾性）。
     qu_shear: f64,
     /// 面内せん断モードベクトル p（24 自由度）。上辺 2 節点の並進を壁面内水平方向
     /// `ex_bottom` へ 1.0 ずつ与えたもの。`pᵀ·f` は上辺が伝達する面内水平力に等しく、
@@ -57,36 +36,23 @@ pub struct WallElement {
     committed_slip: f64,
     /// トライアル塑性せん断すべり γp [mm]。
     trial_slip: f64,
-    /// 面内せん断の復元力ばね。骨格は従来と同じ弾完全塑性（初期剛性 k_s0・耐力 Qu）
-    /// で、除荷・再載荷則を履歴則設定から解決する（既定は最大点指向型。
-    /// [`Self::with_shear_hysteresis`]）。`None` は従来の移動硬化型
-    /// （弾完全塑性リターンマッピング）のまま。
+    /// 面内せん断の復元力ばね。`None` は弾完全塑性リターンマッピング。
     shear_spring: Option<Box<dyn squid_n_material::UniaxialMaterial>>,
     /// せん断ばねの変形測度 D = γp + Q/k_s0 に用いる弾性モード剛性
     /// k_s0 = pᵀ·K_elastic·p [N/mm]（ばね骨格の初期剛性と共有）。
     shear_k0: f64,
     /// 壁柱の軸・曲げの弾塑性評価（ファイバー断面＋塑性増分ヒンジ）。
-    /// `Some` のとき軸・曲げの応答（剛性・内力）はこのファイバー壁柱から得て、
-    /// 面内せん断の Qu 頭打ちは従来どおり塑性すべりで扱う。
-    /// 非線形解析（保有水平耐力）の既定で有効化される
-    /// （[`Self::with_fiber_flexure`]。線形解析は従来どおり弾性壁柱）。
+    /// `Some` のとき軸・曲げの応答（剛性・内力）はこのファイバー壁柱から得る。
     fiber_column: Option<crate::frame::fiber::FiberBeam>,
     /// ファイバー壁柱へ与え済みの壁柱端変位（グローバル系 12）。トライアル/確定。
-    /// 四隅変位から求めた目標値との差分を増分としてファイバー要素へ渡すためのミラー。
     fiber_u12_trial: [f64; 12],
     fiber_u12_committed: [f64; 12],
 }
 
 /// 壁エレメント（4 節点）の幾何。
 ///
-/// 節点は入力順に依らず**標高 z で下辺 2 節点・上辺 2 節点に分ける**（`ElementData::nodes`
-/// の並び順は任意であり、下辺が先頭に来る保証はない）。上辺は下辺 a に近い方を a として
-/// 対応付ける。
-///
-/// 壁長 `lw` は**上下辺長さの平均**とする（台形壁では上下辺長が異なるため、
-/// 一方の辺だけでは代表長さにならない）。耐力壁の平均せん断応力度
-/// τu = Q/(t·lw) など、壁の断面量を要する算定は本構造体を用いて要素実装と同じ
-/// 幾何を共有する。
+/// 節点は入力順に依らず標高 z で下辺 2 節点・上辺 2 節点に分ける。上辺は
+/// 下辺 a に近い方を a として対応付ける。壁長 `lw` は上下辺長さの平均とする。
 pub struct WallElementGeometry {
     /// 下辺の 2 節点（a→b）
     pub bottom: [NodeId; 2],
@@ -121,15 +87,12 @@ pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallEl
         .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
         .collect::<Option<Vec<_>>>()?;
 
-    // z で下辺 2 節点・上辺 2 節点に分ける（入力順には依存しない）。
     let mut order: Vec<usize> = (0..4).collect();
     order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
     let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
 
-    // 下辺の軸方向 a→b
     let (pa, pb) = (coords[b0], coords[b1]);
     let ex_bot = unit(sub(pb, pa))?;
-    // 上辺は下辺の a に近い方を a とする（対応付け）
     let (ta, tb) = {
         let d0 = dot(sub(coords[t0], pa), ex_bot).abs();
         let d1 = dot(sub(coords[t1], pa), ex_bot).abs();
@@ -153,7 +116,6 @@ pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallEl
         top: [ids[ta], ids[tb]],
         lw_bottom: lw_bot,
         lw_top,
-        // 台形壁に対応するため上下辺長さの平均を壁長とする。
         lw: 0.5 * (lw_bot + lw_top),
         h,
         ex_bottom: ex_bot,
@@ -162,24 +124,16 @@ pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallEl
     })
 }
 
-/// 増分解析（保有水平耐力）で壁柱がファイバー化されるときの塑性化域長 Lp [mm]。
+/// 増分解析で壁柱がファイバー化されるときの塑性化域長 Lp [mm]。
 /// ファイバー化されない壁（耐震壁不成立・Qu を算定できない・Fc 未設定など）は `None`。
-///
-/// 判定条件・Lp の値ともに要素生成（[`crate::factory::build_nonlinear_behavior`] と
-/// [`WallElement::with_fiber_flexure`]）と同一のため、モデル化図の表示は解析の
-/// モデル化と一致する。Lp は壁長の 0.5 倍を壁高さ h の 45% でクランプした値で、
-/// 断面せい基準（0.5D）の柱・梁とは基準が異なる。
 pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
-    // 耐震壁不成立（フレーム内雑壁）は剛性が実質 0 のため弾性のまま扱う。
     if !crate::wall::misc_wall::wall_is_seismic(data, model) {
         return None;
     }
-    // Qu を算定できない壁は、非線形経路が弾性要素へフォールバックする。
     if WallElement::shear_capacity_of(data, model) <= 0.0 {
         return None;
     }
     let geom = wall_element_geometry(data, model)?;
-    // コンクリート強度がなければファイバー断面を組めない。
     model.element_material(data)?.fc.filter(|fc| *fc > 0.0)?;
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
     let t = match sec.and_then(|s| s.shape.as_ref()) {
@@ -196,10 +150,7 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
 }
 
 /// 壁要素の面積等価開口寸法 `(l0, h0)` [mm]。
-///
-/// 複数開口は**面積等価**の 1 開口へまとめる（技術基準解説書:
-/// lo = Σli、ho = Σ(li·hi)/lo）。モード別の開口列の作り方
-/// （包絡／面積等価／自動）は `opening_dims_for` に従う。
+/// 複数開口は面積等価の 1 開口へまとめる（lo = Σli、ho = Σ(li·hi)/lo）。
 /// 個別寸法が取れない・開口なしのときは `None`。
 fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f64)> {
     model
@@ -214,11 +165,7 @@ fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f6
         })
 }
 
-/// [`WallElement::shear_capacity`] へ渡す、耐震壁の幾何・配筋・材料。
-///
-/// モデルから読み取った値をそのまま束ねたもので、荒川mean式の入力
-/// （[`squid_n_core::rc_wall_capacity::RcWallShearInput`]）への組み立ては
-/// `shear_capacity` が行う。
+/// 耐震壁の幾何・配筋・材料。
 struct WallShearGeometry {
     /// コンクリート設計基準強度 Fc [N/mm²]（未設定は `None`）
     fc: Option<f64>,
@@ -238,31 +185,24 @@ struct WallShearGeometry {
     has_side_column: bool,
     /// 壁横筋の降伏点 σwh [N/mm²]
     sigma_wh: f64,
-    /// 壁横筋が高強度せん断補強筋か（Qu 係数 0.053 → 0.068）
+    /// 壁横筋が高強度せん断補強筋か
     high_strength_shear_rebar: bool,
     /// 開口寸法 `(l0, h0)` [mm]（無開口は `None`）
     opening: Option<(f64, f64)>,
 }
 
 impl WallElement {
-    /// 生成。4 節点未満・寸法/断面が不定の場合は None
-    /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
+    /// 生成。4 節点未満・寸法/断面が不定の場合は None。
     pub fn try_new(data: &ElementData, model: &Model) -> Option<Self> {
         Self::try_new_scaled(data, model, 1.0)
     }
 
-    /// 剛性スケール付き生成。耐震壁不成立（フレーム内雑壁）の壁は剛性を
-    /// 周辺部材へ算入するため、壁要素自体は `stiffness_scale`（微小値）で
-    /// 実質無剛性とし、質量のみを保持する（RC規準の耐震壁。
-    /// フレーム内雑壁のモデル化）。
+    /// 剛性スケール付き生成。`stiffness_scale` で壁要素の剛性をスケールする。
     pub(crate) fn try_new_scaled(
         data: &ElementData,
         model: &Model,
         stiffness_scale: f64,
     ) -> Option<Self> {
-        // 幾何（下辺・上辺の対応付け、壁長 lw＝上下辺の平均、高さ h）は
-        // [`wall_element_geometry`] に集約する（保有水平耐力の τu 算定など要素外の
-        // 利用と同一の幾何を共有し、定義が食い違わないようにする）。
         let geom = wall_element_geometry(data, model)?;
         let (ids_b0, ids_b1) = (geom.bottom[0], geom.bottom[1]);
         let (ids_ta, ids_tb) = (geom.top[0], geom.top[1]);
@@ -274,7 +214,6 @@ impl WallElement {
         let h = geom.h;
         let lw = geom.lw;
 
-        // 壁板厚: RcWall 形状 → Section.thickness → Section.width の順で採用
         let sec = data
             .section
             .and_then(|sid| model.sections.get(sid.index()))?;
@@ -287,11 +226,8 @@ impl WallElement {
         }
         let mat = model.element_material(data)?;
 
-        // 開口低減率 r（複数開口モード考慮）。r=0 でせん断断面積が 0 になると
-        // φ 項が NaN になるため微小値を下限とする。
         let r = crate::factory::wall_opening_reduction(data, model).max(1e-6);
 
-        // 鉄筋剛性の考慮（壁筋比 ps を縦横共通とみなす近似）: (1+(n−1)·ps)
         let ps = match &sec.shape {
             Some(SectionShape::RcWall { ps, .. }) => (*ps).max(0.0),
             _ => 0.0,
@@ -302,17 +238,11 @@ impl WallElement {
             1.0
         };
 
-        // 側柱（壁の鉛直辺の 2 節点を両端に持つ鉛直 Beam 部材）を収集し、
-        // せん断断面への算入と I 形形状係数 κ の算定に用いる。
         let edge_pairs = [[ids_b0, ids_ta], [ids_b1, ids_tb]];
         let mut col_area_sum = 0.0;
-        let mut col_depth_sum = 0.0; // 沿壁方向せい（両側の和）
+        let mut col_depth_sum = 0.0;
         let mut col_width_max: f64 = 0.0;
         let mut col_main_at: f64 = 0.0;
-        // 側柱断面をせん断断面へ算入してよいのは、その側柱が面内両端ピン化される
-        // （＝面内せん断を負担しない）場合に限る。ピン化条件
-        // （`side_column::wall_side_column_release`）と同じ判定をここでも課さないと、
-        // ピン化されない柱の断面を壁が肩代わりして**面内せん断の二重計上**になる。
         let side_columns_released = crate::wall::misc_wall::wall_is_seismic(data, model);
         for e in &model.elements {
             if !side_columns_released {
@@ -321,7 +251,6 @@ impl WallElement {
             if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
-            // 鉛直材のみ（ピン化条件と同じ、全クレート共通の 45° 余弦基準）。
             if let (Some(a), Some(b)) = (
                 model.nodes.get(e.nodes[0].index()),
                 model.nodes.get(e.nodes[1].index()),
@@ -343,22 +272,12 @@ impl WallElement {
                 col_area_sum += cs.area;
                 col_depth_sum += cs.depth.max(cs.width);
                 col_width_max = col_width_max.max(cs.width.min(cs.depth).max(t));
-                // 終局せん断強度 Qu の等価引張鉄筋比 pte 用に、側柱 1 本の主筋量を採る
-                // （引張側最端の柱 1 本。両側柱のうち大きい方を代表とする）。
                 if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
                     col_main_at =
                         col_main_at.max(squid_n_core::section_shape::bar_set_area(&rebar.main_x));
                 }
             }
         }
-        // κ: 側柱があれば I 形断面の形状係数（ξ=内法長さ/外面間全長、η=t/側柱幅。
-        // 定義は要原典照合）、なければ矩形の 1.2。
-        // κ: 側柱があれば平面 I 形断面（ウェブ＝壁板、フランジ＝側柱）の厳密な
-        // せん断形状係数 κ = A/I²·∫Q²/b dy、なければ矩形の 1.2。
-        // 従来の閉形式（`wall_shear_shape_factor`）は記号定義が原典で確認できず、
-        // η=1（側柱幅＝壁厚＝一様矩形）でも 0.6(1+ξ) を返すなど内部整合性を欠き、
-        // 側柱が大きいほど κ が 1.2 から**減少**して as_y が総断面積を超える
-        // 非物理な値（面内せん断剛性が最大 5.8 倍過大）を与えていた。
         let dc_each = col_depth_sum / 2.0;
         let kappa = if col_area_sum > 0.0 && col_width_max > 0.0 && dc_each > 0.0 {
             squid_n_core::section_shape::wall_shear_shape_factor_isection(
@@ -379,14 +298,10 @@ impl WallElement {
             g: mat.shear_modulus() * stiffness_scale,
             a: area * rebar_factor,
             a_mass: area,
-            // 面内曲げ（局所 z 軸まわり）= t·lw³/12、面外 = lw·t³/12
             iy: lw * t.powi(3) / 12.0,
             iz: t * lw.powi(3) / 12.0 * rebar_factor,
             j: lw * t.powi(3) / 3.0,
-            // 面内せん断（局所 y 方向）: (壁板+側柱)/κ に開口低減 r を考慮
             as_y: r * as_gross / kappa,
-            // 面外せん断にも開口低減を適用する（開口は面外剛性も低下させる。
-            // 従来は面内のみに乗じており面外は取りこぼしていた）。
             as_z: r * area / KAPPA_RC,
             length: h,
             density: mat.density,
@@ -397,7 +312,6 @@ impl WallElement {
                 squid_n_core::model::EndCondition::Fixed,
                 squid_n_core::model::EndCondition::Fixed,
             ],
-            // 壁柱は鉛直材のため、梁のねじれ解放（`beam::torsion`）は適用しない。
             torsion_release: [false, false],
             eval_sections: vec![0.0, 0.5, 1.0],
             section: data.section,
@@ -407,15 +321,8 @@ impl WallElement {
             local_stiffness_cache: std::sync::OnceLock::new(),
         };
 
-        // 変換行列 A（壁柱端 ← 四隅並進）。
-        // 並進: u_c = (u_a + u_b)/2
-        // 回転: ω = ex × (u_b − u_a)/lw（剛梁の剛体回転。剛梁軸まわり成分は
-        //        ピンのため伝達されず 0）
         let mut a_mat = vec![0.0; 12 * 24];
-        let corner_slot = |idx: usize| -> usize {
-            // nodes 配列 [b_a, b_b, t_a, t_b] 中の位置 → 24 自由度中のオフセット
-            idx * 6
-        };
+        let corner_slot = |idx: usize| -> usize { idx * 6 };
         let node_order = [ids_b0, ids_b1, ids_ta, ids_tb];
         let slot_of = |orig: NodeId| -> usize {
             node_order
@@ -429,7 +336,6 @@ impl WallElement {
                 a_mat[(col_base + tdof) * 24 + sa + tdof] += 0.5;
                 a_mat[(col_base + tdof) * 24 + sb + tdof] += 0.5;
             }
-            // ω_i = Σ_jk ε_ijk・ex_j・(u_b − u_a)_k / lw
             for i in 0..3 {
                 for j in 0..3 {
                     for k in 0..3 {
@@ -447,8 +353,6 @@ impl WallElement {
         fill_end(0, ids_b0, ids_b1, ex_bot, geom.lw_bottom);
         fill_end(6, ids_ta, ids_tb, ex_top, geom.lw_top);
 
-        // 面内せん断モード p: 上辺 2 節点（スロット 2,3）の並進を ex_bot 方向へ 1.0。
-        // pᵀ·f = 上辺 2 節点の ex 方向内力の和 ＝ 壁が伝達する面内水平力。
         let mut shear_mode = [0.0; 24];
         for slot in [2usize, 3usize] {
             for k in 0..3 {
@@ -460,13 +364,6 @@ impl WallElement {
             nodes: [ids_b0, ids_b1, ids_ta, ids_tb],
             column,
             a_mat,
-            // 質量は自重側の控除規約と揃える: **開口面積を控除し、開口部（サッシ等）の
-            // 重量を加算**する。従来は gross（t·lw·h、開口控除なし）で、節点質量からの
-            // 控除側（`squid_n_load::story_gen` は開口控除・サッシ重量加算済み）と
-            // 食い違い、地震用質量が恒常的に過大だった。
-            // 残差: 自重側は周辺柱梁の内法寸法補正（`wall_clear_area_factor`）も
-            // 行うが、その算定は squid-n-load 側にあり本クレートからは参照できない
-            // （V&V §2.4 の残課題）。
             mass_total: {
                 let attr = model.wall_attrs.iter().find(|a| a.elem == data.id);
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
@@ -477,7 +374,6 @@ impl WallElement {
             },
             committed_disp: [0.0; 24],
             trial_disp: [0.0; 24],
-            // 既定は弾性（降伏なし）。非線形経路が `with_shear_capacity` で与える。
             qu_shear: 0.0,
             shear_mode,
             committed_slip: 0.0,
@@ -491,15 +387,8 @@ impl WallElement {
     }
 
     /// 壁柱の軸・曲げをファイバー断面（コンクリート格子＋縦筋の等価分散配置）の
-    /// 弾塑性評価に切り替える（保有水平耐力・非線形解析の既定）。
+    /// 壁柱の軸・曲げをファイバー断面の弾塑性評価に切り替える。
     /// コンクリート強度 Fc がない等でファイバー断面を組めない場合は弾性のまま返す。
-    ///
-    /// ファイバー壁柱は「全長弾性梁＋端部塑性増分ヒンジ」
-    /// （[`crate::frame::fiber::FiberBeam::from_raw_parts`]）で、弾性剛性は従来の弾性壁柱
-    /// と同じ諸元（軸・面内曲げは鉄筋剛性係数込み、せん断は κ・開口低減込み）を
-    /// 用いる。塑性化域長は 0.5·lw（可撓長の 45% までにクランプ）。
-    /// 縦筋は壁筋比 ps を各層へ等価分散した鋼材ファイバー
-    /// （既定 SD345、材料強度の基準 `basis` の主筋割増を適用）とする。
     pub(crate) fn with_fiber_flexure(
         mut self,
         data: &ElementData,
@@ -530,13 +419,9 @@ impl WallElement {
             return self;
         }
 
-        // ファイバー断面: コンクリート格子（幅 t × せい lw、面内曲げが κz 面）
-        // ＋縦筋の等価分散配置（各せい方向層の中心へ ps·t·lw/nd ずつ）。
         let nw = 4;
         let nd = 20;
         let rebar_fy = 345.0 * basis.rebar_factor(Some(mat));
-        // コンクリート除荷則は解析種別と部材個別指定から解決する。壁柱の増分既定は
-        // 原点指向型（[`crate::factory::resolve_wall_concrete_hysteresis`] 参照）。
         let concrete_rule = crate::factory::resolve_wall_concrete_hysteresis(data, model, kind);
         let make_section = || {
             let (mut section, mut mats) = crate::frame::fiber::build_gauss_fibers(
@@ -555,7 +440,6 @@ impl WallElement {
             if ps > 0.0 {
                 let a_each = ps * t * lw / nd as f64;
                 for i in 0..nd {
-                    // build_gauss_fibers の回転後座標系: y=せい（lw）方向、z=幅（t）方向。
                     let y = ((i as f64 + 0.5) / nd as f64 - 0.5) * lw;
                     section.fibers.push(squid_n_section::fiber::Fiber {
                         y,
@@ -572,7 +456,6 @@ impl WallElement {
             (section, mats)
         };
 
-        // 弾性剛性の諸元は従来の弾性壁柱（`try_new_scaled` の column）と同一。
         let col = &self.column;
         let fiber = crate::frame::fiber::FiberBeam::from_raw_parts(
             col.nodes,
@@ -594,23 +477,9 @@ impl WallElement {
         self
     }
 
-    /// 耐震壁の面内せん断終局強度 Qu [N]（保有水平耐力用）。
-    ///
-    /// [`squid_n_core::rc_wall_capacity::wall_shear_ultimate`]（荒川mean式系）に、
-    /// 壁エレメントの幾何・配筋から組み立てた入力を与える。開口低減は**耐力用**
-    /// r2 = 1−max(r0, l0/lw, h0/h)（剛性用 r1 = 1−1.25·r0 とは別式）。
-    ///
-    /// 主な仮定（要・原典照合）:
-    /// - 等価壁厚 te は壁厚 t と同値とする。
-    /// - 引張側柱の主筋量 at は側柱（`SectionShape::RcRect`）の `main_x` 総断面積。
-    ///   側柱がない／配筋が取れない場合は、壁の縦筋が一様配筋であるとみなして
-    ///   `at = ps·te·d`（＝等価引張鉄筋比 pte = 100·ps \[%\]）とする。
-    /// - 横筋比 Pwh は壁筋比 ps（縦横共通とみなす近似）。σwh は断面のせん断補強筋
-    ///   材料の `fy` とし、未割当のときは SD295 相当 295 を既定とする。
-    /// - せん断スパン比 M/(Q·D) は壁の h/D（適用範囲 1.0〜3.0 にクランプ）。
-    /// - 軸方向応力度 σ0 は 0（軸力は Qu を増やすため、0 とするのは安全側）。
-    ///
-    /// 算定できない場合（Fc 未設定など）は 0.0 を返し、呼び出し側は弾性のままとする。
+    /// 耐震壁の面内せん断終局強度 Qu [N]（荒川mean式系）。
+    /// 開口低減は耐力用 r2 = 1−max(r0, l0/lw, h0/h)（剛性用 r1 = 1−1.25·r0 とは別式）。
+    /// 算定できない場合（Fc 未設定など）は 0.0 を返す。
     fn shear_capacity(inp: &WallShearGeometry) -> f64 {
         let &WallShearGeometry {
             fc,
@@ -637,14 +506,6 @@ impl WallElement {
         if d_eff <= 0.0 {
             return 0.0;
         }
-        // 等価引張鉄筋比 pte = 100·at/(te·d) の at。
-        // - 付帯柱（側柱）がある壁: 引張側最端の柱 1 本の主筋量を用いる。
-        //   側柱があるのに主筋を読み取れない場合は**断面設定の不備**であり、
-        //   代替値で埋めずに 0 を返す（呼び出し側が
-        //   [`wall_shear_capacity_issue`] で検出しエラーとする）。
-        // - 付帯柱がない壁: 壁の縦筋が一様配筋であるとみなし at = ps·te·d
-        //   （＝ pte = 100·ps \[%\]）とする。壁のみで構成される耐震壁の
-        //   正規の扱いであり、データ不備の代替ではない。
         let at = if has_side_column {
             col_main_at
         } else {
@@ -672,10 +533,6 @@ impl WallElement {
     }
 
     /// 耐力用開口低減率 r2（無開口は 1.0）。
-    ///
-    /// [`shear_capacity_of`] の Qu 算定と同じ開口寸法・式
-    /// （[`squid_n_core::rc_wall_capacity::wall_opening_reduction_strength`]）を用いる。
-    /// 保有水平耐力の τu 種別判定の分母 `t·lw` にも本率を乗じる。
     pub fn opening_strength_reduction(data: &ElementData, model: &Model) -> f64 {
         let Some(geom) = wall_element_geometry(data, model) else {
             return 1.0;
@@ -685,11 +542,7 @@ impl WallElement {
         squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(opening)
     }
 
-    /// この壁の面内せん断終局強度 Qu [N] を、要素と同じ幾何・配筋から算定する
-    /// （非線形経路が [`Self::with_shear_capacity`] へ渡す値）。
-    ///
-    /// モデル化図（`squid-n-app`）が、面内せん断を Qu で頭打ちにする壁かどうかの
-    /// 判定と表示値に用いるため公開する。
+    /// この壁の面内せん断終局強度 Qu [N] を、要素と同じ幾何・配筋から算定する。
     pub fn shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
         let Some(geom) = wall_element_geometry(data, model) else {
             return 0.0;
@@ -701,13 +554,10 @@ impl WallElement {
             Some(SectionShape::RcWall { thickness, ps }) => (*thickness, (*ps).max(0.0)),
             _ => (sec.thickness.unwrap_or(sec.width), 0.0),
         };
-        // 鋼板耐震壁はせん断降伏で決まる（[`Self::steel_shear_capacity_of`]）。
-        // 荒川式は RC 耐震壁の終局せん断強度のため適用しない。
         if !crate::wall::misc_wall::is_rc_wall(data, model) {
             return Self::steel_shear_capacity_of(data, model);
         }
         let fc = model.element_material(data).and_then(|m| m.fc);
-        // 側柱（壁の鉛直辺に取り付く柱）の沿壁方向せい・主筋量。
         let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
         let mut col_depth_sum = 0.0;
         let mut col_main_at: f64 = 0.0;
@@ -733,8 +583,6 @@ impl WallElement {
             }
         }
         let opening = wall_opening_equiv_dims(data, model);
-        // 壁横筋の材質は断面のせん断補強筋材料から引く。未割当のときは規格上の
-        // 最小グレードである SD295 相当（295 N/mm²・普通強度）を既定とする。
         let shear_mat = model.element_shear_rebar_material(data);
         let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
             .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
@@ -764,12 +612,7 @@ impl WallElement {
     /// ```
     ///
     /// F は材料の降伏強度 `Material.fy` を用いる。
-    ///
-    /// **せん断座屈は考慮していない。** 幅厚比の大きい無補剛の鋼板は、せん断降伏に
-    /// 達する前に面外へせん断座屈して耐力が頭打ちになるため、本式は座屈が生じない
-    /// （十分に補剛された）鋼板を前提とする**危険側**の評価である。増分解析の実行時に
-    /// その旨を情報表示する（`squid-n-app` の解析実行）。座屈耐力の評価は原典の
-    /// 入手後に対応する。
+    /// せん断座屈は考慮していない。
     pub fn steel_shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
         let Some(geom) = wall_element_geometry(data, model) else {
             return 0.0;
@@ -777,7 +620,6 @@ impl WallElement {
         let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
             return 0.0;
         };
-        // 壁形状 `RcWall` は RC 壁専用のため、鋼板壁の板厚は断面の板厚を用いる。
         let t = sec.thickness.unwrap_or(sec.width);
         let f = model
             .element_material(data)
@@ -789,37 +631,23 @@ impl WallElement {
         t * geom.lw * f / 3.0_f64.sqrt()
     }
 
-    /// 耐震壁のせん断終局強度 Qu を算定できない**設定不備**があれば、その内容を返す。
-    ///
-    /// 保有水平耐力計算では耐震壁を Qu で頭打ちにするため、Qu が算定できない壁は
-    /// 際限なく水平力を負担して保有水平耐力を過大評価する（危険側）。したがって
-    /// 代替値で埋めずに解析を止め、利用者へ是正を促す。
+    /// 耐震壁のせん断終局強度 Qu を算定できない設定不備があれば、その内容を返す。
     ///
     /// 検出する不備:
-    /// - 壁エレメントとして構築できない（4 節点未満／節点座標が退化）。この壁は
-    ///   暫定等価梁（弾性梁）へフォールバックするため Qu の頭打ちが効かない。
+    /// - 壁エレメントとして構築できない（4 節点未満／節点座標が退化）。
     /// - 断面が設定されていない／壁厚が 0 以下。
     /// - 材料が設定されていない。
     /// - 材料にコンクリート強度 Fc が設定されていない、または Fc が 0 以下。
     /// - 付帯柱（側柱）はあるのに、その断面から主筋量を読み取れない
-    ///   （断面形状が RcRect でない／主筋本数・径が 0）。等価引張鉄筋比 pte を
-    ///   算定できない。
-    /// - 上記のいずれにも当てはまらないが Qu が 0 以下になる（適用範囲外の寸法など）。
+    ///   （断面形状が RcRect でない／主筋本数・径が 0）。
+    /// - 上記のいずれにも当てはまらないが Qu が 0 以下になる。
     ///
     /// 付帯柱がない壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
-    /// 算定する。`ps = 0` の場合は主筋・壁筋がいずれもないことになるため不備とする。
-    ///
-    /// 耐震壁として成立する壁について、[`Self::shear_capacity_of`] が 0 を返す
-    /// （＝弾性のまま扱われる）ケースを**必ず**いずれかの不備として拾う。個別診断を
-    /// 追加し忘れても無音で弾性へ落ちないよう、最後に Qu>0 を確認する総括判定を置く。
+    /// 算定する。`ps = 0` の場合は不備とする。
     pub fn wall_shear_capacity_issue(data: &ElementData, model: &Model) -> Option<String> {
         if !matches!(data.kind, squid_n_core::model::ElementKind::Wall) {
             return None;
         }
-        // 4 節点を与えているのに壁エレメントの幾何を組めない壁（節点の指定ミス・
-        // 退化した座標）は、耐震壁の四周条件を判定できず雑壁へ落ちる。雑壁としての
-        // 剛性算入も 4 節点の幾何を要するため、剛性も耐力も持たないまま無音で消える。
-        // 入力不備として報告する。
         let geom = match wall_element_geometry(data, model) {
             Some(g) => g,
             None if data.nodes.len() >= 4 => {
@@ -832,7 +660,6 @@ impl WallElement {
             }
             None => return None,
         };
-        // 耐震壁として成立しない壁（フレーム内雑壁）は Qu を要さない。
         if !crate::wall::misc_wall::wall_is_seismic(data, model) {
             return None;
         }
@@ -864,8 +691,6 @@ impl WallElement {
                 data.id.0
             ));
         };
-        // 鋼板耐震壁はせん断降伏 Qy=t·lw·F/√3 で決まるため、要するのは Fc ではなく
-        // 降伏強度 fy である（[`Self::steel_shear_capacity_of`]）。
         if !crate::wall::misc_wall::is_rc_wall(data, model) {
             if !mat.fy.is_some_and(|fy| fy > 0.0) {
                 return Some(format!(
@@ -941,8 +766,6 @@ impl WallElement {
                 data.id.0
             ));
         }
-        // 総括判定: 個別診断に当てはまらない理由（適用範囲外の寸法・開口など）で
-        // Qu が 0 になる場合も、無音で弾性へ落とさずここで捕捉する。
         if Self::shear_capacity_of(data, model) <= 0.0 {
             return Some(format!(
                 "耐震壁 ID {} の終局せん断強度 Qu を算定できません（算定結果が 0 以下）。\
@@ -961,22 +784,16 @@ impl WallElement {
         self
     }
 
-    /// 面内せん断の復元力ばねを構築する（[`Self::with_shear_capacity`] の後に呼ぶ）。
-    ///
-    /// 骨格は従来と同じ弾完全塑性（初期剛性 k_s0 = pᵀ·K_elastic·p、耐力 Qu で
-    /// 頭打ち）とし、除荷・再載荷則のみ `rule` に従う（既定は最大点指向型）。
-    /// トリリニア骨格のひび割れ点は弾性線上（Qu/3）に置きバイリニア相当、
-    /// 終局点は降伏変形の 10⁴ 倍（降伏後フラット＝Qu 頭打ちを保持）とする。
-    /// `qu_shear <= 0`（弾性）や k_s0 が取れない場合は何もしない
-    /// （従来の弾完全塑性リターンマッピングのまま）。
+    /// 面内せん断の復元力ばねを構築する。
+    /// 骨格は弾完全塑性（初期剛性 k_s0、耐力 Qu で頭打ち）とし、
+    /// 除荷・再載荷則のみ `rule` に従う。
+    /// `qu_shear <= 0` や k_s0 が取れない場合は何もしない。
     pub(crate) fn with_shear_hysteresis(mut self, rule: HysteresisModel) -> Self {
         use squid_n_material::{HysteresisMaterial, HysteresisRule};
         if self.qu_shear <= 0.0 {
             return self;
         }
-        // 弾性壁柱の全体系剛性で k_s0 = pᵀ·(Aᵀ·K12·A)·p を評価する。
         let k12 = self.column.axis.to_global(&self.column.local_stiffness());
-        // v = A·p（12 自由度）
         let mut v = [0.0_f64; 12];
         for (i, vi) in v.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -985,7 +802,6 @@ impl WallElement {
             }
             *vi = acc;
         }
-        // w = K12·v
         let mut w = [0.0_f64; 12];
         for (i, wi) in w.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -994,7 +810,6 @@ impl WallElement {
             }
             *wi = acc;
         }
-        // k_s0 = pᵀ·Aᵀ·w = vᵀ·w
         let k_s0: f64 = v.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
         if k_s0 <= 0.0 {
             return self;
@@ -1025,7 +840,6 @@ impl WallElement {
                 ultimate,
                 alpha: 0.4,
             },
-            // 既定（Auto・Karsan–Jirsa 型等の Q–δ 系でない指定を含む）: 最大点指向型。
             _ => HysteresisRule::MaxPointOriented {
                 crack,
                 yield_point,
@@ -1050,7 +864,6 @@ impl WallElement {
         if self.qu_shear <= 0.0 {
             return (0.0, false);
         }
-        // k_s = pᵀ K p
         let kp = Self::mat_vec(k, &self.shear_mode);
         let k_s: f64 = self
             .shear_mode
@@ -1061,7 +874,6 @@ impl WallElement {
         if k_s <= 0.0 {
             return (self.committed_slip, false);
         }
-        // 確定すべりを差し引いた弾性試行での面内水平力。
         let mut u_eff = *u24;
         for (ue, p) in u_eff.iter_mut().zip(self.shear_mode.iter()) {
             *ue -= self.committed_slip * p;
@@ -1075,9 +887,6 @@ impl WallElement {
             .sum();
         if let Some(sp) = &self.shear_spring {
             if self.shear_k0 > 0.0 {
-                // 直列ばねの整合: 変形測度 D = γp_c + Q(γp_c)/k_s0 でばね履歴を評価し、
-                // 伝達水平力がばね応答 M(D) と一致するよう γp を補正する（Q は γp に
-                // 線形なため 1 回で厳密。補正後も D は不変で自己整合）。
                 let d = self.committed_slip + q_trial / self.shear_k0;
                 let (q_target, _) = sp.probe(d);
                 let yielded = (q_trial - q_target).abs() > self.qu_shear * 1e-9;
@@ -1166,7 +975,6 @@ impl WallElement {
     fn stiffness_24(&self, ctx: &Ctx) -> LocalMat {
         let k12 = self.k12_global(ctx);
         let mut k = LocalMat::zeros(24);
-        // K = Aᵀ K12 A
         for p in 0..24 {
             for q in 0..24 {
                 let mut s = 0.0;
@@ -1228,20 +1036,10 @@ impl ElementBehavior for WallElement {
         if k_s <= 0.0 {
             return k;
         }
-        // せん断方向の剛性低減率 factor:
-        // - ばねあり: **剛性を保持**し（factor=0）、せん断非線形は内力側のすべり
-        //   補正（`Q = M(D)` の整合）だけで表現する（初期剛性法）。プラトー
-        //   （ばね接線 0）で剛性を除去する整合接線にすると、曲げ機構の形成後に
-        //   せん断が Qu から除荷へ向かう「角点」で大域 Newton が特異化して発散する。
-        //   従来の弾完全塑性リターンマッピングも、降伏判定の許容差により実質的に
-        //   全剛性を保持して同じ角点を通過していた（挙動踏襲）。
-        // - ばね無し（従来）: 降伏中のみ全除去（弾完全塑性のコンシステント接線）。
         let factor = if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
             0.0
         } else {
             let yielded = match self.inplane_shear_fiber(ctx) {
-                // ファイバー壁柱: すべり γp は update_state で確定済み。伝達中の面内
-                // 水平力が Qu 近傍なら降伏中（せん断方向の剛性を除去する）。
                 Some(q) => q.abs() >= self.qu_shear * (1.0 - 1e-9),
                 None => self.shear_return_map(&k, &self.trial_disp).1,
             };
@@ -1267,17 +1065,11 @@ impl ElementBehavior for WallElement {
     }
 
     fn internal_force(&self, ctx: &Ctx) -> LocalVec {
-        // ファイバー壁柱: 復元力は履歴に整合したファイバー内力 f24 = Aᵀ·f12
-        // （すべり γp は update_state で反映済み）。
         if let Some(f24) = self.f24_fiber(ctx) {
             return LocalVec {
                 data: smallvec::SmallVec::from_slice(&f24),
             };
         }
-        // 弾性壁柱: f = K24 · (u − γp·p)（トライアル追従。beam/behavior.rs と同じ規約）。
-        // γp は面内せん断の塑性すべりで、終局せん断強度 Qu を超える水平力を
-        // 負担しないよう [`Self::shear_return_map`] が求める。Qu 未設定
-        // （弾性解析経路）では γp=0 で従来どおりの線形弾性。
         let k = self.stiffness_24(ctx);
         let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
         let mut u_eff = self.trial_disp;
@@ -1295,11 +1087,6 @@ impl ElementBehavior for WallElement {
             self.trial_disp[i] += du.data[i];
         }
         if self.fiber_column.is_some() {
-            // ファイバー壁柱: すべり γp とファイバー状態を固定点反復で整合させる。
-            // 確定すべりから出発し、有効変位 u−γp·p を壁柱端変位へ写して
-            // ファイバー要素を更新 → 伝達水平力 Q が Qu を超えていれば
-            // Δγp = (|Q|−Qu)/k_s（k_s = pᵀ·K_t·p）だけすべりを進める。
-            // ファイバー応答は局所的に線形なため数回で収束する。
             let mut slip = self.committed_slip;
             for _ in 0..8 {
                 let mut u_eff = self.trial_disp;
@@ -1322,8 +1109,6 @@ impl ElementBehavior for WallElement {
                 let Some(q) = self.inplane_shear_fiber(ctx) else {
                     break;
                 };
-                // ばねあり: 残差 = 伝達水平力 − ばね応答 M(D)（D = γp + Q/k_s0 の
-                // 固定点 Q = M(D) を目指す）。ばね無し: 従来の Qu 超過分。
                 let residual = if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
                     let d = slip + q / self.shear_k0;
                     let q_target = self
@@ -1355,13 +1140,10 @@ impl ElementBehavior for WallElement {
             }
             self.trial_slip = slip;
         } else {
-            // 弾性壁柱: 塑性すべりはトライアル変位から都度求め直す
-            // （経路依存の単調載荷を前提。commit 時に確定値へ移す）。
             let k = self.stiffness_24(ctx);
             let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
             self.trial_slip = slip;
         }
-        // せん断ばねのトライアル状態を最終変形測度で更新（commit_state で確定）。
         if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
             let q = self.inplane_shear_trial(ctx);
             let d = self.trial_slip + q / self.shear_k0;
@@ -1434,8 +1216,6 @@ impl ElementBehavior for WallElement {
         self.fiber_u12_trial = *u12t;
         self.fiber_u12_committed = *u12c;
         if let (Some(sp), Some(bytes)) = (&mut self.shear_spring, spring.as_ref()) {
-            // snapshot は同一実行内の巻き戻し用のため、復元失敗はプログラム
-            // エラー（形式は常に一致する）。
             sp.deserialize_state(bytes)
                 .expect("壁せん断ばねのスナップショット復元");
         }
@@ -1459,7 +1239,6 @@ impl ElementBehavior for WallElement {
         &mut self,
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
         if data.is_empty() {
             return Ok(());
         }
@@ -1479,7 +1258,6 @@ impl ElementBehavior for WallElement {
             }
             return Ok(());
         }
-        // 旧形式（変位のみ）。
         let (committed, trial): ([f64; 24], [f64; 24]) = bincode::deserialize(data)
             .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
         self.committed_disp = committed;
@@ -1493,7 +1271,6 @@ impl ElementBehavior for WallElement {
     }
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
-        // 壁板質量を四隅の並進へ 1/4 ずつ集中（Consistent 指定も同じ扱い）
         let mut mm = LocalMat::zeros(24);
         let m_node = self.mass_total / 4.0;
         for i in 0..4 {
@@ -1513,14 +1290,12 @@ impl ElementBehavior for WallElement {
         if u_elem.len() < 24 {
             return None;
         }
-        // 壁柱の断面力（N・Q・M）として復元する
         let u12 = self.to_column_disp(&u_elem[..24]);
         Some(self.column.recover_forces(&u12))
     }
 }
 
-/// [`WallElement`] のチェックポイント形式（現行）。
-/// 旧形式（`(committed_disp, trial_disp)` のみ）は読み込み時にフォールバックする。
+/// [`WallElement`] のチェックポイント形式。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WallElementCheckpoint {
     committed_disp: [f64; 24],
@@ -1531,7 +1306,7 @@ struct WallElementCheckpoint {
     fiber: Option<Vec<u8>>,
     fiber_u12_trial: [f64; 12],
     fiber_u12_committed: [f64; 12],
-    /// 面内せん断ばねの材料状態（ばね未構築は None。旧形式も None 扱い）。
+    /// 面内せん断ばねの材料状態（ばね未構築は None）。
     #[serde(default)]
     shear_spring: Option<Vec<u8>>,
 }
@@ -1574,7 +1349,6 @@ mod tests {
                 make_node(2, [4000.0, 0.0, 3000.0]),
                 make_node(3, [0.0, 0.0, 3000.0]),
             ],
-            // 材料は断面が持つ。
             sections: vec![squid_n_core::model::Section {
                 material: Some(MaterialId(0)),
                 ..shape.to_section(SectionId(0), "W150".into())
@@ -1608,7 +1382,6 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
-        // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を置く。
         let mut model = model;
         crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
@@ -1630,7 +1403,6 @@ mod tests {
         let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
-        // 全節点に同一並進（剛体移動）→ 力ゼロ
         for dir in 0..3 {
             let mut u = [0.0; 24];
             for n in 0..4 {
@@ -1652,12 +1424,9 @@ mod tests {
         let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
-        // 上辺 2 節点を面内水平(X)に単位変位（下辺固定・上辺回転 0 = 両端固定柱の
-        // せん断変形モード）→ ひずみエネルギ uᵀKu が壁柱の両端固定水平剛性
-        // 12EI/((1+φ)h³) と一致する
         let mut u = [0.0; 24];
-        u[2 * 6] = 1.0; // 上辺 a の ux
-        u[3 * 6] = 1.0; // 上辺 b の ux
+        u[2 * 6] = 1.0;
+        u[3 * 6] = 1.0;
         let uku = energy(&k, &u);
 
         let col = &wall.column;
@@ -1675,7 +1444,6 @@ mod tests {
         let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
-        // 上辺 2 節点を鉛直に単位変位 → EA/h
         let mut u = [0.0; 24];
         u[2 * 6 + 2] = 1.0;
         u[3 * 6 + 2] = 1.0;
@@ -1694,7 +1462,6 @@ mod tests {
         let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
-        // 四隅の回転自由度は剛性を持たない（剛梁両端ピン）
         for n in 0..4 {
             for d in 3..6 {
                 let idx = n * 6 + d;
@@ -1750,7 +1517,7 @@ mod tests {
         };
         model.wall_attrs.push(squid_n_core::model::WallAttr {
             elem: ElemId(0),
-            opening_area: 3.0e6, // 25%
+            opening_area: 3.0e6,
             opening_weight: 0.0,
             slit: Default::default(),
             openings: vec![],
@@ -1776,7 +1543,6 @@ mod tests {
         let n = squid_n_core::section_shape::E_STEEL / 23000.0;
         let expected = 150.0 * 4000.0 * (1.0 + (n - 1.0) * 0.0025);
         assert!((wall.column.a - expected).abs() < 1e-6);
-        // 質量用は幾何断面のまま
         assert!((wall.column.a_mass - 150.0 * 4000.0).abs() < 1e-9);
     }
 
@@ -1786,7 +1552,6 @@ mod tests {
         let (mut model, data) = make_wall_model();
         let wall_plain = WallElement::try_new(&data, &model).unwrap();
 
-        // 両側の鉛直辺(節点0-3・1-2)に 600×600 の側柱を追加
         let col_shape = SectionShape::RcRect {
             b: 600.0,
             d: 600.0,
@@ -1812,8 +1577,6 @@ mod tests {
         model
             .sections
             .push(col_shape.to_section(SectionId(1), "C600".into()));
-        // 左右の鉛直辺（節点 0-3・1-2）へ 600×600 RC 側柱を追加する。
-        // `add_surrounding_frame` は上下辺の大梁だけを置くため、側柱はここで足す。
         let base = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
         for (i, (a, b)) in [(NodeId(0), NodeId(3)), (NodeId(1), NodeId(2))]
             .into_iter()
@@ -1835,7 +1598,6 @@ mod tests {
             });
         }
         let wall_cols = WallElement::try_new(&data, &model).unwrap();
-        // (壁板+側柱2本)/κ(I形) > 壁板/1.2
         assert!(
             wall_cols.column.as_y > wall_plain.column.as_y,
             "側柱算入で as_y が増えない: {} vs {}",
@@ -1843,7 +1605,6 @@ mod tests {
             wall_plain.column.as_y
         );
         let a_gross = 150.0 * 4000.0 + 2.0 * 360_000.0;
-        // κ = as_gross/as_y(逆算)が矩形の 1.2 と異なる(I形の値)
         let kappa = a_gross / wall_cols.column.as_y;
         assert!(
             (kappa - 1.2).abs() > 1e-3,
@@ -1854,15 +1615,13 @@ mod tests {
     #[test]
     fn test_wall_element_try_new_fallbacks() {
         let (model, mut data) = make_wall_model();
-        // 2 節点しかない場合は None（従来の暫定等価梁へ）
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(2)];
         assert!(WallElement::try_new(&data, &model).is_none());
     }
 
     /// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
     /// 反映され（内力 = K24·u と厳密に一致）、commit / revert / snapshot / restore が
-    /// beam/behavior.rs と同じ規律で機能すること。従来は internal_force が恒常的に
-    /// ゼロを返しており、非線形解析で耐震壁が復元力を負担していなかった。
+    /// beam/behavior.rs と同じ規律で機能すること。
     ///
     /// 本テストの K·u 比較は「internal_force と tangent_stiffness が将来ズレない」
     /// ことの回帰ガードであり、K24 の値そのものの正しさは独立の解析解と照合する
@@ -1875,7 +1634,6 @@ mod tests {
         let mut wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
 
-        // 上辺 2 節点へ面内水平変位（両端固定柱のせん断変形モード）
         let mut du = LocalVec {
             data: smallvec::smallvec![0.0; 24],
         };
@@ -1884,7 +1642,6 @@ mod tests {
         let snap = wall.snapshot_state();
         wall.update_state(&du, false, &ctx);
 
-        // commit 前でも内力へ反映され、K24·u と厳密に一致する
         let f = wall.internal_force(&ctx);
         let k = wall.stiffness_24(&ctx);
         for i in 0..24 {
@@ -1895,10 +1652,8 @@ mod tests {
                 f.data[i]
             );
         }
-        // 上辺の水平力は非零（壁がせん断復元力を負担する）
         assert!(f.data[2 * 6].abs() > 1.0, "壁の復元力が生じていない");
 
-        // commit → さらに反復 → revert で確定値へ戻る
         wall.commit_state();
         wall.update_state(&du, false, &ctx);
         wall.revert_state();
@@ -1907,7 +1662,6 @@ mod tests {
             assert!((f2.data[i] - f.data[i]).abs() < 1e-9);
         }
 
-        // restore_state でスナップショット時点（初期状態）へ完全ロールバック
         wall.restore_state(&*snap);
         let f0 = wall.internal_force(&ctx);
         assert!(f0.data.iter().all(|v| v.abs() < 1e-12));
@@ -1994,7 +1748,6 @@ mod geometry_tests {
             [4000.0, 0.0, 3000.0],
             [0.0, 0.0, 3000.0],
         ];
-        // 先頭 2 節点が鉛直辺（節点0=下、節点3=上）になる並び。
         let (model, data) = wall_with(coords, [0, 3, 1, 2]);
         let g = wall_element_geometry(&data, &model).expect("Some");
         assert!(
@@ -2036,7 +1789,6 @@ mod shear_yield_tests {
                 mk(2, [4000.0, 0.0, 3000.0]),
                 mk(3, [0.0, 0.0, 3000.0]),
             ],
-            // 材料は断面が持つ。
             sections: vec![squid_n_core::model::Section {
                 material: Some(MaterialId(0)),
                 ..shape.to_section(SectionId(0), "W200".into())
@@ -2070,7 +1822,6 @@ mod shear_yield_tests {
             plastic_zone: None,
             spring: None,
         };
-        // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を置く。
         let mut model = model;
         crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
@@ -2129,9 +1880,7 @@ mod shear_yield_tests {
     }
 
     /// 非線形経路（プッシュオーバー）では耐震壁の面内水平力が終局せん断強度 Qu で
-    /// 頭打ちになる。従来は線形弾性のままで、押し込むほど際限なく水平力を負担し
-    /// （100mm で 17.9 万 kN 等、実強度の数百倍）、崩壊機構が形成されないまま
-    /// 保有水平耐力を過大評価していた。
+    /// 頭打ちになる。
     #[test]
     fn test_wall_shear_yields_at_ultimate_strength() {
         let (model, data) = wall_model();
@@ -2150,21 +1899,19 @@ mod shear_yield_tests {
             let mut du = LocalVec {
                 data: smallvec::SmallVec::from_elem(0.0, 24),
             };
-            du.data[12] = 1.0; // 上辺a Ux
-            du.data[18] = 1.0; // 上辺b Ux
+            du.data[12] = 1.0;
+            du.data[18] = 1.0;
             b.update_state(&du, false, &ctx);
             b.commit_state();
             let f = b.internal_force(&ctx);
             max_q = max_q.max((f.data[0] + f.data[6]).abs());
         }
-        // 300mm 押しても Qu を（数値誤差程度を除き）超えない。
         assert!(
             max_q <= qu * 1.001,
             "壁の水平力 {:.3e} N が終局せん断強度 Qu={:.3e} N を超えている",
             max_q,
             qu
         );
-        // 十分押しているので Qu に達していること（頭打ちが機能している）。
         assert!(
             max_q > qu * 0.99,
             "max_q={:.3e} が Qu={:.3e} に達していない",
@@ -2193,15 +1940,14 @@ mod shear_yield_tests {
             let mut du = LocalVec {
                 data: smallvec::SmallVec::from_elem(0.0, 24),
             };
-            du.data[12] = d; // 上辺a Ux
-            du.data[18] = d; // 上辺b Ux
+            du.data[12] = d;
+            du.data[18] = d;
             b.update_state(&du, false, &ctx);
             b.commit_state();
             let f = b.internal_force(&ctx);
             f.data[0] + f.data[6]
         };
 
-        // (1) +30mm 押して降伏（|Q| ≈ Qu）。
         let mut q_peak = 0.0;
         for _ in 0..30 {
             q_peak = push(&mut b, 1.0);
@@ -2212,9 +1958,6 @@ mod shear_yield_tests {
         );
         let sgn = q_peak.signum();
 
-        // (2) 除荷: 最大点指向の除荷は反対側の経験点を指向する割線のため、
-        // Q が 0 付近へ落ちるまでに要する戻し量は 30mm より明確に小さい
-        // （＝残留変形が残る）。
         let mut q = q_peak;
         let mut n_unload = 0;
         while q * sgn > qu * 0.02 && n_unload < 29 {
@@ -2226,8 +1969,6 @@ mod shear_yield_tests {
             "除荷完了までの戻し量 {n_unload}mm が押し量より小さい（残留変形）"
         );
 
-        // (3) 再載荷: 中間点は最大経験点への割線上（Qu より明確に小さい）で、
-        // ピーク変位まで戻すと Qu へ復帰する。
         let mut q_mid = 0.0;
         for i in 0..n_unload {
             q = push(&mut b, 1.0);
@@ -2249,7 +1990,7 @@ mod shear_yield_tests {
         );
     }
 
-    /// 弾性経路（許容応力度計算）では従来どおり降伏しない（線形）。
+    /// 弾性経路（許容応力度計算）では降伏しない（線形）。
     #[test]
     fn test_wall_stays_elastic_in_linear_path() {
         let (model, data) = wall_model();
@@ -2269,7 +2010,6 @@ mod shear_yield_tests {
                 q_at.push((f.data[0] + f.data[6]).abs());
             }
         }
-        // 変位 2 倍で力も 2 倍（線形）。
         assert!(
             (q_at[1] - 2.0 * q_at[0]).abs() < q_at[1] * 1e-9,
             "弾性経路は線形であるべき: {:?}",
@@ -2303,7 +2043,6 @@ mod capacity_issue_tests {
             story: None,
             support_spring: None,
         };
-        // 材料は断面が持つ。
         let mut sections = vec![Section {
             material: Some(MaterialId(0)),
             ..shape.to_section(SectionId(0), "W200".into())
@@ -2333,16 +2072,11 @@ mod capacity_issue_tests {
             sections.push(cs);
             SectionId(1)
         });
-        // 上下辺の大梁。耐震壁は上下辺が大梁で囲まれた壁を対象とする
-        // （`misc_wall::wall_is_framed`）。ElemId は壁（0）に続く連番とする。
-        edge(1, 0, 1, None); // 下辺
-        edge(2, 3, 2, None); // 上辺
-                             // 側柱は「側柱あり」のときだけ鉛直辺へ置く。側柱を持たない耐震壁は壁筋比 ps から
-                             // 等価引張鉄筋比 pte を算定する正規の対象であり、鉛直材を置かないことで再現する。
-                             // 断面のない鉛直材を置くと「側柱はあるのに主筋量を読み取れない＝入力不備」となる。
+        edge(1, 0, 1, None);
+        edge(2, 3, 2, None);
         if let Some(sec) = side_sec {
-            edge(3, 0, 3, Some(sec)); // 左の鉛直辺（側柱）
-            edge(4, 1, 2, None); // 右の鉛直辺
+            edge(3, 0, 3, Some(sec));
+            edge(4, 1, 2, None);
         }
         let wall = ElementData {
             id: ElemId(0),
@@ -2411,7 +2145,6 @@ mod capacity_issue_tests {
                 },
             }
         } else {
-            // 主筋 0 本（断面設定の不備）。
             SectionShape::RcRect {
                 b: 600.0,
                 d: 600.0,
@@ -2453,7 +2186,6 @@ mod capacity_issue_tests {
         let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
             .expect("側柱主筋がなければ不備として検出されるべき");
         assert!(issue.contains("側柱"), "{}", issue);
-        // 壁筋比 ps があっても代替しない（Qu=0 のまま）。
         assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 

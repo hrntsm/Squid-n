@@ -1,53 +1,15 @@
 //! 仕口パネル（柱梁接合部パネル）要素。
 //!
-//! # モデル化
-//!
-//! 仕口パネルは柱梁接合部の節点に設ける、寸法 `(Bx, By, Dz)` を持つ 6 面体である。
-//! パネルは部材座標系 X'-Z' 平面内と Y'-Z' 平面内でせん断モーメント `{mxp, myp}` と
-//! せん断変形角 `{γ'x, γ'y}` を持ち、剛性は寸法とせん断弾性係数 G から定まる。
+//! 部材座標系 X'-Z' 平面内と Y'-Z' 平面内のせん断モーメント `{mxp, myp}` と
+//! せん断変形角 `{γ'x, γ'y}` を持つ。
 //!
 //! ```text
 //! {mxp, myp} = [[Kyp, 0], [0, Kxp]] {γ'x, γ'y},   Kyp = Kxp = G・V
 //! ```
 //!
-//! 体積 `V` には実効体積 `Ve`（[`squid_n_core::panel_zone::PanelGeometry::effective_volume`]）
-//! を用いる。H 形柱ではウェブ厚方向の寸法を `By = tp` と対応させたものであり、
-//! 中実 6 面体ではなく板厚分の実効体積となる。断面検定の降伏モーメント
-//! `pMy = (Ve/κ)・√(1−n²)・Fy/√3` と同じ体積を用いるため、剛性と耐力が同一の
-//! 諸元で整合する。
-//!
-//! パネルが設けられた節点は、基準座標系でせん断モーメント `{MSX, MSY}` と
-//! せん断変形角 `{γX, γY}` を持つ。節点の変位とパネルの変形は次式で適合させる。
-//!
-//! ```text
-//! {γ'x, γ'y} = [[-1, 0], [0, 1]] [Tp] {γX, γY}
-//! {MSX, MSY} = [Tp]ᵀ [[-1, 0], [0, 1]] {mxp, myp}
-//! [Tp] = [[cosθ, sinθ], [-sinθ, cosθ]]
-//! ```
-//!
-//! `−1` が現れるのは部材座標と基準座標の方向が逆向きであるため。`θ` はパネルの
-//! 部材座標系が基準座標系 X-Y 平面内で回転する角度で、本実装では 0 固定とする
-//! （直交フレームを前提とする。変換自体は一般の θ で実装してあるため、将来
-//! 斜交フレームへ拡張する際は `theta` を設定するだけでよい）。
-//!
-//! `Kxp = Kyp` のとき `[Tp]ᵀ [[-1,0],[0,1]] K' [[-1,0],[0,1]] [Tp] = K'` となり、
-//! 節点座標系でのパネル剛性は θ に依らず `diag(K, K)` に帰着する。
-//!
-//! # 追加自由度
-//!
 //! `{γX, γY}` は節点の標準 6 自由度とは別枠の追加自由度で、
-//! [`DofMap`] のグローバル自由度空間の末尾へ払い出される
-//! （[`squid_n_core::dof::PANEL_DOF_PER_NODE`]）。本要素はその 2 自由度に対して
-//! のみ剛性を与える。パネル分のオフセットを介した部材端との適合
-//! （`{d} = {D} + [B0]{Φ} + [Btp]{S}`）は、部材側のデコレータ
-//! [`crate::frame::panel_offset::PanelOffsetMember`] が担う。
-//!
-//! # 弾塑性
-//!
-//! 増分解析・時刻歴応答解析では、パネルの降伏を考慮する。骨格は
-//! `pMy = (Ve/κ)・√(1−n²)・Fy/√3` を降伏点とするバイリニア（二次勾配比
-//! [`PANEL_HARDENING`]）で、履歴則は S 造部材の既定と同じ標準型（Masing）とする。
-//! 軸力比 `n` は各ステップの柱軸力から更新する（[`ColumnAxial`]）。
+//! グローバル自由度空間の末尾へ払い出される。本要素はその 2 自由度に対して
+//! のみ剛性を与える。
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
@@ -57,30 +19,17 @@ use squid_n_core::model::{ElementData, Model};
 use squid_n_core::panel_zone::{resolve_panel_joint, PanelGeometry};
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
 
-/// パネル降伏後の二次勾配比（材端集中ばねの既定と同じ）。
+/// パネル降伏後の二次勾配比。
 pub const PANEL_HARDENING: f64 = 0.01;
 
 /// パネル諸元を解決できなかった場合に用いる剛性 [N·mm/rad]。
-///
-/// 実効体積 `Ve` が 0 以下になるのは、柱・梁の断面情報が欠けている異常系のみ。
-/// 剛性 0 では追加自由度が零剛性となり全体剛性行列が特異になるため、接合部を
-/// 剛（`γ ≈ 0`）とみなせる十分大きな値へ倒す。準備計算のパネル生成
-/// （`squid_n_app` の準備計算）は `Ve > 0` を確認した接合部にのみパネルを設ける
-/// ため、通常この値は使われない。
 const PANEL_RIGID_STIFFNESS: f64 = 1.0e14;
 
 /// パネルの降伏モーメント `pMy` の軸力比 `n` を追従するための柱の情報。
 ///
 /// パネル要素は自身の 2 自由度に加えて柱の 12 自由度を自由度写像へ含め、
-/// 剛性 0 のまま変位だけを受け取る（`ElementBehavior::update_state` は
-/// `global_dofs` と同じ並びの増分を受け取るため、他要素の状態を参照せずに
-/// 柱の軸力を追える）。剛性寄与は 0 のため、全体剛性行列には一切影響しない。
-///
-/// 軸力は材端集中ばねの N-M 相関（`ConcentratedSpringBeam::current_axial_force`）と
-/// 同じく、蓄積した節点変位から弾性軸剛性 `EA/L` で評価する近似とする。
-/// 節点の並進変位をそのまま用いるため、パネル分オフセットに伴う項
-/// （`[Btp]{S}`）は考慮しない（パネル寸法 × せん断変形角のオーダーであり、
-/// 階高スケールの軸変形に対して無視できる）。
+/// 剛性 0 のまま変位だけを受け取る。剛性寄与は 0 のため、
+/// 全体剛性行列には一切影響しない。
 #[derive(Clone, Debug)]
 struct ColumnAxial {
     /// 柱の 2 節点（i 端・j 端）。
@@ -102,7 +51,6 @@ impl ColumnAxial {
         for k in 0..3 {
             d += (self.trial[6 + k] - self.trial[k]) * self.axis[k];
         }
-        // N は引張正。圧縮側のみ耐力低減に効く（検定側と同じ規約）。
         let n = self.ea_over_l * d;
         ((-n).max(0.0) / self.n_ref).clamp(0.0, 1.0)
     }
@@ -128,7 +76,7 @@ pub struct PanelZone {
     pub fy: f64,
     /// パネルせん断剛性 `Kxp = Kyp = G・Ve` [N·mm/rad]。
     pub k_panel: f64,
-    /// パネル部材座標系の回転角 θ [rad]（基準座標系 X-Y 平面内。現状は 0 固定）。
+    /// パネル部材座標系の回転角 θ [rad]（基準座標系 X-Y 平面内）。
     pub theta: f64,
     /// 軸力比 `n = 0` における降伏モーメント `pMy0 = (Ve/κ)・Fy/√3` [N·mm]。
     pub pmy0: f64,
@@ -151,18 +99,8 @@ struct ResolvedPanel {
 }
 
 /// 接合部節点 `node` に取り付く柱・梁からパネル諸元を解決する。
-///
-/// 対象接合部の判定・`dc`・`tp`・`db`・柱の選択は
-/// [`squid_n_core::panel_zone::resolve_panel_joint`] に委ねる。準備計算のパネル生成
-/// （[`crate::springs::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
-/// 準備計算の表に出る諸元と、実際に組まれる要素の剛性・耐力が一致する。
-///
-/// 本関数が加えるのは、解決した柱から取る材料量（せん断弾性係数 `G`・基準強度 `F`・
-/// 軸力比の基準軸力）だけである。`F` は鋼種名の前方一致（板厚 40mm 区分）で解決し、
-/// 解決できない場合は材料の `fy`、それもなければ 235 とする（断面検定と同じ規則）。
 fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
     let joint = resolve_panel_joint(model, node, &model.elements)?;
-    // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
     if joint.has_filled_column {
         return None;
     }
@@ -220,9 +158,6 @@ impl PanelZone {
     }
 
     /// 増分解析・時刻歴応答解析用の弾塑性パネルを生成する。
-    ///
-    /// 降伏点 `pMy` は軸力比 `n` により各ステップで更新されるため、柱の自由度を
-    /// 自由度写像へ含める（剛性寄与は 0）。
     pub fn new_nonlinear(data: &ElementData, model: &Model) -> Self {
         Self::build(data, model, true)
     }
@@ -251,7 +186,6 @@ impl PanelZone {
         } else {
             PANEL_RIGID_STIFFNESS
         };
-        // pMy0 = (Ve/κ)・Fy/√3（軸力比 n = 0 のときの降伏モーメント）。
         let pmy0 = if kappa > 0.0 {
             (ve / kappa) * fy / 3.0_f64.sqrt()
         } else {
@@ -334,9 +268,6 @@ impl PanelZone {
     }
 
     /// 節点座標系のパネルせん断モーメント `{MSX, MSY}` [N·mm]。
-    ///
-    /// 断面検定の設計用パネルモーメント `pM` にそのまま用いる（節点まわりの
-    /// モーメント釣り合いが解析上厳密に満たされた値）。
     pub fn panel_moments(&self) -> [f64; 2] {
         let (_, m) = self.panel_response();
         self.to_node_frame(m)
@@ -364,8 +295,6 @@ impl PanelZone {
         if self.springs.is_none() || self.column.is_none() {
             return;
         }
-        // 降伏耐力が 0 まで落ちると接線剛性が二次勾配のみになり数値的に不安定な
-        // ため、材端集中ばねの N-M 相関と同じく下限を設ける。
         let pmy = self.yield_moment().max(0.02 * self.pmy0);
         if let Some(sp) = self.springs.as_mut() {
             sp[0].set_yield(pmy);
@@ -376,7 +305,6 @@ impl PanelZone {
 
 impl ElementBehavior for PanelZone {
     fn n_dof(&self) -> usize {
-        // パネルの 2 自由度 ＋（軸力追従する場合）柱の 12 自由度（剛性寄与 0）。
         2 + if self.column.is_some() { 12 } else { 0 }
     }
 
@@ -391,8 +319,6 @@ impl ElementBehavior for PanelZone {
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         let (k_panel_frame, _) = self.panel_response();
-        // K_node = [Tp]ᵀ S K' S [Tp]（S = diag(-1, 1)）。S は対角 ±1 のため
-        // S K' S = K' となり、実質 [Tp]ᵀ K' [Tp] に帰着する。
         let t = self.tp_matrix();
         let mut k = LocalMat::zeros(self.n_dof());
         for i in 0..2 {
@@ -430,7 +356,6 @@ impl ElementBehavior for PanelZone {
                 }
             }
         }
-        // 軸力比の変化を降伏値へ反映してから、パネルばねへトライアルを与える。
         self.apply_axial_interaction();
         let gp = self.to_panel_frame(self.trial_disp);
         if let Some(sp) = self.springs.as_mut() {
@@ -493,9 +418,6 @@ impl ElementBehavior for PanelZone {
             c.trial = col.1;
         }
         if let (Some(sp), Some(data)) = (self.springs.as_mut(), springs.as_ref()) {
-            // 同一実行内で serialize_state した信頼済みバイト列のため、復元失敗は
-            // snapshot_state との実装対応が崩れたプログラムエラー。無音で据え置くと
-            // ロールバック漏れの履歴汚染で解析が続行してしまうため診断付きで停止する。
             sp[0]
                 .deserialize_state(&data[0])
                 .expect("PanelZone::restore_state: せん断ばね状態の復元");
@@ -523,7 +445,6 @@ impl ElementBehavior for PanelZone {
         &mut self,
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
         if data.is_empty() {
             return Ok(());
         }
@@ -549,13 +470,10 @@ impl ElementBehavior for PanelZone {
     }
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
-        // パネルは質量を持たない（せん断変形角の自由度に質量は対応しない）。
-        // 固有値解析は零質量方向を質量ランク判定で除くため、回転自由度と同じ扱いになる。
         LocalMat::zeros(self.n_dof())
     }
 
     fn panel_moments_from(&self, u_elem: &[f64]) -> Option<[f64; 2]> {
-        // `global_dofs` の並びは [γX, γY, （軸力追従する場合）柱の 12 自由度]。
         let gamma = [
             u_elem.first().copied().unwrap_or(0.0),
             u_elem.get(1).copied().unwrap_or(0.0),
@@ -635,8 +553,6 @@ mod tests {
     };
     use squid_n_core::section_shape::SectionShape;
 
-    // ── フェイスモーメント（原典: 添付資料『パネルゾーンの力学』小野瀬, 2009） ──
-
     /// 整合条件 pqc·db = pqb·dc は、節点のモーメント釣り合い
     /// ml_b + mr_b = ml_c + mu_c が成立するとき自動的に満たされる（資料 式(4)）。
     #[test]
@@ -650,7 +566,7 @@ mod tests {
             bnl: 0.0,
             bnr: 0.0,
             ml_c: 400_000.0,
-            mu_c: 400_000.0, // 500+300 = 400+400 = 800 ✓
+            mu_c: 400_000.0,
             cql: 120.0,
             cqu: 130.0,
         };
@@ -696,7 +612,7 @@ mod tests {
         let (dc, db, tp) = (0.2_f64, 0.4_f64, 1.0_f64);
         let conn = PanelConnection {
             ml_b: 400.0,
-            mr_b: 0.0, // 欠落部材 → 0
+            mr_b: 0.0,
             bql: 133.333,
             bqr: 0.0,
             bnl: 0.0,
@@ -717,7 +633,6 @@ mod tests {
     fn test_face_moments_joint_shapes() {
         let (dc, db, tp) = (500.0, 700.0, 12.0);
         let cases = [
-            // L 型: 釣り合い ml_b = ml_c
             PanelConnection {
                 ml_b: 300_000.0,
                 mr_b: 0.0,
@@ -730,7 +645,6 @@ mod tests {
                 cql: 80.0,
                 cqu: 0.0,
             },
-            // ト型: 釣り合い ml_b + mr_b = mu_c
             PanelConnection {
                 ml_b: 200_000.0,
                 mr_b: 100_000.0,
@@ -743,7 +657,6 @@ mod tests {
                 cql: 0.0,
                 cqu: 90.0,
             },
-            // 十字型（左右・上下対称）
             PanelConnection {
                 ml_b: 450_000.0,
                 mr_b: 450_000.0,
@@ -766,8 +679,6 @@ mod tests {
             );
         }
     }
-
-    // ── 仕口パネル要素 ──────────────────────────────────────
 
     /// 十字型の S 造接合部モデル（柱: H-400×400×13×21、梁: H-600×200×11×17）。
     /// 節点 0 が接合部、1/2 が梁の遠端、3/4 が柱の遠端。
@@ -817,14 +728,13 @@ mod tests {
 
         let model = Model {
             nodes: vec![
-                node(0, [0.0, 0.0, 3000.0]),     // 接合部
-                node(1, [-5000.0, 0.0, 3000.0]), // 左梁の遠端
-                node(2, [5000.0, 0.0, 3000.0]),  // 右梁の遠端
-                node(3, [0.0, 0.0, 0.0]),        // 下柱の遠端
-                node(4, [0.0, 0.0, 6000.0]),     // 上柱の遠端
+                node(0, [0.0, 0.0, 3000.0]),
+                node(1, [-5000.0, 0.0, 3000.0]),
+                node(2, [5000.0, 0.0, 3000.0]),
+                node(3, [0.0, 0.0, 0.0]),
+                node(4, [0.0, 0.0, 6000.0]),
             ],
             sections: vec![
-                // 0: 梁 H-600×200×11×17、1: 柱 H-400×400×13×21
                 section(
                     0,
                     SectionShape::SteelH {
@@ -862,10 +772,10 @@ mod tests {
                 fy: None,
             }],
             elements: vec![
-                member(0, 1, 0, 0), // 左梁
-                member(1, 0, 2, 0), // 右梁
-                member(2, 3, 0, 1), // 下柱
-                member(3, 0, 4, 1), // 上柱
+                member(0, 1, 0, 0),
+                member(1, 0, 2, 0),
+                member(2, 3, 0, 1),
+                member(3, 0, 4, 1),
             ],
             ..Default::default()
         };
@@ -896,7 +806,6 @@ mod tests {
         assert!((pz.dc - (400.0 - 21.0)).abs() < 1e-9, "dc は柱: {}", pz.dc);
         assert!((pz.db - (600.0 - 17.0)).abs() < 1e-9, "db は梁: {}", pz.db);
         assert!((pz.tp - 13.0).abs() < 1e-9, "tp は柱ウェブ厚: {}", pz.tp);
-        // H 形柱: Ve = dc·db·tp
         assert!((pz.ve - pz.dc * pz.db * pz.tp).abs() / pz.ve < 1e-12);
     }
 
@@ -931,7 +840,6 @@ mod tests {
         let f = pz.internal_force(&ctx);
         assert!((f.data[0] - k * 1.0e-4).abs() / (k * 1.0e-4) < 1e-12);
         assert!(f.data[1].abs() < 1e-6);
-        // panel_moments() は内力と同じ値（検定の pM に供給する）。
         assert!((pz.panel_moments()[0] - f.data[0]).abs() < 1e-6);
     }
 
@@ -942,7 +850,7 @@ mod tests {
         let (model, data) = cross_joint_model();
         let ctx = Ctx { model: &model };
         let mut pz = PanelZone::new(&data, &model);
-        pz.theta = 0.37; // 任意角
+        pz.theta = 0.37;
         let k = pz.tangent_stiffness(&ctx);
         let expected = pz.g * pz.ve;
         assert!((k.get(0, 0) - expected).abs() / expected < 1e-12);
@@ -962,10 +870,8 @@ mod tests {
         let expected_pmy0 = (pz.ve / pz.kappa) * pz.fy / 3.0_f64.sqrt();
         assert!((pz.pmy0 - expected_pmy0).abs() / expected_pmy0 < 1e-12);
 
-        // 降伏変形角 γy = pMy0 / (G·Ve)
         let gamma_y = pz.pmy0 / (pz.g * pz.ve);
 
-        // 降伏直前は弾性剛性
         let mut du = LocalVec {
             data: SmallVec::from_elem(0.0, pz.n_dof()),
         };
@@ -974,9 +880,6 @@ mod tests {
         let k = pz.tangent_stiffness(&ctx);
         assert!((k.get(0, 0) - pz.g * pz.ve).abs() / (pz.g * pz.ve) < 1e-9);
 
-        // 降伏後は二次勾配。接線剛性は確定状態からの載荷方向で評価されるため、
-        // 確定させずに（commit = false）降伏を超える増分を与えた状態で確認する
-        // （確定点そのものでは増分 0 ＝除荷剛性が返るのが弾塑性材の規約）。
         let mut du2 = LocalVec {
             data: SmallVec::from_elem(0.0, pz.n_dof()),
         };
@@ -990,7 +893,6 @@ mod tests {
             k2.get(0, 0),
             k_expected
         );
-        // モーメントは pMy をわずかに超える程度（二次勾配分）で頭打ちになる。
         let m = pz.panel_moments()[0];
         assert!(
             m > pz.pmy0 && m < 1.05 * pz.pmy0,
@@ -1035,12 +937,9 @@ mod tests {
             "初期 n=0"
         );
 
-        // 柱（節点 3 → 0、鉛直上向き）を圧縮する変位を与える。
-        // 自由度並びは [γX, γY, 柱 i 端 6, 柱 j 端 6]。i 端＝節点 3、j 端＝節点 0。
         let mut du = LocalVec {
             data: SmallVec::from_elem(0.0, pz.n_dof()),
         };
-        // j 端（上側）を下げる＝軸方向に縮む → 圧縮
         du.data[2 + 6 + 2] = -1.0;
         pz.update_state(&du, true, &ctx);
 
@@ -1065,7 +964,7 @@ mod tests {
         let mut du = LocalVec {
             data: SmallVec::from_elem(0.0, pz.n_dof()),
         };
-        du.data[2 + 6 + 2] = 1.0; // j 端を上げる＝伸び → 引張
+        du.data[2 + 6 + 2] = 1.0;
         pz.update_state(&du, true, &ctx);
         assert_eq!(pz.axial_ratio(), 0.0);
         assert!((pz.yield_moment() - pz.pmy0).abs() / pz.pmy0 < 1e-12);
@@ -1076,7 +975,6 @@ mod tests {
     #[test]
     fn test_unresolvable_panel_falls_back_to_rigid() {
         let (mut model, data) = cross_joint_model();
-        // 柱の断面形状を消してパネル諸元を解決できなくする。
         model.sections[1].shape = None;
         let pz = PanelZone::new(&data, &model);
         assert_eq!(pz.k_panel, PANEL_RIGID_STIFFNESS);
