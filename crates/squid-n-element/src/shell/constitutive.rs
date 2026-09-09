@@ -4,9 +4,6 @@
 //! - [`d_bending`] — 曲げ剛性 D 行列
 //! - [`d_shear`] — 横せん断剛性 D 行列（せん断補正係数 5/6）
 
-// ---------------------------------------------------------------------------
-// Constitutive matrices (plane stress bending and shear) for isotropic material
-// ---------------------------------------------------------------------------
 pub(crate) fn d_membrane(e: f64, nu: f64, t: f64) -> [[f64; 3]; 3] {
     let c = e * t / (1.0 - nu * nu);
     [

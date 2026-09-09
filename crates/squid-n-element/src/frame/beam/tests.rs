@@ -56,7 +56,7 @@ fn update_state_rejects_mismatched_du_length() {
     elem.update_state(&du, false, &ctx);
 }
 
-/// SRC/CFT の複合換算が要素生成へ配線されていること（SRC規準の考え方・ヤング係数比による等価換算）。
+/// SRC/CFT の複合換算が要素生成へ配線されていること。
 #[test]
 fn test_beam_new_src_cft_composite_props() {
     use squid_n_core::dof::Dof6Mask;
@@ -115,7 +115,6 @@ fn test_beam_new_src_cft_composite_props() {
                 support_spring: None,
             },
         ],
-        // 材料は断面が持つ。断面 0 = SRC（コンクリート）、断面 1 = CFT（鋼材）。
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
@@ -171,35 +170,29 @@ fn test_beam_new_src_cft_composite_props() {
         spring: None,
     };
 
-    // SRC + コンクリート材料: ns=Es/Ec による等価断面性能
     let src_beam = BeamElement::new(&make_elem(0), &model);
     let p = src_shape.src_equivalent_props(23000.0, 0.2).unwrap();
     assert!((src_beam.a - p.area_ax).abs() < 1e-6);
-    // 断面レイヤの iy（強軸）・as_z（ウェブ）は要素座標系では iz・as_y に入る
     assert!((src_beam.iz - p.iy).abs() / p.iy < 1e-12);
     assert!((src_beam.j - p.j).abs() / p.j < 1e-12);
     assert!((src_beam.as_y - p.as_z).abs() < 1e-6);
-    // ns=205000/23000≈8.91 は既定 N_S_EQ=15 と異なる値になること
     let ns = E_STEEL / 23000.0;
     assert!((ns - N_S_EQ).abs() > 1.0);
-    // 質量用断面積は幾何断面(コンクリート全断面)のまま
     assert!((src_beam.a_mass - 360_000.0).abs() < 1e-9);
 
-    // CFT + 鋼材料(fc=充填強度): 充填コンクリートの 1/n 換算累加
     let cft_beam = BeamElement::new(&make_elem(1), &model);
     let pc = cft_shape.cft_equivalent_props(205000.0, 0.3, 36.0).unwrap();
     assert!((cft_beam.a - pc.area_ax).abs() < 1e-6);
     assert!((cft_beam.iz - pc.iy).abs() / pc.iy < 1e-12);
     assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
 
-    // SRC + fc のない材料: 既定 N_S_EQ の軸剛性累加へフォールバック
     model.materials[0].fc = None;
     let src_fallback = BeamElement::new(&make_elem(0), &model);
     assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
     assert!((src_fallback.iz - model.sections[0].iy).abs() < 1e-6);
 }
 
-/// スラブ協力幅による強軸剛性増大（RC規準8条）。
+/// スラブ協力幅による強軸剛性増大。
 #[test]
 fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     use squid_n_core::dof::Dof6Mask;
@@ -299,10 +292,6 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         spring: None,
     };
 
-    // 期待値: a は隣接平行梁との内法距離（RC規準8条の a）。軸間 2500 から
-    // 自梁の幅/2 と相手梁の幅/2（向かい側に梁要素がないため自梁と同幅の
-    // フォールバック）を控除して a=2500−150−150=2200 < l/2=3000
-    // → ba=(0.5−0.6·2200/6000)·2200=616(片側のみ)
     let (b, d, t, l) = (300.0_f64, 600.0_f64, 150.0_f64, 6000.0_f64);
     let a_clear = 2500.0 - b / 2.0 - b / 2.0;
     let ba = (0.5 - 0.6 * a_clear / l) * a_clear;
@@ -317,7 +306,6 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         + af * (d - t / 2.0 - g).powi(2);
 
     let beam = BeamElement::new(&elem, &model);
-    // 強軸（鉛直曲げ）は要素座標系では iz（Mz 面）
     assert!(
         (beam.iz - ie).abs() / ie < 1e-12,
         "iz={} ie={}",
@@ -325,10 +313,8 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         ie
     );
     assert!(beam.iz / i0 > 1.3, "増大率が小さすぎる: {}", beam.iz / i0);
-    // 弱軸（要素座標系では iy）は増大しない
     assert!((beam.iy - model.sections[0].iz).abs() < 1e-9);
 
-    // 版を外すと増大しない（建物一律の `slab_thickness` は判定に使わない）
     model.slabs.clear();
     let beam0 = BeamElement::new(&elem, &model);
     assert!((beam0.iz - i0).abs() < 1e-9);
@@ -379,8 +365,6 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
             },
         },
     };
-    // 床領域は 6000×5000 の矩形（節点 0-1-2-3）。中央の小梁（節点 4-5）が
-    // これを 2 枚の床板（0: y=0..2500, 1: y=2500..5000）へ細分する。
     let model = Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 3000.0]),
@@ -445,8 +429,6 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         slab_thickness: 150.0,
         ..Default::default()
     };
-    // 床領域の外周を走る大梁（節点 0→1。床領域の対角にあたるため、細分後の
-    // どちらの床板の境界にも両端は同時に含まれない）。
     let elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -652,7 +634,6 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             make_node(2, [6000.0, 2500.0, 3000.0]),
             make_node(3, [0.0, 2500.0, 3000.0]),
         ],
-        // 材料は断面が持つ。断面 1 は版の板厚（協力幅判定は `slab_plate_thickness`）。
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
@@ -708,9 +689,6 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
         spring: None,
     };
 
-    // 期待値: 協力幅 bf = b + ba（片側のみ）。a=2500−100−100=2300 < l/2
-    // → ba=(0.5−0.6·2300/6000)·2300=621。合成断面（スラブ上端基準・Hd=0・
-    // スラブ Fc21）と鉄骨単独の平均。
     let sec = &model.sections[0];
     let (sa, si, sh) = (sec.area, sec.iy, 400.0_f64);
     let (es, t, l) = (205000.0_f64, 150.0_f64, 6000.0_f64);
@@ -727,19 +705,15 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
     let expected = (i_comp + si) / 2.0;
 
     let beam = BeamElement::new(&elem, &model);
-    // 強軸（鉛直曲げ）は要素座標系では iz（Mz 面）
     assert!(
         (beam.iz - expected).abs() / expected < 1e-12,
         "iz={} expected={}",
         beam.iz,
         expected
     );
-    // 平均法: 鉄骨単独 < 採用剛性 < 完全合成
     assert!(beam.iz > si && beam.iz < i_comp);
-    // 弱軸（要素座標系では iy）は増大しない
     assert!((beam.iy - model.sections[0].iz).abs() < 1e-9);
 
-    // 版を外すと鉄骨単独のまま
     model.slabs.clear();
     let beam0 = BeamElement::new(&elem, &model);
     assert!((beam0.iz - si).abs() < 1e-9);
@@ -763,13 +737,11 @@ fn test_local_stiffness_symmetric() {
 
 #[test]
 fn test_phi_zero_converges_to_bernoulli() {
-    // As → ∞ => phi → 0 => Timoshenko → Bernoulli
     let mut beam = make_test_beam();
     beam.as_y = 1e30;
     beam.as_z = 1e30;
     let k_timo = beam.local_stiffness_raw();
 
-    // Bernoulli reference: same beam with phi=0
     let e = beam.e;
     let iz = beam.iz;
     let iy = beam.iy;
@@ -835,14 +807,8 @@ fn test_beam_torsion_stiffness() {
 
 #[test]
 fn test_rigid_zone_preserves_rigid_body_rotation() {
-    // 剛域変換は剛体運動不変性を保たねばならない: 要素全体を剛体回転させると
-    // 可撓部にひずみは生じず、節点力はゼロでなければならない。
-    // 剛域腕の運動学 u_flex = u_node + θ×r（i端 r=+li·ex, j端 r=-lj·ex）より
-    // uy_i'=uy_i+li·rz_i, uz_i'=uz_i-li·ry_i, uy_j'=uy_j-lj·rz_j, uz_j'=uz_j+lj·ry_j。
-    // 従来はこの 4 項の符号がすべて逆で、剛体回転に対し偽の材端モーメント・
-    // せん断（~1e7 オーダ）を生じていた。
     let mut beam = make_test_beam();
-    beam.j = 5.0e8; // ねじり剛性を与える（回転自由度の一般性確保）
+    beam.j = 5.0e8;
     beam.rigid = RigidZone {
         length_i: 300.0,
         length_j: 300.0,
@@ -850,9 +816,7 @@ fn test_rigid_zone_preserves_rigid_body_rotation() {
     };
     let k = beam.local_stiffness();
 
-    // 局所 z 軸まわりに節点 i を中心とする剛体回転 θ:
-    // uy_j = θ·L、rz_i = rz_j = θ、その他 0。
-    let theta = 1.0; // 線形剛性なので大きさは任意（剛体モードは厳密に核）
+    let theta = 1.0;
     let l = beam.length;
     let u = [
         0.0,
@@ -860,15 +824,14 @@ fn test_rigid_zone_preserves_rigid_body_rotation() {
         0.0,
         0.0,
         0.0,
-        theta, // 節点 i
+        theta,
         0.0,
         theta * l,
         0.0,
         0.0,
         0.0,
-        theta, // 節点 j
+        theta,
     ];
-    // f = K·u（剛体回転なので ≈ 0 でなければならない）。
     let mut fmax = 0.0_f64;
     for i in 0..12 {
         let mut fi = 0.0;
@@ -877,27 +840,25 @@ fn test_rigid_zone_preserves_rigid_body_rotation() {
         }
         fmax = fmax.max(fi.abs());
     }
-    // 代表剛性スケール（曲げ対角）に対して十分小さいこと。
     let scale = k.get(1, 1).abs().max(1.0);
     assert!(
         fmax / scale < 1e-9,
         "rigid-body z-rotation must produce ~zero nodal force: fmax={fmax}, scale={scale}"
     );
 
-    // 同様に局所 y 軸まわりの剛体回転（uz_j = -θ·L、ry_i=ry_j=θ）。
     let u_y = [
         0.0,
         0.0,
         0.0,
         0.0,
         theta,
-        0.0, // 節点 i
+        0.0,
         0.0,
         0.0,
         -theta * l,
         0.0,
         theta,
-        0.0, // 節点 j
+        0.0,
     ];
     let mut fmax_y = 0.0_f64;
     for i in 0..12 {
@@ -915,8 +876,6 @@ fn test_rigid_zone_preserves_rigid_body_rotation() {
 
 #[test]
 fn test_torsion_not_stiffened_by_rigid_zone() {
-    // ねじりは剛域で増大させない（軸剛性と同じく節点間長 L 基準 GJ/L）。
-    // 剛域を入れても剛性は GJ/l_flex ではなく GJ/L のまま。
     let mut beam = make_test_beam();
     beam.j = 5.0e8;
     beam.rigid = RigidZone {
@@ -925,7 +884,7 @@ fn test_torsion_not_stiffened_by_rigid_zone() {
         ..Default::default()
     };
     let k = beam.local_stiffness();
-    let gj_l = beam.g * beam.j / beam.length; // 全長 3000 基準（可撓長 2400 ではない）
+    let gj_l = beam.g * beam.j / beam.length;
     assert!(
         (k.get(3, 3) - gj_l).abs() / gj_l < 1e-9,
         "ねじりは GJ/L: got {}, want {}",
@@ -939,12 +898,10 @@ fn test_torsion_not_stiffened_by_rigid_zone() {
 fn test_geometric_stiffness_consistent_with_rigid_zone() {
     use crate::behavior::ElementBehavior;
     let n = 1000.0;
-    // 剛域なし: 従来どおり全長 L 基準（回帰なしを確認）。
     let kg = make_test_beam().geometric_stiffness(n);
     let expected_full = n / 3000.0 * 6.0 / 5.0;
     assert!((kg.get(1, 1) - expected_full).abs() / expected_full < 1e-9);
 
-    // 剛域あり: 可撓長基準となり弾性剛性と整合（並進対角 N/l_flex·6/5 が増える）。
     let mut beam_rz = make_test_beam();
     beam_rz.rigid = RigidZone {
         length_i: 300.0,
@@ -952,7 +909,7 @@ fn test_geometric_stiffness_consistent_with_rigid_zone() {
         ..Default::default()
     };
     let kg_rz = beam_rz.geometric_stiffness(n);
-    let expected_flex = n / 2400.0 * 6.0 / 5.0; // 可撓長 2400
+    let expected_flex = n / 2400.0 * 6.0 / 5.0;
     assert!(
         (kg_rz.get(1, 1) - expected_flex).abs() / expected_flex < 1e-9,
         "剛域ありは可撓長基準: got {}, want {}",
@@ -964,11 +921,9 @@ fn test_geometric_stiffness_consistent_with_rigid_zone() {
 
 #[test]
 fn test_pinned_end_releases_moment() {
-    // i端をピンにすると、i端回転行/列がほぼゼロになり剛性が低下
     let mut beam = make_test_beam();
     beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
     let k = beam.local_stiffness();
-    // i端の My, Mz 対角成分が Fixed 時より大幅に小さい
     let k_fixed = make_test_beam().local_stiffness();
     assert!(k.get(4, 4) < k_fixed.get(4, 4) * 1e-6);
     assert!(k.get(5, 5) < k_fixed.get(5, 5) * 1e-6);
@@ -976,8 +931,6 @@ fn test_pinned_end_releases_moment() {
 
 #[test]
 fn test_fixed_ends_exact_equals_raw() {
-    // 両端剛接は raw 剛性そのもの（ペナルティばね近似を用いない厳密な扱い）。
-    // 剛域なし・両端固定なので local_stiffness は raw と厳密に一致する。
     let beam = make_test_beam();
     let k = beam.local_stiffness();
     let raw = beam.local_stiffness_raw();
@@ -1000,18 +953,14 @@ fn test_fixed_ends_exact_equals_raw() {
 fn test_local_stiffness_cache_is_bit_exact() {
     let beam = make_test_beam();
 
-    // 同一インスタンスへの2回目の呼び出し（キャッシュ利用）が1回目とビット一致。
     let k1 = beam.local_stiffness();
     let k2 = beam.local_stiffness();
     assert_eq!(k1.data, k2.data);
 
-    // キャッシュ済みインスタンスをクローンしても、同じ値が得られる
-    // （クローン時にキャッシュを引き継いでも新規に計算しても正しさは不変）。
     let cloned = beam.clone();
     let k_cloned = cloned.local_stiffness();
     assert_eq!(k1.data, k_cloned.data);
 
-    // キャッシュを一度も呼び出していない新規インスタンスの結果ともビット一致。
     let fresh = make_test_beam();
     let k_fresh = fresh.local_stiffness();
     assert_eq!(k1.data, k_fresh.data);
@@ -1019,7 +968,6 @@ fn test_local_stiffness_cache_is_bit_exact() {
 
 #[test]
 fn test_pinned_end_rotation_stiffness_exactly_zero() {
-    // ピン端の節点回転への当要素の寄与は「厳密に 0」（従来のペナルティでは ~1e-8 残っていた）。
     let mut beam = make_test_beam();
     beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
     let k = beam.local_stiffness();
@@ -1041,8 +989,6 @@ fn test_pinned_end_rotation_stiffness_exactly_zero() {
 
 #[test]
 fn test_auto_rigid_zone_standard_formula() {
-    // 柱せい 600, 梁せい 700 の T 字接合
-    // 梁端 λ = 柱せい/2 - 梁せい/4 = 300 - 175 = 125
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     let col_sec = Section {
         id: SectionId(0),
@@ -1162,7 +1108,6 @@ fn test_auto_rigid_zone_standard_formula() {
 
     let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
     assert!((zone.length_i - 125.0).abs() < 1e-9);
-    // フェイス距離 face_i = D_orth/2 = 柱せい/2 = 300（低減率は掛けない）。
     assert!(
         (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "face_i={}",
@@ -1226,7 +1171,7 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
             mk_node(1, [0.0, 0.0, 3000.0]),
             mk_node(2, [4000.0, 0.0, 3000.0]),
         ],
-        elements: vec![mk_beam(0, 0, 1, 0), mk_beam(1, 1, 2, 1)], // 柱(せい600)・梁(せい700)
+        elements: vec![mk_beam(0, 0, 1, 0), mk_beam(1, 1, 2, 1)],
         sections: vec![mk_sec(0, 600.0), mk_sec(1, 700.0)],
         materials: vec![Material {
             strength_factor: None,
@@ -1244,18 +1189,15 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
         ..Default::default()
     };
 
-    // 既定では剛域長 0（未適用）。
     assert_eq!(model.elements[1].rigid_zone.length_i, 0.0);
 
     apply_auto_rigid_zones(&mut model, &RigidZoneRule::default());
-    // 梁端（接合部側）に λ = 柱せい/2 − 梁せい/4 = 300 − 175 = 125 が入る。
     assert!(
         (model.elements[1].rigid_zone.length_i - 125.0).abs() < 1e-9,
         "λ_i={}",
         model.elements[1].rigid_zone.length_i
     );
 
-    // 手動端は再適用で保護される。
     model.elements[1].rigid_zone.source_i = ZoneSource::Manual;
     model.elements[1].rigid_zone.length_i = 999.0;
     model.elements[1].rigid_zone.face_i = Some(0.0);
@@ -1264,8 +1206,6 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
         model.elements[1].rigid_zone.length_i, 999.0,
         "Manual 端が上書きされた"
     );
-    // face_i は剛域長の Manual/Auto フラグとは無関係な幾何量なので、
-    // Manual 端でも常に再算定される（設計書 §6.2.1）。
     assert!(
         (model.elements[1].rigid_zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "Manual 端でも face_i は再算定されるべき: face_i={}",
@@ -1273,8 +1213,8 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
     );
 }
 
-/// 危険断面位置（§6.2.3）: face_i/face_j から評価断面リストを算定する。
-/// face=0（直交材なし）の端では従来どおり [0.0, 0.5, 1.0] と完全一致する。
+/// 危険断面位置: face_i/face_j から評価断面リストを算定する。
+/// face=0 の端では [0.0, 0.5, 1.0] と完全一致する。
 #[test]
 fn test_eval_sections_from_face_distance() {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -1366,14 +1306,11 @@ fn test_eval_sections_from_face_distance() {
         );
     }
 
-    // face=0 の端では従来どおり [0.0, 0.5, 1.0] と完全一致。
     let mut model_zero = model.clone();
     model_zero.elements[0].rigid_zone = RigidZone::default();
     let beam_zero = BeamElement::new(&model_zero.elements[0], &model_zero);
     assert_eq!(beam_zero.eval_sections, vec![0.0, 0.5, 1.0]);
 
-    // 部材付帯情報（ハンチ・継手位置）があれば、ハンチ端・継手位置も評価断面に
-    // 加わる（§6.2.3 の追加検定位置。剛性には影響しない）。
     use squid_n_core::model::{Haunch, JointKind, MemberDetailAttr, MemberJoint};
     let mut model_detail = model.clone();
     model_detail.member_detail_attrs.push(MemberDetailAttr {
@@ -1390,7 +1327,6 @@ fn test_eval_sections_from_face_distance() {
         }],
     });
     let beam_detail = BeamElement::new(&model_detail.elements[0], &model_detail);
-    // face_i=300, ハンチ長 700 → (300+700)/4000 = 0.25、継手 3000/4000 = 0.75
     let expected_detail = [0.0, 0.075, 0.25, 0.5, 0.75, 0.9375, 1.0];
     assert_eq!(beam_detail.eval_sections.len(), expected_detail.len());
     for (a, b) in beam_detail.eval_sections.iter().zip(expected_detail.iter()) {
@@ -1401,7 +1337,6 @@ fn test_eval_sections_from_face_distance() {
         );
     }
 
-    // 付帯情報を付けても剛性行列は不変（剛性には影響しない）。
     let beam_base = BeamElement::new(&model.elements[0], &model);
     assert_eq!(
         beam_base.local_stiffness().data,
@@ -1540,11 +1475,7 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
 }
 
 /// S梁 + RC柱（混在節点）: 剛域は設けない。
-///
-/// 剛域を設けるのは節点に集合する柱・大梁がすべて RC/SRC のときだけで
-/// （技術基準「剛域の計算」）、S 梁が 1 本でも集まる仕口は対象外である。
-/// S 造の仕口は剛域ではなく仕口パネル（`RigidZone::panel_offset_i/j`）で
-/// モデル化するため、ここで剛域を与えると二重に剛くなる。
+/// S 梁が 1 本でも集まる仕口は対象外である。
 #[test]
 fn test_auto_rigid_zone_steel_beam_rc_column() {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -1659,7 +1590,6 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
         "S梁が集まる仕口では剛域を設けない: λ_i={}",
         zone.length_i
     );
-    // 危険断面位置のフェース距離は構造種別を問わない幾何量なので残る。
     assert!(
         (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "face_i={} (期待値=柱せい/2=300)",
@@ -1667,8 +1597,7 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
     );
 }
 
-/// RC梁 + S柱のみ: 直交する RC/SRC 系の柱がないため D_orth_rc=0 となり、
-/// 従来式 λ=reduction·(0/2−梁せい/4) は負となって 0 にクランプされる。
+/// RC梁 + S柱のみ: 剛域長は 0 になる。
 #[test]
 fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -1831,7 +1760,6 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
         shear_rebar_material: None,
         steel_material: None,
     };
-    // 壁のせい（名目値）を柱・梁より大きくし、混入すれば結果が変わることを検証可能にする。
     let wall_sec = Section {
         id: SectionId(2),
         name: "wall".to_string(),
@@ -1930,7 +1858,6 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 plastic_zone: None,
                 spring: None,
             },
-            // 節点1に接続する壁要素（節点1-3）。梁と直交するがWall kindなので無視される。
             ElementData {
                 id: ElemId(2),
                 kind: ElementKind::Wall,
@@ -2033,7 +1960,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         spring: None,
     };
 
-    // 壁なしモデル（基準）
     let model_no_wall = Model {
         nodes: nodes.clone(),
         elements: vec![beam_elem.clone()],
@@ -2043,7 +1969,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
     };
     let beam_no_wall = BeamElement::new(&beam_elem, &model_no_wall);
 
-    // 壁ありモデル: 節点0-1が下辺、2-3が上辺の4節点壁
     let wall_elem = ElementData {
         id: ElemId(1),
         kind: ElementKind::Wall,
@@ -2058,8 +1983,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         plastic_zone: None,
         spring: None,
     };
-    // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、下辺（beam_elem）に加えて
-    // 上辺・左右の鉛直辺を置く（`misc_wall::wall_is_seismic`）。
     let edge = |id: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -2079,9 +2002,9 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         elements: vec![
             beam_elem.clone(),
             wall_elem,
-            edge(2, 3, 2), // 上辺
-            edge(3, 0, 3), // 左の鉛直辺
-            edge(4, 1, 2), // 右の鉛直辺
+            edge(2, 3, 2),
+            edge(3, 0, 3),
+            edge(4, 1, 2),
         ],
         sections: vec![sec],
         materials: vec![mat],
@@ -2101,7 +2024,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         beam_with_wall.a,
         beam_no_wall.a
     );
-    // 質量用断面積（a_mass）は倍率の対象外
     assert!(
         (beam_with_wall.a_mass - beam_no_wall.a_mass).abs() < 1e-9,
         "a_massは変更されないはず"
@@ -2155,7 +2077,6 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         story: None,
         support_spring: None,
     };
-    // 節点1は壁の隅、節点4は壁に属さない別節点（梁は壁の外へ伸びる）
     let nodes = vec![
         make_node(0, [0.0, 0.0, 0.0]),
         make_node(1, [4000.0, 0.0, 0.0]),
@@ -2259,7 +2180,6 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         make_node(2, [4000.0, 0.0, 3000.0]),
         make_node(3, [0.0, 0.0, 3000.0]),
     ];
-    // 左辺（節点0-3）を結ぶ鉛直材。両端とも壁の節点だが鉛直材なので対象外。
     let column_elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -2303,9 +2223,7 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
     );
 }
 
-/// フレーム内雑壁（耐震壁不成立）の柱への袖壁算入（RC規準の耐震壁規定・
-/// フレーム内雑壁のモデル化）。大開口(r0=√(3.6e6/12e6)=0.548>0.4)の壁は
-/// 耐震壁不成立となり、側柱（左辺=節点0-3）に袖壁として断面性能算入される。
+/// フレーム内雑壁の柱への袖壁算入。大開口の壁は耐震壁不成立となり、
 /// 面内（iz・as_y）は平行軸の定理による合成値と一致し、面外（iy・as_z）は不変。
 #[test]
 fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
@@ -2417,7 +2335,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         openings: openings.clone(),
         finish_intensity: 0.0,
     });
-    // 雑壁の幾何は壁版（入力）が情報源。
     model.wall_plates.push(squid_n_core::model::WallPlate {
         id: squid_n_core::ids::WallPlateId(0),
         shape: squid_n_core::model::WallPlateShape::Enclosed {
@@ -2433,8 +2350,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
 
     let column = BeamElement::new(&column_elem, &model);
 
-    // 手計算（misc_wall::tests::test_collect_misc_walls_and_lengths と同じ壁形状）:
-    // wing_length(side=0)=800、lww=800-300/2=650、Aw=150*650=97500。
     let d_col: f64 = 300.0;
     let lww = 650.0_f64;
     let aw = 150.0 * lww;
@@ -2442,8 +2357,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
     let e_i = -(d_col / 2.0 + lww / 2.0);
     let g = (aw * e_i) / (ac + aw);
     let self_i = 150.0 * lww.powi(3) / 12.0;
-    // 要素座標系では断面 iy（強軸）が elem.iz、断面 as_z が elem.as_y に入る
-    // （construct.rs のクロス変換）。面内合成のベースはその値。
     let expected_iz = col_sec.iy + ac * g * g + self_i + aw * (e_i - g).powi(2);
 
     assert!(
@@ -2463,7 +2376,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         "as_y={}",
         column.as_y
     );
-    // 面外（iy・as_z）は袖壁算入の影響を受けない
     assert!((column.iy - col_sec.iz).abs() < 1e-6, "iy={}", column.iy);
     assert!(
         (column.as_z - col_sec.as_y).abs() < 1e-6,
@@ -2584,7 +2496,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         openings: openings.clone(),
         finish_intensity: 0.0,
     });
-    // 雑壁の幾何は壁版（入力）が情報源。
     model.wall_plates.push(squid_n_core::model::WallPlate {
         id: squid_n_core::ids::WallPlateId(0),
         shape: squid_n_core::model::WallPlateShape::Enclosed {
@@ -2600,8 +2511,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
 
     let beam = BeamElement::new(&beam_elem, &model);
 
-    // 手計算: strip_height(top=false)=750（lw/2=2000 は開口 x:[800,3200] 内）、
-    // hw=750-600/2=450、Aw=150*450=67500。下辺の梁なので壁は上に載る(+方向)。
     let d_beam: f64 = 600.0;
     let hw = 450.0_f64;
     let aw = 150.0 * hw;
@@ -2609,8 +2518,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
     let e_i = d_beam / 2.0 + hw / 2.0;
     let g = (aw * e_i) / (ac + aw);
     let self_i = 150.0 * hw.powi(3) / 12.0;
-    // 鉛直曲げは要素座標系では iz（ベースは断面 iy=強軸）、対のせん断は as_y
-    // （ベースは断面 as_z）に入る（construct.rs のクロス変換）。
     let expected_iz = beam_sec.iy + ac * g * g + self_i + aw * (e_i - g).powi(2);
 
     assert!(
@@ -2630,14 +2537,12 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         "as_y={}",
         beam.as_y
     );
-    // 耐震壁不成立のため上下大梁100倍は掛からない（合成値は元の強軸値の高々数倍）
     assert!(
         beam.iz < beam_sec.iy * 10.0,
         "100倍が誤って適用されている可能性: iz={} base={}",
         beam.iz,
         beam_sec.iy
     );
-    // 弱軸（要素座標系では iy・as_z）は腰壁算入の影響を受けない
     assert!((beam.iy - beam_sec.iz).abs() < 1e-6, "iy={}", beam.iy);
     assert!(
         (beam.as_z - beam_sec.as_y).abs() < 1e-6,
@@ -2648,10 +2553,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
 
 /// 柱際スリットは、切れている側の柱への袖壁算入だけを落とし、梁への腰壁・垂れ壁
 /// 算入は残す。
-///
-/// スリットのある壁を一律に剛性算入の対象外としていた頃は、上の梁と一体の壁を無視して
-/// 梁の剛性を過小に評価していた（その梁の負担応力を過小に見る危険側）。切れている
-/// のは柱際だけで、上下の梁とは打ち放しで一体だからである。
 #[test]
 fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
@@ -2725,7 +2626,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
         fc: Some(24.0),
         fy: None,
     };
-    // 左辺（節点 0-3）が柱、下辺（節点 0-1）が梁。
     let column_elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -2769,9 +2669,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
         spring: None,
     };
 
-    // 柱際スリットの有無だけを変えたモデルを 2 つ作る。どちらも大開口
-    // （r0 = √(3.6e6 / 12e6) = 0.548 > 0.4）で耐震壁は不成立なので、
-    // 差はスリットだけになる。
     let build = |slit: squid_n_core::model::WallSlit| -> Model {
         let openings = vec![WallOpening {
             width: 2400.0,
@@ -2829,7 +2726,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
     let beam_plain = BeamElement::new(&beam_elem, &plain);
     let beam_slit = BeamElement::new(&beam_elem, &slit);
 
-    // 柱: スリットありでは袖壁が付かず、断面そのままになる。
     assert!(
         column_plain.a > col_sec.area + 1.0,
         "スリット無しでは袖壁が算入される: a={}",
@@ -2845,7 +2741,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
         "袖壁の有無で面内剛性が変わる"
     );
 
-    // 梁: スリットの有無で変わらない（上下の梁とは一体のまま）。
     assert!(
         beam_plain.a > beam_sec.area + 1.0,
         "腰壁が算入される: a={}",
@@ -2862,7 +2757,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
         "柱際スリットは梁の面内剛性を変えない"
     );
 
-    // 梁際スリットは、その梁への腰壁算入を落とす。柱際とは独立に効く。
     let bottom_slit = build(WallSlit {
         column_face: [false, false],
         beam_face: [true, false],
@@ -2873,7 +2767,6 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
         "下辺の梁際を切った側へは腰壁を算入しない: a={}",
         beam_bottom_slit.a
     );
-    // 柱は梁際スリットの影響を受けない（袖壁は柱際の縁切りだけで決まる）。
     let column_bottom_slit = BeamElement::new(&column_elem, &bottom_slit);
     assert!(
         (column_bottom_slit.a - column_plain.a).abs() < 1e-9,
@@ -2881,9 +2774,8 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
     );
 }
 
-/// 耐震壁が成立する壁（無開口・t=150）の周辺部材: 柱・梁とも雑壁算入されず、
-/// 上下大梁は従来どおり100倍（`WALL_GIRDER_STIFF_FACTOR`）のままとなる
-/// （雑壁算入と上下大梁100倍は排他: `collect_misc_walls` は不成立壁のみ返す）。
+/// 耐震壁が成立する壁の周辺部材: 柱・梁とも雑壁算入されず、
+/// 上下大梁は100倍のままとなる。
 #[test]
 fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
@@ -3003,8 +2895,6 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         plastic_zone: None,
         spring: None,
     };
-    // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、既にある左の鉛直辺
-    // （column_elem）・下辺（beam_elem）に加えて、上辺と右の鉛直辺を置く。
     let edge = |id: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -3019,15 +2909,14 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         plastic_zone: None,
         spring: None,
     };
-    // 開口なし（wall_attrs 未設定）・t=150 → 耐震壁成立
     let model = Model {
         nodes,
         elements: vec![
             column_elem.clone(),
             beam_elem.clone(),
             wall_elem,
-            edge(3, 3, 2), // 上辺
-            edge(4, 1, 2), // 右の鉛直辺
+            edge(3, 3, 2),
+            edge(4, 1, 2),
         ],
         sections: vec![
             col_sec.clone(),
@@ -3085,7 +2974,6 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         story: None,
         support_spring: None,
     };
-    // H-400x200 相当の非対称断面（iy=強軸 ≫ iz=弱軸、as_z=ウェブ、as_y=フランジ）
     let sec = Section {
         id: SectionId(0),
         name: "H-400x200".into(),
@@ -3145,13 +3033,11 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
     };
 
     let beam = BeamElement::new(&elem, &model);
-    // 水平梁（ref=[0,0,1]）: ey=+Z（鉛直上向き）を確認
     assert!((beam.axis.rot[1][2] - 1.0).abs() < 1e-12);
 
     let k = beam.local_stiffness_raw();
     let (e, g, l) = (beam.e, beam.g, beam.length);
 
-    // 鉛直たわみ（uy、DOF1）: 断面の強軸 iy とウェブ as_z が支配する
     let phi_v = 12.0 * e * sec.iy / (g * sec.as_z * l * l);
     let expected_v = 12.0 * e * sec.iy / ((1.0 + phi_v) * l.powi(3));
     assert!(
@@ -3161,7 +3047,6 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         expected_v
     );
 
-    // 水平たわみ（uz、DOF2）: 断面の弱軸 iz とフランジ as_y が支配する
     let phi_h = 12.0 * e * sec.iz / (g * sec.as_y * l * l);
     let expected_h = 12.0 * e * sec.iz / ((1.0 + phi_h) * l.powi(3));
     assert!(
@@ -3171,16 +3056,12 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         expected_h
     );
 
-    // 鉛直曲げ剛性 > 水平曲げ剛性（強軸 ≫ 弱軸）であること
     assert!(k.get(1, 1) > k.get(2, 2) * 5.0);
 }
 
 /// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
 /// 反映され、commit_state で確定、revert_state / restore_state でロールバック
-/// できること。旧実装は commit=false の du を捨てており、非線形ドライバの規律
-/// 「反復中 update_state(du,false) → 収束時 commit_state()」では弾性要素の内力が
-/// 一切更新されなかった（Newton 収束の劣化と、弾性要素が復元力を負担しない
-/// 誤った釣合いの原因）。
+/// できること。
 #[test]
 fn test_beam_trial_displacement_tracking() {
     use crate::behavior::{Ctx, ElementBehavior, LocalVec};
@@ -3188,7 +3069,6 @@ fn test_beam_trial_displacement_tracking() {
     let model = Model::default();
     let ctx = Ctx { model: &model };
 
-    // 初期状態: 内力ゼロ
     assert!(beam
         .internal_force(&ctx)
         .data
@@ -3198,11 +3078,10 @@ fn test_beam_trial_displacement_tracking() {
     let mut du = LocalVec {
         data: smallvec::SmallVec::from_elem(0.0, 12),
     };
-    du.data[6] = 1.0; // j端 軸方向 1mm
+    du.data[6] = 1.0;
     let snap = beam.snapshot_state();
     beam.update_state(&du, false, &ctx);
 
-    // commit 前でも内力へ反映される（トライアル追従）
     let f = beam.internal_force(&ctx);
     let ea_over_l = beam.e * beam.a / beam.length;
     assert!(
@@ -3212,17 +3091,14 @@ fn test_beam_trial_displacement_tracking() {
         ea_over_l
     );
 
-    // commit_state で確定
     beam.commit_state();
     assert!((beam.committed_disp[6] - 1.0).abs() < 1e-15);
 
-    // さらに反復 → revert_state で確定値へ戻る
     beam.update_state(&du, false, &ctx);
     assert!((beam.trial_disp[6] - 2.0).abs() < 1e-15);
     beam.revert_state();
     assert!((beam.trial_disp[6] - 1.0).abs() < 1e-15);
 
-    // restore_state でスナップショット時点（初期状態）へ完全ロールバック
     beam.restore_state(&*snap);
     assert!(beam
         .internal_force(&ctx)
@@ -3236,23 +3112,18 @@ fn test_beam_trial_displacement_tracking() {
 /// recover_forces の内力場が i/j 分岐（ξ=0.5）をまたいで連続・整合であること。
 /// スパン荷重なしでは N/Qy/Qz/Mx は全断面で一定、Mz/My は
 /// dMz/dx = Qy・dMy/dx = −Qz を満たす単一の線形場になる。
-/// （旧実装は i 端側分岐で節点モーメントの符号を反転せず出力しており、
-/// 端部モーメント非ゼロの部材で M 図が ξ=0.5 でジャンプしていた。）
 #[test]
 fn test_recover_forces_moment_field_continuous_across_half() {
     let mut beam = make_test_beam();
-    beam.j = 1.0e8; // ねじり剛性を与えて Mx も検証する
+    beam.j = 1.0e8;
     beam.eval_sections = vec![0.0, 0.25, 0.45, 0.5, 0.55, 0.75, 1.0];
-    // 全自由度を励起する任意の端部変位（局所=グローバルの恒等軸）
     let u = [
-        0.1, 2.0, -1.5, 0.004, 0.002, -0.003, //
-        -0.2, -1.0, 0.5, -0.002, 0.004, 0.001,
+        0.1, 2.0, -1.5, 0.004, 0.002, -0.003, -0.2, -1.0, 0.5, -0.002, 0.004, 0.001,
     ];
     let mf = beam.recover_forces(&u);
     let l = beam.length;
     let f0 = mf.at.first().unwrap().1;
     for &(xi, f) in &mf.at {
-        // N・Qy・Qz・Mx は一定
         for (k, name) in [(0, "N"), (1, "Qy"), (2, "Qz"), (3, "Mx")] {
             let tol = 1e-6 * f0[k].abs().max(1.0);
             assert!(
@@ -3262,7 +3133,6 @@ fn test_recover_forces_moment_field_continuous_across_half() {
                 f0[k]
             );
         }
-        // Mz(ξ) = Mz(0) + Qy·ξL、My(ξ) = My(0) − Qz·ξL の線形場
         let mz_expected = f0[5] + f0[1] * xi * l;
         let my_expected = f0[4] - f0[2] * xi * l;
         let tol_mz = 1e-6 * mz_expected.abs().max(1.0);
@@ -3289,8 +3159,8 @@ fn test_recover_forces_pure_bending_constant_negative_moment() {
     beam.eval_sections = vec![0.0, 0.25, 0.45, 0.5, 0.55, 0.75, 1.0];
     let theta = 1.0e-3;
     let mut u = [0.0; 12];
-    u[5] = theta; // rz_i
-    u[11] = -theta; // rz_j
+    u[5] = theta;
+    u[11] = -theta;
     let mf = beam.recover_forces(&u);
     let expected = -2.0 * beam.e * beam.iz * theta / beam.length;
     for &(xi, f) in &mf.at {
@@ -3303,12 +3173,7 @@ fn test_recover_forces_pure_bending_constant_negative_moment() {
     }
 }
 
-/// 袖壁の偏心 e は壁の**節点入力順に依存してはならない**。
-///
-/// 柱の両側に袖壁が付く場合、壁の節点入力順によって壁ローカル +x の向きが反転する。
-/// 従来は `bottom_pair` のインデックスだけで符号を決め、向きを `.abs()` で捨てて
-/// いたため、2 枚の向きが逆だと**左右の袖壁が柱の同じ側に載る**評価となり、
-/// 図心・合成断面二次モーメントを誤っていた（同じモデルでも入力順で剛性が変わる）。
+/// 袖壁の偏心 e は壁の節点入力順に依存しないこと。
 #[test]
 fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
@@ -3362,7 +3227,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         fc: Some(24.0),
         fy: None,
     };
-    // 中央の柱（節点1-5）の左右に壁 A(0..4000) と壁 B(4000..8000) が付く。
     let nodes = vec![
         make_node(0, [0.0, 0.0, 0.0]),
         make_node(1, [4000.0, 0.0, 0.0]),
@@ -3399,7 +3263,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         plastic_zone: None,
         spring: None,
     };
-    // 開口を与えて耐震壁不成立（＝雑壁として柱へ袖壁算入される）にする。
     let attr = |id: u32| WallAttr {
         elem: ElemId(id),
         opening_area: 0.0,
@@ -3433,7 +3296,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         BeamElement::new(&column_elem, &model)
     };
 
-    // 壁 B を通常順（4000→8000）と反転順（8000→4000）で構築する。
     let normal = build([1, 2, 5, 4]);
     let flipped = build([2, 1, 4, 5]);
 
@@ -3450,8 +3312,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         flipped.a
     );
 }
-
-// ===== 梁のねじり剛性の既定モデル化（i 端ねじれ解放） =====
 
 /// ねじれ解放の検証用モデル。2 本の柱（節点 0→1・2→3）の柱頭を X 方向の大梁で
 /// つないだ 1 スパン 1 層の骨組み。`split_x` を真にすると大梁を中間節点 4 で
@@ -3486,8 +3346,6 @@ fn torsion_test_model(split_x: bool) -> Model {
         plastic_zone: None,
         spring: None,
     };
-    // 柱脚（節点 0・2）は固定支点。柱の i 端（＝柱脚）でも材軸（Z）まわりの
-    // 回転が支点で拘束されるため、柱もねじれ解放の判定を通る。
     let mut nodes = vec![
         mk_node(0, [0.0, 0.0, 0.0]),
         mk_node(1, [0.0, 0.0, 3000.0]),
@@ -3496,7 +3354,6 @@ fn torsion_test_model(split_x: bool) -> Model {
     ];
     nodes[0].restraint = squid_n_core::dof::Dof6Mask::FIXED;
     nodes[2].restraint = squid_n_core::dof::Dof6Mask::FIXED;
-    // 要素 0・1 = 柱、要素 2（＋分割時は 3）= 大梁。
     let mut elements = vec![mk_member(0, 0, 1, true), mk_member(1, 2, 3, true)];
     if split_x {
         nodes.push(mk_node(4, [3000.0, 0.0, 3000.0]));
@@ -3545,13 +3402,10 @@ fn torsion_test_model(split_x: bool) -> Model {
     }
 }
 
-/// 水平材（梁）は既定で i 端ねじれが解放され、局所剛性のねじり行・列
-/// （rx = 局所 3・9）が厳密に 0 になる（部材全長で Mx = 0）。柱（鉛直材）は
-/// 従来どおり GJ/L を保持する。
+/// 水平材（梁）は i 端ねじれが解放され、局所剛性のねじり行・列が 0 になる。
 #[test]
 fn test_beam_i_end_torsion_released_by_default() {
     let model = torsion_test_model(false);
-    // 大梁（要素 2、節点 1→3、X 方向。両端に柱が付く）
     let beam = BeamElement::new(&model.elements[2], &model);
     assert!(beam.torsion_release[0], "梁の i 端ねじれが解放されていない");
     assert!(!beam.torsion_release[1], "j 端は解放しない");
@@ -3567,8 +3421,6 @@ fn test_beam_i_end_torsion_released_by_default() {
         }
     }
 
-    // 柱（節点 0→1、鉛直材）も対象。i 端（柱脚）は支点でねじれ回転が拘束され、
-    // j 端（柱頭）には非平行な大梁が付くため、判定を通って解放される。
     let column = BeamElement::new(&model.elements[0], &model);
     assert!(column.torsion_release[0], "柱の i 端ねじれも解放される");
     let kc = column.local_stiffness();
@@ -3577,7 +3429,6 @@ fn test_beam_i_end_torsion_released_by_default() {
             assert_eq!(kc.get(r, i), 0.0, "柱のねじり行 K[{r}][{i}] が 0 でない");
         }
     }
-    // raw（端条件・解放を適用する前）の段階では GJ/L を持つ。
     let raw = column.local_stiffness_raw();
     approx::assert_relative_eq!(
         raw.get(3, 3),
@@ -3593,7 +3444,6 @@ fn test_column_torsion_release_skipped_at_collinear_column_node() {
     use squid_n_core::ids::SectionId;
     use squid_n_core::model::ForceRegime;
     let mut model = torsion_test_model(false);
-    // 柱 0（節点 0→1）を中間節点 5 で 2 分割する。
     model.nodes.push(Node {
         id: NodeId(model.nodes.len() as u32),
         coord: [0.0, 0.0, 1500.0],
@@ -3628,19 +3478,16 @@ fn test_column_torsion_release_skipped_at_collinear_column_node() {
 }
 
 /// 柱がなく一直線の梁だけが集まる節点（大梁の中間分割点）では、ねじれを解放すると
-/// 材軸まわり回転が浮いて剛性行列が特異になるため、解放しない（安全側）。
+/// 材軸まわり回転が浮いて剛性行列が特異になるため、解放しない。
 #[test]
 fn test_i_end_torsion_release_skipped_at_collinear_beam_node() {
     let model = torsion_test_model(true);
-    // 要素 2（節点 1→4）・要素 3（節点 4→3）はいずれも節点 4 を共有する X 方向材で、
-    // 節点 4 には他の非平行な部材がない。
     let seg_a = BeamElement::new(&model.elements[2], &model);
     let seg_b = BeamElement::new(&model.elements[3], &model);
     assert!(
         !seg_a.torsion_release[0] && !seg_b.torsion_release[0],
         "ねじれ回転が浮く節点を持つ梁は解放してはならない"
     );
-    // ねじり剛性が残っていること（rx 対角が GJ/L）。
     let k = seg_a.local_stiffness();
     approx::assert_relative_eq!(
         k.get(3, 3),
@@ -3648,8 +3495,6 @@ fn test_i_end_torsion_release_skipped_at_collinear_beam_node() {
         max_relative = 1e-12
     );
 
-    // 柱が取り付く節点 1 を i 端に持つ要素 2 でも、j 端側（節点 4）が判定に
-    // 落ちるため解放されない（両端の判定が必要という規則の確認）。
     assert!(!seg_a.torsion_release[0]);
 }
 
@@ -3675,7 +3520,7 @@ fn test_beam_torsion_mode_keep_retains_torsion() {
 /// 返し補正項が省略される）。
 #[test]
 fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
-    let mut beam = make_test_beam(); // j = 0.0
+    let mut beam = make_test_beam();
     beam.end_cond = [EndCondition::Pinned, EndCondition::Pinned];
     let k = beam.local_stiffness();
     for i in 0..12 {
@@ -3687,7 +3532,6 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
             );
         }
     }
-    // ねじり剛性がないので rx 行・列は元から 0（解放の有無に依らない）。
     assert_eq!(k.get(3, 3), 0.0);
 }
 
@@ -3783,22 +3627,16 @@ fn t_joint_model(
     }
 }
 
-/// 剛域を設けるのは、節点に集合する柱・大梁が**すべて** RC/SRC のときだけ
-/// （技術基準「剛域の計算」）。1 本でも S 系があればその端の剛域は 0 になる。
-///
-/// S 造の仕口は剛域ではなく仕口パネルでモデル化するため、剛域を与えると
-/// 二重に剛くなる。危険断面位置のフェース距離は幾何量なので、剛域が 0 でも
-/// 常に付く。
+/// 剛域を設けるのは、節点に集合する柱・大梁がすべて RC/SRC のときだけ。
+/// 1 本でも S 系があればその端の剛域は 0 になる。
 #[test]
 fn test_auto_rigid_zone_only_when_all_members_are_rc() {
     use squid_n_core::ids::ElemId;
 
-    // 柱・梁とも RC: λ = 柱せい/2 − 梁せい/4 = 300 − 175 = 125
     let all_rc = t_joint_model(600.0, 700.0, 4000.0, false, false);
     let zone = auto_rigid_zones(&all_rc, ElemId(1), &RigidZoneRule::default());
     assert!((zone.length_i - 125.0).abs() < 1e-9, "λ={}", zone.length_i);
 
-    // 柱が S・梁が RC（混在節点）: 剛域は 0。フェース距離は幾何量なので残る。
     let steel_col = t_joint_model(600.0, 700.0, 4000.0, true, false);
     let zone = auto_rigid_zones(&steel_col, ElemId(1), &RigidZoneRule::default());
     assert_eq!(zone.length_i, 0.0, "S 柱が集まる節点では剛域を設けない");
@@ -3808,28 +3646,21 @@ fn test_auto_rigid_zone_only_when_all_members_are_rc() {
         zone.face_i_or_zero()
     );
 
-    // 梁が S・柱が RC（混在節点）: 梁側の剛域も 0。
     let steel_beam = t_joint_model(600.0, 700.0, 4000.0, false, true);
     let zone = auto_rigid_zones(&steel_beam, ElemId(1), &RigidZoneRule::default());
     assert_eq!(zone.length_i, 0.0, "S 梁自身にも剛域を設けない");
 
-    // 柱・梁とも S: 当然 0。
     let all_steel = t_joint_model(600.0, 700.0, 4000.0, true, true);
     let zone = auto_rigid_zones(&all_steel, ElemId(1), &RigidZoneRule::default());
     assert_eq!(zone.length_i, 0.0);
 }
 
 /// 両端の剛域長の合計が材長以上になる短い部材は、材長の中点から部材せいの
-/// 1/4 の距離までを剛域とする（技術基準「剛域長が重なる場合」）。
-///
-/// これを行わないと可撓長が 0 以下になり、要素が剛性ゼロに退化する。
+/// 1/4 の距離までを剛域とする。
 #[test]
 fn test_auto_rigid_zone_clamps_when_zones_overlap() {
     use squid_n_core::ids::ElemId;
 
-    // 柱せい 2000・梁せい 400・スパン 1000。
-    // クランプ前の λ = 1000 − 100 = 900 で、両端の合計 1800 が材長 1000 を超える。
-    // クランプ後は λ = 材長/2 − 梁せい/4 = 500 − 100 = 400（両端とも）。
     let model = t_joint_model(2000.0, 400.0, 1000.0, false, false);
     let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
     assert!(
@@ -3838,10 +3669,8 @@ fn test_auto_rigid_zone_clamps_when_zones_overlap() {
         zone.length_i,
         zone.length_j
     );
-    // 可撓長が正に保たれる（要素が退化しない）。
     assert!(zone.length_i + zone.length_j < 1000.0);
 
-    // 部材せいが材長に対して大きすぎる場合は 0 へ丸める（負にしない）。
     let deep = t_joint_model(2000.0, 4000.0, 1000.0, false, false);
     let zone = auto_rigid_zones(&deep, ElemId(1), &RigidZoneRule::default());
     assert_eq!(zone.length_i, 0.0);
@@ -3946,7 +3775,6 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             mk_sec(2, 0.0, Some(wall_thickness)),
         ],
         materials: vec![mat],
-        // 雑壁の幾何は壁版（入力）が情報源なので、壁エレメントと同じ境界の壁版を置く。
         wall_plates: vec![squid_n_core::model::WallPlate {
             id: squid_n_core::ids::WallPlateId(0),
             shape: squid_n_core::model::WallPlateShape::Enclosed {
@@ -3963,16 +3791,8 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
     }
 }
 
-/// 剛域長は、取り付く壁の分だけ長くなる（技術基準「剛域の計算」）。
-///
-/// 柱せい 600・梁せい 700・柱 A の右に長さ 1000 の袖壁（開口なしなので柱で折半し
-/// 500）。柱フェースからの張り出しは 500 − 600/2 = 200 なので
-/// Lf = 300 + 200 = 500、λ = 500 − 700/4 = 325 となる（壁を考慮しなければ 125）。
-///
-/// 一方、危険断面位置のフェース距離には壁を含めない。壁の考慮は剛域の規定で
-/// あって、危険断面位置は柱フェースで決まる幾何量だからである。フェース距離は
-/// RC/SRC 梁の自重の内法長にも使われるため、ここに壁を混ぜると壁の張り出し分
-/// だけ梁の自重が過小になる。
+/// 剛域長は、取り付く壁の分だけ長くなる。
+/// Lf = 300 + 200 = 500、λ = 500 − 700/4 = 325 となる。
 #[test]
 fn test_auto_rigid_zone_considers_attached_wall() {
     use squid_n_core::ids::ElemId;
@@ -3990,7 +3810,6 @@ fn test_auto_rigid_zone_considers_attached_wall() {
         zone.face_i_or_zero()
     );
 
-    // 壁は柱 A の右側にしかないので、反対端（柱 B）は原断面のまま。
     assert!(
         (zone.length_j - 125.0).abs() < 1e-9,
         "壁のない側の λ_j={}（期待値 125）",
@@ -4003,8 +3822,7 @@ fn test_auto_rigid_zone_considers_attached_wall() {
     );
 }
 
-/// 壁厚が 100 mm 未満の壁は剛域算定の対象外（技術基準の「壁」は現場打ち
-/// コンクリート壁で厚さ 100 mm 以上）。
+/// 壁厚が 100 mm 未満の壁は剛域算定の対象外。
 #[test]
 fn test_auto_rigid_zone_ignores_thin_wall() {
     use squid_n_core::ids::ElemId;
@@ -4018,7 +3836,7 @@ fn test_auto_rigid_zone_ignores_thin_wall() {
     );
 }
 
-/// 「壁を考慮する」を無効にすると原断面だけで算定する（設定は既定で有効）。
+/// 「壁を考慮する」を無効にすると原断面だけで算定する。
 #[test]
 fn test_auto_rigid_zone_wall_consideration_can_be_disabled() {
     use squid_n_core::ids::ElemId;

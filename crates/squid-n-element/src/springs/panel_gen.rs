@@ -1,56 +1,36 @@
 //! 仕口パネル要素の自動生成（準備計算の前処理）。
 //!
 //! S 造（CFT を除く）の柱梁接合節点を検出し、[`ElementKind::PanelZone`] の要素を
-//! モデルへ生成する。剛域の自動算定（[`crate::frame::beam::apply_auto_rigid_zones`]）と
-//! 同じく、解析に先立って 1 回適用する冪等な前処理である。
+//! モデルへ生成する。解析に先立って 1 回適用する冪等な前処理である。
 //!
 //! # 生成条件
 //!
-//! 対象とする接合部の判定は [`squid_n_core::panel_zone::resolve_panel_joint`] が
-//! 一手に担う（規則は同モジュールの「対象とする接合部」を参照）。要約すると、
-//! 柱とはりが 1 本以上ずつ取り付き、**それらがすべて S 系**で、諸元を解決できる
-//! 柱があり `Ve` が正の節点である。
-//!
-//! モデル化はこれに加えて、取り付く柱に CFT が 1 本もないことを要求する。
-//! 充填コンクリートと通しダイアフラムが接合部のせん断挙動に関与し、鋼管のみの
-//! 実効体積による弾性せん断パネルでは剛性を表せないため、接合部を剛節点として
-//! 扱う。CFT の接合部は S 造パネルゾーンの断面検定の対象には含まれる。
+//! 柱とはりが 1 本以上ずつ取り付き、それらがすべて S 系で、諸元を解決できる
+//! 柱があり `Ve` が正の節点である。取り付く柱に CFT が 1 本でもある接合部は
+//! 対象外とする。
 //!
 //! # パネル分のオフセットをモデルへ書き込む
 //!
 //! パネルを設けた接合部では、部材は節点ではなくパネルの面（柱フェース・梁フェース）
-//! で接合する。この接合位置までのオフセットは剛体アームそのものなので、生成時に
+//! で接合する。この接合位置までのオフセットを、生成時に
 //! 各部材の `rigid_zone.panel_offset_i/j` へ書き込む。
 //!
-//! オフセットを要素の組み立て時にだけ折り込む方式では、`rigid_zone` を直接読む
-//! 側（幾何剛性・せん断降伏の `h0`・座屈長さの剛度比 `G`・モデル化図）が
-//! オフセットを見落とす。モデルに一度だけ確定させることで、
-//! [`RigidZone::rigid_length_i`] を読むすべての経路が同じ値を見る。
+//! 剛域長 `length_i/j` とは別のフィールドへ入れる。
 //!
-//! **剛域長 `length_i/j` とは別のフィールドへ入れる。**剛域の自動算定
-//! （[`crate::frame::beam::apply_auto_rigid_zones`]）は `Auto` 端の `length_i/j` を無条件に
-//! 再算定するため、同じ場所へ入れると増分解析・時刻歴のように剛域算定を単独で
-//! 走らせる経路でオフセットが消える。別フィールドなら呼び出し順に依存しない。
+//! 剛体アーム長は `max(剛域長, パネルオフセット)` とする。
 //!
-//! 剛体アーム長は `max(剛域長, パネルオフセット)` とする。オフセットは
-//! 「部材が節点ではなくパネル面で接合する」という幾何的事実なので、剛域長の手動
-//! 指定が 0 でも部材が節点まで伸びることはない。手動指定がオフセットより大きければ
-//! そちらが効く。
-//!
-//! 本関数は全要素の `panel_offset_i/j` を毎回求め直すため、パネルを OFF にすれば
+//! 全要素の `panel_offset_i/j` を毎回求め直すため、パネルを OFF にすれば
 //! 値は 0 へ戻り、繰り返し適用しても増えない（冪等）。
 //!
 //! # 要素 ID の扱い
 //!
-//! `Model` は「配列添字 == `ElemId`」を不変条件とするため、パネルの生成・削除では
-//! 要素 ID の詰め直しが必要になる。本モジュールは
+//! `Model` は「配列添字 == `ElemId`」を不変条件とする。本モジュールは
 //!
 //! 1. 既存のパネル要素をすべて取り除き、残った要素の ID を連番へ詰め直す
 //!    （モデル内の全 `ElemId` 参照を同時に付け替える）
 //! 2. 新しいパネル要素を末尾へ追加する
 //!
-//! の順で処理する。パネルは常に末尾へ並ぶため、パネル生成後にモデルを編集しない
-//! 限り 1. で ID は動かない。
+//! の順で処理する。
 
 use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::ids::{ElemId, NodeId};
@@ -61,7 +41,7 @@ use squid_n_core::panel_zone::{
     member_orientation, panel_half_extent, resolve_panel_joint, PanelHalfExtent,
 };
 
-/// 1 つの接合部に生成するパネルの諸元（準備計算の結果表示用）。
+/// 1 つの接合部に生成するパネルの諸元。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeneratedPanel {
     /// 接合部の節点。
@@ -101,9 +81,6 @@ fn remove_existing_panels(model: &mut Model) {
     }
     model.elements = kept;
 
-    // 詰め直しに伴う ID 参照の付け替え。パネル要素は側テーブル属性・部材荷重・
-    // 部材グループのいずれからも参照されないため、`remap` が `None` になる
-    // 参照は生じない（防御的に、解決できない参照はそのまま残す）。
     let shift = |id: &mut ElemId| {
         if let Some(Some(new)) = remap.get(id.index()).copied() {
             *id = ElemId(new);
@@ -114,8 +91,6 @@ fn remove_existing_panels(model: &mut Model) {
             shift(&mut ml.elem);
         }
     }
-    // 側テーブル属性と一本部材指定（beam_groups）の参照は shift_elem_attr_refs が
-    // 一括で付け替える。
     model.shift_elem_attr_refs(shift);
 }
 
@@ -129,7 +104,6 @@ fn panel_at(
     node: NodeId,
 ) -> Option<(GeneratedPanel, Vec<NodeId>)> {
     let joint = resolve_panel_joint(model, node, adjacency.elements_at(model, node))?;
-    // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
     if joint.has_filled_column {
         return None;
     }
@@ -139,15 +113,10 @@ fn panel_at(
         .map(|m| m.shear_modulus())
         .unwrap_or(0.0);
     let k_panel = shear_modulus * joint.ve;
-    // 諸元を解決できない接合部（材料が欠けている）にはパネルを設けない。
-    // 剛性 0 のパネルは追加自由度が零剛性となり全体剛性行列を特異にする。
     if k_panel <= 0.0 || !k_panel.is_finite() {
         return None;
     }
 
-    // 描画・パネル自由度との連成に用いる、接合部へ取り付く部材の他端。
-    // 節点の照合を先に行い、合致した部材だけ向きを判定する（向きの判定は
-    // 座標参照と平方根を伴うため、全要素へ先に掛けない）。
     let connected: Vec<NodeId> = adjacency
         .elements_at(model, node)
         .filter_map(|e| {
@@ -181,9 +150,6 @@ fn far_end_at(e: &ElementData, node: NodeId) -> Option<NodeId> {
 ///
 /// パネルが 1 つもなければ全要素の値が 0 になるため、モデル化を OFF にすると
 /// オフセットは消える（冪等）。
-///
-/// 節点ごとに全要素を走査すると パネル数 × 要素数 になるため、半寸法を節点表へ
-/// 引けるようにしたうえで、要素側を 1 周して両端を引く。
 fn apply_panel_offsets(model: &mut Model, adjacency: &NodeAdjacency, panels: &[GeneratedPanel]) {
     let mut extent_of: Vec<Option<PanelHalfExtent>> = vec![None; model.nodes.len()];
     for p in panels {
@@ -230,19 +196,16 @@ fn apply_panel_offsets(model: &mut Model, adjacency: &NodeAdjacency, panels: &[G
 /// `Model::panel_zone` が [`PanelZoneMode::None`] のときは既存のパネルを取り除く
 /// だけで、新しいパネルは生成しない。
 ///
-/// 戻り値は生成したパネルの諸元（節点 index の昇順）。準備計算の結果表示に用いる。
+/// 戻り値は生成したパネルの諸元（節点 index の昇順）。
 pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     remove_existing_panels(model);
     if model.panel_zone != PanelZoneMode::Model {
-        // パネルが 1 つもない状態のオフセット（＝すべて 0）へ戻す。
         for e in &mut model.elements {
             e.rigid_zone.panel_offset_i = 0.0;
             e.rigid_zone.panel_offset_j = 0.0;
         }
         return Vec::new();
     }
-    // パネル要素を取り除いた状態で作る（パネル自身は線材ではないため隣接には
-    // 入らないが、要素の詰め直しで添字が動くため取り除いた後に構築する）。
     let adjacency = NodeAdjacency::build(model);
 
     let mut generated = Vec::new();
@@ -255,7 +218,7 @@ pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
         let mut nodes: smallvec::SmallVec<[NodeId; 8]> = smallvec::smallvec![node];
         nodes.extend(connected);
         new_elements.push(ElementData {
-            id: ElemId(0), // 追加時に連番へ振り直す
+            id: ElemId(0),
             kind: ElementKind::PanelZone,
             nodes,
             section: None,
@@ -421,7 +384,6 @@ mod tests {
             .collect();
         assert_eq!(panel_elems.len(), 1);
         assert_eq!(panel_elems[0].nodes[0], NodeId(0), "先頭は接合部の節点");
-        // 描画用に接続部材の他端も並ぶ。
         assert!(panel_elems[0].nodes.len() >= 2);
         model.validate().expect("配列添字 == ElemId が保たれる");
     }
@@ -468,17 +430,14 @@ mod tests {
         apply_auto_panel_zones(&mut model);
         assert_eq!(model.elements.len(), 3, "梁・柱・パネル");
 
-        // パネルの後ろへ利用者が部材を追加した状況（ID は末尾の 3）。
         let mut added = member(3, 1, 2, 0);
         added.id = ElemId(3);
         model.elements.push(added);
-        // その部材を参照する部材グループを作る。
         model.beam_groups = vec![vec![ElemId(3)]];
 
         apply_auto_panel_zones(&mut model);
         model.validate().expect("配列添字 == ElemId が保たれる");
 
-        // 追加部材はパネルを詰めた分だけ前へ繰り上がり、参照も追従する。
         let added_idx = model
             .elements
             .iter()
@@ -543,7 +502,6 @@ mod tests {
             assert!(panels.is_empty(), "CFT 柱はモデル化の対象外");
             assert_eq!(model.elements.len(), 2, "パネル要素は生成されない");
 
-            // 一方、諸元の解決自体は成功する（断面検定はこの経路を使う）。
             let geom = PanelGeometry::from_column(&model.sections[1]).expect("諸元は解決できる");
             assert!(geom.filled, "モデル化対象ではない");
             assert!(geom.effective_volume(500.0) > 0.0, "検定用の Ve は求まる");
@@ -580,7 +538,6 @@ mod tests {
             rc_shape(400.0, 700.0),
             700.0,
         );
-        // 判定は材料の区分による。梁の断面（断面 0）へコンクリートを割り当てる。
         model.sections[0].material = Some(MaterialId(1));
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 梁の接合部は対象外");
@@ -591,7 +548,6 @@ mod tests {
     #[test]
     fn test_mixed_beams_get_no_panel() {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
-        // Y 方向へ RC 梁を追加する。
         model.nodes.push(Node {
             id: NodeId(3),
             coord: [0.0, 6000.0, 3000.0],
@@ -603,7 +559,6 @@ mod tests {
         model
             .sections
             .push(section_with_mat(2, rc_shape(400.0, 700.0), 700.0, 1));
-        // 判定は材料の区分による（断面 2 の材料 1 = コンクリート）。
         model.elements.push(member(2, 0, 3, 2));
 
         let panels = apply_auto_panel_zones(&mut model);
@@ -617,14 +572,12 @@ mod tests {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
         apply_auto_panel_zones(&mut model);
 
-        // 梁（要素 0）の i 端が接合部。オフセットは柱せい 400 の 1/2。
         let beam = &model.elements[0].rigid_zone;
         assert!((beam.panel_offset_i - 200.0).abs() < 1e-9);
         assert_eq!(beam.panel_offset_j, 0.0, "接合部でない端は 0");
         assert_eq!(beam.length_i, 0.0, "剛域長そのものは変えない");
         assert!((beam.rigid_length_i() - 200.0).abs() < 1e-9);
 
-        // 柱（要素 1）の j 端が接合部。オフセットは梁せい 600 の 1/2。
         let col = &model.elements[1].rigid_zone;
         assert!((col.panel_offset_j - 300.0).abs() < 1e-9);
         assert_eq!(col.panel_offset_i, 0.0);
@@ -718,7 +671,6 @@ mod tests {
     /// 要素の並び順を入れ替えても結果が変わらないことを併せて確認する。
     #[test]
     fn test_smallest_ve_column_is_used() {
-        // 上柱を細い H 形（ウェブ薄 → Ve 小）にする。
         let thin = h_shape(400.0, 400.0, 9.0, 21.0);
         let thick = h_shape(400.0, 400.0, 22.0, 21.0);
 
@@ -733,7 +685,6 @@ mod tests {
                 support_spring: None,
             });
             model.sections.push(section(2, thin.clone(), 400.0));
-            // 上柱（細い断面）を先頭へ入れるか末尾へ入れるかで順序を変える。
             let upper = member(2, 0, 3, 2);
             if upper_first {
                 model.elements.insert(0, upper);
@@ -764,7 +715,6 @@ mod tests {
     #[test]
     fn test_column_only_node_gets_no_panel() {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
-        // 梁を取り除く
         model.elements.remove(0);
         model.elements[0].id = ElemId(0);
         let panels = apply_auto_panel_zones(&mut model);

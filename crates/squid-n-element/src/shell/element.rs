@@ -9,9 +9,6 @@ use super::DEFAULT_DRILLING_FACTOR;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::Model;
 
-// ---------------------------------------------------------------------------
-// ShellElement
-// ---------------------------------------------------------------------------
 #[derive(Clone)]
 pub struct ShellElement {
     pub nodes: [NodeId; 4],
@@ -23,10 +20,9 @@ pub struct ShellElement {
     pub frame: ShellFrame,
     pub drilling_factor: f64,
     pub membrane_active: bool,
-    /// 確定変位（4 節点 24 自由度、グローバル系）。commit_state で trial から確定。
+    /// 確定変位（4 節点 24 自由度、グローバル系）。
     pub committed_disp: [f64; 24],
-    /// トライアル変位（グローバル系）。Newton 反復中も蓄積され、
-    /// internal_force はこちらを参照する（beam/behavior.rs と同じトライアル追従規約）。
+    /// トライアル変位（グローバル系）。
     pub trial_disp: [f64; 24],
 }
 
@@ -42,19 +38,12 @@ impl ShellElement {
         let frame = ShellFrame::from_nodes(coords);
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-        // 断面（厚さ）・材料の未割当は解析前チェック（precheck_model）で捕捉される
-        // 前提。ここでの既定はゼロ剛性とし、チェックを通らない経路から来ても
-        // 「もっともらしい板厚・剛性」で無音に解析が通ることはなく、特異行列と
-        // して顕在化させる（従来は t=100・E=205000 として静かに解析されていた）。
         let t = sec.and_then(|s| s.thickness).unwrap_or(0.0);
 
         let mat = model.element_material(data);
         let e = mat.map(|m| m.young).unwrap_or(0.0);
         let nu = mat.map(|m| m.poisson).unwrap_or(0.3);
 
-        // Determine membrane_active: true unless every node is part of a rigid diaphragm
-        // （剛床の情報源は `Constraint::RigidDiaphragm` のみ。節点の所属階を
-        // 経由すると、階には属するが剛床には入らない中間節点を取り違える）
         let membrane_active = !nids.iter().all(|&n| model.node_on_rigid_diaphragm(n));
 
         ShellElement {
@@ -73,10 +62,7 @@ impl ShellElement {
     }
 
     /// 節点座標を要素ローカル面内 2D 座標（e1,e2 への射影）へ変換する。
-    /// B 行列・ヤコビアンはこのローカル座標で評価しなければならない
-    /// （`to_global` でフレーム回転を掛けるため、座標も同じフレームに揃える）。
-    /// グローバル x,y を直接使うと、第1辺がグローバル x に沿わない要素で
-    /// 二重回転になりパッチテストが破綻する。
+    /// B 行列・ヤコビアンはこのローカル座標で評価する。
     pub(crate) fn local_coords(&self) -> [[f64; 3]; 4] {
         let f = &self.frame;
         let mut lc = [[0.0; 3]; 4];

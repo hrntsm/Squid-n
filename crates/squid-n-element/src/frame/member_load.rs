@@ -1,40 +1,25 @@
-//! 部材（梁）スパン荷重の等価節点力（consistent load vector）と、
-//! 両端固定梁としての固定端内力（重ね合わせ用）を計算する。
+//! 部材（梁）スパン荷重の等価節点力と固定端内力を計算する。
 //!
-//! # 規約
-//! - ローカル 12 自由度の並びは beam.rs と同一:
-//!   i 端 [N, Vy, Vz, Mx, My, Mz] = index 0..6、j 端 = index 6..12。
-//! - `MemberLoad::dir` は全体座標の作用方向。ローカル軸 (ex, ey, ez) へ分解して
-//!   軸方向 (x) と 2 つの曲げ面 (y, z) の成分に分けて扱う。
-//! - 等価節点力 `Q`（local）は構造系の荷重ベクトルへ `R^T·Q` で加算する。
-//! - 内力回復では、`K·u` 由来の内力に本モジュールの「固定端内力」を重ね合わせる。
+//! ローカル 12 自由度の並びは i 端 [N, Vy, Vz, Mx, My, Mz] = index 0..6、j 端 = index 6..12。
 
 use crate::transform::LocalFrame;
 use squid_n_core::geom::vec3;
 use squid_n_core::model::{MemberLoad, MemberLoadKind};
 
-/// ローカル 1 軸へ分解した成分荷重。`mag` は成分係数 (dir·e_axis) を乗じ済み。
 #[derive(Clone, Copy, Debug)]
 enum Comp {
-    /// i 端から距離 a に集中荷重 p（成分係数込み）。
     Point { a: f64, p: f64 },
-    /// [a,b] 区間に強度 w1→w2 の線形分布（成分係数込み）。
     Dist { a: f64, b: f64, w1: f64, w2: f64 },
 }
 
-/// 1 つの部材荷重をローカル 3 軸 (x,y,z) の成分へ分解する。
 /// 返り値 [Option<Comp>;3]: index 0=軸(x), 1=曲げ面y, 2=曲げ面z。
 fn resolve(load: &MemberLoad, frame: &LocalFrame) -> [Option<Comp>; 3] {
-    // dir を正規化する。除算を `vec3::unit` へ寄せないのは、`unit` の縮退判定が
-    // mm 座標前提の `ZERO_TOL`（1e-9）で、無次元の方向ベクトルを測るここの
-    // 判定値 1e-12 とは意味が違うためである。
     let d = load.dir;
     let dl = vec3::norm(d);
     if dl < 1e-12 {
         return [None, None, None];
     }
     let d = [d[0] / dl, d[1] / dl, d[2] / dl];
-    // ローカル成分係数 c_axis = d · e_axis（rot 行が ex,ey,ez）
     let c = [
         vec3::dot(d, frame.rot[0]),
         vec3::dot(d, frame.rot[1]),
@@ -59,7 +44,6 @@ fn resolve(load: &MemberLoad, frame: &LocalFrame) -> [Option<Comp>; 3] {
     out
 }
 
-// --- Hermite 形状関数（ξ = s/L）。曲げ面の等価節点力に用いる ---
 fn n_vi(xi: f64) -> f64 {
     1.0 - 3.0 * xi * xi + 2.0 * xi * xi * xi
 }
@@ -73,13 +57,10 @@ fn n_tj(xi: f64, l: f64) -> f64 {
     l * (-xi * xi + xi * xi * xi)
 }
 
-/// [a,b] 区間の強度 w1→w2 線形分布に対し、被積分関数 f(s) を 3 点 Gauss で積分。
-/// w が線形・f が高々 3 次までなら正確（4 次まで可）。
 fn gauss_dist<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, f: F) -> f64 {
     if (b - a).abs() < 1e-12 {
         return 0.0;
     }
-    // 3 点 Gauss-Legendre [-1,1]
     const G: [f64; 3] = [-0.7745966692414834, 0.0, 0.7745966692414834];
     const W: [f64; 3] = [0.5555555555555556, 0.8888888888888888, 0.5555555555555556];
     let mid = 0.5 * (a + b);
@@ -88,32 +69,21 @@ fn gauss_dist<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, f: F) -> f64 
     for k in 0..3 {
         let x = mid + half * G[k];
         let t = (x - a) / (b - a);
-        let w = w1 + (w2 - w1) * t; // 強度
+        let w = w1 + (w2 - w1) * t;
         s += W[k] * w * f(x);
     }
     s * half
 }
 
-/// スパン荷重を材端へ配る方式。曲げ剛性の有無で使い分ける。
+/// スパン荷重を材端へ配る方式。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpanLoadTransfer {
-    /// 曲げ剛性を持つ線材（梁・柱・非線形梁）。Hermite 形状関数による等価節点力で、
-    /// 材端モーメント（固定端モーメント）を含む。
     #[default]
     Consistent,
-    /// 軸剛性のみの線材（ブレース＝トラス要素）。材軸直交成分は単純梁反力と同じ
-    /// 静定分配で両端へ配り、材端モーメントを生じない。
-    ///
-    /// トラス要素は曲げ・せん断・ねじり剛性を持たないため、固定端モーメントを
-    /// 与えても部材はそれを負担できない。にもかかわらず節点へは外力として
-    /// 撒かれるため、材端モーメントを含む等価節点力を使うと架空のモーメントが
-    /// 周囲の柱梁へ流れ込む。合力と作用位置は保存されるので、建物総重量や
-    /// 支点反力の釣り合いはこの方式でも変わらない。
     StaticallyEquivalent,
 }
 
 /// 部材の全スパン荷重に対する等価節点力ベクトル（local 12）。
-/// 構造系へは `frame.rotate_to_global(&q)` を加算する。
 pub fn consistent_load_local(
     loads: &[MemberLoad],
     frame: &LocalFrame,
@@ -127,7 +97,6 @@ pub fn consistent_load_local(
         for (axis, comp) in comps.iter().enumerate() {
             let Some(comp) = comp else { continue };
             match (axis, transfer) {
-                // 軸方向は形状関数が線形で、そもそも静定分配と一致する。
                 (0, _) => add_axial_consistent(&mut q, comp, l),
                 (1, SpanLoadTransfer::Consistent) => add_bending_consistent(&mut q, comp, l, 1),
                 (1, SpanLoadTransfer::StaticallyEquivalent) => {
@@ -143,7 +112,7 @@ pub fn consistent_load_local(
     q
 }
 
-/// 軸方向（線形形状関数 1-ξ, ξ）。q[0]=N_i, q[6]=N_j。
+/// q[0]=N_i, q[6]=N_j。
 fn add_axial_consistent(q: &mut [f64; 12], comp: &Comp, l: f64) {
     match *comp {
         Comp::Point { a, p } => {
@@ -159,7 +128,6 @@ fn add_axial_consistent(q: &mut [f64; 12], comp: &Comp, l: f64) {
 }
 
 /// 曲げ面（plane=1: y面 → Vy,Mz / plane=2: z面 → Vz,My）。
-/// z 面はモーメント自由度の符号が反転する（右手系 θy と θz の差）。
 fn add_bending_consistent(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) {
     let (iv, im, jv, jm, msign) = if plane == 1 {
         (1usize, 5usize, 7usize, 11usize, 1.0)
@@ -183,19 +151,11 @@ fn add_bending_consistent(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) 
     }
 }
 
-/// 曲げ面成分を材端モーメント無しで両端へ配る（単純梁反力と同じ静定分配）。
-/// 自由度の並び・符号規約は [`add_bending_consistent`] と共通。
-///
-/// i 端まわりのモーメント釣り合いから j 端の分担 `R_j = ∫w(s)·s ds / L` を決め、
-/// 残り `R − R_j` を i 端へ配る。合力と作用位置の 1 次モーメントがともに保存される。
+/// 曲げ面成分を材端モーメント無しで両端へ配る。
 fn add_bending_static(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) {
     let (iv, jv) = if plane == 1 { (1usize, 7usize) } else { (2, 8) };
-    // 積分区間は荷重自身の定義域とし、材長で切り取らない
-    // （[`add_bending_consistent`] が形状関数を [a,b] 上で積分するのと合わせ、
-    // 両方式で合力が一致するようにする）。
     let (r, r_j) = match *comp {
         Comp::Point { a, p } => {
-            // 材端ちょうど（a = L）の集中荷重を落とさないよう、位置は比で扱う。
             let xi = (a / l).clamp(0.0, 1.0);
             (p, p * xi)
         }
@@ -212,7 +172,6 @@ fn add_bending_static(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) {
     q[jv] += r_j;
 }
 
-/// 区間 [lo,hi] における合力 ∫ w ds（成分荷重 1 つ分）。
 fn comp_resultant(comp: &Comp, lo: f64, hi: f64) -> f64 {
     if hi <= lo {
         return 0.0;
@@ -231,13 +190,11 @@ fn comp_resultant(comp: &Comp, lo: f64, hi: f64) -> f64 {
             if h <= l {
                 return 0.0;
             }
-            // [l,h] 区間の強度を 2 点 Gauss で積分（w 線形 → 正確）
             integ2(a, b, w1, w2, l, h, |_s| 1.0)
         }
     }
 }
 
-/// 区間 [lo,hi] における断面 xref まわりの 1 次モーメント ∫ w(s)(xref−s) ds。
 fn comp_moment(comp: &Comp, lo: f64, hi: f64, xref: f64) -> f64 {
     if hi <= lo {
         return 0.0;
@@ -261,7 +218,6 @@ fn comp_moment(comp: &Comp, lo: f64, hi: f64, xref: f64) -> f64 {
     }
 }
 
-/// 強度 w1→w2（[a,b] 上線形）の分布に対し被積分 w(s)·f(s) を区間 [l,h] で 2 点 Gauss 積分。
 fn integ2<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, l: f64, h: f64, f: F) -> f64 {
     const G: [f64; 2] = [-0.5773502691896257, 0.5773502691896257];
     let mid = 0.5 * (l + h);
@@ -281,15 +237,10 @@ fn integ2<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, l: f64, h: f64, f
     s_sum * half
 }
 
-/// 断面 xi（i 端からの正規化位置 0..1）における「両端固定梁としての固定端内力」を
-/// local 内力 [N, Qy, Qz, Mx, My, Mz] で返す。`K·u` 由来の内力（part A）へ重ね合わせる。
+/// 断面 xi（i 端からの正規化位置 0..1）における固定端内力を
+/// local 内力 [N, Qy, Qz, Mx, My, Mz] で返す。
 ///
-/// beam.rs の `recover_forces` の符号規約・i/j 分岐を厳密にミラーする。
-/// `fFEF = -Q`（固定端力 = 等価節点力の符号反転）を端部力として用い、
-/// 分布荷重のスパン自由体項を beam の式形に合わせて加える。
-///
-/// `transfer` が [`SpanLoadTransfer::StaticallyEquivalent`]（ブレース）の場合、
-/// 材軸直交成分は荷重ベクトル側で両端へ流してしまうため部材内には残らない。
+/// `transfer` が [`SpanLoadTransfer::StaticallyEquivalent`] の場合、
 /// 曲げ・せん断・ねじりの固定端内力は零を返し、軸力成分のみを返す。
 pub fn fixed_internal_local(
     loads: &[MemberLoad],
@@ -302,9 +253,8 @@ pub fn fixed_internal_local(
     let x = xi * l;
     let xr = (1.0 - xi) * l;
     let q = consistent_load_local(loads, frame, l, transfer);
-    let ff = q.map(|v| -v); // fFEF = -Q
+    let ff = q.map(|v| -v);
 
-    // 各ローカル軸（y,z,x）の成分荷重を集約
     let mut comps_x: Vec<Comp> = Vec::new();
     let mut comps_y: Vec<Comp> = Vec::new();
     let mut comps_z: Vec<Comp> = Vec::new();
@@ -320,7 +270,6 @@ pub fn fixed_internal_local(
             comps_z.push(c);
         }
     }
-    // [0,x] の合力 / x まわりモーメント、[x,L] の合力 / x まわりモーメント
     let res_i = |comps: &[Comp]| comps.iter().map(|c| comp_resultant(c, 0.0, x)).sum::<f64>();
     let mom_i = |comps: &[Comp]| comps.iter().map(|c| comp_moment(c, 0.0, x, x)).sum::<f64>();
     let mom_jx = |comps: &[Comp]| comps.iter().map(|c| comp_moment(c, x, l, x)).sum::<f64>();
@@ -329,25 +278,18 @@ pub fn fixed_internal_local(
     let sz_i = res_i(&comps_z);
 
     let mut f = [0.0; 6];
-    // 軸力（端部反力の線形内挿。分布軸荷重の中間値は近似）
     f[0] = ff[0] * (1.0 - xi) + ff[6] * xi;
-    // 曲げ剛性のない部材（ブレース）は材軸直交成分を負担しないため、
-    // 軸力以外の固定端内力は生じない。
     if transfer == SpanLoadTransfer::StaticallyEquivalent {
         return f;
     }
-    // せん断（i 側自由体の単一式: Q = fFEF_i + ∫₀ˣ w ds）
     f[1] = ff[1] + sy_i;
     f[2] = ff[2] + sz_i;
 
     if xi < 0.5 {
-        // i 端基準（beam: mz=−f5+f1·x, my=−f4−f2·x）。節点モーメントは断面内力と
-        // 符号が逆のため反転し、スパン荷重の自由体項も j 側と対称な符号で加える。
         f[3] = -ff[3];
         f[5] = -ff[5] + ff[1] * x + mom_i(&comps_y);
         f[4] = -ff[4] - ff[2] * x - mom_i(&comps_z);
     } else {
-        // j 端基準（beam: mz=f11+f7·xr, my=f10−f8·xr）
         f[3] = ff[9];
         f[5] = ff[11] + ff[7] * xr - mom_jx(&comps_y);
         f[4] = ff[10] - ff[8] * xr + mom_jx(&comps_z);
@@ -361,14 +303,11 @@ mod tests {
     use squid_n_core::ids::ElemId;
     use squid_n_core::model::{MemberLoad, MemberLoadKind};
 
-    // 水平梁（i→j が +X）、参照ベクトルで ey が +Z 上向きになるよう構成。
     fn horiz_frame() -> LocalFrame {
-        // ex=+X。ref=+Z → ey=+Z, ez = ex×ey = +X×+Z = -Y
         LocalFrame::from_nodes([0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 0.0, 1.0])
     }
 
     fn udl(w: f64, l: f64) -> MemberLoad {
-        // 下向き(-Z)等分布。ey=+Z なので成分 cy = dir·ey = -1。
         MemberLoad::manual(
             ElemId(0),
             [0.0, 0.0, -1.0],
@@ -384,15 +323,13 @@ mod tests {
     #[test]
     fn udl_fixed_end_moment_is_wl2_over_12() {
         let l = 1000.0;
-        let w = 2.0; // N/mm
+        let w = 2.0;
         let frame = horiz_frame();
         let loads = vec![udl(w, l)];
         let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
-        // y 面のせん断（i,j）= wL/2、符号は成分 cy=-1 を反映
         let expected_shear = w * l / 2.0;
         assert!((q[1].abs() - expected_shear).abs() < 1e-6, "q1={}", q[1]);
         assert!((q[7].abs() - expected_shear).abs() < 1e-6, "q7={}", q[7]);
-        // 固定端モーメント = wL²/12
         let fem = w * l * l / 12.0;
         assert!((q[5].abs() - fem).abs() < 1e-3, "q5={} fem={}", q[5], fem);
         assert!((q[11].abs() - fem).abs() < 1e-3, "q11={}", q[11]);
@@ -425,7 +362,6 @@ mod tests {
             MemberLoadKind::Point { a: l / 2.0, p },
         )];
         let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
-        // 中央集中の固定端モーメント = PL/8、せん断 = P/2
         let fem = p * l / 8.0;
         assert!((q[5].abs() - fem).abs() < 1e-6, "q5={} fem={}", q[5], fem);
         assert!((q[1].abs() - p / 2.0).abs() < 1e-6, "q1={}", q[1]);
@@ -435,8 +371,6 @@ mod tests {
     /// 連続かつ符号付き理論解と一致すること。下向き荷重（下端引張正の規約）で
     /// M(ξ) = wL²(6ξ−6ξ²−1)/12（端部 −wL²/12・中央 +wL²/24）、
     /// Q(ξ) = wL(1−2ξ)/2。
-    /// （旧実装は i 端側分岐の符号が j 側と不整合で、ξ=0.5 の前後で値が
-    /// ジャンプしていた。）
     #[test]
     fn udl_clamped_internal_field_continuous_and_signed() {
         let l = 1000.0;
@@ -470,15 +404,12 @@ mod tests {
         let frame = horiz_frame();
         let loads = vec![udl(w, l)];
         let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
-        // 材端モーメントは 0
         for &k in &[3usize, 4, 5, 9, 10, 11] {
             assert!(q[k].abs() < 1e-9, "q[{k}]={} は 0 のはず", q[k]);
         }
-        // 曲げ面せん断は両端 wL/2 ずつ
         let half = w * l / 2.0;
         assert!((q[1].abs() - half).abs() < 1e-6, "q1={}", q[1]);
         assert!((q[7].abs() - half).abs() < 1e-6, "q7={}", q[7]);
-        // 合力は等価節点力方式と一致する
         let qc = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
         assert!(
             ((q[1] + q[7]) - (qc[1] + qc[7])).abs() < 1e-6,
@@ -500,7 +431,6 @@ mod tests {
             MemberLoadKind::Point { a, p },
         )];
         let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
-        // R_i = P(1−a/L) = 75、R_j = P·a/L = 25
         assert!((q[1].abs() - p * (1.0 - a / l)).abs() < 1e-6, "q1={}", q[1]);
         assert!((q[7].abs() - p * a / l).abs() < 1e-6, "q7={}", q[7]);
         assert!(
@@ -510,8 +440,6 @@ mod tests {
     }
 
     /// 材端ちょうどに載る集中荷重も落とさずに配る。
-    /// 位置 a = L は「材長で切り取る」実装では区間外と判定されて消えるため、
-    /// 静定分配では位置を比で扱っている。
     #[test]
     fn brace_point_load_at_far_end_goes_entirely_to_that_end() {
         let l = 1000.0;
@@ -555,7 +483,6 @@ mod tests {
             qs[1] + qs[7],
             qc[1] + qc[7]
         );
-        // 台形分布 w1=1→w2=4 を [200,700] に載せた合力は (1+4)/2×500 = 1250
         assert!(((qs[1] + qs[7]).abs() - 1250.0).abs() < 1e-6);
     }
 
@@ -583,9 +510,6 @@ mod tests {
 
     #[test]
     fn triangle_via_trapezoid_matches_known_fem() {
-        // 対称三角形（端 0、中央ピーク）は台形では表せないが、
-        // 片側三角形 [0,L] で w1=0→w2=w の固定端モーメントを検算。
-        // FEM_i = wL²/30, FEM_j = wL²/20（i 端が荷重小側）。
         let l = 1000.0;
         let w = 3.0;
         let frame = horiz_frame();

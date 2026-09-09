@@ -71,7 +71,7 @@ fn friction() -> IsolatorProps {
         qd: 0.0,
         kv: 5_000_000.0,
         mu: 0.1,
-        n_long: 1_000_000.0, // Qmax = 0.1×1e6 = 100kN
+        n_long: 1_000_000.0,
         n_springs: 8,
         ..Default::default()
     }
@@ -100,7 +100,7 @@ fn push_horizontal(elem: &mut IsolatorElement, ctx: &Ctx, delta: f64) -> LocalVe
     let mut du = LocalVec {
         data: smallvec::smallvec![0.0; 12],
     };
-    du.data[6] = delta; // node j, global ux
+    du.data[6] = delta;
     elem.update_state(&du, true, ctx);
     elem.internal_force(ctx)
 }
@@ -114,7 +114,6 @@ fn test_laminated_elastic_horizontal_stiffness() {
     let model = iso_model(laminated());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    // 弾性域（降伏変位 δy=Qd/K1=50mm 未満）。δ=10mm → |F|=K1·δ=20kN。
     let f = push_horizontal(&mut elem, &ctx, 10.0);
     assert!(
         (horiz_resultant(&f) - 2000.0 * 10.0).abs() < 1.0,
@@ -129,8 +128,6 @@ fn test_laminated_yields_past_qd() {
     let model = iso_model(laminated());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    // δy=Qd/K1=50mm。δ=150mm（降伏後）。二次剛性 K2=200 なので
-    // |F|=Qd+K2·(δ−δy)=100000+200·100=120kN < 弾性外挿 K1·δ=300kN。
     let f = push_horizontal(&mut elem, &ctx, 150.0);
     let fr = horiz_resultant(&f);
     assert!(fr < 2000.0 * 150.0, "降伏で剛性低下: {fr}");
@@ -148,10 +145,9 @@ fn test_vertical_axial_elastic() {
     let mut du = LocalVec {
         data: smallvec::smallvec![0.0; 12],
     };
-    du.data[8] = 2.0; // node j, global uz（鉛直）
+    du.data[8] = 2.0;
     elem.update_state(&du, true, &ctx);
     let f = elem.internal_force(&ctx);
-    // 鉛直軸力 = Kv·δ = 5e6·2 = 1e7 N。
     assert!(
         (f.data[8].abs() - 5_000_000.0 * 2.0).abs() < 1.0,
         "鉛直軸剛性 Fz={}",
@@ -164,15 +160,12 @@ fn test_friction_slips_at_qmax() {
     let model = iso_model(friction());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    // Qmax=μN=100kN, K1=10000 → 滑り出し変位 = 10mm。
-    // 弾性: δ=5mm → |F|=50kN。
     let f1 = push_horizontal(&mut elem, &ctx, 5.0);
     assert!(
         (horiz_resultant(&f1) - 50_000.0).abs() < 10.0,
         "摩擦弾性 |F|={}",
         horiz_resultant(&f1)
     );
-    // 滑り: δ=50mm → |F| は Qmax=100kN で頭打ち。
     let mut elem2 = IsolatorElement::new(&model.elements[0], &model);
     let f2 = push_horizontal(&mut elem2, &ctx, 50.0);
     assert!(
@@ -187,9 +180,8 @@ fn test_commit_revert_roundtrip() {
     let model = iso_model(laminated());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    let f_committed = push_horizontal(&mut elem, &ctx, 80.0); // 降伏後をコミット
+    let f_committed = push_horizontal(&mut elem, &ctx, 80.0);
 
-    // さらに trial して revert → コミット状態へ戻る。
     let mut du = LocalVec {
         data: smallvec::smallvec![0.0; 12],
     };
@@ -213,11 +205,9 @@ fn test_commit_revert_roundtrip() {
 
 #[test]
 fn test_hdr_strain_dependent_softens_with_strain() {
-    // 高減衰ゴム（歪依存）: 弾性域は K1·δ、降伏後は γ 依存で剛性・耐力が低下する。
     let model = iso_model(hdr_strain_dependent());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    // 弾性域（δ=10mm < δy=50mm）: 歪依存でも弾性は K1·δ=20kN。
     let f_el = push_horizontal(&mut elem, &ctx, 10.0);
     assert!(
         (horiz_resultant(&f_el) - 2000.0 * 10.0).abs() < 1.0,
@@ -225,12 +215,11 @@ fn test_hdr_strain_dependent_softens_with_strain() {
         horiz_resultant(&f_el)
     );
 
-    // 降伏後（δ=100mm, γ=0.5）: 歪依存で耐力が定数バイリニアより低下。
     let f_sd = {
         let mut e = IsolatorElement::new(&model.elements[0], &model);
         horiz_resultant(&push_horizontal(&mut e, &ctx, 100.0))
     };
-    let model_c = iso_model(laminated()); // 同 K1/K2/Qd の定数バイリニア。
+    let model_c = iso_model(laminated());
     let ctx_c = Ctx { model: &model_c };
     let f_const = {
         let mut e = IsolatorElement::new(&model_c.elements[0], &model_c);
@@ -244,20 +233,16 @@ fn test_hdr_strain_dependent_softens_with_strain() {
 }
 
 /// チェックポイントの往復で履歴（バイリニアの塑性変位）と変位が完全復元されること。
-/// 従来はトレイト既定（空バイト列）のままで、レジューム時に免震装置だけが
-/// 初期状態へ戻り、以降の応答が別の履歴経路を辿っていた。
 #[test]
 fn test_checkpoint_roundtrip_restores_hysteresis() {
     let model = iso_model(laminated());
     let ctx = Ctx { model: &model };
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    // 降伏域まで押し込んで履歴（塑性変位）を作る。
     let f_before = push_horizontal(&mut elem, &ctx, 150.0);
 
     let cp = elem.serialize_checkpoint();
     assert!(!cp.is_empty(), "チェックポイントに状態が直列化されるべき");
 
-    // 新品の要素へ復元 → 内力・接線がチェックポイント時点と一致する。
     let mut restored = IsolatorElement::new(&model.elements[0], &model);
     restored
         .deserialize_checkpoint(&cp)
@@ -276,7 +261,6 @@ fn test_checkpoint_roundtrip_restores_hysteresis() {
         );
     }
 
-    // 空バイト列（旧チェックポイント）は「状態なし」として成功する。
     let mut fresh = IsolatorElement::new(&model.elements[0], &model);
     assert!(fresh.deserialize_checkpoint(&[]).is_ok());
 }

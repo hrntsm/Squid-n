@@ -50,13 +50,11 @@ impl InPlaneReleasedColumn {
     ///
     /// K* = Kaa − Kab·Kbb⁻¹·Kba（a: 残す10自由度、b: 解放する2自由度）。
     /// 縮約後の b 自由度の行・列は 0（その回転自由度に剛性を持たない＝ピン）。
-    /// 軸・ねじり・他方向曲げは元の局所剛性で b 自由度と非連成のため影響を受けない。
     fn released_local_stiffness(&self) -> LocalMat {
         let k = self.inner.local_stiffness();
         let b = self.release_dofs();
         let n = k.n;
 
-        // Kbb（2×2）とその逆行列
         let kbb = vec![
             k.get(b[0], b[0]),
             k.get(b[0], b[1]),
@@ -64,9 +62,6 @@ impl InPlaneReleasedColumn {
             k.get(b[1], b[1]),
         ];
         let Some(kbb_inv) = invert_small(&kbb, 2) else {
-            // 解放面の 2×2 が特異（当該曲げ面の剛性なし）。補正項を省略し、
-            // 解放行・列を 0 にした剛性を返す（もっともらしい剛性を作らない。
-            // `beam::stiffness::condense_end_springs` と同じ扱い）。
             let mut out = LocalMat::zeros(n);
             for i in 0..n {
                 if b.contains(&i) {
@@ -105,9 +100,7 @@ impl InPlaneReleasedColumn {
         out
     }
 
-    /// 縮約後の局所剛性を用いた断面力の復元（`BeamElement::recover_forces` と同じ規約）。
-    /// `BeamElement::recover_forces` は自身の（非解放の）`local_stiffness()` を用いるため、
-    /// ここでは解放後の局所剛性で同じ算定式を再実装する。
+    /// 縮約後の局所剛性を用いた断面力の復元。
     fn recover_forces_released(
         &self,
         u_elem_global: &[f64; 12],
@@ -157,8 +150,6 @@ crate::behavior::forward_element_behavior!(InPlaneReleasedColumn, inner, {
     }
 
     fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // trial_disp はグローバル系で蓄積される（BeamElement と同じトライアル追従規約）
-        // ため、解放後の局所剛性をグローバルへ回した K で内力を評価する。
         let k = self.inner.axis.to_global(&self.released_local_stiffness());
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
@@ -182,7 +173,7 @@ crate::behavior::forward_element_behavior!(InPlaneReleasedColumn, inner, {
         Some(self.recover_forces_released(&arr))
     }
 
-    /// 側柱は面内解放を除けば弾性材のため、蓄積した trial 変位から復元する。
+    /// 蓄積した trial 変位から復元する。
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         Some(self.recover_forces_released(&self.inner.trial_disp))
     }

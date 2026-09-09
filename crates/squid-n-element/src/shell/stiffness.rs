@@ -11,16 +11,12 @@ use super::shape::{dshape_cart, jacobian, jacobian_det, GAUSS_PTS_2};
 use crate::behavior::LocalMat;
 
 impl ShellElement {
-    /// Add drilling stabilization to the stiffness matrix.
-    /// Uses a 4×4 element matrix that is zero for uniform drilling rotation
-    /// (rigid body mode) and stiff for relative drilling modes.
     pub(crate) fn add_drilling(&self, k: &mut LocalMat) {
         let gamma = self.drilling_factor;
         let g_mod = self.e / (2.0 * (1.0 + self.nu));
         let area = element_area(&self.coords);
         let scale = gamma * g_mod * self.t * area;
 
-        // Q = I - (1/4) * 1*1^T  =>  diag=3/4, off-diag=-1/4
         let q_diag = 0.75 * scale;
         let q_off = -0.25 * scale;
 
@@ -40,7 +36,6 @@ impl ShellElement {
         let mut k = LocalMat::zeros(n);
         let lc = self.local_coords();
 
-        // Proper Gauss integration:
         for gi in 0..2 {
             for gj in 0..2 {
                 let gp = gi * 2 + gj;
@@ -54,11 +49,9 @@ impl ShellElement {
 
                 let dNc = dshape_cart(xi, eta, &lc);
 
-                // Membrane contribution
                 if self.membrane_active {
                     let bm = self.membrane_b(xi, eta, &dNc);
                     let dm = d_membrane(self.e, self.nu, self.t);
-                    // K += B^T * D * B * weight * t  (membrane: integrated over thickness = multiply by t)
                     let mut btd = vec![0.0; 24 * 3];
                     for i in 0..24 {
                         for r in 0..3 {
@@ -80,7 +73,6 @@ impl ShellElement {
                     }
                 }
 
-                // Bending contribution
                 {
                     let bb = self.bending_b(xi, eta, &dNc);
                     let db = d_bending(self.e, self.nu, self.t);
@@ -105,7 +97,6 @@ impl ShellElement {
                     }
                 }
 
-                // MITC4 shear contribution
                 {
                     let bs = self.shear_b_mitc4(xi, eta, &lc);
                     let ds = d_shear(self.e, self.nu, self.t);
@@ -132,7 +123,6 @@ impl ShellElement {
             }
         }
 
-        // Drilling stabilization
         self.add_drilling(&mut k);
 
         k
@@ -140,14 +130,13 @@ impl ShellElement {
 
     pub fn apply_rigid_floor_membrane_off(&self, k: &mut LocalMat) {
         if !self.membrane_active {
-            // Zero out rows/cols for Ux (0), Uy (1), Rz (5) at each node
             let n = 24;
             let mut mask = vec![true; n];
             for i in 0..4 {
                 let bo = i * 6;
-                mask[bo] = false; // Ux
-                mask[bo + 1] = false; // Uy
-                mask[bo + 5] = false; // Rz
+                mask[bo] = false;
+                mask[bo + 1] = false;
+                mask[bo + 5] = false;
             }
             for i in 0..n {
                 if !mask[i] {

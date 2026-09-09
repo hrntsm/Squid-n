@@ -67,7 +67,6 @@ fn test_local_stiffness_symmetric() {
 fn test_drilling_prevents_singularity() {
     let shell = make_flat_shell(10.0);
     let k = shell.local_stiffness();
-    // Check diagonal of drilling DOFs are non-zero
     for i in 0..4 {
         let idx = i * 6 + 5;
         assert!(k.get(idx, idx) > 0.0, "drilling DOF {i} diagonal is zero");
@@ -80,7 +79,6 @@ fn test_rigid_floor_disables_membrane() {
     shell.membrane_active = false;
     let mut k = shell.local_stiffness();
     shell.apply_rigid_floor_membrane_off(&mut k);
-    // Ux, Uy, Rz diagonals should be 1.0 (penalized)
     for i in 0..4 {
         let bo = i * 6;
         assert!((k.get(bo, bo) - 1.0).abs() < 1e-12, "Ux[{i}] should be 1.0");
@@ -404,9 +402,6 @@ fn test_patch_membrane_constant_stress() {
     assert!((strain[2] - gam_xy).abs() < 1e-12, "γ_xy={}", strain[2]);
 }
 
-// -----------------------------------------------------------------------
-// 真のパッチテスト（歪みメッシュ・機械精度）— 仕様 §9.2（唯一の厳密ゲート）
-// -----------------------------------------------------------------------
 fn distorted_patch() -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
     // 中央節点を非対称に歪ませた 9 節点・4 要素パッチ。内部=節点4。
     let coords = vec![
@@ -651,8 +646,6 @@ fn test_patch_bending_distorted() {
 
 /// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
 /// 反映され（内力 = 接線剛性·u と厳密に一致）、剛体並進では内力ゼロとなること。
-/// 従来は internal_force が恒常的にゼロを返しており、非線形解析でシェルが
-/// 復元力を負担していなかった。
 ///
 /// K·u 比較は「internal_force と tangent_stiffness が将来ズレない」ことの
 /// 回帰ガードであり、K の値そのものの正しさは本ファイルのパッチテスト群

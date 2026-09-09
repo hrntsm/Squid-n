@@ -1,17 +1,4 @@
-//! 耐震壁（壁エレメントモデル）の側柱（RC規準の耐震壁規定。
-//! 側柱の断面性能）。
-//!
-//! 側柱の扱い:
-//! 軸剛性・曲げ剛性・せん断剛性は通常の柱と同様に計算する。ただし、ＲＣ耐震壁
-//! 面内方向は両端ピンのためモーメント・せん断力を負担しない。
-//!
-//! すなわち側柱は、壁面内方向の曲げに対してのみ両端ピン（その曲げ面のモーメント・
-//! せん断力を負担しない）とし、面外方向・軸・ねじりは通常の柱と同じ剛性を持つ。
-//! 両端ピンの曲げ面は、静的縮約でその面の回転自由度（要素ローカル 12 自由度中の
-//! 2 個）を消去することで表現する。剛接梁（`beam.rs` の `condense_end_springs`）と
-//! 異なり片端ではなく両端を同時に解放するため、縮約後はその面のせん断（並進）剛性も
-//! 厳密にゼロとなる（両端ピン材は面内方向に対し機構となり、面内の相対水平変位・
-//! 回転のいずれに対しても内力を生じない）。
+//! 耐震壁の側柱。
 //!
 //! - [`InPlaneReleasedColumn`] — 面内両端ピンの側柱要素本体（`column`）
 //! - [`wall_side_column_release`] — 自部材が側柱かどうかの幾何判定（`detect`）
@@ -45,8 +32,6 @@ mod tests {
     use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Material, Node, RigidZone};
 
     fn make_test_column(release_axis: ReleaseAxis) -> InPlaneReleasedColumn {
-        // 識別しやすいよう iy・iz を非対称にした軸方向材（軸=ローカルX、
-        // 局所座標系=グローバル座標系のまま。曲げ面判定を単純化するため）。
         let inner = BeamElement {
             id: ElemId(0),
             e: 23000.0,
@@ -103,7 +88,6 @@ mod tests {
         let model = Model::default();
         let ctx = Ctx { model: &model };
 
-        // 両曲げ面の公称固定端剛性（解放していない通常の柱としての基準値）
         let col_ref = make_test_column(ReleaseAxis::LocalZ);
         let phi_y = 12.0 * col_ref.inner.e * col_ref.inner.iy
             / (col_ref.inner.g * col_ref.inner.as_z * col_ref.inner.length * col_ref.inner.length);
@@ -116,7 +100,6 @@ mod tests {
             col_ref.inner.e * col_ref.inner.iz / ((1.0 + phi_z) * col_ref.inner.length.powi(3));
         let expected_uy = 12.0 * az;
 
-        // LocalZ 解放（rz を消去）→ uy 面（1,5,7,11。iz を用いる面）が縮約でゼロになる。
         let col_z = col_ref;
         let k_z = col_z.tangent_stiffness(&ctx);
         let e_uy_zero = energy_at(&k_z, 7);
@@ -124,14 +107,12 @@ mod tests {
             e_uy_zero.abs() / expected_uy < 1e-6,
             "LocalZ解放でuy面のエネルギがゼロでない: {e_uy_zero}"
         );
-        // 面外（uz面、iy を用いる。8番）は通常剛性のまま
         let e_uz = energy_at(&k_z, 8);
         assert!(
             (e_uz - expected_uz).abs() / expected_uz < 1e-6,
             "面外剛性が変化した: e_uz={e_uz} expected={expected_uz}"
         );
 
-        // LocalY 解放（ry を消去）→ uz 面（2,4,8,10。iy を用いる面）が縮約でゼロになる。
         let col_y = make_test_column(ReleaseAxis::LocalY);
         let k_y = col_y.tangent_stiffness(&ctx);
         let e_uz_zero = energy_at(&k_y, 8);
@@ -139,7 +120,6 @@ mod tests {
             e_uz_zero.abs() / expected_uz < 1e-6,
             "LocalY解放でuz面のエネルギがゼロでない: {e_uz_zero}"
         );
-        // 面外（uy面、iz を用いる）は通常剛性のまま
         let e_uy = energy_at(&k_y, 7);
         assert!(
             (e_uy - expected_uy).abs() / expected_uy < 1e-6,
@@ -175,10 +155,6 @@ mod tests {
         for axis in [ReleaseAxis::LocalY, ReleaseAxis::LocalZ] {
             let mut col = make_test_column(axis);
 
-            // 有意性確認: 片端のみの軸方向伸び（非剛体）では内力が生じること。
-            // （横方向の片端変位は解放曲げ面では剛体回転となり内力ゼロが正しい
-            // ため、常に内力が出る軸方向で「trial が空のまま恒等的にゼロ」という
-            // 無意味な合格を防ぐ。）
             let mut u_axial = [0.0; 12];
             u_axial[0] = 1.0;
             col.inner.trial_disp = u_axial;
@@ -189,7 +165,6 @@ mod tests {
             );
 
             for dir in 0..3 {
-                // 剛体移動: 内力ゼロ
                 let mut u = [0.0; 12];
                 u[dir] = 1.0;
                 u[6 + dir] = 1.0;
@@ -371,8 +346,7 @@ mod tests {
             let mut col = make_test_column(axis);
             col.inner.eval_sections = vec![0.0, 0.25, 0.45, 0.5, 0.55, 0.75, 1.0];
             let u = [
-                0.1, 2.0, -1.5, 0.004, 0.002, -0.003, //
-                -0.2, -1.0, 0.5, -0.002, 0.004, 0.001,
+                0.1, 2.0, -1.5, 0.004, 0.002, -0.003, -0.2, -1.0, 0.5, -0.002, 0.004, 0.001,
             ];
             let mf = col.recover_forces(&u).unwrap();
             let l = col.inner.length;

@@ -1,22 +1,11 @@
-//! スラブ協力幅・合成梁・壁エレメント上下大梁による曲げ剛性の増大率算定。
-//!
-//! いずれもモデルデータ（[`Model`]・[`ElementData`]）から剛性倍率（無次元）を返す
-//! 純関数群で、[`super::construct`] の `BeamElement::new` から呼ばれる。
+//! スラブ協力幅・合成梁・壁エレメント上下大梁による剛性の増大率算定。
 
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::Model;
 
-/// RC規準8条によるスラブ協力幅 bf = b + ba(左) + ba(右) [mm]。
+/// スラブ協力幅 bf = b + ba(左) + ba(右) [mm]。
 ///
-/// 梁の両端節点をともに境界節点に含む床領域（[`squid_n_core::model::FloorRegion::boundary`]。
-/// 小梁による細分によらず常に大梁の1区画を表す）またはどの床領域にも属さない
-/// 床板を「梁に取り付く床」とみなし、隣接する平行梁との**内法距離** a（軸間距離
-/// から自梁・相手梁の幅の半分ずつを控除。RC規準8条の図の a）を求めて
-/// ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）で片側協力幅を算定する。
-/// 対象は水平材（勾配 5% までは水平とみなす）のみ。
-/// 適用不能（スラブ厚 t≤0・非水平・取り付く床なし・bf≤b）は None。
-/// 連続梁の λ・吹抜け補正・二重スラブ/片持ちスラブの区別は未対応（v1。
-/// dev_docs/v_and_v/剛性計算_参照実装照合.md 参照）。
+/// 対象は水平材のみ。適用不能時は None。
 fn slab_cooperating_width(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -37,18 +26,14 @@ fn slab_cooperating_width(
     let (p0, p1) = (node0.coord, node1.coord);
     let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
     let lp = (dx * dx + dy * dy).sqrt();
-    // 水平材のみ対象（勾配 5% までは水平とみなす）
     if lp < 1e-9 || dz.abs() > 0.05 * lp {
         return None;
     }
     let l = (lp * lp + dz * dz).sqrt();
     let (ex, ey) = (dx / lp, dy / lp);
-    // 平面内で梁軸に直交する符号付き距離
     let signed_dist =
         |coord: [f64; 3]| -> f64 { -(coord[0] - p0[0]) * ey + (coord[1] - p0[1]) * ex };
 
-    // スラブ境界内で自梁と平行な向かい側の梁（距離 target_s）の幅を探す。
-    // 見つからなければ自梁と同幅とみなす（同一符号の梁が並ぶ床組の慣用近似）。
     let far_beam_width =
         |boundary: &[squid_n_core::ids::NodeId], target_s: f64, sign: f64| -> f64 {
             const TOL_MM: f64 = 1.0;
@@ -82,25 +67,11 @@ fn slab_cooperating_width(
             b
         };
 
-    // 梁軸の左右それぞれの隣接平行梁との内法距離 a（複数スラブは大きい方を採用）。
-    // 軸間距離（スラブ境界節点の最大直交距離）から、自梁の幅/2 と相手梁の幅/2 を
-    // 控除して内法にする（RC規準8条の a。従来は軸間距離をそのまま用いており
-    // 協力幅を過大評価していた）。
     let mut a_pos: f64 = 0.0;
     let mut a_neg: f64 = 0.0;
     let mut t_used: f64 = 0.0;
     let mut matched = false;
 
-    // 梁の両端節点をともに含む境界と、そこでの板厚を候補として集める。
-    //
-    // 床領域（大梁の1区画）は小梁で複数の床板（`Slab`）へ細分されうるため、
-    // 個々の床板の境界だけを見ると、床領域の外周を走る大梁の両端（床領域の対角）を
-    // 1 枚の床板だけでは含めなくなる（内部の小梁で分割されているため）。
-    // そこで床領域の外周そのもの（`FloorRegion::boundary`。小梁の分割によらず
-    // 常に大梁の1区画を表す）を優先候補とし、板厚は床領域内の床板
-    // （`region.slab_ids`）の `slab_plate_thickness` の最大を用いる。
-    // どの床領域にも属さない床板（警告対象。帰属なしでも実在するスラブとして
-    // 効かせる）は、床板自身の境界を候補として別途加える。
     let mut referenced = std::collections::HashSet::new();
     let mut candidates: Vec<(&[NodeId], f64)> = Vec::new();
     for region in &model.floor_regions {
@@ -154,7 +125,6 @@ fn slab_cooperating_width(
         }
     }
 
-    // RC 規準 8 条の片側協力幅
     let ba = |a: f64| -> f64 {
         if a <= 0.0 {
             0.0
@@ -168,7 +138,6 @@ fn slab_cooperating_width(
     if !matched || bf <= b {
         return None;
     }
-    // 板厚が定まる床板が 1 枚でも一致すれば t_used > 0。欠落時のみ建物一律へ控える。
     let t = if t_used > 0.0 {
         t_used
     } else {
@@ -180,14 +149,8 @@ fn slab_cooperating_width(
     Some((bf, t))
 }
 
-/// スラブ協力幅による強軸曲げ剛性の増大率（協力幅は RC規準 8 条
-/// = [`slab_cooperating_width`] による）。
-///
-/// 対象は水平な RC 矩形梁のみ。梁の両端節点を境界に含み、板厚が定まる床板
-/// （`Model::slab_plate_thickness`）に限り、スラブ厚さ t（一致する床板の
-/// `slab_plate_thickness` の最大。欠落時のみ `Model::slab_thickness`。
-/// 上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
-/// 元断面 I0=b·D³/12 で除した値を返す。適用不能時は 1.0（増大なし）。
+/// スラブ協力幅による強軸曲げ剛性の増大率。
+/// 適用不能時は 1.0。
 pub(super) fn slab_stiffness_factor(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -200,7 +163,6 @@ pub(super) fn slab_stiffness_factor(
     let Some((bf, t)) = slab_cooperating_width(model, data, b) else {
         return 1.0;
     };
-    // スラブを考慮した中立軸による T 形断面の Ie
     let tf = t.min(d);
     let aw = b * d;
     let af = (bf - b) * tf;
@@ -213,30 +175,10 @@ pub(super) fn slab_stiffness_factor(
     (ie / i0).max(1.0)
 }
 
-/// S 造合成梁の断面性能に用いる床スラブコンクリートの設計基準強度の仮定値
-/// [N/mm²]（モデルにスラブ材料がないための標準仮定。普通コンクリート Fc21）。
+/// 床スラブコンクリートの設計基準強度の仮定値 [N/mm²]。
 const COMPOSITE_SLAB_FC: f64 = 21.0;
 
-/// S 造合成梁の強軸曲げ剛性の増大率。
-///
-/// スラブが取り付く水平な H 形鋼梁を合成梁とみなし、スラブを考慮した換算断面の
-/// 剛性 I と鉄骨梁のみの剛性 sI の**平均**を採用する（各種合成構造設計指針の
-/// 完全合成梁の剛性を安全側に丸めた平均法）。スラブ上端からの図心位置 g と
-/// 換算断面 I（鉄骨基準）は
-///
-/// ```text
-/// g = (cE·B·t·(t/2) + sE·sA·(t + Hd + sH/2)) / (cE·B·t + sE·sA)
-/// I = (cE/sE)·(B·t³/12 + B·t·(g − t/2)²) + sI + sA·(g − t − Hd − sH/2)²
-/// ```
-///
-/// で算定する（B=協力幅 [`slab_cooperating_width`]、t=スラブ厚、sA/sI/sH=鉄骨の
-/// 断面積・断面2次モーメント・せい）。返り値は (I+sI)/(2·sI) ≥ 1。
-///
-/// 簡略化（適用条件とともに doc 固定）:
-/// - デッキ高さ Hd は未対応（=0。スラブ下端＝鉄骨上端と仮定）
-/// - スラブコンクリートは Fc21 標準仮定（`COMPOSITE_SLAB_FC`。モデルにスラブ
-///   材料がないため）
-/// - 頭付きスタッド等の合成条件は判定しない（スラブが取り付けば合成とみなす）
+/// S 造合成梁の強軸曲げ剛性の増大率。適用不能時は 1.0。
 pub(super) fn composite_beam_stiffness_factor(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -251,7 +193,7 @@ pub(super) fn composite_beam_stiffness_factor(
         return 1.0;
     };
     let ec = squid_n_core::section_shape::concrete_young_modulus(COMPOSITE_SLAB_FC);
-    let hd = 0.0; // デッキ高さ（未対応=0）
+    let hd = 0.0;
     let ca = bf * t;
     let denom = ec * ca + es * sa;
     if denom <= 0.0 {
@@ -264,28 +206,15 @@ pub(super) fn composite_beam_stiffness_factor(
     ((i_comp + si) / (2.0 * si)).max(1.0)
 }
 
-/// 壁エレメントモデルの上下大梁の剛性倍率（壁エレメント置換モデルの上下大梁の
-/// 断面性能。RC規準の耐震壁規定）。
-///
-/// 「上下大梁の断面性能: 通常の大梁に対し、倍率を乗じた剛性を採用します。倍率は
-/// 剛性計算条件で設定できます。既定値は100倍となります。」
-/// 壁エレメントモデルの上下大梁は、壁の剛性を四隅の節点へ正しく伝えるため剛体に
-/// 近い扱いとする。剛性計算条件 UI からの倍率変更は将来対応（現状は既定値固定）。
+/// 壁エレメントモデルの上下大梁の剛性倍率。
 pub const WALL_GIRDER_STIFF_FACTOR: f64 = 100.0;
 
-/// 部材の剛性算定で断面性能へ乗じられる割増し率の内訳（準備計算の確認表示用）。
-///
-/// [`BeamElement::new`](super::BeamElement::new) が実際に適用する率と同じものを
-/// [`stiffness_breakdown`] で外部から取得できるようにするための型。
-/// フレーム内雑壁（腰壁・垂壁・袖壁）の断面性能算入は部材ごとの合成であり
-/// 単一の率で表せないためここには含めない。
+/// 部材の剛性算定で断面性能へ乗じられる割増し率の内訳。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StiffnessBreakdown {
-    /// スラブ協力幅（RC 矩形梁）または合成梁（H 形鋼梁）による強軸曲げ剛性の
-    /// 増大率。対象外の断面・適用不能時は 1.0。
+    /// 強軸曲げ剛性の増大率。対象外は 1.0。
     pub slab: f64,
-    /// 壁エレメントモデルの上下大梁の剛性倍率（対象外は 1.0）。
-    /// 軸・曲げ・ねじり・せん断のすべてに乗じられる。
+    /// 上下大梁の剛性倍率（対象外は 1.0）。
     pub wall_girder: f64,
 }
 
@@ -298,9 +227,7 @@ impl Default for StiffnessBreakdown {
     }
 }
 
-/// 断面・材料が確定した状態で割増し率を求める（[`super::construct`] 用）。
-///
-/// `is_horizontal` は部材が水平材か（勾配 5% までは水平とみなす）。
+/// 断面・材料が確定した状態で割増し率を求める。
 pub(super) fn breakdown_with(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -328,10 +255,7 @@ pub(super) fn breakdown_with(
 }
 
 /// 部材の剛性算定で適用される割増し率を、モデルと要素データから求める。
-///
-/// `BeamElement::new` が用いるのと同じ判定・算定を通るため、表示した率は
-/// 実際に解析へ入る剛性の割増しと一致する。断面・材料が引けない要素、
-/// 2 節点未満の要素は既定値（すべて 1.0）を返す。
+/// 断面・材料が引けない要素、2 節点未満の要素はすべて 1.0 を返す。
 pub fn stiffness_breakdown(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -361,11 +285,7 @@ pub fn stiffness_breakdown(
     breakdown_with(model, data, sec, mat.young, is_horizontal)
 }
 
-/// 要素の SRC/CFT 等価断面性能を求める（[`BeamElement::new`] と同じ判定・算定）。
-///
-/// SRC は材料（コンクリート）の fc がある場合に ns=Es/Ec で、CFT は鋼管材料と
-/// 充填コンクリート強度 fc から 1/n 換算で累加する。対象外の断面・算定不能
-/// （fc 無し・Ec≤0 等）では `None`。
+/// 要素の SRC/CFT 等価断面性能を求める。対象外・算定不能では `None`。
 pub fn composite_props_of(
     model: &Model,
     data: &squid_n_core::model::ElementData,
@@ -377,7 +297,6 @@ pub fn composite_props_of(
     composite_props_with(sec.shape.as_ref()?, mat)
 }
 
-/// [`composite_props_of`] の中核（断面形状と材料が確定した状態）。
 pub(super) fn composite_props_with(
     shape: &squid_n_core::section_shape::SectionShape,
     mat: &squid_n_core::model::Material,
@@ -397,14 +316,6 @@ pub(super) fn composite_props_with(
 }
 
 /// 自部材（両端節点 n0, n1）が壁エレメントモデルの上辺・下辺大梁かどうかを判定する。
-///
-/// `model.elements` 中に節点数4以上（四隅を持つ）の `ElementKind::Wall` 要素があり、
-/// その壁の節点集合に自部材の両端節点がともに含まれていれば、その壁の上辺または
-/// 下辺の大梁とみなす（壁エレメント置換モデルの上下大梁）。
-///
-/// ただし対象は耐震壁が成立した壁のみ（`misc_wall::wall_is_seismic`）。不成立の
-/// フレーム内雑壁の上下梁は 100 倍せず、代わりに腰壁/垂壁として断面性能へ算入する
-/// （`BeamElement::new` 内の雑壁算入処理）。
 pub(super) fn is_wall_top_bottom_girder(model: &Model, n0: NodeId, n1: NodeId) -> bool {
     model.elements.iter().any(|e| {
         matches!(e.kind, squid_n_core::model::ElementKind::Wall)

@@ -1,10 +1,4 @@
-//! モデルからの断面・材料の引き当て（未割当時のフォールバックを含む）。
-//!
-//! 線材要素の構築（[`super::truss`]・[`super::beam`]）が共有する。ID が範囲外・
-//! 世代違い・未割当のいずれでも「物性ゼロの断面／材料」へ落として構築を続け、
-//! 解析前チェック（`solver` の `precheck_model`・`factory::ensure_nonlinear_input`）
-//! に検出を委ねる。ここで架空のもっともらしい断面を与えると、チェックを通らない
-//! 経路から来たモデルが無音のまま解析されてしまう。
+//! モデルからの断面・材料の引き当て。
 
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::{ElementData, Material, MaterialCategory, Model, Section};

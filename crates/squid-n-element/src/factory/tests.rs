@@ -68,8 +68,6 @@ fn make_diaphragm_model() -> Model {
             density: 0.0,
             shear: None,
             fc: None,
-            // Fiber 要素の生成テスト用に、実質降伏しない大きな fy を明示する
-            // （fy 未設定の鋼材ファイバは契約違反として panic する）。
             fy: Some(1e20),
         }],
         ..Default::default()
@@ -102,7 +100,6 @@ fn test_resolve_force_regime_explicit() {
 #[test]
 fn test_resolve_force_regime_auto() {
     let model = make_diaphragm_model();
-    // 水平部材＋剛床あり → ConcentratedSpring
     let beam = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -122,7 +119,6 @@ fn test_resolve_force_regime_auto() {
         ResolvedRegime::ConcentratedSpring
     ));
 
-    // 鉛直部材 → Fiber
     let col = ElementData {
         id: ElemId(1),
         kind: ElementKind::Beam,
@@ -166,19 +162,16 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
         plastic_zone: None,
         spring: None,
     };
-    // 前提: この梁の regime は ConcentratedSpring（剛床に載る水平材）。
     assert!(matches!(
         resolve_force_regime(&beam, &model),
         ResolvedRegime::ConcentratedSpring
     ));
 
     let behavior = build_behavior(&beam, &model);
-    // 弾性 BeamElement なので部材内力を回収できる。
     assert!(
         behavior.recover_forces(&[0.0; 12]).is_some(),
         "線形解析の梁は内力を回収できる弾性 BeamElement であること"
     );
-    // 剛性も素の弾性 BeamElement と厳密一致（材端ばねが直列に入っていない）。
     let elastic = crate::frame::beam::BeamElement::new(&beam, &model);
     let k_ref = elastic.local_stiffness();
     let k_ref = elastic.axis.to_global(&k_ref);
@@ -213,7 +206,6 @@ fn test_build_behavior_fiber_still_fiber() {
         spring: None,
     };
     let behavior = build_behavior(&col, &model);
-    // Fiber 分岐は暫定 BeamElement（線形解析）→ recover_forces は Some
     assert!(
         behavior.recover_forces(&[0.0; 12]).is_some(),
         "Fiber regime should use BeamElement for linear analysis"
@@ -475,9 +467,6 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         spring: None,
     };
 
-    // 壁エレメント(24自由度)の面内せん断・鉛直軸のエネルギーパターン。
-    // 内部節点順は z ソート([0,1] 下辺, [3,2] 上辺)のため、上辺の
-    // スロットは 2(node3)・3(node2)。
     let shear_pattern = |k: &crate::behavior::LocalMat| -> f64 {
         let mut u = [0.0; 24];
         u[2 * 6] = 1.0;
@@ -503,13 +492,10 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         s
     };
 
-    // 開口なし
     let b_no = build_behavior(&wall, &model);
     let ctx = crate::behavior::Ctx { model: &model };
     let k_no = b_no.tangent_stiffness(&ctx);
 
-    // 開口 10%（壁 4000×3000=12e6 mm² に対し 1.2e6 mm²）→ r0=0.316(耐震壁
-    // 成立のまま)、r=1−1.25·0.316=0.605
     model.wall_attrs.push(WallAttr {
         elem: ElemId(0),
         opening_area: 1.2e6,
@@ -522,11 +508,9 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
     let ctx2 = crate::behavior::Ctx { model: &model };
     let k_open = b_open.tangent_stiffness(&ctx2);
 
-    // 個別開口(合計 1.2e6 mm²)は面積のみ指定と同じ低減率になる。
-    // また opening_area(古い値)より個別開口が優先される。
     model.wall_attrs[0] = WallAttr {
         elem: ElemId(0),
-        opening_area: 1.0, // 無視される(個別開口が優先)
+        opening_area: 1.0,
         opening_weight: 0.0,
         slit: Default::default(),
         finish_intensity: 0.0,
@@ -553,8 +537,6 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         shear_pattern(&k_open)
     );
 
-    // 包絡モード: 離れた2開口の包絡矩形(2300×800=1.84e6、r0=0.39≦0.4 で
-    // 耐震壁成立のまま)により低減がさらに大きくなる
     model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Envelope;
     let b_env = build_behavior(&wall, &model);
     let ctx4 = crate::behavior::Ctx { model: &model };
@@ -567,7 +549,6 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
     );
     model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Equivalent;
 
-    // せん断剛性の低減で面内せん断が小さくなる（鉛直軸剛性 EA/h は不変）
     assert!(
         shear_pattern(&k_open) < shear_pattern(&k_no) * 0.999,
         "shear open={} no={}",
@@ -620,7 +601,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     };
     model.elements.push(beam.clone());
 
-    // 断面形状なし → 非 RC → 標準型（バイリニア、N-M 相関対象）。
     assert!(!is_rc_like_section(&beam, &model));
     assert_eq!(
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
@@ -634,7 +614,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     );
     assert!(use_mn);
 
-    // RcRect + Fc → RC 系 → 既定=武田型（履歴材料、N-M 相関対象外）。
     model.sections[0].shape = Some(SectionShape::RcRect {
         b: 400.0,
         d: 700.0,
@@ -658,7 +637,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     );
     assert!(!use_mn, "武田型(履歴材料)は N-M 相関(set_yield)対象外");
 
-    // SteelH → 非 RC → 標準型。
     model.sections[0].shape = Some(SectionShape::SteelH {
         height: 400.0,
         width: 200.0,
@@ -671,7 +649,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         HysteresisModel::Standard
     );
 
-    // 個別指定は既定表に優先する。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::MaxPointOriented);
     assert_eq!(
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
@@ -687,7 +664,7 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
 }
 
 /// 履歴則の 2 スロット（増分用／時刻歴用）の解決を検証する。
-/// - 時刻歴用スロット未指定は増分用の指定に従う（旧形式ファイルの互換挙動）
+/// - 時刻歴用スロット未指定は増分用の指定に従う
 /// - 時刻歴用スロット指定は時刻歴解決のみに効く
 #[test]
 fn test_resolve_member_hysteresis_two_slots() {
@@ -710,7 +687,6 @@ fn test_resolve_member_hysteresis_two_slots() {
     };
     model.elements.push(beam.clone());
 
-    // 未指定: 増分・時刻歴とも構造種別既定（非 RC=標準型）。
     for kind in [AnalysisKind::Incremental, AnalysisKind::TimeHistory] {
         assert_eq!(
             resolve_member_hysteresis(&beam, &model, kind),
@@ -718,14 +694,12 @@ fn test_resolve_member_hysteresis_two_slots() {
         );
     }
 
-    // 増分用のみ指定: 時刻歴も増分用に従う（旧形式互換）。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::OriginOriented);
     assert_eq!(
         resolve_member_hysteresis(&beam, &model, AnalysisKind::TimeHistory),
         HysteresisModel::OriginOriented
     );
 
-    // 時刻歴用スロットを指定: 時刻歴のみ変わり、増分は据え置き。
     model.set_member_hysteresis_th(ElemId(0), Some(HysteresisModel::MaxPointOriented));
     assert_eq!(
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
@@ -761,7 +735,6 @@ fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
     };
     model.elements.push(col.clone());
 
-    // 既定。
     assert_eq!(
         resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
         HysteresisModel::Retrograde
@@ -779,15 +752,12 @@ fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
         HysteresisModel::KarsanJirsa
     );
 
-    // コンクリート履歴として解釈できない指定（武田型）は既定へフォールバック。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
     assert_eq!(
         resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
         HysteresisModel::Retrograde
     );
 
-    // 有効な個別指定（原点指向型）は増分・時刻歴とも尊重される（時刻歴スロット
-    // 未指定は増分用に従うため）。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::OriginOriented);
     assert_eq!(
         resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
@@ -798,7 +768,6 @@ fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
         HysteresisModel::OriginOriented
     );
 
-    // 時刻歴のみ Karsan–Jirsa へ切替。
     model.set_member_hysteresis_th(ElemId(0), Some(HysteresisModel::KarsanJirsa));
     assert_eq!(
         resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
@@ -834,7 +803,6 @@ fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
     };
     model.elements.push(wall.clone());
 
-    // 既定は最大点指向型（増分・時刻歴共通）。
     for kind in [AnalysisKind::Incremental, AnalysisKind::TimeHistory] {
         assert_eq!(
             resolve_wall_shear_hysteresis(&wall, &model, kind),
@@ -842,19 +810,16 @@ fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
         );
     }
 
-    // コンクリート用指定（Karsan–Jirsa）はせん断ばねとしては解釈不能 → 既定のまま。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::KarsanJirsa);
     assert_eq!(
         resolve_wall_shear_hysteresis(&wall, &model, AnalysisKind::Incremental),
         HysteresisModel::MaxPointOriented
     );
-    // 同じ指定は壁柱コンクリート除荷則としては有効。
     assert_eq!(
         resolve_wall_concrete_hysteresis(&wall, &model, AnalysisKind::Incremental),
         HysteresisModel::KarsanJirsa
     );
 
-    // Q–δ 系の個別指定（標準型=従来の移動硬化）は尊重される。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::Standard);
     assert_eq!(
         resolve_wall_shear_hysteresis(&wall, &model, AnalysisKind::Incremental),
@@ -883,11 +848,8 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
     };
     model.elements.push(beam.clone());
 
-    // 断面形状なし（非 RC）→ 既定 0.3。
     assert!((flexural_alpha_y(&beam, &model) - 0.3).abs() < 1e-12);
 
-    // RC 矩形梁（水平材）→ 菅野式。b=400, D=700, 4-D22（at=半分）, かぶり50,
-    // L=5000（a=2500, a/D≈3.57）, Ec=20000 → n=10.25。
     let rebar = RcRebar {
         main_x: BarSet {
             count: 4,
@@ -912,7 +874,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
         rebar: rebar.clone(),
     });
     let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-    // d_eff は断面検定と同規約（帯筋径を含む dt）。
     let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(700.0, &rebar);
     let expected = squid_n_core::rc_capacity::rc_alpha_y_sugano(
         at / (400.0 * 700.0),
@@ -931,7 +892,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
         "菅野式の値が既定 0.3 と区別できること（got={got}）"
     );
 
-    // 鉛直材（柱扱い）→ 既定 0.3（菅野式は軸力項を要するため対象外）。
     let mut column = beam.clone();
     column.nodes = smallvec::smallvec![NodeId(0), NodeId(2)];
     assert!((flexural_alpha_y(&column, &model) - 0.3).abs() < 1e-12);
@@ -939,8 +899,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
 
 #[test]
 fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
-    // RC 梁の材端バネが解析で実際に武田型（除荷剛性が初期剛性より低下）で
-    // 応答することを、返却された復元力材料を直接駆動して確認する。
     use squid_n_core::model::HysteresisModel;
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -994,18 +952,15 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
     let (mut si, _sj, use_mn) = build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
     assert!(!use_mn);
 
-    // 初期（弾性）接線。
     let (_m0, k0) = si.trial(1e-8);
     si.commit();
     assert!(k0 > 0.0);
 
-    // 十分大きい回転で降伏させ、スケルトン上のモーメントを得る。
     let big = 0.02_f64;
     let (m_peak, _) = si.trial(big);
     si.commit();
     assert!(m_peak > 0.0, "should carry positive moment at peak");
 
-    // 除荷: 武田型の除荷剛性は初期剛性より小さい（剛性低下）。
     let (m1, _) = si.trial(big * 0.95);
     let (m2, _) = si.trial(big * 0.90);
     let ku = (m1 - m2) / (big * 0.05);
@@ -1018,8 +973,6 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
 
 #[test]
 fn test_steel_beam_flexural_spring_buckling_degrades() {
-    // 鉄骨梁に座屈考慮型を個別指定 → 材端バネが最大耐力後に耐力劣化することを、
-    // 返却された復元力材料を直接駆動して確認する。
     use squid_n_core::model::HysteresisModel;
     use squid_n_core::section_shape::SectionShape;
 
@@ -1059,11 +1012,7 @@ fn test_steel_beam_flexural_spring_buckling_degrades() {
     let (_m0, k0) = si.trial(1e-9);
     si.commit();
     assert!(k0 > 0.0);
-    // 単調載荷でピーク → さらに大変形で耐力劣化。
-    let theta_y = {
-        // My は spring 内部だが、θy≈small。大きめの回転で骨格の各域を通過させる。
-        1e-3
-    };
+    let theta_y = { 1e-3 };
     let mut m_max = 0.0_f64;
     let mut m_last = 0.0_f64;
     for i in 1..=200 {

@@ -1,16 +1,8 @@
-//! 節点バネ要素（構造力学。部材の変形と自由度）。
-//!
-//! 構造力学上、部材の変形と自由度を整理すると、節点バネは
-//! θX（ねじり） = ―（非考慮）、θY = ○、θZ = ○、γY（Y方向せん断）= ○、
-//! γZ（Z方向せん断）= ○、δX（軸方向）= ○ の変形成分を持ちうる。
-//! つまりねじり以外の曲げ・せん断・軸の各自由度に独立なバネ剛性を
-//! 定義できる 2 節点要素である。
-//!
-//! ## モデル化
+//! 節点バネ要素。
 //!
 //! 局所座標系の各自由度 d ∈ {ux, uy, uz, rx, ry, rz} ごとに独立なバネ定数
-//! `k = [kx, ky, kz, krx, kry, krz]`（軸[N/mm]・せん断[N/mm]・回転[N·mm/rad]）を
-//! 持つ。標準的な 2 節点バネ剛性として、局所自由度 d（0..6）・j 端側 d+6 に対し
+//! `k = [kx, ky, kz, krx, kry, krz]`（軸[N/mm]・せん断[N/mm]・回転[N·mm/rad]）を持つ
+//! 2 節点要素。局所自由度 d（0..6）・j 端側 d+6 に対し
 //!
 //! ```text
 //! K[d][d]     = +k[d]
@@ -18,17 +10,9 @@
 //! K[d][d+6]   = K[d+6][d] = -k[d]
 //! ```
 //!
-//! を組む（軸方向バネ・せん断バネ・回転バネのいずれも同形）。
+//! を組む。
 //!
-//! θX（ねじり）を非考慮とする扱いは `krx = 0` を既定とすることで対応する
-//! （`ElementData::spring` は 6 成分すべてを入力可能とし、θX 方向にも
-//! バネ定数を与えることを妨げない。既定値として 0 を渡せば非考慮と等価）。
-//!
-//! ## 局所座標系
-//!
-//! 2 節点が同一座標（零長バネ）の場合、`LocalFrame::from_nodes` は方向ベクトルが
-//! 定義できないため、全体座標系＝局所座標系（単位回転）とみなして扱う
-//! （零長バネは主に鉛直な独立要素として用いられ、軸の傾きを持たないため）。
+//! 2 節点が同一座標（零長バネ）の場合は全体座標系＝局所座標系（単位回転）とみなす。
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 use crate::transform::LocalFrame;
@@ -42,15 +26,14 @@ use squid_n_core::model::{ElementData, Model};
 pub struct NodalSpringElement {
     pub id: ElemId,
     pub nodes: [NodeId; 2],
-    /// 局所軸バネ定数 `[kx, ky, kz, krx, kry, krz]`。`spring` 未指定時は全 0
-    /// （剛性ゼロ。パニックせず安全にフォールバックする）。
+    /// 局所軸バネ定数 `[kx, ky, kz, krx, kry, krz]`。
     pub k: [f64; 6],
-    /// 局所座標系。2 節点が同一座標（零長バネ）の場合は単位回転（全体座標系＝局所座標系）。
+    /// 局所座標系。2 節点が同一座標の場合は単位回転。
     pub axis: LocalFrame,
-    /// 確定変位（グローバル座標系）。commit_state で trial_disp から確定される。
+    /// 確定変位（グローバル座標系）。
     pub committed_disp: [f64; 12],
     /// トライアル変位（グローバル座標系）。Newton 反復中も蓄積され、
-    /// internal_force はこちらを参照する（beam/behavior.rs と同じ規約）。
+    /// internal_force はこちらを参照する。
     pub trial_disp: [f64; 12],
 }
 
@@ -64,8 +47,6 @@ impl NodalSpringElement {
         let [p0, p1] = geom.coords;
         let len = geom.length;
 
-        // 零長バネ（2 節点が同一座標）は方向ベクトルが定義できないため、
-        // 全体座標系＝局所座標系（単位回転）とする。
         let axis = if len < ZERO_LENGTH_EPS {
             LocalFrame {
                 rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -74,7 +55,6 @@ impl NodalSpringElement {
             LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector)
         };
 
-        // spring 未指定は剛性ゼロへ安全にフォールバック（パニックしない）。
         let k = data.spring.unwrap_or([0.0; 6]);
 
         Self {
@@ -120,14 +100,10 @@ impl ElementBehavior for NodalSpringElement {
     crate::behavior::elastic_disp_behavior!(NodalSpringElement, 12);
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
-        // 節点バネは質量を持たない（質量規定は設けない。既存要素の質量は
-        // 接続する節点・部材側で評価される想定）。
         LocalMat::zeros(12)
     }
 
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
-        // 弾性バネのため、累積した全変位（global）から `recover_forces` と
-        // 同じ経路で断面力を返す（非線形解析の部材内力記録用）。
         self.recover_forces(&self.trial_disp)
     }
 
@@ -135,10 +111,6 @@ impl ElementBehavior for NodalSpringElement {
         let f_local = self
             .axis
             .local_end_forces(&self.local_stiffness(), u_elem)?;
-        // 両端 2 評価点の [N, Qy, Qz, Mx, My, Mz]（バネ力。beam.rs と同じ断面力の
-        // 符号規約: N は引張正・モーメントは i 端節点モーメントの符号反転、
-        // せん断は i 端節点力そのまま）。バネの剛性形（f_local[d+6] = −f_local[d]）
-        // から、断面力は両評価点で同一値（一定）になる。
         let v = [
             -f_local[0],
             f_local[1],
@@ -221,9 +193,6 @@ mod tests {
         assert!((k.get(0, 6) + kx).abs() < 1e-9);
         assert!((k.get(6, 0) + kx).abs() < 1e-9);
 
-        // i 端固定・j 端自由の 1DOF 系: K·u = f → kx·u = P → u = P/kx。
-        // 縮約: [kx, -kx; -kx, kx] のうち i端固定行を除いた j端の式は
-        // kx·u_j = P + kx·u_i(=0) なので u_j = P/kx。
         let p = 500.0;
         let u_j = p / kx;
         assert!((k.get(6, 6) * u_j - p).abs() < 1e-9);
@@ -247,7 +216,6 @@ mod tests {
         assert!((k.get(5, 11) + krz).abs() < 1e-6);
         assert!((k.get(11, 5) + krz).abs() < 1e-6);
 
-        // θX（ねじり）は既定 0（非考慮）。
         assert_eq!(k.get(3, 3), 0.0);
         assert_eq!(k.get(9, 9), 0.0);
     }
@@ -261,7 +229,6 @@ mod tests {
             [1.0, 0.0, 0.0],
         );
         let spring = NodalSpringElement::new(&data, &model);
-        // 単位回転であること
         assert_eq!(
             spring.axis.rot,
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -280,9 +247,7 @@ mod tests {
     /// 4) 局所軸が傾いた配置（45°）での座標変換の照合。局所 x 軸（軸バネ方向）を全体座標へ回転させたとき、全体剛性の ii ブロックが k·(t·tᵀ) に一致すること（truss.rs と同じ検証手法）。
     #[test]
     fn test_tilted_axis_global_stiffness_matches_projection() {
-        // 軸バネ成分のみ（ky=kz=kr*=0）にして、他自由度の寄与を排除した上で
-        // truss.rs と同じ t·tᵀ 射影照合を行う。
-        let l = (2000.0_f64 * 2000.0 + 2000.0 * 2000.0).sqrt(); // 45°、水平面内
+        let l = (2000.0_f64 * 2000.0 + 2000.0 * 2000.0).sqrt();
         let (model, data) = make_model_with_k(
             [0.0, 0.0, 0.0],
             [2000.0, 2000.0, 0.0],
@@ -324,7 +289,6 @@ mod tests {
                 assert_eq!(k_global.get(i, j), 0.0);
             }
         }
-        // internal_force / recover_forces もパニックしないこと
         let f = spring.internal_force(&ctx);
         for i in 0..12 {
             assert_eq!(f.data[i], 0.0);
@@ -346,8 +310,8 @@ mod tests {
             [1000.0, 2000.0, 3000.0, 4.0e6, 5.0e6, 6.0e6],
         );
         let spring = NodalSpringElement::new(&data, &model);
-        let delta = 0.5; // j 端 +x（軸）伸び
-        let phi = 1.0e-3; // j 端 +rz 相対回転
+        let delta = 0.5;
+        let phi = 1.0e-3;
         let mut u = [0.0; 12];
         u[6] = delta;
         u[11] = phi;

@@ -1,60 +1,7 @@
-//! 仕口パネルに接合する部材の適合（資料 2.10.2・2.10.3）。
+//! 仕口パネルへ接合する部材の適合。
 //!
-//! 仕口パネルが設けられた節点では、部材は節点そのものではなく、パネル寸法分だけ
-//! 離れた「仕口パネルと部材の接合位置」で接合する。節点の変位（せん断変形角
-//! `{γX, γY}` を含む 8 成分）と部材端の変位（6 成分）は次式で適合する。
-//!
-//! ```text
-//! {d} = {D} + [B0]{Φ} + [Btp]{S}
-//! {φ} = {Φ} + [Bp]{S}
-//!
-//! [B0] = [ 0  Z0 −Y0]        [Btp] = 1/2 [  0  Z0]      [Bp] = [ζ 0]
-//!        [−Z0  0  X0]                    [−Z0   0]             [0 ζ]
-//!        [ Y0 −X0  0]                    [−Y0  X0]             [0 0]
-//! ```
-//!
-//! `{X0, Y0, Z0}` は節点から接合位置までのオフセット、`ζ` は部材が仕口パネルの
-//! どの面で接合するかで決まる係数で、水平材（はり）は `−0.5`、鉛直材（柱）は
-//! `+0.5` とする。
-//!
-//! # 既存の剛域変換との関係
-//!
-//! `[B0]{Φ} = Φ × r`（`r = {X0,Y0,Z0}`）は剛体アームによる並進-回転結合そのもので、
-//! [`crate::frame::rigid_arm`] の剛域変換が既に実装している。さらに、上記 3 行列の間には
-//!
-//! ```text
-//! [Btp]{S} = ([Bp]{S}) × r
-//! ```
-//!
-//! という恒等関係が成り立つ（`[Btp]` の第 3 行の符号は、はり `ζ = −0.5`・
-//! 柱 `ζ = +0.5` の双方でこの関係が成立するように定められている）。したがって
-//! `{B}` 全体は「回転を `Φ' = Φ + [Bp]{S}` に置き換えたうえで、オフセット `r` の
-//! 剛体アームを適用したもの」に等しい。
-//!
-//! ```text
-//! d = D + Φ'×r = D + [B0]{Φ} + ([Bp]{S})×r = D + [B0]{Φ} + [Btp]{S}   ✓
-//! φ = Φ'       = {Φ} + [Bp]{S}                                        ✓
-//! ```
-//!
-//! よって本モジュールは、
-//!
-//! 1. パネル分のオフセットを部材の**剛域長**へ含めて内側の要素を組む
-//!    （剛体アーム `r` は既存の剛域変換が担う）
-//! 2. 節点の回転自由度へ `ζ・γ` を加える変換 `T = [I | C]` を被せる
-//!
-//! の 2 段で資料の `[B]` を厳密に再現する。1. はパネル生成
-//! （[`crate::springs::panel_gen::apply_auto_panel_zones`]）が部材の剛域長へ書き込み済みで、
-//! 本モジュールは 2. だけを担う。
-//!
-//! オフセットの大きさは接合部の物理的な半寸法（はりは柱せいの 1/2、柱は梁せいの
-//! 1/2。[`squid_n_core::panel_zone::panel_half_extent`]）である。断面算定の
-//! 危険断面位置（`RigidZone::face_i` / `face_j`）は将来任意位置を取りうるため、
-//! そちらとは独立な量として扱う。
-//!
-//! # 適用対象
-//!
-//! 水平材（はり）と鉛直材（柱）のみを対象とする。斜材（ブレース等）は資料が
-//! 接合位置・`ζ` を定めていないため、節点で接合する（パネル自由度と連成させない）。
+//! 節点の回転自由度へ `ζ・γ` を加える変換 `T = [I | C]` を内側の要素へ被せる。
+//! 水平材は `ζ = −0.5`、鉛直材は `ζ = +0.5`。水平材と鉛直材のみを対象とする。
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
@@ -79,16 +26,11 @@ pub struct PanelEnd {
 
 /// 部材 `data` の各端が仕口パネルへ接合するかを調べ、接合面の係数 ζ を返す。
 ///
-/// どちらの端もパネルへ接合しない場合は `None`（素の要素をそのまま組む）。
-///
-/// パネル分のオフセットはここでは扱わない。パネル生成
-/// （[`crate::springs::panel_gen::apply_auto_panel_zones`]）が既に部材の剛域長へ
-/// 書き込んでおり、剛体アーム `r` は既存の剛域変換がそのまま担う。
+/// どちらの端もパネルへ接合しない場合は `None`。
 pub fn resolve(data: &ElementData, model: &Model) -> Option<[Option<PanelEnd>; 2]> {
     if !matches!(data.kind, ElementKind::Beam) || data.nodes.len() < 2 {
         return None;
     }
-    // 斜材はオフセット・ζ が定義されないため対象外。
     let zeta = match member_orientation(model, data)? {
         MemberOrientation::Column => ZETA_COLUMN,
         MemberOrientation::Beam => ZETA_BEAM,
@@ -117,12 +59,9 @@ pub fn resolve(data: &ElementData, model: &Model) -> Option<[Option<PanelEnd>; 2
     Some(ends)
 }
 
-/// 仕口パネルへ接合する部材。内側の要素（12 自由度）へパネルのせん断変形角を
-/// 連成させる変換 `T = [I | C]` を被せる。
+/// 仕口パネルへ接合する部材。
 ///
 /// 自由度の並びは `[内側の 12 自由度, (γX, γY)_i?, (γX, γY)_j?]`。
-/// `C` は節点回転自由度へ `ζ・γ` を加える成分のみを持つ（モジュール冒頭の
-/// 「既存の剛域変換との関係」を参照）。
 pub struct PanelOffsetMember {
     inner: Box<dyn ElementBehavior>,
     ends: [Option<PanelEnd>; 2],
@@ -141,9 +80,6 @@ impl PanelOffsetMember {
     }
 
     /// `C`（12 × パネル自由度数）の非零成分を `(内側自由度, パネル自由度, 係数)` で列挙する。
-    ///
-    /// 節点回転 `ΘX`・`ΘY`（i 端は内側 3・4、j 端は 9・10）へ `ζ・γX`・`ζ・γY` を
-    /// 加える。`ΘZ` は `[Bp]` の第 3 行が 0 のため寄与しない。
     fn coupling(&self) -> SmallVec<[(usize, usize, f64); 4]> {
         let mut out = SmallVec::new();
         let mut col = 12;
@@ -173,14 +109,12 @@ impl PanelOffsetMember {
     fn transform_matrix(&self, k: &LocalMat) -> LocalMat {
         let n = self.n_dof();
         let mut out = LocalMat::zeros(n);
-        // 左上 12×12 は内側そのまま。
         for i in 0..12 {
             for j in 0..12 {
                 out.set(i, j, k.get(i, j));
             }
         }
         let cpl = self.coupling();
-        // K·C（右上）と Cᵀ·K（左下）。
         for &(r, c, z) in &cpl {
             for i in 0..12 {
                 let v = out.get(i, c) + k.get(i, r) * z;
@@ -189,8 +123,6 @@ impl PanelOffsetMember {
                 out.set(c, i, v);
             }
         }
-        // Cᵀ·K·C（右下）。上のループで左下・右上を書き換えた後の値ではなく、
-        // 内側 `k` から直接組む。
         for &(r1, c1, z1) in &cpl {
             for &(r2, c2, z2) in &cpl {
                 let v = out.get(c1, c2) + z1 * k.get(r1, r2) * z2;
@@ -209,8 +141,6 @@ crate::behavior::forward_element_behavior!(PanelOffsetMember, inner, {
     update_state: custom,
     mass_matrix: custom,
     recover_forces: custom,
-    // 素通しで正しい。内側は自身のトライアル変位（パネル寄与を反映済み）を
-    // 保持しており、自由度の並べ替えを経ずに内力分布を出せる。
     state_member_forces: forward,
     geometric_stiffness: custom,
     snapshot_state: forward,
@@ -249,8 +179,6 @@ crate::behavior::forward_element_behavior!(PanelOffsetMember, inner, {
     }
 
     fn internal_force(&self, ctx: &Ctx) -> LocalVec {
-        // f_elem = Tᵀ · f_inner。パネル自由度には ζ·（節点回転まわりのモーメント）が
-        // 集まり、パネル要素の内力と釣り合う（資料 (2.10.3-3)）。
         let f_inner = self.inner.internal_force(ctx);
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, self.n_dof()),
@@ -337,8 +265,6 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
-        // パネル分のオフセットは `panel_gen` が剛域長へ書き込み済みの状態を作る。
-        // 危険断面位置 face は別の量なので、独立していることを示すため異なる値を入れる。
         let rigid = RigidZone {
             length_i: offset,
             length_j: offset,
@@ -367,8 +293,8 @@ mod tests {
                 fy: None,
             }],
             elements: vec![
-                member(0, 0, 1, rigid), // 梁（水平材）
-                member(1, 2, 0, rigid), // 柱（鉛直材）
+                member(0, 0, 1, rigid),
+                member(1, 2, 0, rigid),
                 ElementData {
                     id: ElemId(2),
                     kind: ElementKind::PanelZone,
@@ -422,7 +348,7 @@ mod tests {
         assert!(moved_ends[1].is_none());
     }
 
-    /// パネルが 1 つもないモデルでは `None` を返し、従来どおり素の要素が組まれる。
+    /// パネルが 1 つもないモデルでは `None` を返す。
     #[test]
     fn test_resolve_returns_none_without_panel() {
         let mut model = model_with_panel(200.0);
@@ -436,7 +362,6 @@ mod tests {
     #[test]
     fn test_resolve_skips_diagonal_member() {
         let mut model = model_with_panel(200.0);
-        // 節点 1 を斜め方向へ動かして梁を斜材にする。
         model.nodes[1].coord = [4000.0, 0.0, 6000.0];
         assert!(resolve(&model.elements[0], &model).is_none());
     }
@@ -456,7 +381,6 @@ mod tests {
         assert_eq!(wrapped.n_dof(), 14, "12 ＋ パネル 2");
         let k = wrapped.tangent_stiffness(&ctx);
 
-        // 左上 12×12 は内側そのまま（パネル変形角 0 のとき従来と一致）。
         for i in 0..12 {
             for j in 0..12 {
                 assert!(
@@ -466,7 +390,6 @@ mod tests {
                 );
             }
         }
-        // 合同変換なので対称性が保たれる。
         for i in 0..14 {
             for j in 0..14 {
                 let (a, b) = (k.get(i, j), k.get(j, i));
@@ -488,13 +411,13 @@ mod tests {
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         let mut u = vec![0.0; wrapped.n_dof()];
-        u[12] = 1.0; // γX
+        u[12] = 1.0;
         let inner_u = wrapped.to_inner(&u);
         assert!((inner_u[3] - ZETA_BEAM).abs() < 1e-12, "ΘX へ ζ·γX");
         assert_eq!(inner_u[4], 0.0);
 
         let mut v = vec![0.0; wrapped.n_dof()];
-        v[13] = 1.0; // γY
+        v[13] = 1.0;
         let inner_v = wrapped.to_inner(&v);
         assert!((inner_v[4] - ZETA_BEAM).abs() < 1e-12, "ΘY へ ζ·γY");
         assert_eq!(inner_v[3], 0.0);
@@ -510,7 +433,6 @@ mod tests {
         let inner = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
         let mut wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
-        // 梁 j 端（節点 1）に単位回転を与える。
         let mut du = LocalVec {
             data: SmallVec::from_elem(0.0, wrapped.n_dof()),
         };
@@ -518,7 +440,6 @@ mod tests {
         wrapped.update_state(&du, true, &ctx);
 
         let f = wrapped.internal_force(&ctx);
-        // i 端の ΘX・ΘY（内側 3・4）に対応するパネル自由度の値は ζ 倍。
         assert!((f.data[12] - ZETA_BEAM * f.data[3]).abs() <= 1e-6 * f.data[3].abs().max(1.0));
         assert!((f.data[13] - ZETA_BEAM * f.data[4]).abs() <= 1e-6 * f.data[4].abs().max(1.0));
     }
