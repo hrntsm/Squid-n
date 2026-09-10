@@ -1,17 +1,6 @@
 //! 質点系（串団子）モデルの生成（せん断型多質点系、構造力学）。
 //!
-//! 立体フレームのプッシュオーバー（漸増静的）結果から、層ごとの層せん断力 Q・層間変形 δ
-//! 関係（Q-δ 曲線）を抽出し、**等包絡面積則**でトリリニア骨格へ縮約した串団子モデルを
-//! 生成する。
-//!
-//! - 初期剛性 K1: プッシュオーバー第1ステップの荷重-変形勾配。
-//! - 第3折点（終局）: Q-δ 曲線の終端。第3勾配 K3: 終端の接線勾配。
-//! - 第1折点: 接線勾配が K1 の指定比率（`secant_ratio`）を初めて下回る直前の変位、
-//!   第1勾配は K1（ルール1「割線剛性比率」の変形。接線基準の意図は実装コメント参照）。
-//! - 第2折点: 0→第3折点の包絡面積が実曲線と等しくなるよう自動決定。
-//!
-//! 詳細なルール1/2/3の分岐（降伏部材比率等）は簡略化しており、第1折点の判定は
-//! 割線剛性比率（`secant_ratio`）で行う。
+//! 立体フレームのプッシュオーバー結果から層ごとの Q-δ 関係を等包絡面積則でトリリニア骨格へ縮約する。
 
 mod eigen;
 mod model;
@@ -34,8 +23,6 @@ pub struct LumpedMassResult {
     pub response: Option<StickResponse>,
 }
 
-// tests は両サブモジュールの非公開項目（`pub(crate)`）を `super::*` で参照するため、
-// テストビルド時のみ mod.rs 名前空間へ取り込む。
 #[cfg(test)]
 use eigen::stick_omega1;
 #[cfg(test)]
@@ -171,17 +158,7 @@ mod tests {
         );
     }
 
-    /// `build_lumped_mass_model` は、長期荷重のみを載荷した初期点（λ=0、
-    /// `push_apply_long_term` 有効時に capacity_curve 先頭へ記録される）の
-    /// (δ,Q) を層 Q-δ 曲線の原点として差し引くこと。
-    ///
-    /// `total_disp` は長期載荷フェーズから水平力増分フェーズへそのまま
-    /// 引き継がれるため、以降の各点の層間変形にはこの残留分（丸め誤差では
-    /// なくミリメートル級になり得る）が乗ったまま記録される。原点補正せずに
-    /// 絶対値を取ると、この残留変形だけを持つ λ=0 点（Q≈0）が変位最小点として
-    /// 誤って拾われ K1=Q/δ≈0（層がほぼ無抵抗）に縮退していた（実モデルで
-    /// 確認された不具合の再現）。原点補正すれば、残留変形が残っていても
-    /// K1 は純粋な水平方向の弾性剛性に一致する。
+    /// `build_lumped_mass_model` は、長期荷重のみを載荷した初期点の (δ,Q) を層 Q-δ 曲線の原点として差し引くこと。
     #[test]
     fn test_build_lumped_mass_model_corrects_long_term_origin() {
         use squid_n_core::model::{Model, Story};
@@ -330,9 +307,7 @@ mod tests {
         );
     }
 
-    /// `lumped_mass_eigen` の1次モードと、既存の逆反復法 `fundamental_omega` が
-    /// 同じ入力で近い値を返すこと（減衰用 ω1 の一本化＝`stick_omega1` が
-    /// 新しい厳密解法へ差し替わっても、従来の概算と乖離しないことの確認）。
+    /// `lumped_mass_eigen` の1次モードと逆反復法 `fundamental_omega` が同じ入力で近い値を返すこと。
     #[test]
     fn test_lumped_mass_eigen_matches_power_iteration_omega1() {
         let lm = LumpedMassModel {
@@ -379,11 +354,7 @@ mod tests {
         ));
     }
 
-    /// `stick_omega1`（減衰算定用）は、質量 0 以下の層があっても ω1 を
-    /// 桁違いに大きくしない。`.max(1e-9)` でそのまま解くと ω1=√(k/1e-9) が
-    /// 巨大になり、`a1=2h/ω1` が実質ゼロへ潰れて無音で無減衰になっていた
-    /// （非安全側の破綻）。他層の質量平均で置き換えて解くため、質量ゼロ層が
-    /// なかった場合の ω1 と同程度のオーダーに収まることを確認する。
+    /// `stick_omega1` は、質量 0 以下の層があっても ω1 を桁違いに大きくしないこと。
     #[test]
     fn test_stick_omega1_survives_zero_mass_story_without_blowing_up() {
         let healthy = LumpedMassModel {
@@ -415,21 +386,14 @@ mod tests {
         let w_zero_mass = stick_omega1(&with_zero_mass_story);
 
         assert!(w_zero_mass.is_finite() && w_zero_mass > 0.0);
-        // .max(1e-9) でそのまま解いた場合（旧来のバグ）は ω1 が 1e4 倍以上に
-        // 跳ね上がる。健全なケースと同程度のオーダー（1桁以内）に収まること。
+        // 健全なケースと同程度のオーダー（1桁以内）に収まること。
         assert!(
             w_zero_mass < w_healthy * 10.0,
             "ω1 が異常に大きい（無減衰化の兆候）: zero_mass={w_zero_mass}, healthy={w_healthy}"
         );
     }
 
-    /// `stick_omega1` は、質量ではなく層剛性 K1 が 0 の層があっても ω1 を
-    /// 0 に潰さない。`fit_story_trilinear` は退化した Q-δ 曲線に対し正当な
-    /// 分岐として K1=0.0 を返しうる（別テスト対象の長期荷重残留変形バグとは
-    /// 独立に起こりうる縮退）。K1=0 の層があると 1 次モードの ω²=0（特異）に
-    /// なり、質量側の補修だけでは救えず、旧来の逆反復法（クランプ付き）へ
-    /// フォールバックしないと a1=2h/ω1 が無条件にゼロへ潰れて無音無減衰になる
-    /// （質量 0 以下のケースと同じ失敗形が剛性側からも起こりうることの確認）。
+    /// `stick_omega1` は、層剛性 K1 が 0 の層があっても ω1 を 0 に潰さないこと。
     #[test]
     fn test_stick_omega1_survives_zero_stiffness_story_without_blowing_up() {
         let healthy = LumpedMassModel {

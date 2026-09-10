@@ -25,15 +25,7 @@ pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, 
 }
 
 /// 支点ばね（`Node::support_spring`）の有効項を `(active DOF 番号, ばね剛性 k)` の
-/// 列で列挙する。値 0・`restraint` で固定されている自由度（固定支持を優先し
-/// ばね値は無視する。[`squid_n_core::model::Node::support_spring`] の仕様）・
-/// 不活性（`dofmap` 側で自由度がない＝孤立節点等）の項は含まない。
-///
-/// 全体剛性の対角加算（[`add_support_spring_diag`]、線形経路）と、非線形経路
-/// （`common::tangent` の `assemble_k`・`add_support_spring_f_int`）の
-/// 双方が同じ列挙結果を使うための共通ヘルパ。ばねは全体座標系の値をそのまま
-/// 対角へ用いる線形ばねのため、K 側の対角項も内力側の `k・u` も同じ
-/// `(active, k)` の組で足りる。
+/// 列で列挙する。値 0・`restraint` で固定されている自由度・不活性の項は含まない。
 pub fn support_spring_terms(model: &Model, dofmap: &DofMap) -> Vec<(usize, f64)> {
     let mut terms = Vec::new();
     for (ni, node) in model.nodes.iter().enumerate() {
@@ -65,13 +57,6 @@ pub fn support_spring_terms(model: &Model, dofmap: &DofMap) -> Vec<(usize, f64)>
 }
 
 /// 支点ばね（`Node::support_spring`）を全体剛性行列の対角へ加算する。
-///
-/// 節点集中質量の対角加算（[`assemble_global_m`]）と同じ形で、
-/// [`support_spring_terms`] が返す自由 DOF の対角項へ単純加算する。
-///
-/// 線形経路（本関数内）・非線形経路（`common::tangent::assemble_k`）の
-/// 双方から呼ばれる共通処理。非線形経路では内力側 `k_i・u_i` の計上も別途必要
-/// （`common::tangent::add_support_spring_f_int` 参照）。
 pub fn add_support_spring_diag(model: &Model, dofmap: &DofMap, triplets: &mut Vec<Triplet>) {
     for (active, k) in support_spring_terms(model, dofmap) {
         triplets.push(Triplet {
@@ -83,16 +68,8 @@ pub fn add_support_spring_diag(model: &Model, dofmap: &DofMap, triplets: &mut Ve
 }
 
 /// 全体質量行列を組み立てる。
-///
 /// 質量源は「部材密度による要素質量」と「節点集中質量（`Node::mass`）」の 2 つで、
-/// どちらを算入するかはモデルの質量方式（[`squid_n_core::model::MassMethod`]、
-/// `Model::mass_method`）に従う:
-///
-/// - `CorrectedLumped`（既定）: 要素質量＋節点質量（従来どおりの合算）。
-///   剛床マスターの節点質量は階生成が「地震用重量−分布質量計上分」の補正値を
-///   与えるため、二重計上にならない。
-/// - `LumpedOnly`: 節点質量のみ（要素質量は算入しない）。剛床マスターには
-///   階生成が地震用重量の全量を与える（水平質点系モデル化）。
+/// どちらを算入するかはモデルの質量方式（`Model::mass_method`）に従う。
 pub fn assemble_global_m(
     model: &Model,
     dofmap: &DofMap,
@@ -109,9 +86,6 @@ pub fn assemble_global_m(
         }
     }
 
-    // 節点集中質量（Node.mass）を対角へ加算する。
-    // 床荷重→質量化した層質量や、集中質量モデルの質量はここで反映される。
-    // これを欠くと固有値・有効質量比（P2 DoD #2）が物理的に誤る。
     for (ni, node) in model.nodes.iter().enumerate() {
         if let Some(mass) = node.mass {
             for (d, &mval) in mass.iter().enumerate() {
@@ -137,7 +111,6 @@ pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<
     let n_active = dofmap.n_active();
     let mut f = vec![0.0; n_active];
 
-    // Find the load case
     if let Some(lc_data) = model.load_cases.iter().find(|l| l.id == lc) {
         for nodal_load in &lc_data.nodal {
             let ni = nodal_load.node.index();
@@ -149,7 +122,6 @@ pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<
             }
         }
 
-        // 部材（梁）荷重 → 等価節点力（consistent load vector）を全体系へ加算。
         add_member_loads(model, dofmap, &lc_data.member, &mut f);
     }
 
@@ -157,11 +129,7 @@ pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<
 }
 
 /// 部材荷重（等価節点力・固定端内力）を扱える線材要素か。
-///
-/// 対象は 2 節点の線材（梁・ファイバー梁・マルチスプリング梁・ブレース。
-/// [`crate::statics::linear::ensure_line_member_forces`] の対象と同じ集合）。壁・シェル等の
-/// 非線材（4 節点）に `MemberLoad` が誤って紐付いた場合、従来は先頭 2 節点だけを
-/// 材端とみなして荷重を配ってしまい、エラーも出ずに荷重が誤適用されていた。
+/// 対象は 2 節点の線材（梁・ファイバー梁・マルチスプリング梁・ブレース）。
 pub(crate) fn is_member_load_target(elem: &ElementData) -> bool {
     matches!(
         elem.kind,
@@ -173,10 +141,7 @@ pub(crate) fn is_member_load_target(elem: &ElementData) -> bool {
 }
 
 /// 部材荷重を材端へ配る方式を要素種別から決める。
-///
-/// ブレース（トラス要素）は軸剛性しか持たないため、材軸直交成分を等価節点力で
-/// 配ると負担できない材端モーメントが節点へ流れ込む。合力と作用位置を保存する
-/// 静定分配へ切り替える（`SpanLoadTransfer` の説明を参照）。
+/// ブレースは `StaticallyEquivalent`、他は `Consistent`。
 pub(crate) fn span_load_transfer(elem: &ElementData) -> SpanLoadTransfer {
     match elem.kind {
         ElementKind::Brace { .. } => SpanLoadTransfer::StaticallyEquivalent,
@@ -193,8 +158,6 @@ pub(crate) fn member_load_frame(model: &Model, elem: &ElementData) -> Option<(Lo
     }
     let p_i = model.nodes.get(elem.nodes[0].index())?.coord;
     let p_j = model.nodes.get(elem.nodes[1].index())?.coord;
-    // 材長は `Model::member_length` が単一情報源。局所座標系は材端座標から組むため、
-    // 座標自体はここでも引き当てる。
     let length = model.member_length(elem);
     if length < 1e-9 {
         return None;
@@ -214,8 +177,6 @@ fn add_member_loads(
 ) {
     use std::collections::HashMap;
 
-    // 要素 ID → 荷重リストへ事前にグルーピングする（従来の全要素×全荷重の
-    // 総当り filter は O(要素数×荷重数) で大規模モデルに不利）。
     let mut by_elem: HashMap<squid_n_core::ids::ElemId, Vec<squid_n_core::model::MemberLoad>> =
         HashMap::new();
     for ml in member_loads {
@@ -241,7 +202,6 @@ fn add_member_loads(
             span_load_transfer(elem),
         );
         let q_global = frame.rotate_to_global(&q_local);
-        // q_global: [i:0..6, j:6..12] を各節点 DOF へ散布
         for (local_node, &node_idx) in [ni, nj].iter().enumerate() {
             for d in 0..DOF_PER_NODE {
                 let g = node_idx * DOF_PER_NODE + d;

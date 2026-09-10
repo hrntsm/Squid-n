@@ -12,22 +12,15 @@ use super::Analysis;
 use crate::statics::linear::StaticOnce;
 
 /// 建物の基部レベル（elevation の基準 0）を求める。
-///
-/// 定義は [`Model::base_elevation`]（階への帰属区間の下端と同一の基準）に
-/// 一元化してあり、本関数はその薄いラッパーである。
 pub fn base_elevation(model: &Model) -> f64 {
     model.base_elevation()
 }
 
 /// 地盤面（GL）レベル [mm] を求める。
-///
 /// 地下階（`StoryLevelKind::Basement`）が定義されているモデルでは、
 /// 各地下階の「床レベル + 地盤面からの深さ depth_m」から GL を復元する
 /// （深さの定義より各地下階で同一値になる想定。数値ずれに備え最大値を採る）。
 /// 地下階がなければ [`base_elevation`]（最下構造節点レベル）を GL とみなす。
-///
-/// 建築物の高さ（令2条・令88条の略算周期 T の h）や風荷重の受風範囲
-/// （地上部分のみ）は、基部レベルではなくこの GL を基準に測る。
 pub fn ground_elevation(model: &Model) -> f64 {
     let gl = model
         .layers()
@@ -75,9 +68,7 @@ pub fn building_height_mm(model: &Model) -> f64 {
 /// 建築物の高さに算入しない扱いに合わせて対象外とする。
 ///
 /// 階高は層の高さ（[`squid_n_core::model::Layer::height`]）そのものである。
-/// 階が定義されていない、または建築物の高さが 0 以下の場合は 0.0 を返す
-/// （レビュー §1.5：従来はこの α を常に 0.0 にハードコードしていたバグの修正。
-/// 地下階・PH 階の除外は照合レビューによる是正）。
+/// 階が定義されていない、または建築物の高さが 0 以下の場合は 0.0 を返す。
 pub fn steel_height_ratio(model: &Model) -> f64 {
     let total_h = building_height_mm(model);
     if total_h <= 0.0 {
@@ -116,11 +107,6 @@ fn distribute_pi_over_slice(diaphragms: &[DiaphragmRef<'_>], pi: f64) -> Vec<(No
 }
 
 /// 剛床を持たない階の水平力 Pi を、階に属する節点へ地震用重量の比で分配する。
-///
-/// 階と剛床は別概念であり（`squid_n_core::model::story`）、階が剛床を持たない
-/// ことがある（床面に節点がない階・面内剛体とみなさないモデル化）。この場合、
-/// 水平力を載せる代表節点が存在しないため、階の節点へ直接分配する。
-///
 /// 重み付けは節点の質点質量（[`Node::mass`] の水平成分）とする。質量が
 /// 設定されていない、または合計が 0 の階では等分割する（載荷位置は決まらない
 /// が、層せん断力の総量は保たれる）。
@@ -151,9 +137,7 @@ fn distribute_pi_over_story_nodes(model: &Model, story: &Story, pi: f64) -> Vec<
 ///
 /// - 剛床が 1 つの階: Pi を全量その剛床へ載せる。
 /// - 剛床が複数の階: 剛床の `weight` の比で按分する（`None` は 0 扱い）。
-///   重量の合計が 0（すべて未設定を含む）の場合は等分割する
-///   （レビュー §1.6：従来は各剛床へ Pi をそのまま重複して載せており、
-///   多剛床の階では地震力が剛床数倍に水増しされるバグだった）。
+///   重量の合計が 0（すべて未設定を含む）の場合は等分割する。
 /// - **剛床がない階**: 階に属する節点へ質量比で直接分配する
 ///   （[`distribute_pi_over_story_nodes`]）。
 ///
@@ -183,9 +167,6 @@ pub(super) fn main_system_weight(model: &Model, story: &Story) -> f64 {
         .filter(|d| d.ci_override.is_some())
         .map(|d| d.weight.unwrap_or(0.0))
         .sum();
-    // 副剛床の重量合計が階の地震重量を超える入力不整合（重量の二重計上・
-    // 桁誤り等）では負値になり得るため 0 で頭打ちにする（負の重量が
-    // Ai 分布式へ渡ることを防ぐ）。
     (total - ci_override_weight).max(0.0)
 }
 
@@ -225,9 +206,6 @@ pub(crate) fn distribute_seismic_forces(
 }
 
 impl Analysis<'_> {
-    /// Run seismic static analysis: approx or semi-precise Ai distribution.
-    /// SemiPrecise uses eigen T, Approx uses approximate formula.
-    ///
     /// 階(Story)・地震重量・剛床が未定義の場合は黙ってゼロ結果を返さず、
     /// 何をすべきかを含むエラーを返す。
     pub fn seismic_static(&self, dir: SeismicDir, mode: AiMode) -> Result<StaticOnce, SolveError> {
@@ -247,7 +225,6 @@ impl Analysis<'_> {
         }
 
         let f_free = self.assemble_f_free_from_nodal(&lc.nodal);
-        // 地震水平力は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
         self.solve_and_recover(&f_free, &[])
     }
 
@@ -255,14 +232,8 @@ impl Analysis<'_> {
     ///
     /// - `AiMode::Approx`: 略算式 T = h(0.02+0.01α)（令88条・昭和55年建設省
     ///   告示第1793号）。h は建築物の高さ（GL〜PH 階を除く最上階。地下深さ・
-    ///   塔屋は含めない。従来の「最上階の生 Z 標高」は、基部が Z=0 にない
-    ///   モデルや地下階付きモデルで h を誤っていた）。
+    ///   塔屋は含めない）。
     /// - `AiMode::SemiPrecise`: 固有値解析（1 次モード）による周期。
-    ///
-    /// T は加力方向（X/Y）によらず同一の値になるため、[`Self::build_seismic_load_case`]
-    /// が X・Y 双方向で呼ばれる場合に本関数を 1 回だけ呼び、その結果を
-    /// [`Self::build_seismic_load_case_with_period`] へ渡すことで、固有値解析
-    /// （部分空間反復）の重複実行を避けられる。
     pub fn seismic_period(&self, mode: AiMode) -> Result<f64, SolveError> {
         match mode {
             AiMode::Approx => {
@@ -271,13 +242,9 @@ impl Analysis<'_> {
                 Ok(squid_n_load::ai::approx_t(height_m, steel_ratio))
             }
             AiMode::SemiPrecise => {
-                // 固有周期は載荷方向に依存しないため、同一 Analysis 上での
-                // 2 回目以降（EX→EY 等）はキャッシュを返し固有値解析を省く。
                 if let Some(&t) = self.semi_precise_t.get() {
                     return Ok(t);
                 }
-                // ソルバの振り分け（PCG 規模では直接法で分解し直す）は
-                // `Analysis::eigen_solver_dispatch` に委ねる。
                 let modal = self.eigen_solver_dispatch(1)?;
                 let t = modal.period.first().copied().unwrap_or(0.3);
                 let _ = self.semi_precise_t.set(t);
@@ -289,9 +256,6 @@ impl Analysis<'_> {
     /// 地震静的解析の水平力（Ai 分布）を荷重ケースとして構築して返す。
     /// `seismic_static_with` の載荷部分を切り出したもので、主軸の計算
     /// （主軸の計算（構造力学）の P ベクトル）にも用いる。
-    ///
-    /// 内部的には [`Self::seismic_period`] で T を求め、
-    /// [`Self::build_seismic_load_case_with_period`] へ委譲する（挙動は従来と同一）。
     pub fn build_seismic_load_case(
         &self,
         cfg: SeismicCfg,
@@ -307,10 +271,6 @@ impl Analysis<'_> {
 
     /// 設計用固有周期 T [s]（[`Self::seismic_period`] 参照）を受け取り、
     /// Ai 分布・階水平力の算定から荷重ケース構築までを行う。
-    ///
-    /// X・Y 両方向の地震荷重ケースを構築する際、T は方向によらず同一なので、
-    /// 呼び出し側が [`Self::seismic_period`] を 1 回だけ呼んだ結果をここへ
-    /// 渡すことで、固有値解析（SemiPrecise モード）の重複実行を避けられる。
     pub fn build_seismic_load_case_with_period(
         &self,
         cfg: SeismicCfg,
@@ -320,11 +280,8 @@ impl Analysis<'_> {
     }
 
     /// 地震静的解析（設計用固有周期 T 指定版）。
-    ///
     /// [`Self::seismic_static_with`] と同じ求解を行うが、T を呼び出し側から
     /// 受け取るため固有値解析（SemiPrecise モード）を内部で実行しない。
-    /// UI 側で「固有値解析は明示実行のみ・その結果の周期を再利用する」方針を
-    /// 実現するための入口（暗黙の固有値解析を避ける）。
     pub fn seismic_static_with_period(
         &self,
         cfg: SeismicCfg,
@@ -337,7 +294,6 @@ impl Analysis<'_> {
         }
 
         let f_free = self.assemble_f_free_from_nodal(&lc.nodal);
-        // 地震水平力は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
         self.solve_and_recover(&f_free, &[])
     }
 }
@@ -370,13 +326,6 @@ pub fn seismic_distribution_for_model(
         ));
     }
 
-    // PH（塔屋）階・地下階を含む階種別ごとの層せん断力算定式に対応する
-    // （seismic_shear_distribution。全階 Normal なら ai_distribution と厳密一致）。
-    // 主系統の重量（Qi 用）は ci_override（副剛床の Ci 直接入力）を持つ剛床の
-    // 重量を除外する（main_system_weight。§副剛床のCi直接入力）。
-    // α・Ai・Ci は「全剛床の場合の Ci」に従うため、副剛床を含む階全体の
-    // 重量（ci_weight = seismic_weight）から算定する。
-    // 層の重量・剛床は上端の階（床）が持つ。
     let specs: Vec<squid_n_load::ai::StorySeismicSpec> = layers
         .iter()
         .map(|l| squid_n_load::ai::StorySeismicSpec {
@@ -398,9 +347,7 @@ pub fn seismic_distribution_for_model(
 /// 構築する（[`Analysis`] を要しないモデル単独版）。
 ///
 /// Ai 分布・階水平力の算定は剛性行列・自由度構成に依存しないため、
-/// `Analysis::prepare`（K 組立・拘束縮約・分解）なしで呼び出せる。UI 側の
-/// 「EX/EY ケースへの荷重同期」のように、解析準備前に荷重ケースだけを
-/// 構築したい場合に用いる（暗黙のフル解析準備を避ける）。
+/// `Analysis::prepare`（K 組立・拘束縮約・分解）なしで呼び出せる。
 pub fn build_seismic_load_case_from_model(
     model: &Model,
     cfg: SeismicCfg,
@@ -409,16 +356,12 @@ pub fn build_seismic_load_case_from_model(
     let SeismicCfg { dir, mode, .. } = cfg;
     let ai = seismic_distribution_for_model(model, cfg, t)?;
 
-    // Create a load case from the Ai distribution horizontal forces
     let lc_id = LoadCaseId(1001);
     let dir_vec = match dir {
         SeismicDir::X => [1.0, 0.0, 0.0],
         SeismicDir::Y => [0.0, 1.0, 0.0],
     };
 
-    // Attach Pi forces to master nodes of each story's diaphragms（多剛床の階
-    // では重量比で按分し、ci_override を持つ副剛床には指定 Ci による力を
-    // 別途作用させる。§1.6・distribute_seismic_forces 参照）。
     let mut lc = squid_n_core::model::LoadCase {
         kind: Default::default(),
         id: lc_id,
@@ -427,15 +370,12 @@ pub fn build_seismic_load_case_from_model(
         member: Vec::new(),
     };
 
-    // 層の水平力 Pi は、その層の質量が集中する**上端の階（床）**の剛床へ作用させる。
     for layer in model.layers() {
         let pi = ai.pi.get(layer.index).copied().unwrap_or(0.0);
         let Some(story) = model.stories.get(layer.top.index()) else {
             continue;
         };
         for (master, share) in distribute_seismic_forces(model, story, pi) {
-            // NaN は `== 0.0` をすり抜けて荷重ケースへ混入し「解析は成功したが
-            // 結果が NaN」という壊れ方をするため、非有限値もここで除外する。
             if share == 0.0 || !share.is_finite() {
                 continue;
             }

@@ -45,10 +45,7 @@ fn build_f_free_cache(model: &Model, dofmap: &DofMap) -> HashMap<LoadCaseId, Vec
 
 /// `model.elements` 全件の `(ElementBehavior, global_dofs)` を1回だけ構築する
 /// （[`Analysis::behavior_cache`] の構築。`prepare` から使う）。
-///
-/// `build_behavior` は局所座標変換・断面/材料 clone・SRC/CFT 合成断面換算など
-/// 荷重ケースに依存しない処理のため、荷重ケース・組合せごとに毎回呼び直す
-/// 必要はない。静解析経路（[`build_behavior`]）は常に弾性要素を返す
+/// 静解析経路（[`build_behavior`]）は常に弾性要素を返す
 /// （履歴状態を持たない）ため、`&self` から複数回・複数スレッドで参照しても
 /// 安全（[`ElementBehavior`] の `Send + Sync` supertrait 経由）。
 fn build_behavior_cache(model: &Model, dofmap: &DofMap) -> Vec<crate::statics::BehaviorEntry> {
@@ -74,35 +71,20 @@ pub struct Analysis<'m> {
     /// 1 回で済む（`build_seismic_load_case`）。
     semi_precise_t: std::sync::OnceLock<f64>,
     /// `Model::load_cases` 各ケースの自由 DOF 荷重ベクトル（`assemble_global_f`）の
-    /// メモ化。`prepare` 時に全ケースぶん1回だけ計算する（同じ荷重ケースを
-    /// `linear_static` で繰り返し解く経路——荷重組合せは参照する荷重ケースを
-    /// 単体で解いて線形和する——で、都度 `assemble_global_f` を再計算すると
-    /// 無駄が大きいため）。`&self` のみで参照する
+    /// メモ化。`&self` のみで参照する
     /// （書き込みは `prepare` 構築時のみ）ため、`run_batch` の rayon
     /// 並列からも安全に共有できる。
     f_free_cache: HashMap<LoadCaseId, Vec<f64>>,
     /// `model.elements` 各要素の `(ElementBehavior, global_dofs)` のメモ化
-    /// （[`build_behavior_cache`]）。`recover_member_forces` が荷重ケース・組合せ
-    /// ごとに `build_behavior` を再構築していたのを避ける（局所座標変換・
-    /// 断面/材料 clone・SRC/CFT 合成断面換算は荷重ケースに依存しないため）。
-    /// `f_free_cache` と同様、書き込みは構築時のみで `run_batch` の rayon 並列
-    /// からも安全に共有できる（`ElementBehavior: Send + Sync`）。
+    /// （[`build_behavior_cache`]）。`f_free_cache` と同様、書き込みは構築時のみで
+    /// `run_batch` の rayon 並列からも安全に共有できる（`ElementBehavior: Send + Sync`）。
     behavior_cache: Vec<crate::statics::BehaviorEntry>,
 }
 
 impl<'m> Analysis<'m> {
-    /// Build DofMap, assemble global K, apply constraint reduction, and factorize.
-    /// After this, `linear_static` and `linear_combination` can be called
-    /// multiple times reusing the factorized K.
-    ///
     /// 解析前にモデルの静的検証（`Model::validate` の不変条件・参照整合・拘束・
     /// 断面/材料割当・孤立節点）を行い、問題があればユーザー向けの日本語診断
     /// メッセージ付きでエラーを返す。
-    ///
-    /// 検証は [`precheck::model_issues`] に一本化されており、UI のモデル整合性
-    /// チェック（診断タブ）も同じ関数を呼ぶ。**ここへ検証を直接足さないこと**。
-    /// 足すと診断が同じ不備を挙げられなくなり、「診断は通ったのに解析が止まる」
-    /// 状態に戻る。
     pub fn prepare(model: &'m Model) -> Result<Self, SolveError> {
         squid_n_math::parallelism::apply_to_faer();
         precheck::precheck_model(model)?;
@@ -221,13 +203,8 @@ impl<'m> Analysis<'m> {
         squid_n_core::ids::ElemId,
         squid_n_element::frame::beam::MemberForces,
     )> {
-        // 要素 ID で事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける
-        // （`crate::statics::linear::solve_once_inner` と同じ最適化）。
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut member_forces = Vec::new();
-        // `behavior_cache`（`prepare` で1回だけ構築済み）を参照する。
-        // ケースごとの `build_behavior` 再構築（局所座標変換・断面/材料 clone 等）を
-        // 排除する（要素順は `self.model.elements` と `behavior_cache` で一致する）。
         for (elem, (behavior, gdofs)) in self.model.elements.iter().zip(self.behavior_cache.iter())
         {
             let mut u_elem = vec![0.0; gdofs.len()];
@@ -253,7 +230,6 @@ impl<'m> Analysis<'m> {
         member_forces
     }
 
-    /// Solve a single load case (back-substitution only, factorized K is reused).
     pub fn linear_static(&self, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
         if self.n_indep == 0 {
             return Ok(self.zero_result());
@@ -264,9 +240,6 @@ impl<'m> Analysis<'m> {
                 lc.0
             )));
         }
-        // `prepare` が全荷重ケースぶん事前計算済みのメモ化を使う
-        // （`assemble_global_f` の再計算を避ける）。キャッシュにない場合
-        // （想定外の経路）はその場で計算する。
         let f_free = self
             .f_free_cache
             .get(&lc)
@@ -282,8 +255,6 @@ impl<'m> Analysis<'m> {
         self.solve_and_recover(&f_free, member_loads)
     }
 
-    /// Solve eigenvalue problem (subspace iteration) for n_modes lowest modes.
-    ///
     /// 通常は `prepare` で分解済みの `self.solver`（縮約後剛性行列 K_red の分解）を
     /// そのまま再利用する（[`eigen::solve_eigen_with_solver`] 参照）。
     /// 例外は [`Self::eigen_solver_dispatch`] を参照。
@@ -292,17 +263,9 @@ impl<'m> Analysis<'m> {
     }
 
     /// 固有値解析に使うソルバの振り分け。
-    ///
     /// `prepare` の `self.solver` は `SolverBackend::Auto` で生成しており、縮約後
     /// 自由度数が [`squid_n_math::auto::AUTO_ITERATIVE_MIN_DOF`] 以上のモデルでは
-    /// f32 精度の反復法（PCG）が選ばれる。部分空間反復は 1 回の分解を
-    /// （部分空間サイズ×反復回数）回の求解で再利用する構造のため、反復法では
-    /// (1) 求解のたびに数千回規模の PCG 反復が走り桁違いに遅くなり、
-    /// (2) f32 精度・緩い収束判定の解では固有値反復の収束判定（相対誤差 1e-10）に
-    /// 達せず `NonConvergence` になり得る。このため PCG が選ばれる規模では
-    /// `self.solver` を使わず、固有値解析専用に直接法（疎 Cholesky）で分解し直す
-    /// [`eigen::solve_eigen`] へ振り分ける（静的解析側の PCG 採用はそのまま維持）。
-    /// しきい値未満では `Auto` は常に直接法を選ぶため、従来どおり分解を再利用する。
+    /// f32 精度の反復法（PCG）が選ばれるため、固有値解析専用に直接法で分解し直す。
     pub(crate) fn eigen_solver_dispatch(&self, n_modes: usize) -> Result<ModalResult, SolveError> {
         if self.n_indep >= squid_n_math::auto::AUTO_ITERATIVE_MIN_DOF {
             eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, n_modes)
@@ -322,20 +285,13 @@ impl<'m> Analysis<'m> {
     /// 並列度設定（[`squid_n_math::parallelism`]）が並列（`Auto`/`Threads`）の
     /// 場合は荷重ケース単位に rayon で並列実行する。各ケースの計算はケース間で
     /// 可変状態を共有しない（`&self` のみ）ため実行順に依存せず、結果の順序は
-    /// 入力 `lcs` の順で固定される。`Deterministic`（既定）では従来どおり
+    /// 入力 `lcs` の順で固定される。`Deterministic`（既定）では
     /// 逐次実行し、`linear_static` を順に呼んだ場合とビット一致する。
     pub fn linear_static_batch(&self, lcs: &[LoadCaseId]) -> Vec<Result<StaticOnce, SolveError>> {
         self.run_batch(lcs, |lc| self.linear_static(*lc))
     }
 
     /// バッチ API の共通経路。並列設定時は項目単位に rayon で並列実行する。
-    ///
-    /// ケース並列（outer）とソルバ内部＝faer の並列（inner）の合計要求が
-    /// コア数を超えるとスレッドを奪い合って逆に遅くなるため
-    /// （`examples/parallel_bench` で実測）、総枠 `effective_threads()` を
-    /// 両者へ自動配分する: ケース数がコア数以上なら inner=1（ケース並列のみ）、
-    /// ケース数が少ないときは余りコア（cores/outer）を faer の内部並列へ回す。
-    /// 終了後は設定値（`squid_n_math::parallelism`）を faer へ再適用して戻す。
     fn run_batch<T: Sync, R: Send>(
         &self,
         items: &[T],
@@ -355,14 +311,11 @@ impl<'m> Analysis<'m> {
             squid_n_math::parallelism::apply_to_faer();
             out
         } else {
-            // 1 件のみのバッチは逐次経路（設定どおりの faer 並列で 1 件を解く）
             items.iter().map(f).collect()
         }
     }
 
     /// 時刻歴応答解析（Newmark-β、減衰込み）。
-    /// 線形専用ラッパ。非線形時刻歴は `timehistory::linear_time_history_analysis`
-    /// と同じパターンのフリー関数で実装予定（§4、現在は線形のみ）。
     /// `record_every` は詳細記録（`ThRecording`）の間引き係数。`None` は自動決定。
     pub fn time_history(
         &self,

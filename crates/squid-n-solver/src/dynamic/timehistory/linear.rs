@@ -94,25 +94,19 @@ pub fn linear_time_history_with_state(
 
     let mut setup = LinearSetup::build(model, dofmap, reducer, newmark, damping, dt, use_kg)?;
 
-    // --- 初期条件 ---
     let u = reduced_vec_from(n_indep, initial_disp);
     let v = reduced_vec_from(n_indep, initial_vel);
 
-    // 初期加速度: M·a_0 = p(0) − C·v_0 − K·u_0（p(0) = −M·r·ẍg(0) は符号込みで構築済み）
     let p_red_0 = reducer.reduce_f(&setup.infl.force_at(wave, 0));
 
     let cv0 = sparse_matvec(&setup.c_red, &v);
     let ku0 = sparse_matvec(&setup.k_red, &u);
     let mut rhs_a0 = vec![0.0; n_indep];
     for i in 0..n_indep {
-        // p(0) は −M·r·ẍg として符号込みで構築済みのため、ここでは加算する
-        // （従来は誤って減算しており、外力項の符号が逆＝初期加速度が
-        // +r·ẍg(0) 側に立ち上がっていた。ẍg(0)=0 の波形では影響なし）。
         rhs_a0[i] = p_red_0[i] - cv0[i] - ku0[i];
     }
     let a = solve_initial_accel(&setup.m_red, &rhs_a0, n_indep)?;
 
-    // --- 時刻歴ループ（start_step=0 から） ---
     run_steps(
         model,
         dofmap,
@@ -160,10 +154,8 @@ pub fn linear_time_history_from_state(
         ));
     }
 
-    // 前処理は初回実行と同一（線形なので行列・係数はステップに依らない）。
     let mut setup = LinearSetup::build(model, dofmap, reducer, newmark, damping, dt, use_kg)?;
 
-    // チェックポイントから状態を復元
     let u = state.disp_red.clone();
     let v = state.vel_red.clone();
     let a = state.accel_red.clone();
@@ -185,10 +177,6 @@ pub fn linear_time_history_from_state(
 
 /// 線形時刻歴の前処理一式。要素の弾性 behavior・質量／減衰行列（縮約空間）・
 /// 地動入力の影響ベクトル・Newmark 係数・分解済みの有効剛性ソルバを持つ。
-///
-/// 初回実行（[`linear_time_history_with_state`]）とチェックポイント再開
-/// （[`linear_time_history_from_state`]）は同じ前処理を要する。線形解析では
-/// 行列も係数もステップに依らないため、両者が同じ組み立てを通るようにここへ集約する。
 struct LinearSetup {
     /// 部材内力記録用の弾性 behavior。線形なので時刻歴を通じて不変。
     behaviors: Vec<Box<dyn ElementBehavior>>,
@@ -213,9 +201,6 @@ impl LinearSetup {
         dt: f64,
         use_kg: bool,
     ) -> Result<Self, SolveError> {
-        // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
-        // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
-        // 解析が通っていた。未対応である事実を明示エラーで返す。
         if use_kg {
             return Err(SolveError::InvalidInput(
                 "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
@@ -238,9 +223,6 @@ impl LinearSetup {
         let infl = GroundInfluence::build(model, dofmap, &m_free);
         let coeffs = NewmarkCoeffs::new(newmark, dt);
 
-        // 有効剛性 K^ = K + c2·C + c1·M は全ステップ共通で、1 回の分解を全時刻
-        // ステップの求解で再利用する。反復法（PCG）はステップごとに反復をやり直す
-        // ため不利であり、直接法を明示する。
         let k_eff = squid_n_math::sparse::weighted_sum_csc(
             reducer.n_indep,
             &[(1.0, &k_red), (coeffs.c2, &c_red), (coeffs.c1, &m_red)],
@@ -304,10 +286,6 @@ fn run_steps(
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
 
-    // P9: u_free/v_free/a_free（自由 DOF 空間への展開）は 1 ステップに 1 回だけ
-    // 展開し、以後（ピーク変位・層間変形角・部材内力復元・record_history_step・
-    // recorder.record_step）で使い回す（従来は `record_step` 内部でも同じ展開を
-    // やり直しており、u_free が 1 ステップに 2 回展開されていた）。
     let mut u_free = vec![0.0f64; n_free];
     let mut v_free = vec![0.0f64; n_free];
     let mut a_free = vec![0.0f64; n_free];
@@ -325,13 +303,9 @@ fn run_steps(
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
-    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
-    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
     let mut ma_free = vec![0.0f64; n_free];
     mass_accel_free_into(m_free, &a_free, &mut ma_free);
 
-    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
-    // 呼び出し元（UI 等）が指定できる。None は自動決定）。
     let mut recorder = ThRecorder::new(
         model,
         dofmap,
@@ -366,7 +340,6 @@ fn run_steps(
         &mf_init,
     );
 
-    // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）
     let record_dir_y = choose_record_dir_y(wave);
     let dir_idx = if record_dir_y { 1 } else { 0 };
     let m_r_record = if record_dir_y { m_r_y } else { m_r_x };
@@ -398,11 +371,6 @@ fn run_steps(
         xg_init,
     );
 
-    // P8/P9: ループ内で毎ステップ確保していた作業バッファをループ外で 1 回だけ
-    // 確保し、以後は書き込みのみで再利用する（p_free・p_red・mw・cw・m_mw・
-    // c_cw・p_eff）。`u_next_buf` は時刻歴応答解析高速化・第2波で追加された
-    // `LinearSolver::solve_into`（squid-n-math）を使い、`solver.solve` の
-    // 戻り値確保（P9 当時は避けられなかった）もなくしている。
     let mut p_free_buf = vec![0.0f64; n_free];
     let mut p_red_buf = vec![0.0f64; n_indep];
     let mut mw_buf = vec![0.0f64; n_indep];
@@ -431,10 +399,6 @@ fn run_steps(
         solver.solve_into(&p_eff_buf, &mut u_next_buf)?;
         let u_next = &u_next_buf;
 
-        // a・v・u を単一パスでその場更新する（P9: 従来は a_next・v_next を別の
-        // Vec に確保する 2 パスだったのを統合。各 i の計算はいずれも他の i に
-        // 依存しないため、1 パスへ統合しても各成分の演算順序・使用値は元の
-        // 2 パス版と完全に同じで、結果はビット完全一致する）。
         for i in 0..n_indep {
             let a_new = c1 * (u_next[i] - u[i]) - c3 * v[i] - c4 * a[i];
             let v_new = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_new);
@@ -449,8 +413,6 @@ fn run_steps(
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
-        // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
-        // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
         reducer.expand_u_into(&v, &mut v_free);
         reducer.expand_u_into(&a, &mut a_free);
         mass_accel_free_into(m_free, &a_free, &mut ma_free);
@@ -499,7 +461,6 @@ fn run_steps(
 
     Ok((
         ResponseResult {
-            // 線形経路は Newton 反復を行わないため常に 0。
             non_converged_steps: 0,
             time,
             peak_disp,

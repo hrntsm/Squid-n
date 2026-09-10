@@ -23,7 +23,7 @@ fn base_story(node_ids: Vec<NodeId>) -> Story {
     }
 }
 
-/// 1層・鉛直ファイバ柱の片持ちプッシュオーバー（P5 §10 相当の最小統合テスト）。
+/// 1層・鉛直ファイバ柱の片持ちプッシュオーバー（最小統合テスト）。
 /// 配線済み非線形要素（FiberBeam）＋座標変換＋NR 反復＋降伏追跡が
 /// エンドツーエンドで動作することを検証する。
 fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
@@ -40,8 +40,6 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
             Node {
                 id: NodeId(1),
                 coord: [0.0, 0.0, 3000.0],
-                // FiberBeam はねじり剛性を持たないため、Z 軸柱の頂部ねじり DOF(rz=bit5)
-                // のみ拘束して特異性を除く。曲げ回転 rx,ry と並進は自由。
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(1)),
@@ -125,10 +123,10 @@ fn test_pushover_single_column_forms_hinge() {
         &dofmap,
         &reducer,
         SeismicDir::X,
-        20,    // max_steps
-        0.0,   // max_disp（変位制御に移行しない＝荷重制御のみ）
-        false, // use_kg
-        false, // use_arc_length
+        20,
+        0.0,
+        false,
+        false,
         0.0,
     )
     .expect("pushover should run end-to-end");
@@ -167,7 +165,7 @@ fn test_pushover_single_column_forms_hinge() {
         );
     }
 
-    // 終了理由が記録されること（従来は非収束を含む全打ち切りが無言だった）。
+    // 終了理由が記録されること。
     // 本モデルは目標無効（max_disp=0）の荷重制御のみのため、終了理由は
     // 「目標到達以外の正常系」（λ 上限・スケジュール完了）または「非収束」の
     // いずれかであり、少なくとも Unknown（未記録）ではないこと。
@@ -202,12 +200,7 @@ fn test_pushover_single_column_forms_hinge() {
 #[test]
 fn test_pushover_load_control_endpoint_is_mesh_independent() {
     // 荷重制御プッシュオーバーの終点（λ=1、base_shear=一定）の頂部変位は、
-    // 物理的には荷重増分ステップ数に依存しない。各ステップの Newton 反復で
-    // 「最後の修正量」だけを total_disp へ加算していた回帰バグでは、塑性域
-    // （1 ステップに複数反復を要する）で途中の修正量が脱落し、終点変位が
-    // ステップ数に依存して過小評価されていた（20 ステップで約 5% 過小、
-    // ステップを細かくするほど真値へ漸近）。全反復修正量を累積する修正後は
-    // ステップ数によらず同一終点となる。
+    // 物理的には荷重増分ステップ数に依存しない。
     //
     // 本モデルは弾性降伏変位 ≈69mm（Qy=My/L≈13.05kN、k=3EI/L³≈189.8N/mm）で、
     // λ=1 の base_shear=16000N は降伏後（塑性域）にあり複数反復ステップを含む。
@@ -261,7 +254,6 @@ fn test_pushover_stops_when_concrete_strength_unset() {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 
     let mut model = single_column_model(235.0, 80_000.0);
-    // 断面を RC 矩形にし、材料からコンクリート強度・降伏強度を落とす（未入力を模擬）。
     model.sections[0].shape = Some(SectionShape::RcRect {
         b: 100.0,
         d: 100.0,
@@ -288,7 +280,6 @@ fn test_pushover_stops_when_concrete_strength_unset() {
     model.materials[0].name = "conc".into();
     model.materials[0].fy = None;
     model.materials[0].fc = None;
-    // 配筋を持つ断面には主筋・せん断補強筋の材料が要る（材料は断面が持つ）。
     model.materials.push(Material {
         id: MaterialId(1),
         name: "SD345".to_string(),
@@ -380,8 +371,6 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
             Node {
                 id: NodeId(1),
                 coord: [0.0, 0.0, 0.0],
-                // 水平（Ux）のみ自由（他の 5 自由度は固定）。合成剛性
-                // kx+support_kx の検証を Ux 1 自由度に限定するため。
                 restraint: Dof6Mask(0b111110),
                 mass: None,
                 story: Some(StoryId(1)),
@@ -421,19 +410,11 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
 
 /// 支点ばね（`Node::support_spring`）が非線形経路（プッシュオーバー）の
 /// 全体剛性 K・内力 f_int の両方に反映され、静的 Newton 法が正しい
-/// 合成剛性 `kx+ks` の変位へ収束することを検証する（本文書の要求 (b)）。
-///
-/// K だけに支点ばねを加算し f_int 側の `k・u` 計上を忘れると（本テストが
-/// 検出したい典型的なバグ）、Newton は「要素ばね kx のみ」の残差方程式の
-/// 根へ収束し、支点ばねが変位に一切効かなくなる（support_kx の有無で
-/// 終点変位が変化しない）。固定 λ 刻み（`max_disp=0.0` で目標判定を無効化）
-/// を用いるため、荷重パターン q・λ=1 到達時の外力は両ケースで完全に同一
-/// （モデル剛性に依存しない）であり、終点変位の比較がそのまま合成剛性の
-/// 検証になる。
+/// 合成剛性 `kx+ks` の変位へ収束することを検証する。
 #[test]
 fn test_pushover_support_spring_affects_k_and_f_int() {
-    let kx = 1000.0; // 要素（節点バネ）側の水平剛性 [N/mm]
-    let ks = 1000.0; // 支点ばねの水平剛性 [N/mm]
+    let kx = 1000.0;
+    let ks = 1000.0;
     let weight = 80_000.0;
 
     let run = |support_kx: Option<f64>| -> (f64, f64) {
@@ -445,10 +426,10 @@ fn test_pushover_support_spring_affects_k_and_f_int() {
             &dofmap,
             &reducer,
             SeismicDir::X,
-            4,     // max_steps（線形弾性なので刻みは収束結果に影響しない）
-            0.0,   // max_disp=0（目標判定なし＝固定 λ 刻みで λ=1 まで荷重制御）
-            false, // use_kg
-            false, // use_arc_length
+            4,
+            0.0,
+            false,
+            false,
             0.0,
         )
         .expect("linear spring pushover should converge every step");
@@ -502,11 +483,11 @@ fn test_pushover_arc_length_path_runs() {
         &dofmap,
         &reducer,
         SeismicDir::X,
-        10,    // max_steps（荷重制御）
-        0.0,   // max_disp
-        false, // use_kg
-        true,  // use_arc_length
-        1.0,   // arc_length_dl [mm]
+        10,
+        0.0,
+        false,
+        true,
+        1.0,
     )
     .expect("arc-length pushover should run end-to-end");
     assert!(!result.capacity_curve.is_empty());
@@ -517,8 +498,6 @@ fn test_pushover_arc_length_path_runs() {
 fn test_pushover_arc_length_respects_termination_target() {
     // 弧長法フェーズも終了目標を判定すること。目標を十分小さく取れば、荷重制御か
     // 変位制御の時点で目標へ達し、弧長法フェーズは 1 ステップも回さない。
-    // （弧長法フェーズだけ目標判定が抜けていた不具合の回帰テスト。抜けていた頃は
-    // 目標到達後も最大 20 ステップが性能曲線へ積まれ、Qu の算定対象に入っていた。）
     let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
@@ -562,9 +541,8 @@ fn test_pushover_arc_length_respects_termination_target() {
 
 #[test]
 fn test_pushover_arc_length_runs_when_target_disabled() {
-    // 終了目標を無効にした場合は、従来どおり弧長法フェーズが走ること
-    // （上のテストの守り〔`!target_reached`〕が、目標なしの解析まで
-    // 止めてしまっていないことの確認）。
+    // 終了目標を無効にした場合は弧長法フェーズが走ること
+    // （目標なしの解析まで止めてしまっていないことの確認）。
     let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
@@ -617,8 +595,7 @@ fn test_pushover_computes_member_ductility() {
         DuctilityMethod::FirstYield,
     )
     .expect("pushover should run");
-    // 降伏したヒンジで塑性率 μ≥1 が算定される（旧実装の粗いモーメント比では
-    // なく、危険断面の曲率塑性率）。
+    // 降伏したヒンジで塑性率 μ≥1 が算定される（危険断面の曲率塑性率）。
     let max_mu = result
         .hinges
         .iter()
@@ -844,8 +821,8 @@ fn test_compute_static_indeterminacy_two_story() {
 fn test_compute_static_indeterminacy_indeterminate_portal() {
     // 1層1スパン両端固定ラーメン: 柱2+梁1=部材3、節点4（基礎2点FIXED+上部2点FREE）
     // r = 3*3 - 3*4 + (3+3) = 9 - 12 + 6 = 3（3次不静定）
-    let model = two_story_model(); // 共用せず簡易生成
-    let _ = model; // unused warning 回避
+    let model = two_story_model();
+    let _ = model;
     let nodes = vec![
         Node {
             id: NodeId(0),
@@ -980,9 +957,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
     // 直交フレーム込みの 3D モデル: 同じ門型を Y=5000 にもう 1 構面複製し、
     // 柱頭同士を Y 方向大梁 2 本でつなぐ。X 加力の静的不静定次数は
     // 「X-Z 構面 2 面ぶん」の 3+3=6 であるべきで、Y 方向大梁を部材数へ
-    // 算入してはならない（従来はモデル全体の要素数・節点数を使っており、
-    // 直交大梁 1 本につき r が 3 水増しされ、機構成立ゲート（≧r+1）が過大に
-    // なって層崩壊機構が Partial と誤判定されていた）。
+    // 算入してはならない。
     let mut model3d = portal.clone();
     let n_nodes = model3d.nodes.len() as u32;
     for i in 0..n_nodes {
@@ -998,9 +973,8 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
         e.nodes = e.nodes.iter().map(|nid| NodeId(nid.0 + n_nodes)).collect();
         model3d.elements.push(e);
     }
-    // 柱頭 (node1,node2) と複製構面の柱頭 (node1+4,node2+4) をつなぐ Y 方向大梁。
     for (k, (a, b)) in [(1u32, 5u32), (2, 6)].iter().enumerate() {
-        let mut e = model3d.elements[1].clone(); // 元の X 方向梁を雛形に
+        let mut e = model3d.elements[1].clone();
         e.id = ElemId(2 * n_elems + k as u32);
         e.nodes = smallvec::smallvec![NodeId(*a), NodeId(*b)];
         model3d.elements.push(e);
@@ -1047,10 +1021,7 @@ fn test_determine_mechanism_story_collapse() {
 #[test]
 fn test_foundation_girder_hinge_does_not_veto_story_collapse() {
     let mut model = two_story_model();
-    // 基部の階に収まる部材（基礎梁に相当）を 1 本足す。
     let base_beam = ElemId(model.elements.len() as u32);
-    // 支点を増やすと静的不静定次数が上がり、機構成立のゲートが本筋と関係なく
-    // 厳しくなるため、相手端は自由節点にする。
     model.nodes.push(Node {
         id: NodeId(3),
         coord: [6000.0, 0.0, 0.0],
@@ -1099,7 +1070,7 @@ fn test_determine_mechanism_overall() {
 #[test]
 fn test_pushover_base_shear_is_real_force() {
     // 最初の（弾性）ステップで base_shear/roof_disp が片持ち柱の弾性剛性
-    // 3EI/L³ ≈ 189.8 N/mm に一致することを確認（DOF添字加算の旧バグを排除）。
+    // 3EI/L³ ≈ 189.8 N/mm に一致することを確認。
     let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
@@ -1148,7 +1119,6 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
             Node {
                 id: NodeId(1),
                 coord: [0.0, 0.0, 3000.0],
-                // FiberBeam はねじり剛性を持たないため Rz を拘束
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(1)),
@@ -1271,7 +1241,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
 }
 
 // 1層1スパン剛床ラーメン（門形フレーム）で崩壊荷重が手計算値（4・My/H_col）
-// に一致し、柱両端に4つの塑性ヒンジが形成され全体機構となることを検証する（P5 §10.1）。
+// に一致し、柱両端に4つの塑性ヒンジが形成され全体機構となることを検証する。
 //
 // 手計算: Z=I/(depth/2)=166,660, My=σ_y·Z, Qu=4My/H=52,220 N（柱両端降伏・2柱）。
 // seismic_weight は崩壊荷重を上回る値に設定し、真に降伏到達させる。
@@ -1341,7 +1311,6 @@ fn test_portal_frame_collapse_load() {
         .map(|c| c.base_shear)
         .unwrap_or(0.0);
     let rel_err = (qu_observed - qu_theory).abs() / qu_theory;
-    // pushover は段階改良途上のため、比較的広めの許容差（30%）を設ける。
     assert!(
         rel_err < 0.30,
         "observed_qu={} at step {} deviates from Qu_theory={} by {:.1}% (>30%)",
@@ -1379,8 +1348,6 @@ fn test_portal_frame_mechanism_classified() {
         ),
     }
 }
-
-// ---- せん断降伏耐力 Qy の単体テスト ----
 
 #[test]
 fn test_compute_shear_yield_qy_steel() {
@@ -1506,7 +1473,6 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
     };
     let rc_sec = rc_shape.to_section(SectionId(0), "rc".into());
     let src_sec = src_shape.to_section(SectionId(1), "src".into());
-    // 材料は断面が持つ。主筋 SD345・せん断補強筋 SD295A・内蔵鉄骨 SN400B。
     let rebar_mat = Material {
         id: MaterialId(1),
         name: "SD345".to_string(),
@@ -1734,7 +1700,6 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         d,
         rebar: rebar.clone(),
     };
-    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
     let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
     sec.material = Some(MaterialId(0));
     sec.rebar_material = Some(MaterialId(1));
@@ -1752,7 +1717,6 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         fc: Some(24.0),
         fy: None,
     };
-    // 材料は断面が持つ。主筋 SD345・せん断補強筋 SD295A。
     let rebar_mat = Material {
         id: MaterialId(1),
         name: "SD345".to_string(),
@@ -1882,7 +1846,6 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
         }
         .to_section(SectionId(0), "RC-400x600".into())
     };
-    // RC 材料（fy は持たない）。fy を持つ材料は鋼系として扱われ荒川式へ入らない。
     let mat = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -1905,7 +1868,6 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
         ..mat.clone()
     };
 
-    // --- せん断: σwy が Qy に効く ---
     let sec = section();
     let sd295 = rebar_mat("SD295A", 295.0);
     let kh785 = rebar_mat("KH785", 785.0);
@@ -1931,11 +1893,9 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
         qy(&sd295)
     );
 
-    // --- 曲げ: 主筋 σy が My に効く ---
     let my_of = |main: Material| {
         let mut model = single_column_model(235.0, 80_000.0);
         let mut sec = section();
-        // 材料は断面が持つ。主筋・せん断補強筋を割り当てる。
         sec.material = Some(MaterialId(0));
         sec.rebar_material = Some(MaterialId(1));
         sec.shear_rebar_material = Some(MaterialId(2));
@@ -2038,12 +1998,10 @@ fn run_pushover_has_shear_yield(as_y: f64, as_z: f64) -> bool {
     !result.shear_yields.is_empty()
 }
 
-/// 局所 y/z 方向の厳密分離（改良1）の検証:
+/// 局所 y/z 方向の厳密分離の検証:
 /// 実際に力が生じる方向（局所 y、しきい値は断面 as_z 由来）の Qy を小さくすれば
 /// せん断降伏イベントが記録されるが、力がほぼ生じない方向（局所 z、断面 as_y 由来）
-/// の Qy をどれだけ小さくしても記録されないこと。v1（軸直交合力 vs
-/// min(qy_y,qy_z)）では後者でも誤って記録されてしまっていた
-/// （qy_z が min を支配してしまうため）。
+/// の Qy をどれだけ小さくしても記録されないこと。
 #[test]
 fn test_pushover_shear_yield_direction_independent() {
     assert!(
@@ -2057,8 +2015,6 @@ fn test_pushover_shear_yield_direction_independent() {
              yield event once Vy/Vz are judged independently against qy_y/qy_z"
     );
 }
-
-// ---- 精緻化1: h0 への剛域控除の単体テスト ----
 
 #[test]
 fn test_effective_clear_span_deducts_rigid_zone_lengths() {
@@ -2117,7 +2073,6 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
         d,
         rebar: rebar.clone(),
     };
-    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
     let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
     sec.material = Some(MaterialId(0));
     sec.rebar_material = Some(MaterialId(1));
@@ -2281,8 +2236,6 @@ fn test_compute_shear_yield_thresholds_rc_rect_falls_back_when_rigid_zone_exceed
     assert!((th.y.qy(0.0) - qsu_y_handcalc).abs() < 1e-6);
 }
 
-// ---- 精緻化2: 軸力σ0の動的反映の単体テスト ----
-
 #[test]
 fn test_dir_threshold_qy_axial_term_matches_handcalc() {
     // rc_capacity::tests::sample_input と同一の断面（b=400,D=600,pw=0.002等）で
@@ -2397,11 +2350,8 @@ impl ElementBehavior for FixedForceBehavior {
     }
 }
 
-/// 精緻化2のエンドツーエンド確認: 同一のせん断力 Vz デマンドに対し、
-/// 軸圧縮が作用する場合は σ0 反映で Qy が増え判定を免れるが、圧縮がない
-/// （引張・軸力ゼロ）場合は従来どおり判定に掛かることを、実際の
-/// `track_shear_yield` を通して確認する（`compute_shear_yield_thresholds` の
-/// 構築から一貫して検証）。
+/// 軸力反映のエンドツーエンド確認: 同一のせん断力 Vz デマンドに対し、
+/// 軸圧縮が作用する場合は σ0 反映で Qy が増え判定を免れることを確認する。
 #[test]
 fn test_track_shear_yield_axial_compression_raises_qy_end_to_end() {
     let (model, _rebar, b, d) = rc_column_model_with_rigid_zone(RigidZone::default());
@@ -2455,7 +2405,7 @@ fn test_track_shear_yield_axial_compression_raises_qy_end_to_end() {
         "compression should raise Qy above the shear demand, suppressing the event"
     );
 
-    // ケースB: 軸力なし（同じ Vz デマンド）→ 従来どおり判定に掛かるはず。
+    // ケースB: 軸力なし（同じ Vz デマンド）→ 判定に掛かるはず。
     let f_zero = LocalVec {
         data: SmallVec::from_slice(&[
             0.0, vz_demand, 0.0, 0.0, 0.0, 0.0, 0.0, -vz_demand, 0.0, 0.0, 0.0, 0.0,
@@ -2471,15 +2421,7 @@ fn test_track_shear_yield_axial_compression_raises_qy_end_to_end() {
     );
 }
 
-// ---- 保有水平耐力計算（プッシュオーバー）の材料強度割増: 部材組み立て時の
-// 係数配線方式（`build_nonlinear_behavior(.., StrengthBasis::MaterialStrength)`
-// および pushover 専用モジュール hinge.rs / shear_yield.rs の無条件適用）の検証。
-// 旧方式（モデル複製 `scale_steel_material_strength`）は廃止したため、
-// `compute_hinge_thresholds` / `compute_shear_yield_thresholds` が返す
-// 実効降伏応力（My・σy）を直接検証する。 ----
-
-/// 鋼材断面1本の片持ち柱モデル（形状情報なし＝フォールバック分岐、
-/// `member_moment_thresholds` の σy·Ze 経路）を作る。
+/// 鋼材断面1本の片持ち柱モデルを作る。
 fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model {
     Model {
         nodes: vec![
@@ -2615,7 +2557,6 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
         d,
         rebar: rebar.clone(),
     };
-    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
     let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
     sec.material = Some(MaterialId(0));
     sec.rebar_material = Some(MaterialId(1));
@@ -2745,11 +2686,6 @@ fn test_compute_shear_yield_thresholds_rc_rebar_scaled_but_shear_reinforcement_i
 
 /// 変位制御フェーズが実際に目標変位まで押し切り、荷重制御（λ=1＝C0=0.2 級）を
 /// 超える耐力まで到達することを検証する回帰テスト。
-///
-/// 修正前は変位制御のペナルティ残差 `penalty·(target − u)` の桁落ちで収束判定が
-/// 原理的に成立せず、変位制御フェーズが1点も確定しなかった。その結果 Qu は荷重
-/// 制御の頭打ち（λ=1、参照荷重 C0=0.2・地震重量＝設計地震力レベル）に張り付き、
-/// 崩壊機構へ到達しないまま過小評価されていた（保有水平耐力計算として致命的）。
 #[test]
 fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
     let seismic_weight = 80_000.0;
@@ -2823,8 +2759,7 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
         load_only.qu
     );
     // 塑性増分ヒンジモデルでは、押し切った耐力が柱脚の全塑性崩壊荷重
-    // Vp = Mp/L = 1.1·σy·Zp/L（Zp = b·d²/4、材料強度割増 1.1）で頭打ちになる
-    // （旧定式化は降伏後もほぼ弾性勾配で伸び続け Qu を過大評価していた）。
+    // Vp = Mp/L = 1.1·σy·Zp/L（Zp = b·d²/4、材料強度割増 1.1）で頭打ちになる。
     // バイリニア硬化（b=0.01）の分だけ Vp をやや上回る。
     let zp = 100.0 * 100.0 * 100.0 / 4.0;
     let vp = 1.1 * 235.0 * zp / 3000.0;
@@ -2838,13 +2773,6 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
 
 /// ヒンジが 1 つも発生しない弾性範囲では、荷重制御→変位制御のフェーズ切替を
 /// またいでも性能曲線のベースシアが単調非減少であることを検証する回帰テスト。
-///
-/// 旧実装の変位制御は Ai 分布の比例荷重を残差から外し、頂部 1 自由度を
-/// ペナルティばねで押し込んでいた。載荷パターンが「Ai 分布」→「頂部 1 点載荷」へ
-/// 不連続に変わるため、ヒンジがない弾性のままでもフェーズ切替点でベースシアが
-/// 落ち込み、その後頂部 1 点載荷の剛性勾配で伸び直す非物理的な V 字曲線を描いて
-/// いた。現行実装は比例荷重パターン λ·q を保持し、荷重係数 λ を頂部変位拘束から
-/// 決定するため、弾性域では曲線が単調増加し λ も 1 を超えて滑らかに増加する。
 #[test]
 fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     // 降伏応力を非現実的に高くし、曲げヒンジ・ファイバー降伏を発生させない。
@@ -2877,7 +2805,7 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
         "変位制御フェーズの点が確定していること"
     );
 
-    // ベースシアが全区間で単調非減少であること（旧実装はフェーズ切替点で低下）。
+    // ベースシアが全区間で単調非減少であること。
     for w in result.capacity_curve.windows(2) {
         assert!(
             w[1].base_shear >= w[0].base_shear * (1.0 - 1e-6),
@@ -2911,10 +2839,6 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
 
 /// 均等変位刻み制御: 性能曲線の頂部変位刻みが全域で概ね目標刻み
 /// du = 押込み上限 / ステップ数 に揃うことを検証する。
-///
-/// 固定 λ 刻み＋変位制御固定 10 分割の旧制御では、弾性域（荷重制御 λ≦1）に点が
-/// 密集し、塑性化が進む変位制御域が数倍〜数十倍粗くなる偏りがあった（グラフの
-/// 序盤だけ点が細かく後半が荒い、の回帰テスト）。
 #[test]
 fn test_pushover_uniform_displacement_spacing() {
     let seismic_weight = 80_000.0;
@@ -3090,7 +3014,7 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
         p
     );
 
-    // 長期荷重を無効にした場合は従来どおり λ=0 の記録はない。
+    // 長期荷重を無効にした場合は λ=0 の記録はない。
     let model2 = single_column_model(235.0, 80_000.0);
     let dofmap2 = DofMap::build(&model2);
     let reducer2 = Reducer::build(&model2, &dofmap2);
@@ -3115,9 +3039,7 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
     );
 }
 
-/// 荷重増分のみで終了目標が両方無効の場合は、従来の荷重制御と同じく λ=1
-/// （設計地震力レベル）で終了することを検証する（λ=1 超の延長は終了目標が
-/// 有効な場合に限る）。
+/// 荷重増分のみで終了目標が両方無効の場合は λ=1 で終了することを検証する。
 #[test]
 fn test_pushover_load_only_without_target_stops_at_lambda_1() {
     let model = single_column_model(235.0, 80_000.0);
@@ -3146,13 +3068,7 @@ fn test_pushover_load_only_without_target_stops_at_lambda_1() {
     );
 }
 
-/// 4 節点の耐震壁（壁エレメントモデル、節点配列 `[下辺a, 下辺b, 上辺a, 上辺b]`）で、
 /// 加力方向の水平力が「下辺 2 節点の**合計**」になること。
-///
-/// 従来は data[0..3]（下辺a）と data[6..9]（下辺b）の最大値を取っており、下辺 2 節点の
-/// 一方だけを見る形で水平力を約 1/2 に過小評価していた（βu・壁の τu が過小＝
-/// 部材種別・Ds が甘くなる危険側）。2 節点の線材では従来と同じ値になること
-/// （リグレッションがないこと）も併せて確認する。
 #[test]
 fn test_horizontal_force_sums_wall_bottom_nodes() {
     use squid_n_element::behavior::LocalVec;
@@ -3171,7 +3087,7 @@ fn test_horizontal_force_sums_wall_bottom_nodes() {
         h
     );
 
-    // 2 節点線材: i 端 +50kN / j 端 -50kN → 50kN（従来と同じ）。
+    // 2 節点線材: i 端 +50kN / j 端 -50kN → 50kN。
     let mut data2 = smallvec::SmallVec::<[f64; 24]>::from_elem(0.0, 12);
     data2[0] = 50_000.0;
     data2[6] = -50_000.0;
@@ -3184,8 +3100,6 @@ fn test_horizontal_force_sums_wall_bottom_nodes() {
     );
 }
 
-// ===== 系レベル V&V: 剛域が保有水平耐力・崩壊機構へ与える影響 =====
-
 /// 剛域検証用の門形フレーム（1層1スパン）。
 ///
 /// 柱は 100×100 のファイバー要素で両端固定、はりは柱より十分強い断面
@@ -3194,7 +3108,6 @@ fn test_horizontal_force_sums_wall_bottom_nodes() {
 /// `rigid` に剛域長 λ [mm] を与えると、柱の上下端に λ の剛域を設定する。
 fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Model {
     let mut model = portal_frame_model(fy, seismic_weight);
-    // はり用の強い断面を追加し、はりへ割り当てる（はりを弾性に保つ）。
     let strong = Section {
         id: SectionId(1),
         name: "girder".to_string(),
@@ -3217,7 +3130,6 @@ fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Mo
     };
     model.sections.push(strong);
     model.elements[1].section = Some(SectionId(1));
-    // 柱（要素 0・2）の上下端へ剛域を設定する。
     if rigid > 0.0 {
         for idx in [0usize, 2] {
             model.elements[idx].rigid_zone = RigidZone {
@@ -3304,7 +3216,6 @@ fn vnv_剛域つき門形フレームの崩壊荷重が可撓長基準になる(
         (ratio / theory - 1.0).abs() < 0.05,
         "崩壊荷重比が可撓長基準の理論値から外れている: 実測 {ratio:.4}（Qu={q0:.0}→{q1:.0} N）, 理論 H/L'={theory:.4}"
     );
-    // 剛域を無視していた頃は崩壊荷重が剛域に反応しなかった（比 = 1.0）。
     assert!(
         ratio > 1.1,
         "剛域が崩壊荷重に反映されていない（比 {ratio:.4}）"
@@ -3381,8 +3292,6 @@ fn portal_frame_spring_model(fy: f64, seismic_weight: f64) -> Model {
         e.kind = ElementKind::Beam;
         e.force_regime = ForceRegime::UniaxialBendingShear;
     }
-    // ファイバー用の G=0（ねじり剛性を持たない前提の設定）のままでは
-    // 一般梁要素のねじり剛性 GJ/L が 0 になるため、実際の G を与える。
     for mat in &mut m.materials {
         mat.shear = Some(78_846.0);
     }
@@ -3558,7 +3467,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         story,
         support_spring: None,
     };
-    // 上辺節点: 面内並進 (ux, uz) のみ自由。
     let top_mask = Dof6Mask(0b111010);
     let shape = SectionShape::RcWall {
         thickness: 150.0,
@@ -3587,7 +3495,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         d: 600.0,
         rebar,
     };
-    // 四周の柱・梁（下辺・上辺・左右の鉛直辺）。
     let edge = |id: u32, n0: u32, n1: u32, ref_vector: [f64; 3]| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -3622,12 +3529,11 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
                 plastic_zone: None,
                 spring: None,
             },
-            edge(1, 0, 1, [0.0, 0.0, 1.0]), // 下辺
-            edge(2, 3, 2, [0.0, 0.0, 1.0]), // 上辺
-            edge(3, 0, 3, [1.0, 0.0, 0.0]), // 左の鉛直辺（側柱）
-            edge(4, 1, 2, [1.0, 0.0, 0.0]), // 右の鉛直辺（側柱）
+            edge(1, 0, 1, [0.0, 0.0, 1.0]),
+            edge(2, 3, 2, [0.0, 0.0, 1.0]),
+            edge(3, 0, 3, [1.0, 0.0, 0.0]),
+            edge(4, 1, 2, [1.0, 0.0, 0.0]),
         ],
-        // 材料は断面が持つ。主材料 = コンクリート、主筋・せん断補強筋 = SD345。
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
@@ -3743,9 +3649,6 @@ fn test_pushover_drift_angle_target_runs_with_wall_element() {
 /// 塑性増分ヒンジ化したファイバー柱の増分解析で、既定目標（層間変形角 1/150）
 /// までに (1) ヒンジが発生し、(2) 降伏後の接線剛性が実際に低下し、
 /// (3) 目標の初回到達で打ち切られることを確認する。
-/// 旧定式化（端部ガウス点の B 積分、重み 2Lp/L'）では端部断面が全塑性化しても
-/// 要素剛性が数 % しか低下しなかった（`dev_docs/v_and_v/増分解析_ヒンジ形成と
-/// 剛性低下_検証_2026-07.md` §2.2）。
 ///
 /// fy=30 では初降伏 V_y = My/L ≒ 1.8kN（変位 ≒9mm・1/330）、全塑性
 /// Vp = 1.1·σy·Zp/L ≒ 2.75kN。地震重量 10kN（λ=1 で 2.0kN）は初降伏と
@@ -3810,8 +3713,6 @@ fn test_pushover_fiber_hinge_softens_at_drift_target() {
 /// 耐震壁の**曲げ降伏**の検証: 細長壁（lw=1000・h=3000、曲げ支配。せん断終局
 /// Qu は曲げ耐力より十分大きい）では、既定でファイバー化された壁柱の端部断面が
 /// 曲げ降伏し、目標層間変形角 1/150 到達までに接線剛性が実際に低下すること。
-/// 従来の壁柱（弾性梁＋せん断 Qu 頭打ちのみ）では曲げ降伏は表現されず、
-/// 細長壁の耐力を危険側に過大評価していた。
 #[test]
 fn test_pushover_wall_flexural_yield_softens() {
     let model = wall_story_model_with(1000.0, 30_000.0);
@@ -3863,9 +3764,6 @@ fn test_pushover_wall_flexural_yield_softens() {
 
 /// 接線剛性が初めから特異なモデルは、ソルバの内部表現（`factor: NotPositiveDefinite`）
 /// ではなく**どの節点のどの自由度に剛性がないか**を示す日本語診断で停止する。
-///
-/// 回帰対象: 従来は `newton_converge` の分解失敗をそのまま `Err` として上げており、
-/// UI には「増分解析エラー: factor: NotPositiveDefinite」だけが出て原因に辿り着けなかった。
 #[test]
 fn test_pushover_singular_tangent_reports_dof_diagnosis() {
     // 単柱モデルの頂部ねじり拘束（rz）を外すと、ファイバ柱はねじり剛性
@@ -3898,9 +3796,6 @@ fn test_pushover_singular_tangent_reports_dof_diagnosis() {
 
 /// 荷重制御フェーズが増分半減でも収束しない場合、結果を「Qu=0 の空の性能曲線」として
 /// 返さず、原因を切り分けた日本語メッセージで停止する（ソルバ内部表現は出さない）。
-///
-/// 回帰対象: 分解失敗を非収束扱いへ変えた際に、1 ステップも確定していないのに
-/// `Ok` で空の結果（Qu=0）を返すと保有水平耐力 0 と誤認させる（危険側）。
 #[test]
 fn test_pushover_unconverged_load_control_reports_reason() {
     // fy を極小にすると最初の増分から釣合いに収束できない（全断面が即降伏する）。

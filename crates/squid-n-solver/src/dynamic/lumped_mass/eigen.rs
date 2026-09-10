@@ -1,14 +1,10 @@
 //! 質点系（串団子）の固有値解析（せん断型多質点系、構造力学）。
 //!
-//! [`LumpedMassModel`] の初期剛性 K1・質量から、せん断型の一般化固有値問題
-//! \\( K x = \omega^2 M x \\) を解く。M は対角（質量マトリクス）なので
-//! \\( A = M^{-1/2} K M^{-1/2} \\) の標準固有値問題へ帰着し、faer の対称行列
-//! 固有値分解（`self_adjoint_eigen`）で解く（層数は通常数層〜数十層と小さく、
-//! 密行列の直接解法で十分）。
+//! 初期剛性 K1・質量から一般化固有値問題 Kx = ω²Mx を解く。
 //!
 //! - [`LumpedMassModal`] — 固有値解析の結果（周期・モード形状）。
 //! - [`lumped_mass_eigen`] — 串団子モデルの固有値解析。
-//! - [`stick_omega1`] — 減衰算定用の1次固有円振動数（内部専用、フォールバックあり）。
+//! - [`stick_omega1`] — 減衰算定用の1次固有円振動数。
 
 use super::model::LumpedMassModel;
 use faer::Side;
@@ -34,8 +30,7 @@ pub struct LumpedMassModal {
 /// （立体モデルの [`crate::dynamic::eigen::solve_eigen`] と同じ規約。呼び出し側は
 /// 返り値の長さを確認すること）。
 ///
-/// 層に質量が 0 以下のものがあると固有値解析が意味を持たない（実体のない
-/// 極端な高周波モードが紛れ込む）ため、`SolveError::InvalidInput` を返す。
+/// 層に質量が 0 以下のものがあると `SolveError::InvalidInput` を返す。
 pub fn lumped_mass_eigen(
     lm: &LumpedMassModel,
     n_modes: usize,
@@ -71,8 +66,6 @@ fn eigen_from_arrays(
     let n = mass.len();
     let sqrt_m: Vec<f64> = mass.iter().map(|&m| m.sqrt()).collect();
 
-    // 標準固有値問題 A = M^{-1/2} K M^{-1/2} を組み立てる。K はせん断型三重対角
-    // （K[i][i]=k_i+k_{i+1}、副対角=-k_{i+1}、k_{n}=0）。
     let a = faer::Mat::from_fn(n, n, |i, j| {
         let k_ij = if i == j {
             let ki1 = if i + 1 < n { k1[i + 1] } else { 0.0 };
@@ -91,7 +84,6 @@ fn eigen_from_arrays(
     let s = eig.S();
     let u = eig.U();
 
-    // faer は昇順で返すが、丸め誤差で微小負になり得るため 0 にクランプする。
     let take = n_modes.min(n);
     let mut omega2 = Vec::with_capacity(take);
     let mut period = Vec::with_capacity(take);
@@ -106,7 +98,6 @@ fn eigen_from_arrays(
             f64::INFINITY
         });
 
-        // 物理座標のモード形状 x = M^{-1/2} y。最上階（配列末尾）を 1.0 に正規化。
         let mut shape: Vec<f64> = (0..n).map(|i| u[(i, j)] / sqrt_m[i]).collect();
         let top = shape[n - 1];
         if top.abs() > 1e-30 {
@@ -126,17 +117,8 @@ fn eigen_from_arrays(
 
 /// 減衰算定用の1次固有円振動数 ω1。
 ///
-/// 質量が 0 以下の層があると、そのまま `.max(1e-9)` で丸めて解いた場合
-/// ω1 が桁違いに大きくなり、`a1=2h/ω1` が実質ゼロへ潰れて**無音で無減衰**に
-/// なる（サイレントな非安全側の破綻。初期剛性比例ではなく接線剛性比例に
-/// なっていた過去の減衰バグと同じ失敗形）。これを避けるため、質量 0 以下の
-/// 層は他層の正の質量の平均で置き換えてから固有値分解する（表示用の
-/// [`lumped_mass_eigen`] はこの補正をせず、質量 0 以下をそのままエラーとして
-/// 利用者へ見せる。この関数は減衰算定専用の内部フォールバック）。
-///
-/// 全層の質量が 0 以下、固有値分解自体が収束しない、または 1 次モードが
-/// 特異（ω²=0。層剛性 K1=0 の層がある場合等）のときのみ、旧来の逆反復法
-/// （[`super::time_history::fundamental_omega`]）へフォールバックする。
+/// 質量 0 以下の層は他層の正の質量の平均で置き換えてから固有値分解する。
+/// 全層の質量が 0 以下、固有値分解自体が収束しない、または 1 次モードが特異のときのみ逆反復法へフォールバックする。
 pub(crate) fn stick_omega1(lm: &LumpedMassModel) -> f64 {
     if lm.is_spatial() {
         if let Ok(modal) = super::spatial::lumped_mass_eigen_spatial(lm, 1) {
@@ -163,12 +145,6 @@ pub(crate) fn stick_omega1(lm: &LumpedMassModel) -> f64 {
             .collect();
         if let Ok(modal) = eigen_from_arrays(&repaired_mass, &k1, 1) {
             if let Some(&w2) = modal.omega2.first() {
-                // w2=0（層剛性 K1=0 の層がある等）は 1 次モードが特異で
-                // ω1=0 になり、呼び出し側で a1=2h/ω1 が無条件にゼロへ潰れて
-                // 無音無減衰になる。質量側の補修と同じ理由で、ここも下の
-                // クランプ付きフォールバックへ逃がす（数値ノイズで負に転じた
-                // 分は eigen_from_arrays 側で既に 0 にクランプ済みのため、
-                // >0.0 判定で「真に特異」と「桁落ちで 0 未満」の両方を拾える）。
                 if w2 > 0.0 {
                     return w2.sqrt();
                 }
@@ -176,8 +152,6 @@ pub(crate) fn stick_omega1(lm: &LumpedMassModel) -> f64 {
         }
     }
 
-    // 全層の質量が 0 以下、固有値分解が収束しなかった、または 1 次モードが
-    // 特異だった場合のみ到達する。
     let mass_clamped: Vec<f64> = mass.iter().map(|&m| m.max(1e-9)).collect();
     let k1_clamped: Vec<f64> = k1.iter().map(|&k| k.max(1e-9)).collect();
     super::time_history::fundamental_omega(&mass_clamped, &k1_clamped)

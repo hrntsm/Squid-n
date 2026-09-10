@@ -15,15 +15,12 @@ pub struct ModalDampingMode {
     pub shape: Vec<f64>,
 }
 
-/// 減衰モデル（設計書 §10.5 / R9、減衰マトリクス、構造動力学）。
+/// 減衰モデル。
 pub enum Damping {
     /// 質量比例減衰 C = a0·M。a0 = 2·h·ω で対象振動数 ω に減衰比 h を与える。
-    /// 低次モードを強く減衰させる（高次は残る）。
     MassProportional { h: f64, omega: f64 },
     /// 剛性比例減衰 C = a1·K。a1 = 2·h/ω で対象振動数 ω に減衰比 h を与える。
-    /// 日本の建築慣行の既定（1次モード剛性比例）。高次モードを強く減衰させる。
-    /// `basis=Tangent` は瞬間（接線）剛性比例（α1 一定）で、非線形解析では
-    /// 毎ステップ接線剛性から C を再構成する。
+    /// `basis=Tangent` は瞬間（接線）剛性比例で毎ステップ C を再構成する。
     StiffnessProportional {
         h: f64,
         omega: f64,
@@ -34,9 +31,8 @@ pub enum Damping {
     /// モード別減衰。各モードに独立の減衰比 h_i を与える。
     /// C = Σ_i 2·h_i·ω_i·(M φ_i)(M φ_i)ᵀ（質量正規化モード）。
     Modal { modes: Vec<ModalDampingMode> },
-    /// 瞬間剛性比例・h1 一定（h1 一定、構造動力学）。
-    /// C = 2·h1/ω1·[S]、ω1 = ω1e·√(uᵀ[S]u / uᵀ[Se]u)（[S]=瞬間剛性, [Se]=初期剛性）。
-    /// 非線形解析で減衰比 h1 を一定に保つよう ω1 を毎ステップ更新する。
+    /// 瞬間剛性比例・h1 一定。C = 2·h1/ω1·[S]。
+    /// 非線形解析では ω1 を毎ステップ更新する。
     TangentStiffnessConstantH { h1: f64, omega1e: f64 },
 }
 
@@ -49,9 +45,8 @@ pub enum StiffnessKind {
     Tangent,
 }
 
-/// 減衰力の評価方式（累積型・非累積型、構造動力学）。
-/// 減衰行列 C が時々刻々変化する（接線比例・モード別で
-/// 剛性が変化する）場合に両者は異なる。C 一定なら両者は一致する。
+/// 減衰力の評価方式（累積型・非累積型）。
+/// C 一定なら両者は一致する。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum DampingAccumulation {
     /// 非累積型: 減衰力 = 瞬間減衰マトリクス × 速度（`{Cn}=[Cn]{ẋn}`）。
@@ -72,8 +67,6 @@ impl Damping {
                 weighted_sum_csc(n, &[(a0, m)])
             }
             Damping::StiffnessProportional { h, omega, .. } => {
-                // ω≦0 のガードは接線系（`assemble_c_tangent`・TangentStiffnessConstantH）
-                // と同じ規則（減衰なし C=0 へフォールバック）で統一する。
                 let a1 = if *omega > 0.0 { 2.0 * h / omega } else { 0.0 };
                 weighted_sum_csc(n, &[(a1, k)])
             }
@@ -83,7 +76,6 @@ impl Damping {
             }
             Damping::Modal { modes } => modal_c(m, modes),
             Damping::TangentStiffnessConstantH { h1, omega1e } => {
-                // 初期近似（ω1=ω1e）: C = 2h1/ω1e·K。非線形解析はループ側で ω1 を更新。
                 let a1 = if *omega1e > 0.0 {
                     2.0 * h1 / omega1e
                 } else {
@@ -105,8 +97,8 @@ impl Damping {
         )
     }
 
-    /// 瞬間剛性 `k_t`・初期剛性 `k_e`・現在変位 `u` から接線減衰行列 C を再構成する
-    /// （剛性変更に伴う減衰項の変更、構造動力学）。接線比例でない場合は初期 C を返す。
+    /// 瞬間剛性 `k_t`・初期剛性 `k_e`・現在変位 `u` から接線減衰行列 C を再構成する。
+    /// 接線比例でない場合は初期 C を返す。
     pub fn assemble_c_tangent(
         &self,
         m: &SparseMat,
@@ -115,11 +107,6 @@ impl Damping {
         u: &[f64],
     ) -> SparseMat {
         match self {
-            // α1 一定: C = (2h/ω)·K_t（α1=2h/ω は初期振動数から定める一定値）。
-            // `weighted_sum_csc(n, &[(a1, k_t)])`（単一行列の重み付き和）はスカラ倍と
-            // 同義なので、triplet 化・ソートを経ない `scale_csc` に置換する
-            // （ビット一致は squid-n-math 側のテスト `test_scale_csc_matches_
-            // weighted_sum_csc_bit_exact` で担保済み）。
             Damping::StiffnessProportional {
                 h,
                 omega,
@@ -128,7 +115,6 @@ impl Damping {
                 let a1 = if *omega > 0.0 { 2.0 * h / omega } else { 0.0 };
                 scale_csc(k_t, a1)
             }
-            // h1 一定: ω1 = ω1e·√(uᵀK_t u / uᵀK_e u)、C = (2h1/ω1)·K_t。
             Damping::TangentStiffnessConstantH { h1, omega1e } => {
                 let num = quad_form(k_t, u);
                 let den = quad_form(k_e, u);
@@ -140,7 +126,6 @@ impl Damping {
                 let a1 = if omega1 > 0.0 { 2.0 * h1 / omega1 } else { 0.0 };
                 scale_csc(k_t, a1)
             }
-            // 接線比例でない場合は初期 C を返す（毎ステップ不変）。
             _ => self.assemble_c(m, k_e),
         }
     }
@@ -164,14 +149,9 @@ impl Damping {
     /// モード i の減衰比: h_i = α_m/(2ω_i) + β_k·ω_i/2。
     /// ω1 で h1、ω2 で h2 を満たす (α_m, β_k) を連立方程式から解く。
     ///
-    /// ω1 と ω2 が一致・近接する場合（対称建物で X・Y 並進の 1 次・2 次モードが
-    /// 縮退するのは珍しくない）、連立方程式は特異になり除算で係数が発散する
-    /// （NaN/∞ が減衰行列 C に混入し時刻歴解析全体が無警告で破綻する）。
-    /// この場合は単一振動数 ω1 で h1 を満たす質量・剛性の対称分配
-    /// α_m = h1·ω1、β_k = h1/ω1（h(ω1) = h1/2 + h1/2 = h1）へフォールバックする。
+    /// ω1 と ω2 が一致・近接する場合は単一振動数 ω1 で h1 を満たす分配へフォールバックする。
     pub fn rayleigh_coeffs(omega1: f64, omega2: f64, h1: f64, h2: f64) -> (f64, f64) {
         let d = omega2 * omega2 - omega1 * omega1;
-        // 相対判定: ω² の差が代表値の 1e-9 倍未満なら実質同一振動数とみなす。
         let scale = (omega1 * omega1).max(omega2 * omega2);
         if d.abs() <= scale * 1e-9 || !d.is_finite() {
             if omega1 > 0.0 {
@@ -186,8 +166,6 @@ impl Damping {
 }
 
 /// モード別減衰行列 C = Σ_i 2·h_i·ω_i·(Mφ_i)(Mφ_i)ᵀ（質量正規化モード φᵀMφ=1）。
-/// このとき φ_jᵀ C φ_j = 2·h_j·ω_j（他モードとは直交）となり、各モードに独立の
-/// 減衰比 h_i を与える。縮約空間で密行列となるため、質点系・縮約モデル向け。
 fn modal_c(m: &SparseMat, modes: &[ModalDampingMode]) -> SparseMat {
     let n = m.ncols();
     let mut dense = vec![0.0f64; n * n];
@@ -195,7 +173,7 @@ fn modal_c(m: &SparseMat, modes: &[ModalDampingMode]) -> SparseMat {
         if mode.shape.len() != n {
             continue;
         }
-        let mphi = sparse_matvec(m, &mode.shape); // M·φ
+        let mphi = sparse_matvec(m, &mode.shape);
         let coef = 2.0 * mode.ratio * mode.omega;
         if coef == 0.0 {
             continue;
@@ -261,13 +239,9 @@ mod tests {
         assert!((h2_actual - 0.05).abs() < 1e-6);
     }
 
-    /// 重根・近接固有値（対称建物で X・Y 並進モードが縮退するのは珍しくない）では
-    /// 連立方程式が特異になるため、単一振動数フォールバックで有限な係数を返し、
-    /// ω1 で目標減衰比 h1 を満たすこと（従来はゼロ除算で NaN/∞ が C 行列に混入し
-    /// 時刻歴解析が無警告で破綻した）。
+    /// 重根・近接固有値では単一振動数フォールバックで有限な係数を返し、ω1 で目標減衰比 h1 を満たすこと。
     #[test]
     fn test_damping_rayleigh_coeffs_degenerate_frequencies_finite() {
-        // 完全一致
         let (a0, a1) = Damping::rayleigh_coeffs(10.0, 10.0, 0.05, 0.05);
         assert!(a0.is_finite() && a1.is_finite(), "a0={a0}, a1={a1}");
         let h = (a0 / 10.0 + a1 * 10.0) / 2.0;
@@ -395,7 +369,7 @@ mod tests {
         };
         assert!(d.is_tangent_based());
         let c = d.assemble_c_tangent(&m, &kt, &ke, &[1.0, 0.0]);
-        let a1 = 2.0 * 0.05 / 10.0; // 0.01
+        let a1 = 2.0 * 0.05 / 10.0;
         assert!((*c.get(0, 0).unwrap_or(&0.0) - a1 * 500.0).abs() < 1e-9);
         assert!((*c.get(1, 1).unwrap_or(&0.0) - a1 * 1000.0).abs() < 1e-9);
     }
@@ -405,7 +379,7 @@ mod tests {
         // h1 一定: ω1 = ω1e·√(uᵀKt u / uᵀKe u)、C = 2h1/ω1·Kt。
         let m = diag_csc(2, &[1.0, 1.0]);
         let ke = diag_csc(2, &[1000.0, 2000.0]);
-        let kt = diag_csc(2, &[250.0, 500.0]); // 剛性 1/4 → ω1 半分
+        let kt = diag_csc(2, &[250.0, 500.0]);
         let d = Damping::TangentStiffnessConstantH {
             h1: 0.05,
             omega1e: 10.0,

@@ -179,7 +179,7 @@ pub struct LumpedMassModel {
 }
 
 impl LumpedMassModel {
-    /// 2 次元せん断串（既存テスト・増分 1 方向からの生成）。
+    /// 2 次元せん断串（増分 1 方向からの生成）。
     pub fn from_stories(model_type: LumpedMassType, stories: Vec<StoryStick>) -> Self {
         Self {
             model_type,
@@ -212,9 +212,6 @@ pub(crate) fn envelope_area(pts: &[(f64, f64)]) -> f64 {
 /// 層 Q-δ 曲線（δ 昇順・正値）を等包絡面積則でトリリニアへ縮約する。
 /// `secant_ratio`（0..1）: 第1折点＝割線剛性が K1 のこの比率以下となる変位。
 pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTrilinear {
-    // 正の変形のみ・δ 昇順に整える。ゼロ荷重ステップの解が丸め誤差程度の
-    // 変形（〜1e-17 mm）を持つことがあるため、最大変形に対する相対許容差で
-    // 実質ゼロの点を除外する（残すと K1 = 0/ε の縮退が起きる）。
     let d_max = curve.iter().map(|&(d, _)| d).fold(0.0, f64::max);
     let tol = d_max * 1e-9;
     let mut pts: Vec<(f64, f64)> = curve.iter().copied().filter(|&(d, _)| d > tol).collect();
@@ -240,7 +237,6 @@ pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTril
         0.0
     };
     if k1 <= 0.0 || d3 <= d_first {
-        // 単調1点・剛性不定は弾性トリリニア（折点なし）で返す。
         return StoryTrilinear {
             k1,
             d1: d3,
@@ -251,7 +247,6 @@ pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTril
             q3,
         };
     }
-    // 第3勾配 K3 = 終端接線（[0, K1] にクランプ）。
     let k3 = if pts.len() >= 2 {
         let (dp, qp) = pts[pts.len() - 2];
         if d3 > dp {
@@ -262,9 +257,6 @@ pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTril
     } else {
         (q3 / d3).clamp(0.0, k1)
     };
-    // 第1折点 δ1: 接線勾配が secant_ratio·K1 を初めて下回る直前の変位（弾性限）。
-    // 第1勾配は K1。接線基準は割線基準より弾性限（折れ点）を鋭く捉える（降伏後剛性が
-    // 小さい場合でも Q1=K1·δ1 が過大にならない）。
     let thr = secant_ratio * k1;
     let mut d1 = d3 * 0.5;
     let mut prev = (0.0, 0.0);
@@ -288,8 +280,6 @@ pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTril
     let d1 = d1.clamp(d_first, d3 * 0.9);
     let q1 = k1 * d1;
 
-    // 等包絡面積: A_tri(δ2)=A_actual を解く。Q2 は第3勾配直線上 Q2=Q3−K3(δ3−δ2)。
-    // A_tri は δ2 について線形（∂A/∂δ2 = ½[(Q1−Q3)+K3(δ3−δ1)] 一定）なので直接解ける。
     let a_actual = envelope_area(&pts);
     let a_tri = |d2: f64| {
         let q2 = q3 - k3 * (d3 - d2);
@@ -326,15 +316,6 @@ pub fn build_lumped_mass_model(
     let mut sticks = Vec::with_capacity(layers.len());
     for layer in &layers {
         let i = layer.index;
-        // 長期荷重のみを載荷した初期点（λ=0、`push_apply_long_term` 有効時に
-        // capacity_curve 先頭へ記録される）を層 Q-δ 曲線の原点とする。この点は
-        // 水平力ゼロの状態だが、非対称な長期荷重により層にわずかな残留水平変形を
-        // 持つことがある（丸め誤差ではなくミリメートル級になり得る）。総変位
-        // （`total_disp`）は長期載荷フェーズから水平力増分フェーズへそのまま
-        // 引き継がれるため、以降の各点の層間変形にもこの残留分が乗ったままであり、
-        // 差し引かないと層剛性の相対分布（＝串団子モデルの振動モード）が歪む。
-        // capacity_curve と steps は生成元で常に同じ並び・同じ長さで積まれる
-        // （driver.rs の各 push 箇所参照）ので、対応するインデックスで拾える。
         let baseline: (f64, f64) = pushover
             .capacity_curve
             .iter()
@@ -346,9 +327,6 @@ pub fn build_lumped_mass_model(
                 Some((d0, q0))
             })
             .unwrap_or((0.0, 0.0));
-        // 層 i の Q-δ 曲線（各キャパシティ点の層せん断・層間変形。原点補正後）。
-        // 補正後の長期のみ載荷点は (0, 0) に潰れ、`fit_story_trilinear` 側の
-        // ゼロ点フィルタ（δ > 丸め許容差）でそのまま除外される。
         let curve: Vec<(f64, f64)> = pushover
             .capacity_curve
             .iter()
@@ -360,8 +338,6 @@ pub fn build_lumped_mass_model(
             .collect();
         let skeleton = fit_story_trilinear(&curve, secant_ratio);
 
-        // 質量 = 地震重量 / g（未設定なら節点質量の合計）。層の質量は上端の階に
-        // 集中する（`Layer` 参照）。
         let mass = match layer.weight {
             Some(w) if w > 0.0 => w / GRAVITY_MM_S2,
             _ => layer
@@ -374,7 +350,6 @@ pub fn build_lumped_mass_model(
         };
 
         sticks.push(StoryStick {
-            // 層の識別は下端の階（＝層の呼び名になる床）で行う。
             story: layer.bottom,
             mass,
             height: layer.height.max(0.0),

@@ -1,9 +1,9 @@
 //! 時刻歴応答解析の入力設定。
 //!
-//! - [`NewmarkCfg`] — Newmark-β 法のパラメータ（§2）
+//! - [`NewmarkCfg`] — Newmark-β 法のパラメータ
 //! - [`GroundMotion`] — 地動加速度入力（基盤一様加振）
 
-/// Newmark-β 法のパラメータ（§2）。
+/// Newmark-β 法のパラメータ。
 pub struct NewmarkCfg {
     pub beta: f64,
     pub gamma: f64,
@@ -29,7 +29,7 @@ impl NewmarkCfg {
     }
 }
 
-/// 地動加速度入力（基盤一様加振）。水平1〜2方向（R8）。
+/// 地動加速度入力（基盤一様加振）。水平1〜2方向。
 /// `dt` はサンプリング間隔。`accel_x`/`accel_y` は同長さの時系列。
 /// `accel_theta` は位相差入力によるねじれ地動加速度 [rad/s²]（鉛直軸まわり。
 /// 多点位相差入力（構造力学）。`None` はねじれ加振なし）。

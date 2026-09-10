@@ -32,10 +32,6 @@ use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend}
 use squid_n_math::sparse::{sparse_matvec, Triplet};
 
 /// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
-///
-/// 引数が多くなるため、`use_kg`・`newton` に加えて長期荷重初期化・記録間引きの
-/// 設定を 1 つの構造体へまとめている（呼び出し元は本モジュールの `tests` のみのため、
-/// 破壊的変更として導入した）。
 #[derive(Clone, Copy, Debug)]
 pub struct NonlinearThCfg {
     /// 各時刻ステップの Newton 反復の収束規約（反復上限・相対許容誤差）。
@@ -98,9 +94,6 @@ pub fn nonlinear_time_history_analysis(
 ) -> Result<ResponseResult, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
-    // 部材の終局耐力を算定できない設定不備（耐震壁の Qu、線材の材料強度未入力）は、
-    // 代替値で埋めず解析を止める（プッシュオーバーと同じ規約）。耐力が定まらない
-    // 部材は弾性のまま際限なく応力を負担し、応答を過小評価する（危険側）。
     squid_n_element::factory::ensure_nonlinear_input(model).map_err(SolveError::InvalidInput)?;
 
     let dt = resolve_dt(newmark.dt, wave)?;
@@ -111,31 +104,21 @@ pub fn nonlinear_time_history_analysis(
     }
 
     let mut behaviors = build_behaviors(model);
-    // 制振（速度依存）要素へ時間刻みを通知する（制振要素、Maxwell モデル等）。マクスウェル
-    // 要素はこれで後退 Euler のダッシュポット積分が有効になる。dt<=0 の静的・線形解析
-    // では通知されず不活性のまま。
     for b in behaviors.iter_mut() {
         b.set_time_step(dt);
     }
-    // 累積損傷度用の塑性率 μ 時刻歴（要素ごと。塑性率プローブを持つ要素のみ収集）。
-    // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
-    // Newton 反復が上限内に収束しなかったステップ数（打ち切らず参考値として続行する）。
     let mut non_converged_steps = 0usize;
-    // 収束判定の基準ノルムの下限に使う、解析中に観測した力のスケールの最大値。
     let mut peak_force_scale = 0.0_f64;
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
-    // 質量行列（縮約空間）。
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
     let m_red = reducer.reduce_k(&m_free);
 
-    // 影響ベクトルと M·r
     let n_free = dofmap.n_active();
     let infl = GroundInfluence::build(model, dofmap, &m_free);
     let m_r_x: &[f64] = &infl.m_r_x;
     let m_r_y: &[f64] = &infl.m_r_y;
 
-    // Newmark-β 係数
     let NewmarkCoeffs {
         c1,
         c2,
@@ -146,10 +129,6 @@ pub fn nonlinear_time_history_analysis(
         ..
     } = NewmarkCoeffs::new(newmark, dt);
 
-    // ── 長期荷重ベクトル（apply_long_term） ─────────────────────────────
-    // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を、
-    // プッシュオーバーの長期載荷フェーズ（driver.rs）と同じ経路で組み立てる。
-    // `cfg.apply_long_term` が偽、または該当荷重ケースがない場合はゼロベクトル。
     let f0_free: Vec<f64> = if cfg.apply_long_term {
         let mut f = vec![0.0; n_free];
         for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
@@ -165,8 +144,6 @@ pub fn nonlinear_time_history_analysis(
     let f0_red = reducer.reduce_f(&f0_free);
     let has_long_term = f0_red.iter().any(|&v| v.abs() > 0.0);
 
-    // 長期荷重を静的 Newton 反復で載荷する（収束時は要素状態を commit）。
-    // 時刻歴の初期変位 u0 はこの長期解（縮約空間）から始める。
     let mut u = vec![0.0; n_indep];
     if has_long_term {
         apply_long_term_static(
@@ -180,14 +157,10 @@ pub fn nonlinear_time_history_analysis(
         )?;
     }
 
-    // 初期剛性の参照（長期荷重載荷後の状態、`use_kg` を反映）から減衰行列を組み立てる。
-    // 従来は幾何剛性を持たない `assemble_global_k`（線形弾性 behavior）を用いており、
-    // Newton 反復内の接線剛性（`common::tangent::assemble_k`、`use_kg` 反映）と不整合だった。
     let k_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
     let k_red = reducer.reduce_k(&k_free);
     let c_red = damping.assemble_c(&m_red, &k_red);
 
-    // 動的初期条件（initial_disp）は「長期解からの増分」として要素状態へ反映する。
     {
         let du_dyn = reduced_vec_from(n_indep, initial_disp);
         for i in 0..n_indep {
@@ -202,14 +175,9 @@ pub fn nonlinear_time_history_analysis(
 
     let mut v = reduced_vec_from(n_indep, initial_vel);
 
-    // 累積型減衰力 {Cn}（初期は C·v0）と、各ステップ収束時の減衰力（累積更新用）。
     let mut f_damp = sparse_matvec(&c_red, &v);
     let mut c_v_last = vec![0.0; n_indep];
 
-    // h1 一定減衰の {u} は「初期剛性による1次の固有ベクトル」（時刻歴を通じて固定）。
-    // 現在変位を用いると高次成分・剛体成分が混入し ω1 の推定が乱れる。
-    // 固有値解析が失敗した場合は零ベクトルとし、assemble_c_tangent 側の
-    // フォールバック（ω1 = ω1e）に委ねる。
     let u_mode1: Vec<f64> = if matches!(damping, Damping::TangentStiffnessConstantH { .. }) {
         crate::dynamic::eigen::solve_eigen(model, dofmap, reducer, 1)
             .ok()
@@ -220,14 +188,8 @@ pub fn nonlinear_time_history_analysis(
         vec![0.0; n_indep]
     };
 
-    // 初期加速度: M·a_0 = p(0) + f0 − C·v_0 − f_int(u_0)
-    // p(0) は地震外力（符号込み −M·r·ẍg）、f0 は長期荷重（時刻歴を通じて一定、
-    // プッシュオーバーの f0+λ·q と同じ扱い）。f_int(u_0) は長期荷重＋動的初期変位を
-    // 反映した現在の要素状態から求まる（既に commit 済み）。
     let p_red_0 = reducer.reduce_f(&infl.force_at(wave, 0));
 
-    // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
-    // Newton 反復（`driver.rs`）と同じ経路）。
     let mut f_int0_free = compute_f_int(model, dofmap, &behaviors);
     {
         let u0_free = reducer.expand_u(&u);
@@ -241,13 +203,7 @@ pub fn nonlinear_time_history_analysis(
     }
     let mut a = solve_initial_accel(&m_red, &rhs_a0, n_indep)?;
 
-    // --- 時刻歴ループ ---
     let n_steps = wave.accel_x.len();
-    // P9: u_free/v_free/a_free（自由 DOF 空間への展開）は 1 ステップに 1 回だけ
-    // 展開し、以後（ピーク変位・層間変形角・record_history_step・
-    // recorder.record_step）で使い回す（linear.rs と同じ方針。従来は
-    // ここだけでも同じ `reducer.expand_u(&u)` を 2 回呼んでいた上、
-    // `record_step` 内部でももう一度展開していた）。
     let mut u_free = vec![0.0f64; n_free];
     let mut v_free = vec![0.0f64; n_free];
     let mut a_free = vec![0.0f64; n_free];
@@ -262,7 +218,6 @@ pub fn nonlinear_time_history_analysis(
     let mut story_drift_angle = vec![0.0f64; model.layer_count()];
     update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
-    // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）
     let record_dir_y = choose_record_dir_y(wave);
     let dir_idx = if record_dir_y { 1 } else { 0 };
     let m_r_record: &[f64] = if record_dir_y { m_r_y } else { m_r_x };
@@ -272,8 +227,6 @@ pub fn nonlinear_time_history_analysis(
         ..Default::default()
     };
     let rmr_record = total_mass(m_r_record, dofmap, model.nodes.len(), dir_idx);
-    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
-    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
     let mut ma_free = vec![0.0f64; n_free];
     mass_accel_free_into(&m_free, &a_free, &mut ma_free);
     {
@@ -299,7 +252,6 @@ pub fn nonlinear_time_history_analysis(
     let mut time = Vec::with_capacity(n_steps + 1);
     time.push(0.0);
 
-    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用、record_every は cfg 経由）。
     let mut recorder = ThRecorder::new(
         model,
         dofmap,
@@ -315,9 +267,6 @@ pub fn nonlinear_time_history_analysis(
             .and_then(|a| a.first().copied())
             .unwrap_or(0.0);
         let mf_init = member_forces_nonlinear(model, &behaviors);
-        // 線材の内力欠落（state_member_forces 未実装）を開始時点でエラー化する。
-        // 従来は None のまま全ステップ記録され、当該部材の応力履歴が無言で
-        // 空になっていた（線形経路の ensure_line_member_forces と同じ趣旨）。
         super::recording::ensure_line_member_forces_nonlinear(model, &mf_init)?;
         recorder.record_step(
             0, 0.0, model, dofmap, m_r_x, m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
@@ -325,8 +274,6 @@ pub fn nonlinear_time_history_analysis(
         );
     }
 
-    // P8/P9: Newton 反復内・ステップ末で毎回確保していた作業バッファを
-    // ループ外で 1 回だけ確保し、以後は書き込みのみで再利用する。
     let mut p_free_buf = vec![0.0f64; n_free];
     let mut p_dyn_red_buf = vec![0.0f64; n_indep];
     let mut p_red_buf = vec![0.0f64; n_indep];
@@ -341,67 +288,24 @@ pub fn nonlinear_time_history_analysis(
     let mut r_red_buf = vec![0.0f64; n_indep];
     let mut du_red_buf = vec![0.0f64; n_indep];
 
-    // ── ソルバインスタンス・CSC 組立てキャッシュの持ち回り（時刻歴応答解析高速化・
-    // 第2波） ──────────────────────────────────────────────────
-    // Newton 反復・ステップループを跨いで同一インスタンスを保持する。K_eff は毎反復
-    // 組み立て直すが、以下はいずれも「同一箇所から呼ばれる限り非ゼロパターンは
-    // ほぼ不変」という前提が成り立つため、キャッシュ・symbolic 分解の再利用が効く:
-    //
-    // - `k_eff_solver`（`CholeskySolver`）: `factorize` を同一インスタンスへ繰り返し
-    //   呼ぶと、直前と同じスパースパターンなら symbolic 分解（AMD順序付け）を
-    //   再利用し数値分解のみ行う（`squid_n_math::cholesky::CholeskySolver` 参照）。
-    //   K_eff は対称正定値を前提とする（旧 `SolverBackend::Auto` も本解析の
-    //   自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を
-    //   明示しても既存挙動と同一。`Auto`（`AutoSolver`）は `factorize` のたびに
-    //   内部ソルバを新規生成するため、これを持ち回っても symbolic キャッシュは
-    //   効かない＝ここでは明示的に直接法ソルバを使う必要がある）。
-    // - `k_t_free_cache`／`k_t_red_cache`（`CscCache`）: 接線剛性 K_t（全体・縮約後）
-    //   の CSC 組立て。要素接続・拘束構成は不変なので、triplet の座標・並び順も
-    //   （弾塑性要素の接線剛性が厳密 0.0 を跨がない限り）不変。
-    // - `k_eff_cache`（`WeightedSumGuard`）: K_eff = K_t + c2·C + c1·M の重み付き和。
-    //
-    // 各キャッシュはパターン変化（弾塑性要素の完全塑性化等で非ゼロ数が変わる場合）を
-    // 自動検知し、その回のみ安全側（パターンの作り直し）へフォールバックする
-    // （[`crate::common::csc_cache`] 参照）。結果は常に非キャッシュ版とビット一致する。
     let mut k_eff_solver: Box<dyn LinearSolver> = make_solver(SolverBackend::DirectSparseCholesky);
     let mut k_t_free_cache = CscCache::new();
     let mut k_t_red_cache = CscCache::new();
     let mut k_eff_cache = WeightedSumGuard::new();
-    // P10: `assemble_k_cached_ref`/`reduce_k_cached_ref` の triplet 一時バッファ。
-    // ステップ・Newton 反復を跨いでループ外で保持することで、`Vec` の容量が
-    // 反復間で維持され毎回の再確保が消える（`clear()` してから書き込む）。
     let mut k_t_free_triplets_buf: Vec<Triplet> = Vec::new();
     let mut k_t_red_triplets_buf: Vec<Triplet> = Vec::new();
 
     for n in 0..n_steps {
         let t_next = (n + 1) as f64 * dt;
 
-        // P3: 全要素の commit 済み状態のスナップショット（`StateSnapshot::capture`）は
-        // 取らない。各ステップ開始時点では、直前ステップが収束していれば
-        // trial==committed（収束時のみ commit_state を呼ぶため）であり、不収束時は
-        // 本ループ自体が Err を返して打ち切るため、次ステップへは進まない。
-        // したがって「あるステップ開始時に trial!=committed のまま次ステップへ
-        // 入る」ことは起こらず、不収束時の rollback は
-        // `revert_all(&mut behaviors)`（各要素の trial←committed）で
-        // スナップショット捕捉・復元と厳密に等価になる。ファイバーモデルでは
-        // `snapshot_state` が全要素・全ゲージ点の状態を Box 確保して複製するため
-        // （毎ステップ数万 Box）、この等価性を利用して捕捉自体を省く。
-
-        // 地震荷重（動的分）＋長期荷重（f0、時刻歴を通じて一定）。
         infl.force_at_into(wave, n, &mut p_free_buf);
-        // 収束判定の分母に使う「動的外力のみ」のノルム基準（長期荷重 f0 を含まない）。
-        // 長期荷重が卓越するモデルでは f0 を含めると分母が過大になり、動的外力に
-        // 対する収束判定が実質的に緩んでしまう。
         reducer.reduce_f_into(&p_free_buf, &mut p_dyn_red_buf);
         let p_dyn_red = &p_dyn_red_buf;
-        // P9: p_dyn_red の複製（.clone()）を避け、要素ごとに f0_red を加算した
-        // 値を直接書き込む。
         for i in 0..n_indep {
             p_red_buf[i] = p_dyn_red[i] + f0_red[i];
         }
         let p_red = &p_red_buf;
 
-        // 予測子: Δu = 0 での a, v
         let mut a_trial = vec![0.0; n_indep];
         let mut v_trial = vec![0.0; n_indep];
         for i in 0..n_indep {
@@ -413,22 +317,6 @@ pub fn nonlinear_time_history_analysis(
         let mut converged = false;
 
         for _iter in cfg.newton.iters() {
-            // P1: 残差（f_int・C·v・M·a のみで計算可能、K は不要）を先に評価し、
-            // 収束していれば接線剛性の組立・有効剛性の組立・分解（このループ内で
-            // 最もコストが大きい）を一切行わずに break する。反復が収束するまで
-            // K を必要としない点は変えず、単に「K を使う手前で判定する」よう
-            // 計算順序を並べ替えただけで、残差自体の計算式・使用値は元のままの
-            // ため数値結果は完全不変（決定性ガードテスト参照）。
-            //
-            // ただし接線比例減衰（α1 一定・h1 一定）は瞬間剛性 k_t_red から C を
-            // 毎反復再構成するため、この場合に限り残差の減衰力項 c_v_red の計算に
-            // k_t_red が要る。そのため接線減衰のときだけ、ここで k_t_red・c_tan を
-            // 先に組み立てて使い回す（後段で二重に組み立てない）。
-            // P10: k_t_free_cache／k_t_red_cache の組立て結果は所有値へ複製せず
-            // 参照のまま使い回す（`assemble_k_cached_ref`/`reduce_k_cached_ref`）。
-            // k_t_red_precomputed は k_t_red_cache への可変借用と寿命が結びつくため、
-            // このブロック以降 k_t_red_cache へは（Some の場合）触れない
-            // （後段の `match` の None 分岐でのみ改めて借用する）。
             let (c_tan, k_t_red_precomputed) = if damping.is_tangent_based() {
                 let k_t_free = assemble_k_cached_ref(
                     model,
@@ -443,8 +331,6 @@ pub fn nonlinear_time_history_analysis(
                     &mut k_t_red_cache,
                     &mut k_t_red_triplets_buf,
                 );
-                // h1 一定の {u} は初期剛性の1次固有ベクトル（u_mode1、固定）。
-                // α1 一定は u を参照しない。
                 let c = damping.assemble_c_tangent(&m_red, k_t_red, &k_red, &u_mode1);
                 (Some(c), Some(k_t_red))
             } else {
@@ -452,13 +338,8 @@ pub fn nonlinear_time_history_analysis(
             };
             let c_cur = c_tan.as_ref().unwrap_or(&c_red);
 
-            // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位＝
-            // 収束済み u ＋ステップ内累積修正量 du_total、プッシュオーバーの
-            // Newton 反復（`driver.rs`）と同じ経路）。
             let mut f_int_free = compute_f_int(model, dofmap, &behaviors);
             {
-                // P9: u_trial_red/u_trial_free をループ外バッファへ書き込む
-                // （毎反復の Vec 確保を避ける）。
                 for i in 0..n_indep {
                     u_trial_red_buf[i] = u[i] + du_total[i];
                 }
@@ -468,9 +349,6 @@ pub fn nonlinear_time_history_analysis(
             reducer.reduce_f_into(&f_int_free, &mut f_int_red_buf);
             let f_int_red = &f_int_red_buf;
 
-            // 減衰力（縮約空間）。非累積型は瞬間 C×速度、累積型は増分減衰力の積分
-            // （{Cn}={Cn−1}+[Cn]{Δẋn}、Δẋn=v_trial−v_前ステップ）。P9: いずれも
-            // ループ外バッファへ書き込む（毎反復の Vec 確保を避ける）。
             match accumulation {
                 DampingAccumulation::NonCumulative => {
                     sparse_matvec_into(c_cur, &v_trial, &mut c_v_red_buf)
@@ -490,26 +368,11 @@ pub fn nonlinear_time_history_analysis(
             sparse_matvec_into(&m_red, &a_trial, &mut m_a_red_buf);
             let m_a_red = &m_a_red_buf;
 
-            // 残差
             for i in 0..n_indep {
                 r_red_buf[i] = p_red[i] - f_int_red[i] - c_v_red[i] - m_a_red[i];
             }
             let r_red = &r_red_buf;
 
-            // 収束判定。基準ノルムは**動的釣り合いの各項の最大**とする
-            // （`p = f_int + C·v + M·a` のうち動的な 3 項。長期荷重 f0 は含めない）。
-            //
-            // 動的外力 `p_dyn` だけを基準にすると、地動加速度がゼロを横切る時刻で
-            // 基準が消えて `1.0`（N）の床まで落ち、判定が「残差 < tol×1 N」という
-            // 絶対値判定に化ける。実建物では内力・慣性力が 1e7 N 規模あり、その
-            // 丸め誤差（倍精度で 1e-9 N 程度／自由度、全自由度で 1e-2 N 規模）が
-            // 1e-6 N を超えるため、**原理的に到達できない閾値**になっていた。
-            // 正弦波なら毎周期 2 回、実波形でも頻繁に起きるありふれた時刻で
-            // 不収束になる（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
-            //
-            // 地動が 0 でも構造は動いており慣性力・減衰力は大きいので、3 項の最大を
-            // 採れば基準は消えない。長期荷重を除く点は従来どおりで、長期が卓越する
-            // モデルで判定が緩む問題も起こさない。
             let r_norm = l2_norm(r_red);
             let scale = crate::common::newton::dynamic_force_scale(p_dyn_red, m_a_red, c_v_red);
             peak_force_scale = peak_force_scale.max(scale);
@@ -519,8 +382,6 @@ pub fn nonlinear_time_history_analysis(
                 break;
             }
 
-            // 未収束のときのみ、接線剛性（未組立なら今組み立てる。接線減衰で既に
-            // 組み立て済みなら再利用）・有効剛性・分解を行い、δu を解く。
             let k_t_red = match k_t_red_precomputed {
                 Some(k) => k,
                 None => {
@@ -549,25 +410,16 @@ pub fn nonlinear_time_history_analysis(
             reducer.expand_u_into(du_red, &mut du_free_buf);
             let du_free = &du_free_buf;
 
-            // a, v を更新
             for i in 0..n_indep {
                 a_trial[i] += c1 * du_red[i];
                 v_trial[i] += c2 * du_red[i];
                 du_total[i] += du_red[i];
             }
 
-            // 要素状態を trial 更新（並列化は共通足場 `common::elem_loop` 参照）。
             apply_du_trial(model, dofmap, &mut behaviors, du_free);
         }
 
         if !converged {
-            // 不収束でも解析は打ち切らず、その時点の試行状態で確定して続行する
-            // （質点系 `crate::dynamic::lumped_mass` と同じ規約）。途中まで解けた応答を
-            // 捨てるより、参考値として最後まで見せたうえで「収束を確認できて
-            // いないステップが何件あるか」を利用者へ伝えるほうが判断材料になる。
-            //
-            // ただし発散して有限でない値になった場合だけは打ち切る。以降の
-            // ステップも結果もすべて NaN に汚染され、参考値にすらならないため。
             if !du_total.iter().all(|x| x.is_finite()) {
                 revert_all(&mut behaviors);
                 return Err(SolveError::Backend(format!(
@@ -582,7 +434,6 @@ pub fn nonlinear_time_history_analysis(
             for i in 0..n_indep {
                 u[i] += du_total[i];
             }
-            // 累積型: 収束した減衰力を次ステップの積分開始値として保持する。
             if accumulation == DampingAccumulation::Cumulative {
                 f_damp.clone_from(&c_v_last);
             }
@@ -593,7 +444,6 @@ pub fn nonlinear_time_history_analysis(
                 b.commit_state();
             }
 
-            // 累積損傷度用に、各要素の危険断面塑性率 μ（=max_yield_ratio）を収集する。
             for (i, b) in behaviors.iter().enumerate() {
                 if let Some(p) = b.ductility_probe() {
                     mu_hist[i].push(p.max_yield_ratio);
@@ -602,8 +452,6 @@ pub fn nonlinear_time_history_analysis(
 
             time.push(t_next);
 
-            // P9: u_free/v_free/a_free をループ外バッファへ書き込んで使い回す
-            // （record_history_step・recorder.record_step と共有）。
             reducer.expand_u_into(&u, &mut u_free);
             for i in 0..n_free {
                 peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
@@ -611,8 +459,6 @@ pub fn nonlinear_time_history_analysis(
             update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
             reducer.expand_u_into(&v, &mut v_free);
             reducer.expand_u_into(&a, &mut a_free);
-            // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
-            // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
             mass_accel_free_into(&m_free, &a_free, &mut ma_free);
             let xg_next = accel_dir_at(wave, n + 1, record_dir_y);
             record_history_step(
@@ -648,9 +494,6 @@ pub fn nonlinear_time_history_analysis(
 
     let peak_disp = expand_peak_disp(model, dofmap, &peak_disp_free);
 
-    // 各要素の μ 時刻歴からレインフロー法で累積損傷度 D を算定する
-    // （レインフロー法（ASTM E1049-85）・Miner 則。鉄骨梁端部の累積損傷度計算）。μ 時刻歴が空（塑性率プローブ
-    // 非対応要素）の場合は 0。疲労特性 C・β は既定（要原典照合）。
     let fatigue = crate::damage::FatigueParams::default();
     let cumulative_ductility: Vec<f64> = mu_hist
         .iter()
@@ -672,13 +515,7 @@ pub fn nonlinear_time_history_analysis(
 
 /// 長期漸増載荷の載荷率（0〜1）を追跡する状態機械。
 ///
-/// 基準増分（`1/n_grav`）ごとに漸増し、収束失敗時は増分半減で再試行する
-/// （最大 `max_attempts` 回、超えたら [`Self::record_failure`] が `false` を返す）。
-/// **半減リトライで成功した場合も、次回は基準増分から再開し、載荷率が 100% に
-/// 達するまで残増分を継続する**（while ループ、[`Self::next_target`] が `None` を
-/// 返すまで）。呼び出し側（`apply_long_term_static`）は FEM の Newton 収束判定
-/// （snapshot/restore/commit）を挟むため、この構造体自体は FEM に依存せず、
-/// 載荷率の遷移ロジックのみを単体テストできるよう切り出している。
+/// 基準増分ごとに漸増し、収束失敗時は増分半減で再試行する。
 #[derive(Debug, Clone, Copy)]
 struct LoadFractionState {
     /// 収束が確定した載荷率。
@@ -734,12 +571,8 @@ impl LoadFractionState {
     }
 }
 
-/// 長期荷重（`f0_red`、縮約空間）を静的 Newton 反復で載荷する
-/// （プッシュオーバーの長期載荷フェーズ、`driver.rs` と同じ考え方: 弾性域で収まらない
-/// 場合に備えて基準 5 分割で漸増し、収束失敗時は増分半減で再試行する。半減リトライで
-/// 成功した場合も、載荷率が 100% に達するまで残増分を基準ペースで継続する。
-/// [`LoadFractionState`] 参照）。収束したステップごとに要素状態を commit し、
-/// 載荷完了時の変位（縮約空間）を `u_out` に加算する。
+/// 長期荷重（`f0_red`、縮約空間）を静的 Newton 反復で載荷する。
+/// 収束したステップごとに要素状態を commit し、載荷完了時の変位（縮約空間）を `u_out` に加算する。
 fn apply_long_term_static(
     model: &Model,
     dofmap: &DofMap,
@@ -751,16 +584,10 @@ fn apply_long_term_static(
 ) -> Result<(), SolveError> {
     let n_indep = reducer.n_indep;
     let mut state = LoadFractionState::new(5);
-    // 長期荷重の漸増ステップ全体（複数の載荷率試行・各試行内の Newton 反復）で
-    // ソルバインスタンス・CSC 組立てキャッシュを保持する（時刻歴応答解析高速化・
-    // 第2波、`nonlinear_time_history_analysis` 本体の Newton ループと同じ方針。
-    // 理由は呼び出し先 [`newton_static_converge`] のコメント参照）。
     let mut solver: Box<dyn LinearSolver> = make_solver(SolverBackend::DirectSparseCholesky);
     let mut k_free_cache = CscCache::new();
     let mut k_red_cache = CscCache::new();
     let mut du_red_buf = vec![0.0f64; n_indep];
-    // P10: `assemble_k_cached_ref`/`reduce_k_cached_ref` の triplet 一時バッファ
-    // （漸増ステップ全体を通じて保持し、`Vec` の容量を維持する）。
     let mut k_free_triplets_buf: Vec<Triplet> = Vec::new();
     let mut k_red_triplets_buf: Vec<Triplet> = Vec::new();
     while let Some(mu_target) = state.next_target() {
@@ -805,20 +632,9 @@ fn apply_long_term_static(
     Ok(())
 }
 
-/// 固定外力 `f_target_red`（縮約空間）に対する静的 Newton 反復
-/// （長期荷重の各漸増ステップの共通経路）。収束時はステップ内の全修正量の累積
-/// （縮約空間の変位増分）を `Some` で返し、要素状態はトライアル反映済み・未確定の
-/// まま戻す（確定・巻き戻しは呼び出し側の責務）。収束しなければ `Ok(None)`。
-/// `u_base_red` はこの呼び出し開始時点の全体変位（縮約空間、これまでの漸増ステップの
-/// 確定累積）。支点ばね内力 `add_support_spring_f_int` に渡す縮約前の全体変位
-/// `u_base_red + du_total` の算定に使う。
-///
-/// `solver`・`k_free_cache`・`k_red_cache`・`du_red_buf`・`k_free_triplets_buf`・
-/// `k_red_triplets_buf` は呼び出し元 [`apply_long_term_static`] が漸増ステップ全体を
-/// 通じて保持するソルバインスタンス・CSC 組立てキャッシュ・作業バッファ（時刻歴応答
-/// 解析高速化・第2波/第3波）。K は対称正定値を前提とする（旧 `SolverBackend::Auto` も
-/// 本解析の自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を
-/// 明示しても既存挙動と同一）。
+/// 固定外力 `f_target_red`（縮約空間）に対する静的 Newton 反復。
+/// 収束時はステップ内の全修正量の累積を `Some` で返し、要素状態はトライアル反映済み・未確定のまま戻す。
+/// 収束しなければ `Ok(None)`。
 #[allow(clippy::too_many_arguments)]
 fn newton_static_converge(
     model: &Model,
@@ -838,8 +654,6 @@ fn newton_static_converge(
 ) -> Result<Option<Vec<f64>>, SolveError> {
     let mut du_total = vec![0.0; n_indep];
     for _iter in STATIC_NEWTON.iters() {
-        // P10: 組立て結果は所有値へ複製せず参照のまま使う
-        // （`assemble_k_cached_ref`/`reduce_k_cached_ref`）。
         let k_free = assemble_k_cached_ref(
             model,
             dofmap,
@@ -849,8 +663,6 @@ fn newton_static_converge(
             k_free_triplets_buf,
         );
         let k_red = reducer.reduce_k_cached_ref(k_free, k_red_cache, k_red_triplets_buf);
-        // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
-        // 長期載荷フェーズ（`driver.rs`）と同じ経路）。
         let mut f_int_free = compute_f_int(model, dofmap, behaviors);
         {
             let u_trial_red: Vec<f64> = (0..n_indep).map(|i| u_base_red[i] + du_total[i]).collect();
@@ -875,7 +687,6 @@ fn newton_static_converge(
         for i in 0..n_indep {
             du_total[i] += du_red_buf[i];
         }
-        // 要素状態を trial 更新（並列化は共通足場 `common::elem_loop` 参照）。
         apply_du_trial(model, dofmap, behaviors, &du_free);
     }
     Ok(None)
@@ -884,9 +695,6 @@ fn newton_static_converge(
 fn build_behaviors(model: &Model) -> Vec<Box<dyn squid_n_element::behavior::ElementBehavior>> {
     let mut behaviors = Vec::new();
     for elem in &model.elements {
-        // 時刻歴応答解析は公称値（材料強度割増なし）。履歴則は
-        // AnalysisKind::TimeHistory で解決する（部材個別指定の時刻歴用スロット →
-        // 既定表。コンクリート除荷則の既定は Karsan–Jirsa 型）。
         let b = build_nonlinear_behavior(
             elem,
             model,
@@ -916,8 +724,7 @@ mod load_fraction_tests {
         assert!((state.applied - 1.0).abs() < 1e-12);
     }
 
-    /// 途中で失敗→増分半減で成功するパスでも、最終的に載荷率は 100% に到達する
-    /// （半減成功後に打ち切らず残増分を継続する、高-1 の回帰防止）。
+    /// 途中で失敗→増分半減で成功するパスでも、最終的に載荷率は 100% に到達すること。
     #[test]
     fn half_step_success_still_reaches_full_load() {
         let mut state = LoadFractionState::new(5);

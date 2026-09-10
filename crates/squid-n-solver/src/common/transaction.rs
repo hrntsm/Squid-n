@@ -2,12 +2,6 @@ use squid_n_element::behavior::ElementBehavior;
 use std::any::Any;
 
 /// 全要素の確定状態のスナップショット。
-///
-/// 非線形解析の増分ステップが収束しなかったとき、ステップ開始時点の要素状態へ
-/// 巻き戻すために用いる。要素状態は `behaviors` 側が保持しており `Model` は
-/// 関与しないため、キャプチャ・復元とも `behaviors` だけを引数に取る
-/// （旧 `StatefulModel` トレイトは self 未使用のまま `&mut Model` を強制して
-/// いたため廃止した）。
 pub struct StateSnapshot {
     pub states: Vec<Box<dyn Any>>,
 }
