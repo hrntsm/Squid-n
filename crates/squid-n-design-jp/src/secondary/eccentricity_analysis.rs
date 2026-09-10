@@ -144,7 +144,6 @@ pub fn center_of_gravity_from_axial(
         let Some(&(_, local)) = mf.at.first() else {
             return;
         };
-        // 局所軸力 n は引張正 → 圧縮 = −n を重みに使う。
         let ni = (-local[0]).max(0.0);
         sum_n += ni;
         sum_nx += ni * top.coord[0];

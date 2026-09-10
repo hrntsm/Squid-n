@@ -366,7 +366,7 @@ mod tests {
         );
     }
 
-    /// 分割なしの柱では従来どおり 1 本として数える（退行防止）。
+    /// 分割なしの柱では 1 本として数える（退行防止）。
     #[test]
     fn test_column_drift_unsplit_column_unchanged() {
         let (model, s0) = build_model();

@@ -26,20 +26,13 @@ pub struct HoldingCapacityResult {
     pub member_ranks: Vec<(ElemId, MemberRank)>,
 }
 
-// ===== T1: 剛性率 Rs・層間変形角 (§4) =====
-
 pub fn check_story_drift(story_height: f64, interstory_drift: f64) -> bool {
     let angle = interstory_drift / story_height;
     angle <= 1.0 / 200.0
 }
 
-/// 全層の剛性率 Rs_i を計算する。
-/// Ks_i = h_i / δ_i,  Rs_i = Ks_i / mean(Ks)
-///
-/// 層間変位 δ=0 の層（変形しない層）は Ks が定義できない（無限大相当）ため
-/// 平均から除外し、Rs には有限層の最大 Rs 以上（最低 1.0）を与える。
-/// 従来は δ=0 を Ks=0（無限に柔らかい層）として扱っており、最も剛な層ほど
-/// Rs=0 で NG になる逆転があった。
+/// 全層の剛性率 Rs_i を計算する。`Ks_i = h_i / δ_i`、`Rs_i = Ks_i / mean(Ks)`。
+/// δ=0 の層は平均から除外し、Rs には有限層の最大 Rs 以上（最低 1.0）を与える。
 pub fn stiffness_ratios(story_heights: &[f64], story_drifts: &[f64]) -> Vec<f64> {
     let ks: Vec<Option<f64>> = story_heights
         .iter()
@@ -51,7 +44,6 @@ pub fn stiffness_ratios(story_heights: &[f64], story_drifts: &[f64]) -> Vec<f64>
     }
     let finite: Vec<f64> = ks.iter().filter_map(|k| *k).collect();
     if finite.is_empty() {
-        // 全層 δ=0（無変形）: 剛性の偏りは定義できないため全層 1.0。
         return vec![1.0; ks.len()];
     }
     let mean = finite.iter().sum::<f64>() / finite.len() as f64;
@@ -67,8 +59,6 @@ pub fn stiffness_ratios(story_heights: &[f64], story_drifts: &[f64]) -> Vec<f64>
         .collect()
 }
 
-// ===== T2: 偏心率 Re (§5.2) =====
-
 /// 偏心距離 e を弾力半径 r で割った偏心率。
 pub fn eccentricity_ratio(e: f64, r: f64) -> f64 {
     if r == 0.0 {
@@ -77,11 +67,7 @@ pub fn eccentricity_ratio(e: f64, r: f64) -> f64 {
     (e / r).abs()
 }
 
-// ===== T3: Fs / Fe / Fes (§5.3) =====
-
-/// 剛性率 Rs から Fs を算定（告示1792）。
-/// Rs ≥ 0.6 → Fs = 1.0
-/// Rs < 0.6 → Fs = 2.0 − Rs/0.6
+/// 剛性率 Rs から Fs を算定する（告示1792）。
 pub fn fs(rs: f64) -> f64 {
     if rs >= 0.6 {
         1.0
@@ -90,9 +76,7 @@ pub fn fs(rs: f64) -> f64 {
     }
 }
 
-/// 偏心率 Re から Fe を算定（告示1792）。
-/// Re ≤ 0.15 → Fe = 1.0
-/// Re > 0.15 → Fe = 1.0 + 0.5·(Re − 0.15)/0.15（最大 1.5）
+/// 偏心率 Re から Fe を算定する（告示1792）。
 pub fn fe(re: f64) -> f64 {
     if re <= 0.15 {
         1.0
@@ -106,9 +90,7 @@ pub fn fes(rs: f64, re: f64) -> f64 {
     fs(rs) * fe(re)
 }
 
-// ===== T4: Ds 自動分類 (§7) =====
-
-/// 架構種別。Ds 表の行を選ぶ。
+/// 架構種別。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameType {
     RcFrame,
@@ -141,42 +123,16 @@ pub fn ds_value(frame: FrameType, rank: MemberRank) -> f64 {
     }
 }
 
-// ===== T2: Qud ヘルパー (§2) =====
-
-/// 二次設計の地震時層せん断 Qud（**C0 = 1.0** の Ai 分布層せん断 Qi）。仕様 §2。
-///
-/// - `story_weights_bottom_to_top`: 下→上の各層の地震用重量。
-/// - `z`: 地域係数。
-/// - `rt`: 振動特性係数 Rt。
-/// - `t`: 設計用一次固有周期 [s]。
-///
+/// 二次設計の地震時層せん断 Qud（C0 = 1.0 の Ai 分布層せん断 Qi）。
 /// 戻り値は層せん断 Qi（下→上インデックス）。
 pub fn qud_by_story(story_weights_bottom_to_top: &[f64], z: f64, rt: f64, t: f64) -> Vec<f64> {
     squid_n_load::ai::ai_distribution(story_weights_bottom_to_top, z, rt, 1.0, t).qi
 }
 
-// ===== T6: Qun 比較・判定・統合 (§3) =====
-
 use squid_n_solver::nonlinear::pushover::PushoverResult;
 
 /// 二次設計（保有水平耐力）の層チェックを統合する。
-///
-/// **Qu（保有水平耐力）は P5 プッシュオーバーから取得する**（DoD §0.2-1）。
-/// 層 i の Qu は `pushover.capacity_curve` 全体の**層別ピーク層せん断**
-/// `max_step story_shear[i]`（崩壊機構形成時の耐力。単調載荷では機構形成後に頭打ち／
-/// 劣化するため最終点ではなくピークを採る）とする。層間変位は終局状態＝最終点の
-/// `story_drift[i]`（層間変形角用）を用いる。capacity_curve が空なら Qu=0。
-///
-/// 他の量は各タスクで算定した層別配列を渡す:
-/// - `qud_by_story`: 二次設計用の地震時層せん断（**Ai 分布・C0=1.0** で算定したもの。§2）。
-/// - `ds_by_story`: 層 Ds（[`crate::secondary::member_rank::story_ds`]）。
-/// - `fes_by_story`: 形状係数 Fes（[`fes`]）。
-/// - `rs_by_story` / `re_by_story`: 剛性率（[`stiffness_ratios`]）・偏心率
-///   （[`crate::secondary::eccentricity`]）。
-/// - `story_heights`: 階高（層間変形角＝層間変位/階高 の算定に使用）。
-/// - `member_ranks`: 部材ランク一覧（出力にそのまま格納）。
-///
-/// 層数 n は `qud_by_story.len()`。判定は `ok = (Qu ≥ Qun)`, `Qun = Ds·Fes·Qud`。
+/// 判定は `ok = (Qu ≥ Qun)`、`Qun = Ds·Fes·Qud`。
 #[allow(clippy::too_many_arguments)]
 pub fn check_holding_capacity(
     pushover: &PushoverResult,
@@ -194,16 +150,11 @@ pub fn check_holding_capacity(
     let stories: Vec<StoryCheck> = (0..n)
         .map(|i| {
             let story = StoryId(i as u32);
-            // 保有水平耐力 Qu_i は「崩壊機構形成時＝性能曲線上でその層が保有した最大
-            // 層せん断」とする。単調載荷では機構形成後に頭打ち／劣化するため、最終点
-            // ではなく性能曲線全体のピーク（層別最大）を採る。変位制御が目標変位まで
-            // 押し切ると最終点が劣化域に入り得るため、最終点固定では Qu を過小評価する。
             let qu = pushover
                 .capacity_curve
                 .iter()
                 .filter_map(|p| p.story_shear.get(i).copied())
                 .fold(0.0_f64, f64::max);
-            // 層間変位（層間変形角の算定用）は終局状態＝最終点（最大変位時）から採る。
             let drift = last_point
                 .and_then(|p| p.story_drift.get(i))
                 .copied()
@@ -243,7 +194,6 @@ pub fn check_holding_capacity(
 mod tests {
     use super::*;
 
-    // ---- T1 ----
     #[test]
     fn test_stiffness_ratios_example() {
         let heights = vec![1.0, 1.0, 1.0];
@@ -283,14 +233,12 @@ mod tests {
         assert!(!check_story_drift(3.0, 0.02));
     }
 
-    // ---- T2 ----
     #[test]
     fn test_eccentricity_ratio_basic() {
         assert!((eccentricity_ratio(1.5, 3.0) - 0.5).abs() < 1e-9);
         assert_eq!(eccentricity_ratio(1.5, 0.0), 0.0);
     }
 
-    // ---- T3 ----
     #[test]
     fn test_fs_ge_06() {
         assert!((fs(0.6) - 1.0).abs() < 1e-9);
@@ -326,7 +274,6 @@ mod tests {
         assert!((fes(0.3, 0.30) - 2.25).abs() < 1e-9);
     }
 
-    // ---- T4 ----
     #[test]
     fn test_ds_value_rc_frame() {
         assert!((ds_value(FrameType::RcFrame, MemberRank::FA) - 0.30).abs() < 1e-9);
@@ -364,7 +311,6 @@ mod tests {
         }
     }
 
-    // ---- T6 ----
     /// Qu を持つ capacity_curve 1点だけの PushoverResult を作る。
     fn pushover_with_qu(story_shear: Vec<f64>, story_drift: Vec<f64>) -> PushoverResult {
         use squid_n_solver::nonlinear::pushover::{CapacityPoint, MechanismType};
@@ -389,9 +335,8 @@ mod tests {
         }
     }
 
-    /// 保有水平耐力 Qu は「性能曲線上の層別ピーク層せん断」を採る（最終点ではない）。
-    /// 変位制御が目標変位まで押し切ると最終点は劣化域に入り得るため、最終点固定では
-    /// Qu を過小評価する。ここでは最終点より前にピークがある曲線で検証する。
+    /// 保有水平耐力 Qu は性能曲線上の層別ピーク層せん断を採る。
+    /// 最終点より前にピークがある曲線で検証する。
     #[test]
     fn test_check_holding_capacity_uses_peak_not_last_point() {
         use squid_n_solver::nonlinear::pushover::{CapacityPoint, MechanismType};
@@ -468,7 +413,7 @@ mod tests {
         assert!((result.stories[0].qu - 100.0).abs() < 1e-9);
         assert!((result.stories[0].qun - 24.0).abs() < 1e-9);
         assert!((result.stories[1].qun - 63.0).abs() < 1e-9);
-        // Rs/Re が出力に反映されている（旧実装は 0.0 固定だった）。
+        // Rs/Re が出力に反映されている。
         assert!((result.stories[1].rs - 0.75).abs() < 1e-9);
         assert!((result.stories[0].re - 0.05).abs() < 1e-9);
         // 層間変形角 = drift/height = 15/3000 = 1/200。
@@ -489,7 +434,7 @@ mod tests {
         assert!(!result.stories[1].ok); // Qu=50 < Qun=63
     }
 
-    /// 境界（Qu = Qun ちょうど）→ ok=true（DoD §3）。
+    /// 境界（Qu = Qun）は ok。
     #[test]
     fn test_check_holding_capacity_boundary() {
         // Qun = Ds·Fes·Qud = 0.5·1.0·100 = 50。Qu = 50 ちょうど。
@@ -504,8 +449,6 @@ mod tests {
         assert!((result.stories[0].qun - 50.0).abs() < 1e-9);
         assert!(result.stories[0].ok, "Qu=Qun は ok（≥）であるべき");
     }
-
-    // ---- Qud ヘルパー ----
 
     /// 等重量3層で qud_by_story の基部層せん断が C0=1.0 版 = C0=0.2 版の 5 倍であること。
     #[test]

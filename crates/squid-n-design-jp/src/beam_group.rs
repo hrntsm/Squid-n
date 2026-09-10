@@ -11,15 +11,10 @@ use crate::BeamGroupContextOverride;
 /// `Model.beam_groups` の各グループについて検定文脈の合成値を求め、
 /// 所属要素 ID → 合成値の対応表を返す。
 ///
-/// - グループは軸方向に連続する梁要素の ID を**並び順**で持つ前提
-///   （幾何学的な連続性・共線性の検証は行わない。並び順が実際の配置と
-///   異なる場合、端部モーメント等の対応がずれる）。
-/// - 要素または内力が欠けるグループ・要素数 2 未満のグループは無視する。
-/// - 中央モーメントは、A 式 `Mc_A = (|Q1|+|Q2|)・L/8 − (|M1|+|M2|)/2`
-///   （端部せん断と釣り合う等分布荷重の単純梁中央モーメントから端部
-///   モーメントの平均を差し引いた復元値）と、B 式（グループ中央位置を
-///   含む分割部材の、中央位置に最も近い評価行のモーメント）の絶対値の
-///   大きい方（符号は B 式に合わせる）。
+/// グループは軸方向に連続する梁要素の ID を**並び順**で持つ前提
+/// （幾何学的な連続性・共線性の検証は行わない）。
+/// 要素または内力が欠けるグループ・要素数 2 未満のグループは無視する。
+/// 中央モーメントは A 式・B 式の絶対値の大きい方（符号は B 式に合わせる）。
 pub fn beam_group_overrides(
     model: &Model,
     member_forces: &[(ElemId, MemberForces)],
@@ -30,7 +25,6 @@ pub fn beam_group_overrides(
         if group.len() < 2 {
             continue;
         }
-        // 各分割部材の (要素, 内力, 長さ) を並び順に収集。欠けがあればスキップ。
         let mut parts: Vec<(&squid_n_core::model::ElementData, &MemberForces, f64)> =
             Vec::with_capacity(group.len());
         let mut ok = true;
@@ -74,7 +68,6 @@ pub fn beam_group_overrides(
             _ => None,
         };
 
-        // A 式: M0 = (Q1+Q2)・L/8（端部せん断と釣り合う等分布仮定）。
         let q1 = end_i.map(|f| f[1].abs()).unwrap_or(0.0);
         let q2 = end_j.map(|f| f[1].abs()).unwrap_or(0.0);
         let m0_a = (q1 + q2) * total / 8.0;
@@ -83,7 +76,6 @@ pub fn beam_group_overrides(
             .unwrap_or(0.0);
         let mc_a = m0_a - m_ends_avg;
 
-        // B 式: グループ中央位置を含む分割部材の、中央位置に最も近い評価行。
         let target_s = total / 2.0;
         let mut acc = 0.0;
         let mut mc_b: Option<f64> = None;

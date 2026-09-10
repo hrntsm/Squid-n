@@ -1,22 +1,12 @@
 //! コンクリート充填鋼管（CFT）柱の**N-M 相互作用（曲げを伴う終局耐力）**
-//! （コンクリート充填鋼管構造設計指針（CFT 指針）に基づく）。
+//! （CFT 指針に基づく）。
 //!
-//! # 位置付け
 //! [`super::cft`] が軸方向終局耐力（Ncu/Ntu）を扱うのに対し、本モジュールは軸方向力と
-//! 曲げモーメントを同時に受ける柱の終局曲げ耐力 `Mu(N)` を CFT 指針に基づき算定する。
+//! 曲げモーメントを同時に受ける柱の終局曲げ耐力 `Mu(N)` を算定する。
 //! - **短柱**（[`cft_short_column_mu`]）: 中立軸位置をパラメータとする耐力曲線を軸力 N に
 //!   整合させ、中立軸がコンクリート断面外の場合は Ncu1・Ntu との直線補間で求める。
 //! - **中柱・長柱**（[`cft_long_medium_column_mu`]）: 座屈による曲げ低減 R=(1−cNcu/Nk) を
 //!   考慮し、コンクリート放物線 cMu＋鋼管の曲げ耐力（低減後）を重ね合わせる。
-//!
-//! # 準拠・出典（要・原典照合、`dev_docs/specs/原典照合リスト.md`）
-//! - 日本建築学会「コンクリート充填鋼管構造設計指針」短柱の終局曲げ耐力。
-//!
-//! # 角形 sMu の第 2 項について（原典照合メモ）
-//! 抽出した原文では角形の `sMu = D·t·(D−t)·Fy + 2t·(cD−xn)·xn·Fc` と末尾が `Fc` だが、
-//! 第 2 項は中立軸 xn におけるウェブ 2 枚の全塑性モーメント
-//! `2·∫ t·Fy·|中立軸からの距離| = 2t·xn·(cD−xn)·Fy` に一致するため、`Fy` を採用する
-//! （`Fc` は OCR 誤りと判断。第 1 項 `D·t·(D−t)·Fy` はフランジ 2 枚の全塑性モーメント）。
 
 use std::f64::consts::PI;
 
@@ -104,18 +94,16 @@ pub fn cft_short_column_mu(inp: &CftBendingInput, n_design: f64, ncu1: f64, ntu:
         return 0.0;
     }
     let p_max = if inp.circular { PI } else { inp.c_d };
-    let (n_lo, m_lo) = nu_mu_at(inp, 0.0); // 圧縮縁ゼロ（最小軸力側）
-    let (n_hi, m_hi) = nu_mu_at(inp, p_max); // 全圧縮側（最大軸力側）
+    let (n_lo, m_lo) = nu_mu_at(inp, 0.0);
+    let (n_hi, m_hi) = nu_mu_at(inp, p_max);
 
     if n_design >= n_hi {
-        // 曲線上端 → (Ncu1, 0) を直線補間。
         if ncu1 > n_hi {
             (m_hi * (ncu1 - n_design) / (ncu1 - n_hi)).max(0.0)
         } else {
             0.0
         }
     } else if n_design <= n_lo {
-        // 曲線下端 → (−Ntu, 0) を直線補間。
         let n_tension = -ntu;
         if n_lo > n_tension {
             (m_lo * (n_design - n_tension) / (n_lo - n_tension)).max(0.0)
@@ -123,7 +111,6 @@ pub fn cft_short_column_mu(inp: &CftBendingInput, n_design: f64, ncu1: f64, ntu:
             0.0
         }
     } else {
-        // 曲線内: Nu(p)=n_design となる p を二分法で求める（Nu は p に単調増加）。
         let mut lo = 0.0;
         let mut hi = p_max;
         for _ in 0..80 {
@@ -190,20 +177,17 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
     if b.d_steel <= 0.0 || b.c_d <= 0.0 || b.t <= 0.0 || b.fc <= 0.0 || b.fy <= 0.0 {
         return 0.0;
     }
-    // 長柱の曲げ低減係数 R = (1 − cNcr/Nk)（CM=1）。
     let r_factor = if inp.nk.is_finite() && inp.nk > 0.0 {
         (1.0 - inp.c_ncr / inp.nk).max(0.0)
     } else {
-        1.0 // Nk=∞（座屈しない）は低減なし
+        1.0
     };
-    // 鋼管の曲げのみ終局耐力 sMu0。
     let s_mu0 = if b.circular {
         let r2 = (b.d_steel - b.t) / 2.0;
         4.0 * r2 * r2 * b.t * b.fy
     } else {
         b.b_steel * b.t * (b.d_steel - b.t) * b.fy + b.t * b.c_d * b.c_d / 2.0 * b.fy
     };
-    // 充填コンクリートの最大曲げ耐力 cMmax。
     let cb = 0.923 - 0.0045 * b.fc;
     let cmmax0 = if b.circular {
         b.fc * b.c_d.powi(3) / 12.0
@@ -216,7 +200,6 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
     } else {
         0.0
     };
-    // 充填コンクリートの曲げ耐力（軸力 cn における放物線）。
     let c_ncr09 = 0.9 * inp.c_ncr;
     let cmu = |cn: f64| -> f64 {
         if c_ncr09 <= 0.0 {
@@ -226,7 +209,6 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
     };
 
     if n_design < 0.0 {
-        // 引張側: (0, sMu0·R) → (−Ntu, 0) を直線補間。
         let mu0 = s_mu0 * r_factor;
         let n_tension = -inp.ntu;
         if 0.0 > n_tension {
@@ -235,10 +217,8 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
             0.0
         }
     } else if n_design <= inp.c_ncr {
-        // Case 1: コンクリート放物線 + 鋼管の曲げのみ耐力（低減後）。
         (cmu(n_design) + s_mu0 * r_factor).max(0.0)
     } else if inp.is_long && b.circular {
-        // Case 2（長柱・円形）: 鋼管長柱の θ パラメトリック。
         let r2 = (b.d_steel - b.t) / 2.0;
         let denom = 4.0 * r2 * b.t * b.fy;
         if denom <= 0.0 {
@@ -247,7 +227,6 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
         let theta = (PI / 2.0 + (n_design - inp.c_ncr) / denom).min(PI);
         (4.0 * r2 * r2 * b.t * theta.sin() * b.fy * r_factor).max(0.0)
     } else {
-        // Case 2（中柱、または角形長柱）: Ncu への線形低減。
         if inp.ncu_axial > inp.c_ncr {
             (s_mu0 * (1.0 - (n_design - inp.c_ncr) / (inp.ncu_axial - inp.c_ncr)) * r_factor)
                 .max(0.0)
@@ -256,7 +235,6 @@ pub fn cft_long_medium_column_mu(inp: &CftLongMediumInput, n_design: f64) -> f64
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

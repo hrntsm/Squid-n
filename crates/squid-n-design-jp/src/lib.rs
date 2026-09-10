@@ -371,7 +371,7 @@ pub struct DesignCtx {
     /// 「中央部の曲げモーメントが端部より大きい場合 C=1.0」判定に用いる。
     pub mid_moment_z: Option<f64>,
     /// 地震時短期の設計用せん断力 QD = min(QD1, QD2) の算定文脈（RC）。
-    /// None の場合は解析せん断力をそのまま用いる（従来動作）。
+    /// None の場合は解析せん断力をそのまま用いる。
     pub seismic_qd: Option<SeismicQd>,
     /// RC 柱のメカニズム ΣMy `(強軸=qy 用, 弱軸=qz 用)` [N·mm]。
     /// 各方向は `Some(ΣMy)`（梁 My 欠落時は端軸力の `Mu_i+Mu_j`）または
@@ -385,8 +385,7 @@ pub struct DesignCtx {
     /// S 造部材の断面検定属性（継手・スカラップ欠損率、横座屈長さ入力）。
     /// `Model::steel_design_attrs` 由来。None は欠損なし・lb 自動。
     pub steel_attr: Option<SteelDesignAttr>,
-    /// 鋼梁の許容曲げ応力度 fb の算定式（旧基準 / 新基準）。既定は `Old`
-    /// （従来挙動を維持）。
+    /// 鋼梁の許容曲げ応力度 fb の算定式（旧基準 / 新基準）。既定は `Old`。
     pub steel_fb_rule: SteelFbRule,
 }
 
@@ -475,7 +474,7 @@ pub fn beam_has_attached_slab(
 /// `λ = max(λ_y, λ_z)`（`λ_y = lk_y/i_y`、`λ_z = lk_z/i_z`）。
 /// - `i_y = √(max(Iy,0)/A)`、`i_z = √(max(Iz,0)/A)`（`iy`/`iz`/`area` は
 ///   呼び出し側が渡す断面二次モーメント・断面積。CFT 柱は鋼管単体の値を渡す
-///   ことで従来の「鋼管単体の i で評価」の流儀を維持できる）。
+///   ことで鋼管単体の i で評価する）。
 /// - `lk_y`/`lk_z` が `None` の場合は `length` を用いる（座屈長さ係数 K=1 相当）。
 /// - 各軸の `i` が極小、または対応する座屈長さが 0 以下の場合は、その軸の
 ///   λ を 0（座屈無視）とする。

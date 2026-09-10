@@ -664,7 +664,7 @@ fn test_girder_haunch_from_member_detail() {
         ((1_000.0 - 800.0) / 2.0 * 1_000.0 * 2.0 + (600.0 - 400.0) / 2.0 * 1_000.0) * 1e-6;
     assert!((g.formwork_m2 - (base_m2 + haunch_m2)).abs() < 1e-9);
 
-    // 付帯情報を持たない基礎梁は従来どおり（ハンチなし）。
+    // 付帯情報を持たない基礎梁はハンチなし。
     let fg = q
         .items
         .iter()

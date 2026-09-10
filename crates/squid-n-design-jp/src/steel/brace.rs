@@ -21,7 +21,6 @@ pub(crate) fn check_brace(
     term: LoadTerm,
 ) -> CheckResult {
     let area = nonzero(sec.area);
-    // 有効細長比 λ = max(lk_y/i_y, lk_z/i_z)（強軸・弱軸を個別の座屈長さで評価）。
     let lk_y_resolved = ctx.lk_y.unwrap_or(ctx.length);
     let lk_z_resolved = ctx.lk_z.unwrap_or(ctx.length);
     let buckling_note = if lk_y_resolved <= 1e-9 && lk_z_resolved <= 1e-9 {
@@ -36,10 +35,7 @@ pub(crate) fn check_brace(
         LoadTerm::Short => "短期",
     };
 
-    // 単一式（Axial）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     if forces.n < 0.0 {
-        // 圧縮: σc/fc（座屈を考慮した許容圧縮応力度、鋼構造設計規準 1973）。
         let sigma_c = forces.n.abs() / area;
         let fc_val = steel_fc(f, lambda, term);
         let ratio = sigma_c / safe_denom(fc_val);
@@ -59,7 +55,6 @@ pub(crate) fn check_brace(
             }],
         }
     } else {
-        // 引張: σt/ft（座屈を考慮しない単純検定）。
         let sigma_t = forces.n / area;
         let ft_val = steel_ft(f, term);
         let ratio = sigma_t / safe_denom(ft_val);

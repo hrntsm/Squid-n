@@ -1,10 +1,4 @@
 //! 部材ランク（FA..FD）の集約と層 Ds の自動分類。
-//!
-//! 個々の部材ランクの判定は各判定モジュール
-//! （鋼: [`crate::secondary::width_thickness::s_member_rank_by_kihon`]、
-//! SRC: [`crate::secondary::src_rank`]、RC: 告示の部材種別表）が担い、
-//! 本モジュールは複数部材ランクの集約（[`worst_rank`]）と
-//! 層 Ds の算定（[`story_ds`]）のみを持つ。
 use super::holding_capacity::{ds_value, FrameType, MemberRank};
 use squid_n_solver::nonlinear::pushover::MechanismType;
 
@@ -47,10 +41,8 @@ pub fn worst_rank(ranks: &[MemberRank]) -> Option<MemberRank> {
 ///    - [`MechanismType::Overall`] は補正なし。
 /// 3. 補正後のランクと `frame` を [`ds_value`] に渡して返す。
 pub fn story_ds(ranks: &[MemberRank], frame: FrameType, mechanism: &MechanismType) -> f64 {
-    // 代表ランク: ranks が空なら FA とみなす
     let worst_index = ranks.iter().map(|r| rank_index(*r)).max().unwrap_or(0);
 
-    // 崩壊機構補正: StoryCollapse または Partial → 1段階不利
     let corrected_index = match mechanism {
         MechanismType::StoryCollapse { .. } | MechanismType::Partial => (worst_index + 1).min(3),
         MechanismType::Overall => worst_index,

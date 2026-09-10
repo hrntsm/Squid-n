@@ -15,9 +15,7 @@ use super::{nonzero, safe_denom, section_modulus, shape_of, shear_area_2d, Shape
 
 /// 鉄骨造柱の断面検定（鋼構造設計規準）。
 ///
-/// 軸力+二軸曲げ: `σ/f + σbX/fbX + σbY/fbY ≤ 1.0`
-/// （円形鋼管は `σb=√(mz²+my²)/Z` に一本化）。
-/// せん断は von Mises 型: `max(√(σ²+3τ²)/ft, τ/fs)`。
+/// 軸力＋二軸曲げの組合せと von Mises 型せん断合成の検定比の最大値を検定比とする。
 pub(crate) fn check_column(
     forces: &MemberForcesAt,
     sec: &Section,
@@ -31,7 +29,6 @@ pub(crate) fn check_column(
     let area = nonzero(sec.area);
     let z_strong = nonzero(section_modulus(sec.iy, h / 2.0));
     let z_weak = nonzero(section_modulus(sec.iz, b / 2.0));
-    // 強軸/弱軸曲げ応力度 σbX = |Mz|/Z強軸、σbY = |My|/Z弱軸。
     let sigma_bx = forces.mz.abs() / z_strong;
     let sigma_by = forces.my.abs() / z_weak;
 
@@ -40,7 +37,6 @@ pub(crate) fn check_column(
     let ft_val = steel_ft(f, term);
     let fs_val = steel_fs(f, term);
 
-    // 有効細長比 λ = max(lk_y/i_y, lk_z/i_z)（強軸・弱軸を個別の座屈長さで評価）。
     let lk_y_resolved = ctx.lk_y.unwrap_or(ctx.length);
     let lk_z_resolved = ctx.lk_z.unwrap_or(ctx.length);
     let buckling_note = if lk_y_resolved <= 1e-9 && lk_z_resolved <= 1e-9 {
@@ -49,13 +45,8 @@ pub(crate) fn check_column(
         ""
     };
     let lambda = effective_slenderness(sec.iy, sec.iz, area, ctx.length, ctx.lk_y, ctx.lk_z);
-    // 座屈を考慮した許容圧縮応力度 fc（鋼構造設計規準 1973、λ に応じた低減）。
     let fc_val = steel_fc(f, lambda, term);
 
-    // 強軸 fb（H形のみ横座屈考慮。lb は柱の階高 = ctx.length。旧基準/新基準の
-    // 切替は梁と同様 ctx.steel_fb_rule による）。修正係数 C は梁と同様
-    // ctx.end_moments_z/mid_moment_z から求める（柱も端部モーメント比により
-    // fb1 が変化する。SteelDesignAttr.c_direct による直接入力にも対応）。
     let c = steel_c_factor(ctx, false);
     let fb_strong = match shape {
         ShapeCategory::H => match ctx.steel_fb_rule {
@@ -80,11 +71,9 @@ pub(crate) fn check_column(
     };
     let fb_weak = ft_val;
 
-    // 円形鋼管は二軸曲げを合成した σb に一本化: σb = √(mz²+my²)/Z強軸。
     let sigma_b_pipe = (forces.mz.powi(2) + forces.my.powi(2)).sqrt() / z_strong;
 
     let (axial_stress, ratio_axial_bend, axial_basis) = if forces.n < 0.0 {
-        // 圧縮+曲げ: σc/fc(座屈考慮) + ΣσB/fb ≤ 1.0。
         let sigma_c = forces.n.abs() / area;
         let ratio = match shape {
             ShapeCategory::Pipe => {
@@ -98,7 +87,6 @@ pub(crate) fn check_column(
         };
         (sigma_c, ratio, "圧縮+曲げ: σc/fc(座屈考慮)+ΣσB/fb")
     } else {
-        // 引張+曲げ: σt/ft + ΣσB/fb ≤ 1.0。
         let sigma_t = forces.n / area;
         let ratio = match shape {
             ShapeCategory::Pipe => {
@@ -113,9 +101,6 @@ pub(crate) fn check_column(
         (sigma_t, ratio, "引張+曲げ: σt/ft+ΣσB/fb")
     };
 
-    // せん断: せん断有効断面積は梁と共用の単一定義（`shear_area_2d`。
-    // H形はウェブ内法 tw·(H−2tf)、角形は角部円弧考慮）。H形・角形は
-    // 強軸 τ=Qy/Ay、円形（Ay=Az）・その他は合成 τ=√(qy²+qz²)/Ay。
     let (as_y, _as_z) = shear_area_2d(shape, sec, tf, tw);
     let tau = match shape {
         ShapeCategory::H | ShapeCategory::Box => forces.qy.abs() / safe_denom(as_y),
@@ -128,7 +113,6 @@ pub(crate) fn check_column(
         ShapeCategory::Pipe => axial_stress + sigma_b_pipe,
         _ => axial_stress + sigma_bx + sigma_by,
     };
-    // von Mises 型合成検定: max(√(σ²+3τ²)/ft, τ/fs)。
     let ratio_shear = ((sigma_total.powi(2) + 3.0 * tau.powi(2)).sqrt() / safe_denom(ft_val))
         .max(tau / safe_denom(fs_val));
 
@@ -140,19 +124,15 @@ pub(crate) fn check_column(
         "鋼構造設計規準 {} 柱: {}{}, せん断 von Mises",
         term_label, axial_basis, buckling_note
     );
-    // AxialBending 固有: 応力度・許容応力度（座屈考慮 fc・横座屈考慮 fbX・
-    // fbY）・細長比 λ・軸+曲げ検定比。
     let axial_bending_detail = format!(
         "σax={:.4} N/mm², σbX={:.4} N/mm², σbY={:.4} N/mm², fc={:.4} N/mm², fbX={:.4} N/mm², \
 fbY={:.4} N/mm², λ={:.3}, 軸曲げ比={:.4}",
         axial_stress, sigma_bx, sigma_by, fc_val, fb_strong, fb_weak, lambda, ratio_axial_bend,
     );
-    // Shear 固有: せん断応力度・許容せん断応力度・せん断（von Mises）検定比。
     let shear_detail = format!(
         "τ={:.4} N/mm², fs={:.4} N/mm², せん断比={:.4}",
         tau, fs_val, ratio_shear
     );
-    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![
@@ -174,7 +154,6 @@ fbY={:.4} N/mm², λ={:.3}, 軸曲げ比={:.4}",
         components,
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,7 +379,7 @@ mod tests {
     // -------------------------------------------------------------
 
     /// lk_y=lk_z=None（=length 共通）の場合、λ=max(lk_y/i_y, lk_z/i_z) が
-    /// 従来の λ=length/i_min（i_min=√(min(Iy,Iz)/A)）と一致することを、
+    /// λ=length/i_min（i_min=√(min(Iy,Iz)/A)）と一致することを、
     /// fc（λ に応じて単調減少）を介して確認する。
     #[test]
     fn test_column_lambda_both_axes_none_matches_legacy_i_min() {
@@ -488,8 +467,8 @@ mod tests {
     // 新基準 fb（AIJ-ASD19）の柱への配線
     // -------------------------------------------------------------
 
-    /// steel_fb_rule 未指定（既定 Old）では従来値（steel_fb_h・
-    /// steel_i_t 直接利用）と一致する（柱の Old 分岐は無変更）。
+    /// steel_fb_rule 未指定（既定 Old）では steel_fb_h・
+    /// steel_i_t 直接利用と一致する（柱の Old 分岐は無変更）。
     #[test]
     fn test_column_check_fb_rule_default_matches_old() {
         let sec = h_section(400.0, 200.0, 8.0, 13.0);

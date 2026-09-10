@@ -1,4 +1,4 @@
-//! 偏心率の厳密計算コア（武藤 D 値法の閉形式）。仕様 `dev_docs/specs/P7_二次設計.md` §5.1–5.2。
+//! 偏心率の厳密計算コア（武藤 D 値法の閉形式）。
 //!
 //! - [`ColumnStiffness`] — 柱1本の平面位置と方向別水平剛性（D値）。
 //! - [`d_value`] — 武藤 D 値の閉形式。
@@ -17,7 +17,7 @@ pub struct ColumnStiffness {
     pub dy: f64,
 }
 
-/// 武藤 D 値の閉形式（仕様 §5.1）。加力方向ごとに呼ぶ。
+/// 武藤 D 値の閉形式。加力方向ごとに呼ぶ。
 ///
 /// - `e`: ヤング係数 [N/mm²]
 /// - `ic`: 加力方向の柱断面二次モーメント [mm⁴]
@@ -49,7 +49,7 @@ pub fn d_value(e: f64, ic: f64, h: f64, sum_beam_stiffness_ratio: f64, first_sto
     a * kc0
 }
 
-/// 剛心座標 [Xs, Ys]。`Xs = Σ(Dy·x)/ΣDy`, `Ys = Σ(Dx·y)/ΣDx`（仕様 §5.1）。
+/// 剛心座標 [Xs, Ys]。`Xs = Σ(Dy·x)/ΣDy`, `Ys = Σ(Dx·y)/ΣDx`。
 pub fn center_of_rigidity(cols: &[ColumnStiffness]) -> [f64; 2] {
     let sum_dy: f64 = cols.iter().map(|c| c.dy).sum();
     let sum_dx: f64 = cols.iter().map(|c| c.dx).sum();
@@ -85,7 +85,7 @@ pub struct Eccentricity {
     pub re_y: f64,
 }
 
-/// 剛心・重心・柱剛性から偏心率を算定（仕様 §5.2）。
+/// 剛心・重心・柱剛性から偏心率を算定。
 pub fn eccentricity(
     cols: &[ColumnStiffness],
     center_of_mass: [f64; 2],
@@ -99,7 +99,6 @@ pub fn eccentricity(
     let sum_dx: f64 = cols.iter().map(|c| c.dx).sum();
     let sum_dy: f64 = cols.iter().map(|c| c.dy).sum();
 
-    // 剛心まわりのねじり剛性。x̄, ȳ は剛心からの距離。
     let kr: f64 = cols
         .iter()
         .map(|c| {

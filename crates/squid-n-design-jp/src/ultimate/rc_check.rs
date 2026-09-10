@@ -73,10 +73,6 @@ fn check_member(
     if fc <= 0.0 || b <= 0.0 || d <= 0.0 {
         return None;
     }
-    // 部材別 Rp（プッシュオーバー応答からの直接反映）が与えられていれば UI 一律 Rp を
-    // 置き換える。以降 opts.rp を参照する全経路（ν・cotφ・μ・tanθ）に効く。
-    // せん断補強筋の材質は断面（`Section::shear_rebar_material`）が持つため、
-    // 部材ごとに解決して opts へ載せ替える。
     let opts_owned = UltimateShearOptions {
         rp: demand.rp.map(|rp| rp.max(0.0)).unwrap_or(opts.rp),
         shear_grade: model
@@ -87,12 +83,10 @@ fn check_member(
     };
     let opts = &opts_owned;
     let kind = MemberKind::of_element(elem, model);
-    // 主筋の降伏点は断面の主筋材料から解決する。未割当の断面は算定できない。
     let sigma_y =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))?;
     let l_clear = clear_span(elem, model);
 
-    // 断面諸元（強軸＝せい方向主筋 main_x）。dt/d_eff は core の単一規約。
     let dt = rebar_tension_dt(rebar);
     let d_eff = d - dt;
     if d_eff <= 0.0 {
@@ -104,7 +98,6 @@ fn check_member(
     let pw = pw_ratio(&rebar.shear, b);
     let n_axial = demand.n_axial;
 
-    // 曲げ終局強度 Mu（柱は軸力を考慮した at 式、梁は軸力なし）。
     let cap = RcCapacityInput {
         b,
         d,
@@ -122,8 +115,6 @@ fn check_member(
         _ => rc_mu_simple(&cap),
     };
 
-    // 設計用せん断力 Qmu。プッシュオーバー応答の設計用せん断が与えられていれば
-    // それを直接反映（上限強度倍率を乗じる）、なければ両端ヒンジ略算 2·Mu/内法。
     let qmu = match demand.shear {
         Some(qm) => opts.upper_strength_factor * qm.abs(),
         None => {
@@ -135,7 +126,6 @@ fn check_member(
         }
     };
 
-    // 終局せん断強度 Qsu（塑性理論式）または Vu（靭性指針式）。
     let qsu = member_shear_strength(
         b,
         d,
@@ -149,9 +139,7 @@ fn check_member(
         opts,
     );
 
-    // 付着割裂耐力 Qbu。
     let (qbu, tau_bu) = if opts.include_bond {
-        // 引張側主筋本数（対称配筋の半分、外側一列を代表）。
         let n_tension = (rebar.main_x.count as f64 / 2.0).max(1.0);
         let tau_bu = bond_reliable_strength_deformed(&BondStrengthInput {
             fc,
@@ -166,7 +154,6 @@ fn check_member(
             top_bar: false,
         });
         let sum_phi = n_tension * std::f64::consts::PI * rebar.main_x.dia;
-        // 塑性理論式は付着割裂耐力 Qbu、靭性指針式は付着考慮せん断信頼強度 Vbu を用いる。
         let qbu = match opts.shear_method {
             ShearMethod::Plastic => rc_shear_qbu_bond(&RcBondSplitInput {
                 b,
@@ -188,7 +175,6 @@ fn check_member(
                     je: jt,
                     tau_bu,
                     sum_phi1: sum_phi,
-                    // モデルは 1 段配筋を仮定するため 2 段目主筋（τbu2・Σφ2）は 0。
                     tau_bu2: 0.0,
                     sum_phi2: 0.0,
                     s: rebar.shear.pitch,
@@ -197,7 +183,6 @@ fn check_member(
                     fc,
                     rp: opts.rp,
                     tensile_axial: n_axial < 0.0,
-                    // Rp>0（ヒンジ回転を指定）を降伏ヒンジ計画部材とみなす（6.8.16b）。
                     yield_hinge: opts.rp > 0.0,
                     lightweight: opts.lightweight,
                 })
@@ -208,10 +193,6 @@ fn check_member(
         (0.0, 0.0)
     };
 
-    // 梁の余裕率は分子から長期せん断力 QL を控除する
-    // （(Qsu−QL)/Qmu・(Qbu−QL)/Qmu ≥ 1.0。QL 未指定は 0 扱い＝従来動作）。
-    // せん断補強筋が MK785/SPR785/SPR685 の場合は QL=Q0（長期荷重による
-    // 単純梁せん断力）と読み替える（各製品の技術評定の規定。Q0 未算定時は QL）。
     let use_q_simple = opts
         .shear_grade
         .as_deref()
@@ -244,8 +225,6 @@ fn check_member(
         f64::INFINITY
     };
 
-    // 2 軸せん断余裕度（柱のみ、指定時）。弱軸（main_y、b↔D 入替）の Qsu/Qmu を
-    // 算定し、相互作用式 1/((Qmx/Qsux)^2+(Qmy/Qsuy)^2)^(1/2)（RC は α=2.0）で合成する。
     let biaxial_shear_margin = if kind == MemberKind::Column && opts.biaxial_shear {
         let (qsu_y, qmu_y_hinge) = column_axis_shear(
             d,
@@ -259,8 +238,6 @@ fn check_member(
             l_clear,
             opts,
         );
-        // 弱軸設計用せん断 Qmuy。プッシュオーバー応答の弱軸せん断が与えられていれば
-        // それを直接反映（上限強度倍率を乗じる）、なければ両端ヒンジ略算 2·Muy/内法。
         let qmu_y = match demand.shear_weak {
             Some(qmy) => opts.upper_strength_factor * qmy.abs(),
             None => qmu_y_hinge,
@@ -276,8 +253,6 @@ fn check_member(
         None
     };
 
-    // 2 軸曲げ余裕度（柱のみ、指定時）。強軸 Mux（=mu）・弱軸 Muy（main_y, b↔D 入替）の
-    // 終局曲げ強度と設計用曲げ需要 Mmx=|mz|, Mmy=|my| を相互作用式で合成する。
     let biaxial_bending_margin = if kind == MemberKind::Column && opts.biaxial_bending {
         let dt_y = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
         let at_y = bar_set_area(&rebar.main_y) / 2.0;
@@ -308,12 +283,10 @@ fn check_member(
         None
     };
 
-    // せん断判定は 2 軸指定時は 2 軸余裕度、そうでなければ強軸せん断余裕度を用いる。
     let effective_shear_ok = match biaxial_shear_margin {
         Some(m) => m >= 1.0,
         None => shear_margin >= 1.0,
     };
-    // 2 軸曲げ指定時は曲げ余裕度も判定に加える。
     let bending_ok = biaxial_bending_margin.map(|m| m >= 1.0).unwrap_or(true);
     let ok = effective_shear_ok && bond_margin >= 1.0 && bending_ok;
 

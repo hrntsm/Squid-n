@@ -184,9 +184,7 @@ pub fn run_member_design_checks(
             .and_then(|map| map.get(elem_id))
             .map(|mf_long| SeismicQd {
                 long_at: mf_long.at.clone(),
-                // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。QD2 用。
                 n_factor: 1.5,
-                // メカニズム側 n_mech（マニュアル n2）。ルート連動前は 1.0。
                 n_mechanism: 1.0,
                 q_simple: options
                     .q_simple_by_elem
@@ -195,8 +193,6 @@ pub fn run_member_design_checks(
                 method: options.qd_method,
             });
 
-        // RC 柱のメカニズム ΣMy（梁降伏/柱降伏）。地震時短期かつ長期内力が
-        // あるときだけ算定する。部分スリット壁の強制柱ヒンジはモデル未対応。
         let column_sum_my = if kind == MemberKind::Column && seismic_qd.is_some() {
             let n_at = |mf: &MemberForces, end: usize| {
                 let target = if end == 0 { 0.0 } else { 1.0 };
@@ -220,7 +216,7 @@ pub fn run_member_design_checks(
                 n_long_j,
                 n_combo_i,
                 n_combo_j,
-                1.0, // ルート連動前の n（ルート2-3 なら 2.0）
+                1.0,
             )
         } else {
             None

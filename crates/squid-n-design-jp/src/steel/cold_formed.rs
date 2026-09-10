@@ -37,27 +37,10 @@ pub struct ColdFormedInput {
 }
 
 /// 冷間成形角形鋼管柱の柱梁耐力比チェック
-/// （2008年版 冷間成形角形鋼管の柱に用いる角形鋼管設計・施工マニュアル）。
+/// （冷間成形角形鋼管マニュアル）。
 ///
-/// ## 柱の耐力低減係数 ν
-/// - `n ≤ 0.5`: `ν = 1 − 4n²/3`
-/// - `n > 0.5`: `ν = 4(1 − n)/3`
-///
-/// ここで `n` は軸力比の絶対値。`n ≥ 1`（軸力が全塑性軸耐力以上）の場合は
-/// 柱の曲げ耐力に余裕がないとみなし `ν = 0` にクランプする。
-///
-/// ## 柱梁耐力比
-/// `ΣMpc = νu・Fu・Zpu + νl・Fl・Zpl`
-///
-/// 要求値 = `min(1.5・ΣMpb, 1.3・Mpp)`。`Mpp ≤ 0`（未評価・対象外）の場合は
-/// `1.5・ΣMpb` のみを要求値とする。
-///
-/// 検定比 = `要求値 / ΣMpc`（1.0 以下で OK）。
-///
-/// **注記**: 同マニュアルでは、この検定を満たさない（NG の）場合でも、他の多くの
-/// 保有耐力接合検定のように部材耐力を直接低減する再計算は行わない
-/// （柱梁耐力比が確保できない状況として設計者に警告する位置付け）。
-/// 本関数もその方針に従い、`ok=false` を返すのみで耐力の再計算は行わない。
+/// 柱の耐力低減係数 ν と柱梁耐力比（要求値/ΣMpc）を算定する。
+/// NG の場合も耐力の再計算は行わず、`ok=false` を返すのみ。
 pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     let nu_upper = nu_factor(inp.n_upper);
     let nu_lower = nu_factor(inp.n_lower);
@@ -79,13 +62,9 @@ pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     };
     let basis =
         "2008年版冷間成形角形鋼管設計・施工マニュアル 柱梁耐力比（NG時も耐力低減なし）".to_string();
-    // 単一式（AxialBending）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),
-        // 柱の軸力低減耐力νと梁の全塑性モーメント和の比較（柱梁耐力比）のため
-        // AxialBending（軸力＋曲げの複合）に分類する。
         components: vec![CheckComponent {
             kind: CheckKind::AxialBending,
             ratio,

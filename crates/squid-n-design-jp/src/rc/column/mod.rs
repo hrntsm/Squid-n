@@ -1,8 +1,4 @@
 //! 鉄筋コンクリート造柱の断面検定（RC 規準14条: 軸力・軸力+曲げ・せん断）。
-//!
-//! 軸力（M=0）・軸力＋二軸曲げ・二方向せん断を検定する。矩形柱は強軸・弱軸
-//! それぞれの N-M 相関曲線を構成して二軸曲げを線形和で評価し、円形柱は
-//! 等価矩形断面に置換して同じ手順を適用する。
 
 use super::{
     bar_set_area, circle_axis_props, effective_damage_control, high_strength_w_ft,
@@ -16,15 +12,10 @@ use squid_n_core::section_shape::SectionShape;
 
 mod nm_interaction;
 
-use nm_interaction::*;
-// N-M 相関曲線の補間は SRC 柱（`crate::srrc`）とも共通利用する。
 pub(crate) use nm_interaction::interp_ma;
+use nm_interaction::*;
 
-// ============================================================================
-// DesignCheck 実装（柱）
-// ============================================================================
-
-/// 柱の断面検定（RC 規準 14条）。軸力・軸力+二軸曲げ・二方向せん断を扱う。
+/// 柱の断面検定（RC 規準 14条）。
 pub(crate) fn column_check(
     forces: &MemberForcesAt,
     sec: &Section,
@@ -34,8 +25,6 @@ pub(crate) fn column_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋・せん断補強筋の材質は**断面が持つ材料**の名前で決まる。
-    // 未割当の断面は [`crate::RcDesign::check`] が検定前に弾く。
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
     let mut allow = rc_allow(
         fc_raw,
@@ -44,19 +33,15 @@ pub(crate) fn column_check(
         long_term,
     );
 
-    // 圧縮を正とする設計軸力（forces.n は引張正・圧縮負）。
     let n_design = -forces.n;
 
     if let SectionShape::RcCircle { d, rebar } = shape {
-        // 高強度せん断補強筋のときだけ Some とする（普通強度を高強度品の表で
-        // 評価すると w_ft を過大評価し危険側になるため）。
         let shear_grade = ctx
             .shear_rebar_material
             .as_ref()
             .map(|m| m.name.as_str())
             .filter(|g| is_high_strength_shear_grade(g));
         if let Some(g) = shear_grade {
-            // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
             allow.w_ft = high_strength_w_ft(g, long_term);
         }
         let damage_control =
@@ -101,8 +86,6 @@ pub(crate) fn column_check(
             shear_grade,
             fc_raw,
         );
-        // 地震時短期は設計用せん断力 QD = min(n_mech·ΣMy/h′, QL+n・QE) を用いる。
-        // ΣMy はメカニズム判定結果を優先。未配線・方向欠落時は等価矩形の 2·Mu で代替。
         let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
             let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
                 b: gross_area / d_full,
@@ -148,18 +131,14 @@ pub(crate) fn column_check(
         let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
         let basis = "RC 規準14条（円形柱、等価矩形近似）".to_string();
-        // AxialBending 固有: 軸耐力・作用軸力・等価矩形近似の曲げ耐力・作用モーメント。
         let axial_bending_detail = format!(
             "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm",
             na, n_design, ma, forces.mz, forces.my,
         );
-        // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比。
         let shear_detail = format!(
             "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw={:.5}",
             qay, qaz, alpha_y, alpha_z, axis.props.pw,
         );
-        // 共通: 軸+曲げ（N-M 相関曲線）・せん断の双方で用いる断面諸元
-        // （円形柱は強軸・弱軸で axis.props を共有するため）。
         let mut detail = format!("at={:.1} mm², d={:.1} mm", axis.props.at, axis.props.d);
 
         let mut components = vec![
@@ -205,29 +184,24 @@ pub(crate) fn column_check(
         SectionShape::RcRect { rebar, .. } => rebar,
         _ => unreachable!(),
     };
-    // 高強度せん断補強筋のときだけ Some とする（普通強度を高強度品の表で
-    // 評価すると w_ft を過大評価し危険側になるため）。
     let shear_grade = ctx
         .shear_rebar_material
         .as_ref()
         .map(|m| m.name.as_str())
         .filter(|g| is_high_strength_shear_grade(g));
     if let Some(g) = shear_grade {
-        // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
         allow.w_ft = high_strength_w_ft(g, long_term);
     }
     let damage_control =
         effective_damage_control(ctx.rc_damage_control, shear_grade, mat.concrete_class);
 
-    let props_z = rect_axis_props_strong(sec, rebar); // mz 方向
-    let props_y = rect_axis_props_weak(sec, rebar); // my 方向
+    let props_z = rect_axis_props_strong(sec, rebar);
+    let props_y = rect_axis_props_weak(sec, rebar);
     let ft_z = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
     let ft_y = rebar_allowable_tension(grade, rebar.main_y.dia, long_term);
 
     let gross_area = sec.width * sec.depth;
     let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    // NA 用の ft は D29 以上の低減を保守的に反映するため、両方向のうち
-    // 大径側（許容応力度が低い方）を採用する。
     let ft_axial =
         rebar_allowable_tension(grade, rebar.main_x.dia.max(rebar.main_y.dia), long_term);
     let na = column_axial_capacity(gross_area, as_total, allow.fc, ft_axial, allow.n_ratio);
@@ -281,9 +255,6 @@ pub(crate) fn column_check(
         shear_grade,
         fc_raw,
     );
-    // 地震時短期は設計用せん断力 QD = min(QD1, QD2) を用いる
-    // （QD1 = n_mech·ΣMy/h′、QD2 = QL + n・QE。ctx.seismic_qd が None なら解析値）。
-    // ΣMy は崩壊メカニズム判定の結果を優先し、未配線・方向欠落時は 2·Mu で代替する。
     let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
         let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
         let mu_of = |b: f64, d_full: f64, props: &AxisProps| {
@@ -333,18 +304,14 @@ pub(crate) fn column_check(
     let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
     let basis = "RC 規準14条（柱、軸力+二軸曲げ+せん断）".to_string();
-    // AxialBending 固有: 軸耐力・作用軸力・強軸/弱軸それぞれの曲げ耐力・作用モーメント。
     let axial_bending_detail = format!(
         "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm",
         na, n_design, ma_z, ma_y, forces.mz, forces.my,
     );
-    // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比
-    // （矩形柱は強軸・弱軸で axis_z/axis_y が別断面諸元のため、pw も方向別）。
     let shear_detail = format!(
         "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw_z={:.5}, pw_y={:.5}",
         qay, qaz, alpha_y, alpha_z, axis_z.props.pw, axis_y.props.pw
     );
-    // 矩形柱は強軸・弱軸で断面諸元を共有しないため共通 detail は空文字列とする。
     let mut detail = String::new();
 
     let mut components = vec![
@@ -386,10 +353,6 @@ pub(crate) fn column_check(
         components,
     }
 }
-
-// ============================================================================
-// テスト（柱の軸力・軸力+曲げ・せん断、RcDesign 経由の柱検定）
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

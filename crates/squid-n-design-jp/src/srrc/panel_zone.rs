@@ -57,11 +57,7 @@ pub struct SrcPanelInput {
 ///   [`crate::rc::concrete_allowable_shear`]）。
 /// - `jδ`: 接合部形状係数。十字形=3、T字形・ト字形=2、L字形=1。
 ///
-/// **原典照合済み（2026-07-11）**: 原典図（ユーザー提供）により、
-/// 左辺は**全体積 `cV`**（有効体積 `cVe` ではない）、右辺係数は **`h′/h`**
-/// （内法階高/階高）であることを確認し、実装を修正した（従来は `cVe`・`h/h′`）。
-/// また「3fs」の「3」が接合部形状係数 jδ であること、jδ の値
-/// （十字型=3・ト字形/T字形=2・L字形=1）を SRC パネルの原典 PDF の表で確認した。
+/// 左辺は全体積 `cV`（有効体積 `cVe` ではない）、右辺係数は `h′/h`（内法階高/階高）。
 ///
 /// ## 諸元
 /// - 梁が SRC/RC の場合（`beam_is_steel=false`）: `cV = Cb・mBd・mCd`
@@ -79,7 +75,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         JointShape::Corner => 1.0,
     };
 
-    // cV = Cb・m_bd・mCd（全体積。m_bd に mBd〔SRC/RC〕か sBd〔S〕が入る）。
     let cv = inp.col_width * inp.m_bd * inp.m_cd;
 
     let denom = inp.col_width * inp.m_cd;
@@ -92,7 +87,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
     let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
 
     let ma = cv * j_delta * fs * (1.0 + beta);
-    // 設計用モーメント Md = (h′/h)・(BM1+BM2)（原典図の右辺係数、2026-07-11）。
     let md = inp.h_ratio * inp.sum_beam_moments;
 
     let ratio = if ma > 0.0 {
@@ -111,8 +105,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         "SRC規準 柱梁接合部（パネル）せん断検定 {} ({})",
         shape_label, term_label
     );
-    // 単一式（Shear）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),

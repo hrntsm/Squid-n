@@ -1,20 +1,9 @@
 //! RC耐震壁の開口低減・複数開口の等価開口置換・耐震壁判定
 //! （RC規準（耐震壁）準拠）。
 //!
-//! 壁の面内剛性を評価する際に、開口の大きさに応じて剛性を低減するための
 //! 開口周比・開口低減率、複数の開口を1つの等価開口に置換する計算、および
 //! 壁を耐震壁として扱ってよいかどうかの判定条件をまとめる。
-//!
-//! 壁要素の開口寸法を保持するデータモデルは本実装時点では未整備のため、
-//! 本モジュールは入力を受け取る純関数として提供するに留める。モデルに
-//! 開口情報（開口高さ・開口長さ）が追加され次第、呼び出し側からそのまま
-//! 利用できる。
-//!
-//! なお [`crate::rc::wall::rc_wall_shear_check`] が持つ開口低減係数
-//! （`r = min(γ1, γ2, γ3)`）は RC規準18条（耐震壁のせん断耐力検定）の
-//! 規定であり、本モジュールの剛性計算用の低減率 `r = 1 − 1.25・r0` とは
-//! 準拠する規定も算定目的（耐力 vs 剛性）も異なる別物
-//! である。両者は数式が異なるため混同・統合しないこと。
+//! 本モジュールの剛性計算用の低減率と耐力検定用の低減率は別物である。
 
 /// 開口周比 r0 = √(h0・l0 / (h・l))（RC規準）。
 ///
@@ -24,7 +13,6 @@
 /// `h`,`l` のいずれかが 0 以下（壁寸法が未設定など）の場合は 0 除算を避ける
 /// ため 0.0 を返す。
 pub fn opening_ratio_r0(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
-    // 本体は Layer 0 の squid_n_core へ集約（壁要素の剛性低減と同一定義にする）。
     squid_n_core::rc_wall_capacity::wall_opening_ratio_r0(h0, l0, h, l)
 }
 
@@ -33,7 +21,6 @@ pub fn opening_ratio_r0(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
 /// `r0`（[`opening_ratio_r0`]）が大きい場合、計算上 r が負になり得るため
 /// 安全側として 0 に下限クランプする。開口がない場合（h0=l0=0）は r=1。
 pub fn opening_reduction_r(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
-    // 本体は Layer 0 の squid_n_core へ集約（壁要素の剛性低減と同一定義にする）。
     squid_n_core::rc_wall_capacity::wall_opening_reduction_stiffness(opening_ratio_r0(h0, l0, h, l))
 }
 
@@ -85,7 +72,6 @@ pub struct WallJudgeInput {
 pub fn is_seismic_wall(input: &WallJudgeInput) -> bool {
     !input.has_slit && input.thickness >= 120.0 && input.r0 <= 0.4
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

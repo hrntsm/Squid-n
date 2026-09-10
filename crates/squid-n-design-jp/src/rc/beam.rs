@@ -1,7 +1,5 @@
 //! 鉄筋コンクリート造梁の断面検定（RC 規準13条: 曲げ・せん断・付着）。
-//!
-//! 強軸曲げ（`mz`）とそれに対のせん断（`qy`）のみを検定する（RC 規準の
-//! 梁断面検定の対象と一致）。付着の検定は [`super::bond`] へ委譲する。
+//! 強軸曲げ（`mz`）とそれに対のせん断（`qy`）のみを検定する。
 
 use super::{
     circle_axis_props, effective_damage_control, high_strength_w_ft, is_high_strength_shear_grade,
@@ -15,10 +13,6 @@ use crate::{
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
-// ============================================================================
-// 梁の曲げ耐力（RC 規準 13条）
-// ============================================================================
-
 pub(crate) struct BeamMoment {
     /// 引張鉄筋支配の許容曲げモーメント MA_t = at・ft・j。
     pub(crate) ma_t: f64,
@@ -29,19 +23,6 @@ pub(crate) struct BeamMoment {
 }
 
 /// 梁の許容曲げモーメント MA を算定する（RC 規準 13条）。
-///
-/// `MA_t = at・ft・j` は引張鉄筋が ft に達する状態（pt が釣合鉄筋比以下）の
-/// 許容曲げモーメント。`MA_c` は複筋断面の弾性（全ひび割れ断面）解析により
-/// 圧縮縁コンクリート応力度が fc に達するモーメントで、pt が釣合鉄筋比を
-/// 超える（圧縮側支配）場合に効く。中立軸位置 xn を
-/// `b・xn²/2 + (n-1)・ac・(xn-dc) = n・at・(d-xn)`（dc=dt）から解き、
-/// `Icr = b・xn³/3 + (n-1)・ac・(xn-dc)² + n・at・(d-xn)²`、
-/// `MA_c = fc・Icr/xn` とする。
-///
-/// `MA = min(MA_t, MA_c)` をとることで、RC 規準の
-/// 「pt <= pt_balance なら C1（引張支配）、それを超えれば C2（圧縮支配）」
-/// という分岐と等価な結果が得られる（過小配筋では MA_c が大きく MA_t が支配、
-/// 過大配筋では逆になる）。
 pub(crate) fn beam_moment_capacity(
     props: &AxisProps,
     ft: f64,
@@ -86,10 +67,6 @@ pub(crate) fn beam_moment_capacity(
     }
 }
 
-// ============================================================================
-// DesignCheck 実装（梁）
-// ============================================================================
-
 /// 梁の断面検定（RC 規準 13条）。強軸曲げ mz とそれに対のせん断 qy のみを扱う。
 pub(crate) fn beam_check(
     forces: &MemberForcesAt,
@@ -105,8 +82,6 @@ pub(crate) fn beam_check(
         _ => unreachable!(),
     };
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋・せん断補強筋の材質は**断面が持つ材料**の名前で決まる。
-    // 未割当の断面は [`crate::RcDesign::check`] が検定前に弾く。
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
     let mut allow = rc_allow(
         fc_raw,
@@ -114,15 +89,12 @@ pub(crate) fn beam_check(
         shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
         long_term,
     );
-    // 以降 `shear_grade` は**高強度せん断補強筋のときだけ** Some とする。普通強度
-    // （SD*/SR*）を高強度品の表で評価すると w_ft を大幅に過大評価し危険側になる。
     let shear_grade = ctx
         .shear_rebar_material
         .as_ref()
         .map(|m| m.name.as_str())
         .filter(|g| is_high_strength_shear_grade(g));
     if let Some(g) = shear_grade {
-        // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
         allow.w_ft = high_strength_w_ft(g, long_term);
     }
 
@@ -133,10 +105,6 @@ pub(crate) fn beam_check(
     };
     let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
 
-    // 中央部かつスラブ取付きかつ正曲げ（mz>0＝床スラブ側圧縮）:
-    // マニュアル 2.5.2 の Ma = at·ft·j（T 形引張支配略算）。
-    // 負曲げではスラブが引張側になり T 形略算が成り立たないため、
-    // 長方形複筋の min(MAt, MAc) を用いる。
     let at_mid = (forces.pos - 0.5).abs() < 1e-6;
     let bm = beam_moment_capacity(&props, ft, allow.fc, allow.n_ratio);
     let use_t_flange = at_mid && ctx.beam_has_slab && forces.mz > 0.0;
@@ -157,10 +125,6 @@ pub(crate) fn beam_check(
         shear_grade,
         fc_raw,
     );
-    // 地震時短期は設計用せん断力 QD = min(Q0+n_mech·ΣBMy/l′, QL+n·QE) を用いる
-    // （ctx.seismic_qd が None のときは解析せん断力のまま）。
-    // ΣBMy は両端とも同一断面・対称配筋（at=ac）の仮定で 2・Mu とする。
-    // Mu にスラブ筋は考慮しない。Q0 未算定時は QL で代替。
     let q_design = if ctx.seismic_qd.is_some() {
         let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
             b: props.b,
@@ -181,7 +145,6 @@ pub(crate) fn beam_check(
     };
     let ratio_q = if qa > 0.0 { q_design / qa } else { 0.0 };
 
-    // RC 梁付着の断面検定（方式は `ctx.bond_method`。既定は 1999）。
     let (ratio_bond, bond_detail) = match ctx.bond_method {
         BondMethod::Rc1999 => {
             let bond = rc_beam_bond_check(
@@ -219,15 +182,10 @@ pub(crate) fn beam_check(
             (ratio, detail)
         }
         BondMethod::Rc1991 => {
-            // 引張側本数は対称複筋仮定で main.count/2（1 本未満は 1）。
             let n_t = ((rebar.main_x.count as f64) / 2.0).max(1.0);
             let phi = n_t * std::f64::consts::PI * rebar.main_x.dia;
             let is_end = !(0.25 < forces.pos && forces.pos < 0.75);
-            let bond = rc_beam_bond_check_1991(
-                q_design, props.j, phi, fc_raw,
-                is_end, // 端部＝上端筋（低減）、中央＝下端筋
-                long_term,
-            );
+            let bond = rc_beam_bond_check_1991(q_design, props.j, phi, fc_raw, is_end, long_term);
             let ratio = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
             let detail = bond.as_ref().map(|b| {
                 format!(
@@ -250,12 +208,10 @@ pub(crate) fn beam_check(
     };
 
     let basis = "RC 規準13条（梁の曲げ・せん断・付着）".to_string();
-    // 高強度せん断補強筋: w_ft の根拠はせん断検定固有の係数のため Shear へ。
     let shear_grade_detail = match shear_grade {
         Some(g) => format!(", 高強度せん断補強筋={g}, w_ft={:.1} N/mm²", allow.w_ft),
         None => String::new(),
     };
-    // Bending 固有: 許容曲げモーメント（引張・圧縮支配それぞれ）と作用モーメント。
     let mid_slab_note = if use_t_flange {
         ", 中央+スラブ正曲げ: MA=at·ft·j"
     } else {
@@ -265,13 +221,10 @@ pub(crate) fn beam_check(
         "MA_t={:.1} N·mm, MA_c={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm{}",
         bm.ma_t, bm.ma_c, ma, forces.mz, mid_slab_note,
     );
-    // Shear 固有: 許容せん断力・作用せん断力・せん断スパン比 α・
-    // せん断補強筋比 pw（いずれもせん断式の係数）。
     let shear_detail = format!(
         "QA={:.1} N, |qy|={:.1} N, α={:.3}, pw={:.5}{}",
         qa, forces.qy, alpha, props.pw, shear_grade_detail,
     );
-    // 共通: 曲げ・付着の双方で使う断面諸元（at・d・j）。付着省略時はその旨を追記。
     let detail = format!(
         "at={:.1} mm², d={:.1} mm, j={:.1} mm{}",
         props.at,
@@ -304,10 +257,8 @@ pub(crate) fn beam_check(
         });
     }
 
-    // 構造規定・長期たわみは部材レベル（中央 pos≈0.5 で一度だけ付記し重複を避ける）。
     let mut detail = detail;
     if super::provisions::is_member_level_station(forces.pos) {
-        // 引張鉄筋下限の存在応力は、端部・中央の |Mz| の最大を用いる。
         let mz_for_at = {
             let mut m = forces.mz.abs();
             if let Some((mi, mj)) = ctx.end_moments_z {
@@ -343,10 +294,6 @@ pub(crate) fn beam_check(
         components,
     }
 }
-
-// ============================================================================
-// テスト（梁の曲げ・せん断・付着の統合、RcDesign 経由の梁検定）
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -410,10 +357,6 @@ mod tests {
             base.ratio()
         );
     }
-
-    // ------------------------------------------------------------------
-    // 梁の曲げ
-    // ------------------------------------------------------------------
 
     #[test]
     fn test_beam_moment_light_reinforcement_tension_governs() {
@@ -651,11 +594,6 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // (B) RC 梁付着の断面検定（beam_check 経由の統合確認、詳細は
-    // rc/bond.rs のテストを参照）
-    // ------------------------------------------------------------------
-
     #[test]
     fn test_beam_check_provision_error_on_cover() {
         // かぶり 20 mm → 構造規定エラー（中央で付記）。
@@ -786,8 +724,7 @@ mod tests {
 
     #[test]
     fn test_beam_check_bond_skipped_without_length_regression() {
-        // ctx.length（Lo 代用値）が既定の 0.0 のままなら付着検定は省略され、
-        // 既存の（付着検定導入前の）挙動から曲げ・せん断比が変化しないこと。
+        // ctx.length が既定の 0.0 のままなら付着検定は省略され、曲げ・せん断比が変化しないこと。
         let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");

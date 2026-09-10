@@ -36,7 +36,6 @@ pub fn rebar_unit_mass_kg_per_m(dia: f64) -> f64 {
 
 /// 鉄筋の総長さ [mm] × 呼び径 [mm] → 重量 [t]。
 pub fn rebar_weight_t(total_length_mm: f64, dia: f64) -> f64 {
-    // kg/m × m → kg → t
     rebar_unit_mass_kg_per_m(dia) * (total_length_mm / 1_000.0) / 1_000.0
 }
 

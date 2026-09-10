@@ -1,33 +1,9 @@
 //! CFT 造の断面検定（許容応力度検定）。SRC 規準の累加強度式を
-//! CFT 柱（コンクリート充填鋼管）に準用する。
+//! CFT 柱（コンクリート充填鋼管）に準用する（相互拘束効果による
+//! コンクリート強度割増しは考慮しない）。
 //!
-//! 準拠する規準:
-//! - 日本建築学会「鉄骨鉄筋コンクリート構造計算規準・同解説」（SRC 規準
-//!   1987年版）の累加強度式の考え方を CFT 断面（コンクリート充填鋼管）に
-//!   適用したもの。相互拘束効果によるコンクリート強度割増しは考慮しない
-//!   （非拘束・安全側の仮定）。
-//!
-//! # 材料の扱い
-//! - `CftBox`/`CftPipe`: 鋼種 = `Material.name`、充填コンクリート強度 =
-//!   `Material.fc`。
-//! - `Material.fc` が `None`/0 の場合は検定をスキップする（`ok=true`,
-//!   `basis` に "Fc未設定" と記載）。
-//! - 鋼材グレードが [`crate::steel::steel_f_value_prefix`] で解決できない
-//!   場合は SS400 相当（F=235）にフォールバックする（安全側とは限らないため
-//!   実運用では鋼種名を確認すること）。
-//!
-//! # 本実装での主な簡略化（doc 内に個別関数でも記載）
-//! 1. CFT 柱の設計用せん断力は `QD = min(QD1, QD2)`（`ctx.seismic_qd.method`
-//!    に従う）。`QD1 = ΣcMy/h′` の cMy には CFT 指針の N-M 相互作用による
-//!    終局曲げ耐力 Mu(N)（[`crate::ultimate::cft_mu_nm`]、柱分類対応）を用い、
-//!    柱頭・柱脚同一断面の仮定で `ΣcMy = 2·Mu(N)` とする（[`cft_q_design`]）。
-//! 2. CFT 柱の鋼管部分の許容圧縮応力度 `s_fc` は座屈を考慮する
-//!    （λ = max(lk_y/i_y, lk_z/i_z) を**鋼管単体**の断面二次半径で評価。
-//!    充填コンクリートの剛性寄与を無視するため安全側。[`cft_common_steel`] 参照）。
-//! 3. CFT 柱のせん断は強軸・弱軸を対称的に扱うため、RC 柱検定
-//!    （`rc/`）と同様に「b/D 入れ替え」の近似を用いる。
-//! 4. CFT 円形柱の (N,M) 相関は閉形式を用いず、縁応力一定の弾性三角形
-//!    分布を断面内で数値積分して求める（矩形の閉形式と同じ弾性仮定）。
+//! コンクリート強度未設定の断面は検定をスキップし、内蔵鉄骨の鋼種を
+//! 解決できない場合は SS400 相当（F=235）で検定する。
 //!
 //! # モジュール構成
 //! CFT はトップレベルの単一モジュール（`crate::cft`、本ファイル）とし、
@@ -43,27 +19,11 @@ use crate::{
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
-// 検定比 M/MA の規約（MA<=0 の退化時は大きな有限値で代用）は RC・SRC と
-// 共通（`crate::ratio_or_large`）。
 use crate::ratio_or_large;
-
-// ============================================================================
-// 1. CFT 矩形柱の充填コンクリート部分 (cN, cM)
-// ============================================================================
 
 /// 矩形充填コンクリート部分の (cN, cM) を弾性三角形応力分布の閉形式で求める。
 /// `xn`: 中立軸位置（圧縮縁からの距離）[mm]、`cb`/`cd`: 検討方向の充填断面
 /// 幅・せい [mm]。
-///
-/// 注意（Xn > cD の分枝の cM 式について）: 他の構造計算プログラムの資料では
-/// `cM = cb·cd²·Fc·(1 − 1/(12Xn))` と記載される場合があるが、これは誤りであり
-/// 正しくは `1/(12Xr)`（本実装）である。根拠:
-/// - Xr=1 での連続性: 断面内式 Xr(3−2Xr)/12 は Xr=1 で 1/12 となり、
-///   1/(12Xr) も Xr=1 で 1/12 で一致する（1−1/12 = 11/12 では不連続）。
-/// - Xn→∞（全断面一様圧縮）で偏心モーメントは 0 に収束すべきで、
-///   1/(12Xr)→0 は整合するが 1−1/(12Xr)→1 は発散的で物理的に不合理。
-///
-/// こうした他資料の記載に合わせる「修正」をしないこと。
 fn cft_rect_cn_cm(cb: f64, cd: f64, fc: f64, xn: f64) -> (f64, f64) {
     if cb <= 0.0 || cd <= 0.0 || fc <= 0.0 || xn <= 0.0 {
         return (0.0, 0.0);
@@ -97,10 +57,6 @@ fn cft_rect_ma(cb: f64, cd: f64, fc: f64, n_design: f64) -> f64 {
     let (_, cm) = cft_rect_cn_cm(cb, cd, fc, xn);
     cm
 }
-
-// ============================================================================
-// 2. CFT 円形柱の充填コンクリート部分 (cN, cM)（数値積分）
-// ============================================================================
 
 /// 縁応力 `fc` 一定・線形分布（コンクリート引張無視）を断面内で数値積分し、
 /// 任意断面形状の (cN, cM) を求める汎用ヘルパ。`width_fn(y)` は圧縮縁からの
@@ -165,10 +121,6 @@ fn cft_circle_ma(dc: f64, fc: f64, n_design: f64) -> f64 {
     cm
 }
 
-// ============================================================================
-// 3. 累加強度式・鋼管の許容応力度
-// ============================================================================
-
 /// CFT 柱 1 軸分の許容曲げモーメント MA(N)。累加強度式による 3 分岐
 /// （コンクリート+鋼管累加 / 圧縮超過で鋼管のみ / 引張で鋼管のみ）を実装する。
 /// `cm_fn`: 0≤N≤cNc の範囲でコンクリート部分の cM(N) を返す関数
@@ -198,7 +150,7 @@ fn cft_axis_capacity(
 /// λ=Lk/i・Lk/D に対応）。細長比 λ は**鋼管単体**の断面二次半径で評価する
 /// （充填コンクリートの曲げ剛性寄与を無視するため実際より λ が大きく
 /// 算定され、安全側）。λ=0（座屈長さ 0）のとき s_fc は長期 F/1.5（=s_ft）
-/// に一致し、従来実装（s_fc = s_ft）と連続する。
+/// に一致する。
 fn cft_common_steel(f_value: f64, term: LoadTerm, lambda: f64) -> (f64, f64, f64) {
     let s_ft = steel_ft(f_value, term);
     let s_fs = steel_fs(f_value, term);
@@ -242,14 +194,10 @@ fn cft_pipe_steel_props(outer_dia: f64, thick: f64) -> (f64, f64) {
 ///   [`crate::rc::seismic_design_shear`] に委譲する。
 ///
 /// `ctx.seismic_qd` が None、または長期内力に同一評価位置が見つからない
-/// 場合は解析せん断力 `|q_signed|` をそのまま返す（従来動作）。
+/// 場合は解析せん断力 `|q_signed|` をそのまま返す。
 fn cft_q_design(ctx: &DesignCtx, pos: f64, q_signed: f64, q_index: usize, sum_c_my: f64) -> f64 {
     crate::rc::seismic_design_shear(ctx, pos, q_signed, q_index, sum_c_my, true)
 }
-
-// ============================================================================
-// 4. CFT 角形柱・円形柱の断面検定
-// ============================================================================
 
 fn cft_box_check(
     forces: &MemberForcesAt,
@@ -261,17 +209,12 @@ fn cft_box_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 軽量コンクリート1種・2種は許容圧縮応力度を 0.9 倍に低減（class 対応版）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
 
-    // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
         .unwrap_or(235.0);
     let (sa, sz_z, sz_y) = cft_box_steel_props(height, width, thick);
-    // 鋼管単体の断面二次モーメントを強軸・弱軸個別に評価し、各軸の座屈長さ
-    // lk_y/lk_z と対にして λ=max(λ_y,λ_z) を求める（安全側。充填コンクリート
-    // の剛性寄与を無視するため実際より λ が大きく算定される）。
     let shape = SectionShape::CftBox {
         height,
         width,
@@ -299,7 +242,6 @@ fn cft_box_check(
 
     let n_design = -forces.n;
 
-    // 累加強度式（SRC 規準の考え方を CFT に適用）: MA = sZ・sft + cM(N)。
     let ma_z = cft_axis_capacity(n_design, cnc, sa, s_ft, s_fc, sz_z, |n| {
         cft_rect_ma(c_b_z, c_d_z, fc_allow, n)
     });
@@ -319,23 +261,16 @@ fn cft_box_check(
         0.0
     };
 
-    // せん断有効断面積は方向別（qy: せい方向の側壁 2t(H−2t)、qz: 幅方向の
-    // 側壁 2t(B−2t)）。従来は両方向とも H 基準で、H≠B の断面の幅方向せん断を
-    // 非保守側に評価していた。
     let s_aw_y = 2.0 * thick * (height - 2.0 * thick).max(0.0);
     let s_aw_z = 2.0 * thick * (width - 2.0 * thick).max(0.0);
     let s_qa_y = s_aw_y * s_fs;
     let s_qa_z = s_aw_z * s_fs;
-    // 地震時短期は QD = min(QD1, QD2)（method に従う）を qy/qz 各成分に適用する。
-    // QD1 の ΣcMy は N-M 相互作用の終局曲げ Mu(N)（CFT 指針・Fc は raw、Fy は F 値）
-    // ×2（柱頭・柱脚同一断面）。ctx.seismic_qd が None なら解析せん断力のまま。
     let (sum_c_my_z, sum_c_my_y) = if ctx.seismic_qd.is_some() {
         let shape = SectionShape::CftBox {
             height,
             width,
             thick,
         };
-        // weak_axis=false（強軸側）は lk_y、weak_axis=true（弱軸側）は lk_z を用いる。
         let lk_y = ctx.lk_y.unwrap_or(ctx.length);
         let lk_z = ctx.lk_z.unwrap_or(ctx.length);
         let mu_z = crate::ultimate::cft_mu_nm(&shape, fc_raw, f_value, n_design, lk_y, false)
@@ -361,19 +296,15 @@ fn cft_box_check(
     let ratio_shear = ratio_shear_y.max(ratio_shear_z);
 
     let basis = "CFT柱(角形): SRC規準に基づく累加強度式".to_string();
-    // AxialBending 固有: 軸耐力（コンクリート・鋼管の圧縮/引張）と作用軸力・
-    // 二軸曲げ耐力・作用モーメント（いずれも軸+曲げの複合検定の値）。
     let axial_bending_detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MAz={:.1} N·mm, MAy={:.1} N·mm, \
          mz={:.1} N·mm, my={:.1} N·mm",
         cnc, s_nc, s_nt, n_design, ma_z, ma_y, forces.mz, forces.my,
     );
-    // Shear 固有: 許容せん断力・作用せん断力。
     let shear_detail = format!(
         "sQAy={:.1} N, sQAz={:.1} N, qy={:.1} N, qz={:.1} N",
         s_qa_y, s_qa_z, forces.qy, forces.qz
     );
-    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![
@@ -405,16 +336,12 @@ fn cft_pipe_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 軽量コンクリート1種・2種は許容圧縮応力度を 0.9 倍に低減（class 対応版）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
 
-    // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
         .unwrap_or(235.0);
     let (sa, sz) = cft_pipe_steel_props(outer_dia, thick);
-    // 鋼管単体の断面二次モーメントで細長比を評価（安全側）。円形は等方性の
-    // ため iy=iz だが、lk_y/lk_z が異なれば λ=max(λ_y,λ_z) は方向により変わる。
     let shape = SectionShape::CftPipe { outer_dia, thick };
     let iy = shape.calc_iy();
     let lambda = effective_slenderness(iy, iy, sa, ctx.length, ctx.lk_y, ctx.lk_z);
@@ -432,7 +359,6 @@ fn cft_pipe_check(
         cft_circle_ma(dc, fc_allow, n)
     });
 
-    // 円形は等方性のため二軸とも同じ MA を用いる。
     let ratio_z = ratio_or_large(forces.mz, ma);
     let ratio_y = ratio_or_large(forces.my, ma);
     let ratio_biaxial = ratio_z + ratio_y;
@@ -447,12 +373,8 @@ fn cft_pipe_check(
 
     let s_aw = sa / 2.0;
     let s_qa = s_aw * s_fs;
-    // 地震時短期は QD = min(QD1, QD2)（method に従う）を qy/qz 各成分に適用して
-    // から合成する。QD1 の ΣcMy は N-M 相互作用の終局曲げ Mu(N)×2（円形は
-    // 方向によらず同値）。ctx.seismic_qd が None なら解析せん断力のまま。
     let sum_c_my = if ctx.seismic_qd.is_some() {
         let shape = SectionShape::CftPipe { outer_dia, thick };
-        // 円形は方向によらず同値のため、安全側に大きい方の座屈長さを採用する。
         let lk = ctx
             .lk_y
             .unwrap_or(ctx.length)
@@ -468,18 +390,15 @@ fn cft_pipe_check(
     let ratio_shear = if s_qa > 1e-9 { q_res / s_qa } else { 0.0 };
 
     let basis = "CFT柱(円形): SRC規準に基づく累加強度式".to_string();
-    // AxialBending 固有: 軸耐力・作用軸力・曲げ耐力・作用モーメント。
     let axial_bending_detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MA={:.1} N·mm, mz={:.1} N·mm, \
          my={:.1} N·mm",
         cnc, s_nc, s_nt, n_design, ma, forces.mz, forces.my,
     );
-    // Shear 固有: 許容せん断力・作用せん断力（二軸合成）。
     let shear_detail = format!(
         "sQA={:.1} N, qy={:.1} N, qz={:.1} N",
         s_qa, forces.qy, forces.qz
     );
-    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![
@@ -501,10 +420,6 @@ fn cft_pipe_check(
         components,
     }
 }
-
-// ============================================================================
-// 5. DesignCheck 実装
-// ============================================================================
 
 /// CFT 柱の断面検定（`SectionShape::CftBox`/`CftPipe` を対象とする）。
 /// 準拠規準に CFT 梁の規定はないため、`ctx.kind` に依らず柱の検定式を
@@ -546,10 +461,6 @@ impl DesignCheck for CftDesign {
         CheckOutcome::Checked(cr)
     }
 }
-
-// ============================================================================
-// テスト
-// ============================================================================
 
 #[cfg(test)]
 mod tests;

@@ -23,21 +23,8 @@ use super::{nonzero, safe_denom, section_modulus, shape_of, shear_area_2d, Shape
 
 /// 鉄骨造梁の断面検定（鋼構造設計規準）。
 ///
-/// - 応力度: `σax=|N|/A`、`σby=|Mz|/Z強軸`（既存の断面欠損 Z' 処理は維持）、
-///   `σbz=|My|/Z弱軸`。円形鋼管は二軸曲げを合成した `σb=√(Mz²+My²)/Z強軸`
-///   を併せて用いる。
-/// - 組合せ検定: 圧縮時 `σc/fc+ΣσB/fb`、引張時 `(σt+ΣσB)/ft`（fc は座屈考慮、
-///   fb は H形強軸のみ横座屈考慮）。
-/// - 単独曲げ検定: `σby/fb_strong`・`σbz/fb_weak` を組合せ式とは別に検定比の
-///   `max` へ含める（軸力 N=0 の純曲げでも横座屈による fb の低減が効くように
-///   するため）。
-/// - せん断検定: 強軸/弱軸それぞれのせん断有効断面積 Ay/Az による `τ/fs`。
-/// - von Mises 検定: 形状ごとの合成応力度（H形はウェブ端の曲げ応力度 σb′
-///   を用いた 2 方向せん断それぞれの式の大きい方）を ft で検定する。
-///
-/// 検定比には含まれない参考情報として、detail 末尾に大梁の必要横補剛数
-/// （[`steel_required_lateral_bracing_count`]）とたわみ
-/// （[`steel_beam_deflection`]、長期のみ）を付記する。
+/// 軸力＋二軸曲げの組合せ・単独曲げ・せん断・von Mises 合成の各検定比の
+/// 最大値を検定比とする。参考情報として必要横補剛数とたわみ（長期のみ）を付記する。
 pub(crate) fn check_beam(
     forces: &MemberForcesAt,
     sec: &Section,
@@ -51,10 +38,6 @@ pub(crate) fn check_beam(
     let area = nonzero(sec.area);
     let (shape, tf, tw) = shape_of(sec);
 
-    // 断面欠損（継手部の欠損率 βf/βw・端部スカラップ αw）を考慮した断面係数。
-    // H 形で SteelDesignAttr が与えられている場合のみ Z' に置き換える
-    // （鋼構造設計規準「鉄骨の断面検定における断面性能」）。端部判定は評価位置
-    // pos<=0.25 / >=0.75 を端部とする（検定位置＝柱フェイス・中央の分類と同じ）。
     let z_strong = match (&ctx.steel_attr, shape) {
         (Some(attr), ShapeCategory::H)
             if attr.joint_flange_loss > 0.0
@@ -77,38 +60,26 @@ pub(crate) fn check_beam(
     };
     let z_weak = nonzero(section_modulus(sec.iz, b / 2.0));
 
-    // 応力度: σax=|N|/A（引張/圧縮共通）、σby=|Mz|/Z強軸、σbz=|My|/Z弱軸。
     let sigma_ax = forces.n.abs() / area;
     let sigma_by = forces.mz.abs() / z_strong;
     let sigma_bz = forces.my.abs() / z_weak;
-    // 円形鋼管の合成曲げ応力度 σb=√(Mz²+My²)/Z強軸（強軸/弱軸を区別しない）。
     let sigma_b_pipe = (forces.mz.powi(2) + forces.my.powi(2)).sqrt() / z_strong;
 
     let ft_val = steel_ft(f, term);
     let fs_val = steel_fs(f, term);
 
-    // 座屈を考慮した許容圧縮応力度 fc（column.rs と同じ流儀）。
-    // λ = max(lk_y/i_y, lk_z/i_z)（強軸・弱軸を個別の座屈長さで評価）。
     let lambda = effective_slenderness(sec.iy, sec.iz, area, ctx.length, ctx.lk_y, ctx.lk_z);
     let fc_val = steel_fc(f, lambda, term);
 
-    // 許容曲げ応力度 fb: H形強軸のみ横座屈考慮（旧基準/新基準の切替）、他は ft。
-    // 弱軸は横座屈を考慮しないため常に ft。
     let fb_weak = ft_val;
     let fb_strong = match shape {
         ShapeCategory::H => {
-            // 横座屈長さ lb の優先順位: ctx.lb 直接指定 > SteelDesignAttr
-            // （直接入力 (始端,中央,終端)／等間隔補剛 L/(n+1)）> 部材長。
             let lb = ctx.lb.unwrap_or_else(|| {
                 ctx.steel_attr
                     .as_ref()
                     .map(|a| resolve_lb(forces.pos, ctx.length, a.lb_direct, a.lateral_brace_count))
                     .unwrap_or(ctx.length)
             });
-            // C 係数の解決（直接入力 > 部分区間なら安全側 1.0 > 自動算定）。
-            // 「座屈区間端部」のモーメント比によるが、実装が保持するのは部材端
-            // モーメントのみ。横補剛で lb が部材の部分区間となる場合は区間端
-            // モーメント比が不明なため、直接入力がなければ安全側の C=1.0 とする。
             let c = steel_c_factor(ctx, lb < ctx.length - 1e-9);
             match ctx.steel_fb_rule {
                 SteelFbRule::Old => {
@@ -129,7 +100,6 @@ pub(crate) fn check_beam(
         _ => ft_val,
     };
 
-    // 組合せ検定（軸力+二軸曲げ）。
     let (ratio_comb, axial_basis) = if forces.n < 0.0 {
         let ratio = match shape {
             ShapeCategory::Pipe => {
@@ -150,8 +120,6 @@ pub(crate) fn check_beam(
         (ratio, "引張+曲げ: (σt+ΣσB)/ft")
     };
 
-    // 単独曲げ検定（Util-My/Util-Mz）。N=0 の純曲げでも横座屈による fb の
-    // 低減が効くよう、組合せ式とは別に検定比の max へ加える。
     let (ratio_my, ratio_mz) = match shape {
         ShapeCategory::Pipe => (sigma_b_pipe / safe_denom(fb_strong), 0.0),
         _ => (
@@ -160,27 +128,22 @@ pub(crate) fn check_beam(
         ),
     };
 
-    // せん断検定（強軸 Qy・弱軸 Qz それぞれのせん断有効断面積による τ/fs）。
     let (ay, az) = shear_area_2d(shape, sec, tf, tw);
     let tau_y = forces.qy.abs() / safe_denom(ay);
     let tau_z = forces.qz.abs() / safe_denom(az);
     let ratio_vy = tau_y / safe_denom(fs_val);
     let ratio_vz = tau_z / safe_denom(fs_val);
 
-    // von Mises 型合成検定（すべて分母 ft）。
     let mises_ratio = match shape {
         ShapeCategory::H => {
-            // σb′ = σby・(H−2tf)/H（ウェブ端の曲げ応力度に換算）。
             let sigma_b_prime = sigma_by * (h - 2.0 * tf).max(0.0) / safe_denom(h);
             let case_y = ((sigma_ax + sigma_b_prime).powi(2) + 3.0 * tau_y.powi(2)).sqrt();
             let case_z = ((sigma_ax + sigma_by + sigma_bz).powi(2) + 3.0 * tau_z.powi(2)).sqrt();
             case_y.max(case_z) / safe_denom(ft_val)
         }
         ShapeCategory::Pipe => {
-            // 円形鋼管は中立軸検定（曲げ項なし）。
             (sigma_ax.powi(2) + 3.0 * (tau_y.powi(2) + tau_z.powi(2))).sqrt() / safe_denom(ft_val)
         }
-        // 角形鋼管・その他: 安全側の一般化として角形と同式を用いる。
         _ => {
             let tau_max = tau_y.max(tau_z);
             ((sigma_ax + sigma_by + sigma_bz).powi(2) + 3.0 * tau_max.powi(2)).sqrt()
@@ -200,9 +163,6 @@ pub(crate) fn check_beam(
         "鋼構造設計規準 {} 梁: 軸力+二軸曲げ・せん断・von Mises ({}, fb={})",
         term_label, axial_basis, fb_rule_label
     );
-    // 曲げ系（組合せ・単独曲げ・von Mises 合成応力度、いずれも Bending の
-    // ratio_bending を構成する値）。σax は組合せ・Mises の両方で使うため
-    // Bending 側に置く（Shear の τ とは独立）。
     let bending_detail = format!(
         "σax={:.4} N/mm², σby={:.4} N/mm², σbz={:.4} N/mm², fc={:.4} N/mm², fb={:.4} N/mm², \
 組合せ比={:.4}, My比={:.4}, Mz比={:.4}, Mises比={:.4}",
@@ -216,14 +176,11 @@ pub(crate) fn check_beam(
         ratio_mz,
         mises_ratio
     );
-    // せん断（強軸 Vy・弱軸 Vz）。
     let shear_detail = format!(
         "τy={:.4} N/mm², τz={:.4} N/mm², Vy比={:.4}, Vz比={:.4}",
         tau_y, tau_z, ratio_vy, ratio_vz
     );
 
-    // 共通: 検定比には含まれない参考情報（必要横補剛数・たわみ）。
-    // いずれの検定式の ratio 算定にも使われないため共通側に置く。
     let mut detail = String::new();
     if let Some((n, lambda_y)) = steel_required_lateral_bracing_count(f, ctx.length, sec) {
         detail.push_str(&format!("必要横補剛数n={} (λy={:.3})", n, lambda_y));
@@ -240,8 +197,6 @@ pub(crate) fn check_beam(
         detail.push_str(&format!("たわみS={:.4} mm (S/l={})", s, ratio_str));
     }
 
-    // 曲げ系（組合せ・単独曲げ・von Mises 合成応力度）を Bending、
-    // せん断（強軸/弱軸）を Shear にまとめる（max の等価性は結合律で担保）。
     let ratio_bending = ratio_comb.max(ratio_my).max(ratio_mz).max(mises_ratio);
     let ratio_shear = ratio_vy.max(ratio_vz);
     let components = vec![
@@ -264,27 +219,9 @@ pub(crate) fn check_beam(
     }
 }
 
-// ---------------------------------------------------------------------
-// 大梁必要横補剛数（情報出力のみ。検定比には含めない）
-// ---------------------------------------------------------------------
-
 /// 大梁の必要横補剛数 n と弱軸細長比 λy を求める（保有耐力横補剛・
-/// 均等間隔配置。昭55建告1791号第2・技術基準解説書）。検定比には含めない
-/// 参考情報。
-///
-/// `λy = L/iy_weak`（`iy_weak = √(Iz/A)`：squid-n の弱軸＝断面二次モーメント
-/// `Section.iz` に対応する断面二次半径、`L = DesignCtx.length`）に対し、
-/// 均等間隔配置の条件は
-/// - F値 235・215（400N/mm²級）: `λy ≦ 170 + 20n`
-/// - それ以外（275以上・490N/mm²級）: `λy ≦ 130 + 20n`
-///
-/// であり、必要本数は `n = ceil(max(0, (λy − 170)/20))`（490級は 130）となる。
-/// 細長い梁（λy が大きい）ほど必要本数が増える。`length` が 0 以下の
-/// 場合は `None`（算定省略）。
-///
-/// 注: `n = (170 − λy)/20` と逆向きの式が示されることもあるが、λy が大きい
-/// ほど n=0 となり技術基準解説書の条件と矛盾するため誤記と判断し、告示・
-/// 解説書の向きで実装する。
+/// 均等間隔配置。昭55建告1791号第2）。検定比には含めない参考情報。
+/// `length` が 0 以下の場合は `None`（算定省略）。
 fn steel_required_lateral_bracing_count(f: f64, length: f64, sec: &Section) -> Option<(u32, f64)> {
     if length <= 1e-9 {
         return None;
@@ -306,25 +243,12 @@ fn steel_required_lateral_bracing_count(f: f64, length: f64, sec: &Section) -> O
     Some((n, lambda_y))
 }
 
-// ---------------------------------------------------------------------
-// たわみの検定（情報出力のみ。検定比には含めない。長期のみ）
-// ---------------------------------------------------------------------
-
 /// 大梁のたわみ S [mm] を求める（たわみの検定、長期のみ）。
 ///
 /// `S = (5·M0·l²)/(48·E·I) − ((ML+MR)·l²)/(16·E·I)`
-///
-/// - `ML`, `MR`: [`DesignCtx::end_moments_z`] の絶対値、`l = DesignCtx.length`、
-///   `E = Material.young`、`I = Section.iy`（強軸まわり断面二次モーメント）。
-/// - `M0`（単純梁と仮定した場合の中央モーメント）は、モーメント図が２次
-///   曲線分布（等分布荷重相当）であるという仮定の下、区間中央の実際の
-///   曲げモーメント `Mc`（[`DesignCtx::mid_moment_z`]）に「両端モーメント
-///   による中央部の低減分」を足し戻すことで近似復元する:
-///   `M0 = |Mc| + (|ML| + |MR|) / 2`。
-///   （等分布荷重・両端モーメント無しの単純梁では `Mc = M0 = wl²/8` となり、
-///   本式は `S = 5wl⁴/(384EI)` に一致する。）
-/// - たわみの変形制限（例: `l/300` 等）は本実装では設けず、S の算定値を
-///   情報として出力するのみで、変形量に基づく合否判定は行わない。
+/// （`M0 = |Mc| + (|ML| + |MR|) / 2`、`l = DesignCtx.length`、
+/// `E = Material.young`、`I = Section.iy`）。
+/// 変形制限による合否判定は行わず、S の算定値を情報として出力するのみ。
 ///
 /// `end_moments_z` または `mid_moment_z` が `None`、`term` が長期以外、
 /// あるいは `length <= 0` の場合は `None`（算定省略）。
@@ -360,9 +284,7 @@ mod tests {
     use crate::{DesignCheck, MemberKind};
     use squid_n_core::ids::{MaterialId, SectionId};
 
-    // -------------------------------------------------------------
     // 断片が意図した component に配置されていることの確認
-    // -------------------------------------------------------------
 
     /// Bending の detail に "組合せ比=" が含まれ、Shear の detail には
     /// 含まれない。逆に Shear 固有の "Vy比=" は Bending に含まれない。
@@ -400,9 +322,7 @@ mod tests {
         assert!(!bending.detail.contains("Vy比="));
     }
 
-    // -------------------------------------------------------------
     // SteelDesignAttr の配線（断面欠損 Z'・横座屈長さ lb）
-    // -------------------------------------------------------------
 
     #[test]
     fn test_check_beam_applies_section_loss_attr() {
@@ -505,9 +425,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // 横座屈修正係数 C の直接入力（SteelDesignAttr.c_direct）
-    // -------------------------------------------------------------
 
     /// c_direct=1.5 を与えると、端部モーメント（異符号・自動算定なら
     /// C=2.3）に関わらず fb1 の C=1.5 が採用され、fb・検定比が自動算定時と
@@ -700,11 +618,9 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // 梁検定
-    // -------------------------------------------------------------
 
-    /// 仕様 P3 §6.4 の検算例を新 API で再現する。
+    /// 矩形断面の検算例（手計算照合）。
     /// 矩形 B=200, D=400 ⇒ Z=B·D²/6=5.3333e6 mm³, M=1e8 N·mm
     /// σ=18.75 N/mm², fb=F/1.5=156.6667 N/mm²（矩形は横座屈対象外＝fb=ft）,
     /// 検定比=0.1197（相対 1e-9）。
@@ -790,9 +706,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // SectionShape 経由の形状解決（tf ≠ tw の実断面）
-    // -------------------------------------------------------------
 
     /// `Section.shape` がある場合は実寸の tw でウェブせん断面積を計算する
     /// （名前推定＋単一板厚近似ではなく、tw=10 が使われること）。
@@ -860,9 +774,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // 組合せ検定（軸力+二軸曲げ）
-    // -------------------------------------------------------------
 
     /// 圧縮軸力+二軸曲げ（H形）: σc/fc+σby/fb+σbz/ft を手計算照合する。
     #[test]
@@ -1000,9 +912,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // せん断検定（弱軸 Qz・角形鋼管）
-    // -------------------------------------------------------------
 
     /// H形の弱軸せん断 Qz: Az=2・B・tf/1.5 の手計算照合。
     #[test]
@@ -1126,11 +1036,9 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // 新基準 fb（AIJ-ASD19）
-    // -------------------------------------------------------------
 
-    /// steel_fb_rule 未指定（既定 Old）では従来値（steel_fb_h）と一致する。
+    /// steel_fb_rule 未指定（既定 Old）では steel_fb_h と一致する。
     #[test]
     fn test_beam_check_fb_rule_default_matches_old() {
         let sec = h_section(400.0, 200.0, 8.0, 13.0);
@@ -1314,9 +1222,7 @@ mod tests {
         assert!((fb - ft).abs() < 1e-9, "fb={} ft={}", fb, ft);
     }
 
-    // -------------------------------------------------------------
     // steel_p_lambda_b（塑性限界細長比 pλb）
-    // -------------------------------------------------------------
 
     /// 座屈区間中央の曲げが両端部より大きい場合は安全側 pλb=0.3。
     #[test]
@@ -1363,9 +1269,7 @@ mod tests {
         assert!((p - 0.3).abs() < 1e-9, "p={}", p);
     }
 
-    // -------------------------------------------------------------
     // 大梁必要横補剛数
-    // -------------------------------------------------------------
 
     /// 均等間隔配置 λy ≦ 170 + 20n（400N/mm²級。告示1791号・技術基準解説書）:
     /// λy=90 ≦ 170 → n=0（補剛不要）、λy=250 → n=(250−170)/20=4。
@@ -1455,9 +1359,7 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------
     // たわみの検定
-    // -------------------------------------------------------------
 
     /// 等分布荷重 w [N/mm] の単純梁相当（端部モーメント無し）を
     /// M0=Mc=wl²/8 として与えると、標準公式 5wl⁴/(384EI) と一致する。

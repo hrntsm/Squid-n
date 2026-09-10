@@ -1,23 +1,9 @@
 //! S 造パネルゾーンの断面検定（許容応力度検定。
 //! 鋼構造接合部設計指針のパネルゾーン部分に準拠）。
 //!
-//! # 位置付け
-//! このモジュールは `Model` や要素（`squid_n_element`）に依存せず、呼び出し側
-//! （節点まわりの応力集計・断面形状の解決を担当する別モジュール）が用意した数値
-//! 入力を受け取る**純関数**として実装する。
-//!
-//! ただしパネルの寸法・形状係数 κ・実効体積 `Ve` は、仕口パネルの**モデル化**
-//! （`squid_n_element::springs::panel`）と同一の値でなければならない。同じ接合部に対して
-//! 剛性と耐力が食い違う諸元で算定されるのを防ぐため、これらは
-//! [`squid_n_core::panel_zone::PanelGeometry`]（`Model` に依存しない値型）へ
-//! 一元化し、本モジュールもモデル化側もそこを唯一の出所とする。
-//!
-//! 準拠する規準: 日本建築学会「鋼構造接合部設計指針」
-//!
-//! # 式の再構成・簡略化について（重要）
-//! 参照した原典テキストは PDF/MathML からの抽出であり、分数式や上付き添字が
-//! 崩れている箇所がある。S パネルゾーンの形状係数 κ は分数 2 項和の形に
-//! 再構成した（下記 [`s_panel_zone_check`] のドキュメント参照）。
+//! 数値入力を受け取る純関数として実装する。パネルの寸法・形状係数 κ・
+//! 実効体積 `Ve` は仕口パネルのモデル化と同一の値
+//! （[`squid_n_core::panel_zone::PanelGeometry`] を唯一の出所とする）。
 
 use crate::{CheckComponent, CheckKind, CheckResult};
 use squid_n_core::panel_zone::{PanelGeometry, PanelShapeKind};
@@ -48,7 +34,7 @@ pub struct SPanelInput {
     /// 釣り合いが解析上厳密に満たされた値であり、梁端モーメント・柱せん断から
     /// 手で組み立てる近似（`beam_moment_*` / `col_shear_*`）を経ない。
     ///
-    /// `None` のときは従来どおり
+    /// `None` のときは
     /// `pM = bML + bMR − (cQU + cQL)・db/2` で組み立てる。
     pub design_moment: Option<f64>,
 }
@@ -74,17 +60,14 @@ pub struct SPanelInput {
 ///   `κ = 1/(2/3 + 2・bc/dc) + 1/(1 + dc/(3・bc))`
 /// - 円形: `Ve = 2・dc・db・tp`、`κ = 4/π`
 ///
-/// **原典照合済み（2026-07-11）**: 接合部パネル降伏モーメントの原典図
-/// （ユーザー提供）と照合し、`pMy = (Ve/κ)・√(1−n²)・Fy/√3`（Ve を κ で
-/// **除する**）であること、および κ の 3 形状分の式が上記で正しいことを確認した。
-/// κ は概ね 0.5〜1.5 のオーダーで、Ve/κ でも整合的（ユニットテストで確認）。
+/// `pMy = (Ve/κ)・√(1−n²)・Fy/√3`（Ve を κ で**除する**）。
+/// κ は概ね 0.5〜1.5 のオーダー。
 ///
 /// `n = |axial_ratio|` とし、`|n| ≥ 1` の場合は `√(1 − n²)` を 0 にクランプする
 /// （軸力が全塑性軸耐力に達している状態を表し、曲げ・せん断耐力の余裕なしに対応）。
 ///
 /// 検定比 = `|pM| / pMy`（1.0 以下で OK）。
 pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
-    // Ve・κ はモデル化側（仕口パネル要素の剛性 Kxp = Kyp = G・Ve）と同じ値を用いる。
     let ve = inp.geometry.effective_volume(inp.db);
     let kappa = inp.geometry.kappa();
     let shape_label = match inp.geometry.kind {
@@ -96,11 +79,8 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
     let n = inp.axial_ratio.abs();
     let reduction = if n >= 1.0 { 0.0 } else { (1.0 - n * n).sqrt() };
 
-    // pMy = (Ve/κ)・√(1−n²)・Fy/√3（原典図で Ve/κ を確認、2026-07-11）。
     let kappa = if kappa.abs() > 1e-9 { kappa } else { 1e-9 };
     let p_my = ve / kappa * reduction * inp.fy / 3f64.sqrt();
-    // 仕口パネルをモデル化した接合部は解析出力のパネルせん断モーメントを用いる。
-    // モデル化していない接合部は梁端モーメント・柱せん断から組み立てる。
     let p_m = inp.design_moment.unwrap_or_else(|| {
         inp.beam_moment_left + inp.beam_moment_right
             - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0
@@ -112,8 +92,6 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
         f64::INFINITY
     };
     let basis = format!("鋼構造接合部設計指針 パネルゾーン検定 {}断面", shape_label);
-    // 単一式（Shear）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),

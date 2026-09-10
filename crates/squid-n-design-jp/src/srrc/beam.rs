@@ -33,11 +33,8 @@ pub(crate) fn src_beam_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋の材質は**断面が持つ材料**の名前で決まる（未割当は検定前に弾く）。
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
 
-    // 軽量コンクリート1種・2種は許容応力度を 0.9 倍に低減（SRC規準1987。
-    // `mat.concrete_class` を考慮した class 対応版を使用）。
     let fs = concrete_allowable_shear_class(fc_raw, mat.concrete_class, long_term);
     let w_ft = rebar_allowable_shear(
         crate::material_strength::shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
@@ -59,8 +56,6 @@ pub(crate) fn src_beam_check(
 
     let props = src_rect_axis_props(b, d_full, &rebar.main_x, rebar);
 
-    // 累加強度式（SRC 規準1987）: MA = sMo（鉄骨単体の許容曲げモーメント）
-    // + rMA（RC 部分の許容曲げモーメント）。
     let s_mo = sz * s_ft;
     let r_ma = props.at * ft * props.j;
     let ma = s_mo + r_ma;
@@ -71,8 +66,6 @@ pub(crate) fn src_beam_check(
     let b_prime = (b - steel_width).max(0.0);
     let dw = steel_height - 2.0 * steel_flange_thick;
 
-    // 地震時短期の設計用せん断力（構造規定方式）: rMu は両端同一断面・
-    // 対称配筋（at=ac）の仮定で `rc_mu_simple` により算定する。
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
     let r_mu = rc_mu_simple(&RcCapacityInput {
         b: props.b,
@@ -120,20 +113,16 @@ pub(crate) fn src_beam_check(
     } else {
         "弾性分担"
     };
-    // Bending 固有: 鉄骨・RC 単純累加の許容曲げモーメントと作用モーメント。
     let bending_detail = format!(
         "sMo={:.1} N·mm, rMA={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm",
         s_mo, r_ma, ma, forces.mz,
     );
-    // Shear 固有: 鉄骨・RC の弾性分担せん断力・許容せん断力・せん断スパン比・
-    // せん断補強筋比・設計用せん断力の決定方式。
     let shear_detail = format!(
         "sQ={:.1} N, rQ={:.1} N, sQA={:.1} N, rQA={:.1} N, α={:.3}, pw={:.5}, \
          設計用せん断力={qd_note}",
         shear.s_q, shear.r_q, shear.s_qa, shear.r_qa, shear.alpha, shear.pw
     );
 
-    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),
@@ -151,10 +140,6 @@ pub(crate) fn src_beam_check(
         ],
     }
 }
-
-// ============================================================================
-// テスト
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

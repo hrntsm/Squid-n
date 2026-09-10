@@ -182,8 +182,6 @@ pub(crate) fn column_provisions(
     }
 
     let b_for_pw_a = d_min.max(1.0);
-    // 矩形は両方向の幅で pw を算定し、小さい方（厳しい側）で下限を見る。
-    // 円形は等価幅 1 本。
     let pw = match shape {
         SectionShape::RcCircle { .. } => pw_ratio(&rebar.shear, b_for_pw_a),
         SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. } => {
@@ -191,10 +189,7 @@ pub(crate) fn column_provisions(
             let pw_d = pw_ratio(&rebar.shear, (*d).max(1.0));
             pw_b.min(pw_d)
         }
-        _ => {
-            // 呼び出し側が矩形・円形以外を渡すことは想定しないが、安全側に d_min。
-            pw_ratio(&rebar.shear, b_for_pw_a)
-        }
+        _ => pw_ratio(&rebar.shear, b_for_pw_a),
     };
     if pw + 1e-12 < 0.002 {
         warnings.push(format!("pw={:.4} < 0.2%（ルート未連動・下限 0.2%）", pw));

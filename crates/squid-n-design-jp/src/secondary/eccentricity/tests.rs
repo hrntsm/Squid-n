@@ -34,10 +34,10 @@ fn test_d_value_degenerate() {
     assert_eq!(d_value(1.0, 1.0, 0.0, 4.0, false), 0.0);
 }
 
-// ---- center_of_rigidity（DoD §8.1）----
+// 剛心の検算例
 #[test]
 fn test_center_of_rigidity_dod_example() {
-    // 仕様 §5.2 の確定値: Dy=[100,300] @ x=[0,6000] → Xs = 4500
+    // 確定値: Dy=[100,300] @ x=[0,6000] → Xs = 4500
     let cols = vec![
         ColumnStiffness {
             pos: [0.0, 0.0],

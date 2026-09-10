@@ -42,23 +42,18 @@ pub struct CftUltimateCheck {
 
 /// CFT 断面（角型/円形）の (円形か, 断面せい D, cA, sA, cI(弱軸), sI(弱軸)) を返す。
 fn cft_section_props(shape: &SectionShape) -> Option<(bool, f64, f64, f64, f64, f64)> {
-    // 充填コンクリートの断面積・断面二次モーメントは剛性側（等価断面性能の累加）と
-    // 共通の実装を用いる（`squid_n_core::section_shape::SectionShape::cft_core_props`）。
     let core = shape.cft_core_props()?;
     let s_area = shape.calc_area();
-    // 弱軸（せい/幅の小さい方まわり）の断面二次モーメントを座屈用に採用する。
-    // 円形は iy = iz のため min でも同値になる。
     let s_inertia = shape.calc_iy().min(shape.calc_iz());
     let c_inertia = core.iy.min(core.iz);
     match *shape {
         SectionShape::CftBox { height, width, .. } => {
-            let d = height.min(width); // 弱軸方向のせい
+            let d = height.min(width);
             Some((false, d, core.area, s_area, c_inertia, s_inertia))
         }
         SectionShape::CftPipe { outer_dia, .. } => {
             Some((true, outer_dia, core.area, s_area, c_inertia, s_inertia))
         }
-        // `cft_core_props` が Some を返すのは CFT 断面のみ。
         _ => None,
     }
 }
@@ -97,7 +92,6 @@ pub fn collect_cft_ultimate_checks(
             SectionShape::CftBox { thick, .. } | SectionShape::CftPipe { thick, .. } => thick,
             _ => 0.0,
         };
-        // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
         let fy = crate::material_strength::steel_f_value_prefix(&mat.name, thick)
             .or(mat.fy)
             .unwrap_or(235.0);
@@ -122,7 +116,6 @@ pub fn collect_cft_ultimate_checks(
             .map(|(_, n)| *n)
             .unwrap_or(0.0);
 
-        // N-M 相互作用の終局曲げ耐力 Mu(N)。曲げは強軸（せい方向）で評価する。
         let mu_nm = cft_mu_nm(shape, fc, fy, n_design, lk, false).unwrap_or(0.0);
 
         let axial_margin = if n_design > 0.0 {

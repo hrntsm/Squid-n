@@ -72,10 +72,6 @@ pub struct RcJointInput {
 ///   梁が柱断面の中心に取り付き、柱幅と梁幅の差が両側に均等に振り分けられる
 ///   （`bi` が両側で共通）と仮定している。
 ///
-///   **原典照合済み（2026-08-12）**: 参照実装マニュアルが
-///   `bai = bi/2 または D/4 の小さい方` と明記。終局検定側
-///   （`ultimate`）と同じ `min` に揃える。
-///
 /// ## 設計用せん断力
 /// `Qdj = min(Qdj1, Qdj2)`
 /// - `ξ = j / (cH・(1 − D/Lb))`
@@ -99,15 +95,12 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
 
     let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
 
-    // 接合部有効幅 bj = bb + ba1 + ba2（両側均等仮定）。
-    // bai = min(bi/2, D/4)（マニュアル「小さい方」、2026-08-12 照合）。
     let bi = (inp.col_width - inp.beam_width) / 2.0;
     let bai = (bi / 2.0).min(inp.col_depth / 4.0).max(0.0);
     let bj = inp.beam_width + 2.0 * bai;
 
     let qaj = kappa_a * (fs - 0.5) * bj * inp.col_depth;
 
-    // 設計用せん断力 Qdj = min(Qdj1, Qdj2)。
     let denom = inp.col_height * (1.0 - inp.col_depth / inp.beam_span);
     let xi = inp.beam_j / denom;
     let (qdj1, qdj2) = if xi.is_finite() && xi > 0.0 && xi < 1.0 {
@@ -116,7 +109,6 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         let qdj2 = inp.col_shear * one_minus_xi / xi;
         (qdj1, qdj2)
     } else {
-        // ξ 退化域: ξ→0 とみなし Qdj1 = ΣM/j をそのまま採用、Qdj2 は無効化。
         (inp.sum_beam_moments / inp.beam_j, f64::INFINITY)
     };
     let qdj = qdj1.min(qdj2);
@@ -129,8 +121,6 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         JointShape::Corner => "L字形(kappaA=3)",
     };
     let basis = format!("RC規準15条 柱梁接合部せん断検定 {}", shape_label);
-    // 単一式（Shear）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),
@@ -144,7 +134,6 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         }],
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

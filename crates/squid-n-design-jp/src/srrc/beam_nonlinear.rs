@@ -1,16 +1,7 @@
-//! 鉄骨鉄筋コンクリート造梁の**せん断終局強度**（SRC 梁の
-//! せん断復元力特性）。
+//! SRC 梁のせん断終局強度（SRC 梁のせん断復元力特性）。
 //!
-//! # 位置付け
-//! 非線形解析のせん断ばね終局耐力を算定する純関数群。せん断終局強度は 3 式
-//! （SRC規準／SRC診断式／構造関係技術基準解説書）から選択できる。本モジュールは
-//! 数式が一意な**構造関係技術基準解説書**式と**SRC規準**式を実装する。
-//! いずれも RC 部分 rQu と鉄骨部分 sQu の累加 `Qu = rQu + sQu`。
-//!
-//! # 準拠する規準・出典
-//! - 構造関係技術基準解説書 SRC 梁せん断終局。
-//! - SRC 規準 SRC 梁せん断終局。
-//! いずれも係数は要・原典照合（`dev_docs/specs/原典照合リスト.md`）。
+//! せん断終局強度は RC 部分 rQu と鉄骨部分 sQu の累加 `Qu = rQu + sQu` とし、
+//! 構造関係技術基準解説書式と SRC 規準式を実装する。
 
 /// SRC 梁せん断終局の算定入力（累加式 Qu=rQu+sQu 共通）。
 #[derive(Clone, Copy, Debug)]
@@ -58,8 +49,6 @@ pub fn src_beam_shear_ultimate_tech_standard(inp: &SrcBeamShearInput) -> f64 {
     if inp.b <= 0.0 || inp.rj <= 0.0 || inp.fc <= 0.0 || inp.clear_span <= 0.0 {
         return 0.0;
     }
-    // 定数 5 は kgf/cm²（長期許容せん断応力度の定数項）。N/mm² 入力に対しては
-    // 0.4903 に換算する（5 をそのまま使うと第2項を約10倍過大評価する）。
     const FIVE_KGF_IN_SI: f64 = 5.0 * 0.098_066_5;
     let fs = (inp.fc / 20.0).min((FIVE_KGF_IN_SI + inp.fc / 100.0) * 1.5);
     let alpha = (4.0 / (inp.m_over_qrd.max(0.0) + 1.0)).clamp(1.0, 2.0);
@@ -78,9 +67,7 @@ pub fn src_beam_shear_ultimate_tech_standard(inp: &SrcBeamShearInput) -> f64 {
 /// - `rQu1 = b·rj·(0.5·α·fs + 0.5·rpw·rwσy)`（fs 係数が 0.5·α）
 /// - `rQu2 = b·rj·(b'/b·fs + rpw·rwσy)`（b'/b の係数が 1）
 /// - `fs = min(0.15·Fc, 22.5 + 4.5·Fc/100)`（工学単位 kgf/cm² で定義された式。
-///   SI では 22.5 kgf/cm² = 2.2065 N/mm² となり fs = min(0.15·Fc, 2.2065 + 0.045·Fc)。
-///   従来実装は括弧を (22.5+4.5Fc)/100 と誤読しさらに単位換算も欠いており、
-///   fs を約 1/2.5 に過小評価していた）
+///   SI では 22.5 kgf/cm² = 2.2065 N/mm² となり fs = min(0.15·Fc, 2.2065 + 0.045·Fc)）。
 ///
 /// 不正入力（b・rj・Fc・l' のいずれかが 0 以下）は 0.0。
 pub fn src_beam_shear_ultimate_src_standard(inp: &SrcBeamShearInput) -> f64 {
@@ -172,9 +159,6 @@ pub fn src_beam_shear_grid(inp: &SrcNonSolidWebShearInput) -> f64 {
     let j = 0.8 * inp.d_full;
     let k = nonweb_kappa(inp.high_strength_shear_rebar);
     let concrete = k * pt.powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
-    // 補強筋項は √(rpw·rσwy + (1/2)·spw·sσwy) に 0.85 を乗じる（√ が帯板項まで
-    // 全体に掛かる）。0.85√(rpw·rσwy)+0.5√(spw·sσwy) と分離していた従来実装は
-    // 補強筋項を過大評価する誤りだった。
     let hoop = 0.85
         * ((inp.rpw * inp.rw_sigma_y).max(0.0) + 0.5 * (inp.spw * inp.s_band_sigma_y).max(0.0))
             .sqrt();
@@ -201,7 +185,6 @@ pub fn src_beam_shear_lattice(inp: &SrcNonSolidWebShearInput) -> f64 {
     let concrete = k * inp.rpt.max(0.0).powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
     let hoop_r = 0.85 * (inp.rpw * inp.rw_sigma_y).max(0.0).sqrt();
     let rc_part = (concrete + hoop_r) * inp.be * inp.rj;
-    // ラチス鉄骨の寄与 sQu。
     let squ_bending = if inp.clear_span > 0.0 {
         2.0 * inp.s_m0 / inp.clear_span
     } else {

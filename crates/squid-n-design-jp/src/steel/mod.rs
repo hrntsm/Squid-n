@@ -1,40 +1,11 @@
 //! 鋼構造の許容応力度と断面検定（許容応力度検定。
 //! 根拠規準は鋼構造設計規準 1973・構造規定）。
-//!
-//! ## 形状情報の取得について
-//!
-//! 検定式（ウェブせん断面積 `tw·H`、圧縮フランジ断面積 `B·tf` 等）にはフランジ厚
-//! `tf`・ウェブ厚 `tw` が必要になる。形状は次の優先順で解決する:
-//!
-//! 1. `Section.shape`（[`squid_n_core::section_shape::SectionShape`]）があれば
-//!    `SteelH`/`SteelBox`/`SteelPipe` の実寸（`flange_thick`/`web_thick`/`thick`）
-//!    を用いる（パラメトリック断面の正規経路）。
-//! 2. なければ `Section.name` の先頭トークン（`"H-..."`, `"BOX-..."`,
-//!    `"PIPE-..."`）から形状カテゴリを推定し、板厚は `Section.thickness` の
-//!    単一値を `tf ≈ tw` として近似する（カタログ断面等のフォールバック。
-//!    フランジとウェブの実厚が異なる断面では誤差を生む）。
-//!
-//! 命名規則にも合わない場合は `Other`（一般断面フォールバック）として扱い、
-//! 横座屈低減なし（fb=ft）・単純 τ/fs 検定になる。
-//!
-//! ## モジュール構成（断面検定の項目に対応）
-//!
-//! - [`section`][]: 鉄骨の断面検定における断面性能（許容曲げ応力度 fb・断面
-//!   二次半径・断面欠損・横座屈長さ）。
-//! - [`beam`][]: 鉄骨造梁の断面検定（必要横補剛数・たわみを含む）。
-//! - [`column`][]: 鉄骨造柱の断面検定。
-//! - [`brace`][]: 鉄骨ブレースの断面検定。
-//! - [`panel_zone`][]: S 造パネルゾーンの断面検定（鋼構造接合部設計指針）。
-//! - [`cold_formed`][]: 冷間成形角形鋼管柱の柱梁耐力比チェック（2008年版
-//!   角形鋼管設計・施工マニュアル）。
+//! 形状は `Section.shape` 優先、なければ `Section.name` から推定し、合わなければ `Other` とする。
 
 use crate::{CheckOutcome, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
-// 鋼材の F 値・許容応力度（ft/fs/fc・限界細長比 Λ・板厚区分）は
-// `crate::material_strength`（材料強度・許容応力度）へ集約した。鋼構造の
-// 検定で用いるものを再エクスポートし、従来のパスも維持する。
 pub use crate::material_strength::{
     big_lambda, plate_thickness, steel_f_value, steel_f_value_prefix, steel_fc, steel_fs, steel_ft,
 };
@@ -51,15 +22,7 @@ mod column;
 pub mod panel_zone;
 mod section;
 
-// 鉄骨の断面検定における断面性能（fb・断面二次半径・断面欠損・横座屈長さ）は
-// `section` サブモジュールへ集約したうえで、従来のパス（`crate::steel::X`）を
-// 維持するために再エクスポートする。
 pub use section::{resolve_lb, steel_fb_h, steel_fb_h_new, steel_h_z_with_loss, steel_i_t};
-
-// ---------------------------------------------------------------------
-// 断面形状カテゴリ（`Section.shape` 優先、なければ `Section.name` から推定。
-// 上記モジュール doc 参照）
-// ---------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShapeCategory {
@@ -88,10 +51,7 @@ fn classify_shape(name: &str) -> ShapeCategory {
 }
 
 /// 形状カテゴリと板厚 `(カテゴリ, tf, tw)` を解決する。
-///
-/// `Section.shape`（パラメトリック断面）があれば実寸のフランジ厚・ウェブ厚を、
-/// なければ断面名からカテゴリを推定して `Section.thickness` を `tf ≈ tw` の
-/// 単一板厚として近似する（モジュール doc 参照）。
+/// `Section.shape` があれば実寸、なければ `Section.thickness` を `tf ≈ tw` とする。
 fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
     if let Some(shape) = &sec.shape {
         match *shape {
@@ -100,7 +60,6 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 flange_thick,
                 ..
             } => return (ShapeCategory::H, flange_thick, web_thick),
-            // 非対称組立 H は H 系として扱う。フランジ厚は薄い方（幅厚比が厳しい側）を代表とする。
             SectionShape::SteelBuiltH {
                 web_thick,
                 upper_thick,
@@ -120,16 +79,13 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 ..
             } => return (ShapeCategory::Other, flange_thick, web_thick),
             SectionShape::SteelAngle { thick, .. } => return (ShapeCategory::Other, thick, thick),
-            // 平鋼・中実丸鋼は板要素でない中実断面。局部座屈検定の対象外として Other 扱い。
             SectionShape::SteelFlatBar { thick, .. } => {
                 return (ShapeCategory::Other, thick, thick)
             }
             SectionShape::SteelRoundBar { dia } => return (ShapeCategory::Other, dia, dia),
-            // リップ溝形は冷間成形の開断面。局部座屈は有効幅で扱うため Other 扱い（板厚 t）。
             SectionShape::SteelLipChannel { thick, .. } => {
                 return (ShapeCategory::Other, thick, thick)
             }
-            // CFT の鋼管部分は角形/円形鋼管として扱う（検定本体は cft 側で行う）。
             SectionShape::CftBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::CftPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),
             SectionShape::RcRect { .. }
@@ -144,18 +100,7 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
 }
 
 /// せん断有効断面積 `(Ay, Az)` [mm²]（強軸 Qy・弱軸 Qz。梁・柱で共用の単一定義）。
-///
-/// - H形: `Ay=tw・(H−2tf)`（ウェブ内法せい×ウェブ厚）、
-///   `Az=2・B・tf/1.5`（上下フランジ断面積を応力分布係数 1.5 で低減）。
-/// - 角形鋼管: 角部外半径 r は断面定義時の入力値（`SteelBox.corner_r`）を
-///   用いる。`r>0` は角部を 1/4 円弧とみなし直線部＋角部円弧の断面積を
-///   合算する: `Ay=2{t・max(H−2r,0)+π・t・(2r−t)/4}`（`Az` は `H` を `B` に
-///   置き換えた同式）。`r=0`（未入力・名前推定フォールバック・角部半径を
-///   持たない CftBox）は角部を直角とみなし `Ay=2t・max(H−2t,0)`（`Az` は
-///   同様に `B`）。
-/// - 円形鋼管: `Ay=Az=π・t・(D−t)/2`（薄肉円管のせん断有効断面積。
-///   `D=sec.depth` は外径）。
-/// - その他: `Ay=as_y>0 ? as_y : area`、`Az=as_z>0 ? as_z : area`。
+/// 断面形状ごとに算定する（角部外半径 r は断面定義時の入力値）。
 fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64, f64) {
     let h = sec.depth;
     let b = sec.width;
@@ -166,7 +111,6 @@ fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64,
             (ay, az)
         }
         ShapeCategory::Box => {
-            // 角形鋼管は tf=tw=t（shape_of 参照）。角部外半径 r は断面入力値。
             let t = tw;
             let r = match &sec.shape {
                 Some(SectionShape::SteelBox { corner_r, .. }) => corner_r.max(0.0),
@@ -179,7 +123,6 @@ fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64,
                     2.0 * (t * (b - 2.0 * r).max(0.0) + corner),
                 )
             } else {
-                // 角部直角（未入力・CftBox・名前推定フォールバック）。
                 (
                     2.0 * t * (h - 2.0 * t).max(0.0),
                     2.0 * t * (b - 2.0 * t).max(0.0),
@@ -194,10 +137,6 @@ fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64,
             (a, a)
         }
         ShapeCategory::Other => {
-            // 断面レイヤの規約（P1 §4.1・squid-n-core builder.rs）は
-            // 「as_z=強軸曲げ用（ウェブ）・as_y=弱軸曲げ用（フランジ）」で、
-            // 検定の Qy は強軸せん断のため、要素剛性側（construct.rs）と同じ
-            // クロス対応（Ay ← 断面 as_z、Az ← 断面 as_y）で引き当てる。
             let ay = if sec.as_z > 0.0 { sec.as_z } else { sec.area };
             let az = if sec.as_y > 0.0 { sec.as_y } else { sec.area };
             (ay, az)
@@ -242,7 +181,6 @@ impl DesignCheck for SteelDesign {
         ctx: &DesignCtx,
     ) -> CheckOutcome {
         let t = plate_thickness(sec);
-        // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
         let f = steel_f_value_prefix(&mat.name, t)
             .or(mat.fy)
             .unwrap_or(235.0);

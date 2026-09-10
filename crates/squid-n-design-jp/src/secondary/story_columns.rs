@@ -50,7 +50,6 @@ fn layer_bounds(model: &Model, top_story: StoryId) -> Option<(StoryId, BottomLev
     if let Some(layer) = model.layers().into_iter().find(|l| l.top == top_story) {
         return Some((top_story, BottomLevel::Story(layer.bottom)));
     }
-    // 階が 1 つだけの略式モデル（テスト用）: 基部標高を下端とする。
     if model.stories.iter().any(|s| s.id == top_story) && model.layers().is_empty() {
         return Some((top_story, BottomLevel::Elevation(model.base_elevation())));
     }

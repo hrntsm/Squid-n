@@ -220,7 +220,7 @@ fn wall_with_large_opening_ratio_is_not_checked() {
     assert!(wall_check_result(&model, &forces).is_none());
 }
 
-/// `wall_attrs` に属性がない壁（厚さ≥120mm）は、従来どおり無開口として
+/// `wall_attrs` に属性がない壁（厚さ≥120mm）は、無開口として
 /// 耐震壁検定される。
 #[test]
 fn wall_without_attr_is_checked_as_no_opening() {
