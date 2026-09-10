@@ -88,27 +88,15 @@ impl ModelClass {
     fn color(self) -> egui::Color32 {
         use egui::Color32;
         match self {
-            // 弾性＝降伏を考えない中立色（グレー）
             ModelClass::Elastic => theme::GRAY_600,
-            // 材端集中塑性＝緑
             ModelClass::ConcentratedPlastic => Color32::from_rgb(0x16, 0xA3, 0x4A),
-            // ファイバー（分布塑性）＝オレンジ
             ModelClass::Fiber => Color32::from_rgb(0xEA, 0x58, 0x0C),
-            // 側柱ピン＝強調紫
             ModelClass::SideColumnPin => theme::HILITE_PURPLE,
-            // 壁エレメント＝青
             ModelClass::Wall => Color32::from_rgb(0x25, 0x63, 0xEB),
-            // 雑壁＝淡い暖色（周辺部材へ剛性算入。構造壁エレメントと区別）
             ModelClass::WallMisc => theme::SECONDARY_AMBER,
-            // 荷重のみの壁版＝不活性を示すウォームグレー。剛性に一切効かないことを
-            // 沈めた色で表す。冷色系の Elastic（GRAY_600）・その他（GRAY_300）とは
-            // 色味で弁別する。
             ModelClass::WallPlateLoadOnly => Color32::from_rgb(0x78, 0x71, 0x6C),
-            // 仕口パネル＝藍
             ModelClass::Panel => Color32::from_rgb(0x6D, 0x28, 0xD9),
-            // トラス／軸材＝ティール
             ModelClass::Truss => Color32::from_rgb(0x0D, 0x94, 0x88),
-            // その他＝淡いグレー
             ModelClass::Other => theme::GRAY_300,
         }
     }
@@ -146,7 +134,7 @@ pub(super) fn classify(
 /// [`classify`] の全部材ループ向け変種。側柱判定（1 部材ごとに全要素を走査する）を
 /// 事前構築した [`SideColumnEdges`] の定数時間参照へ差し替えられる。
 /// `None` は 1 部材だけ分類する呼び出し（ツールチップ・テスト）用で、
-/// [`wall_side_column_release`] による従来の走査判定になる。
+/// [`wall_side_column_release`] による走査判定になる。
 pub(super) fn classify_with(
     data: &ElementData,
     model: &Model,
@@ -154,9 +142,7 @@ pub(super) fn classify_with(
     side_cols: Option<&SideColumnEdges>,
 ) -> ModelClass {
     match data.kind {
-        // 梁・柱（Beam）とファイバー梁（Fiber）は解析種別で扱いが変わる。
         ElementKind::Beam | ElementKind::Fiber => {
-            // 耐震壁の側柱は面内両端ピン（トポロジ由来の解放。解析種別に依らない）。
             let is_side_column = match side_cols {
                 Some(idx) => idx.release_axis(data, model).is_some(),
                 None => wall_side_column_release(data, model).is_some(),
@@ -165,10 +151,7 @@ pub(super) fn classify_with(
                 return ModelClass::SideColumnPin;
             }
             match analysis {
-                // 静解析（線形）は断面の降伏を考えず弾性でモデル化する。
                 ModelingAnalysis::Static => ModelClass::Elastic,
-                // 増分解析は降伏を考慮。Fiber 種別は常にファイバー、Beam は
-                // フォースレジーム判定で材端集中塑性／ファイバーへ振り分ける。
                 ModelingAnalysis::Incremental => {
                     if data.kind == ElementKind::Fiber {
                         ModelClass::Fiber
@@ -181,13 +164,10 @@ pub(super) fn classify_with(
                 }
             }
         }
-        // マルチスプリング梁は端部塑性化域を軸ばね群で置換したモデル。
-        // 増分解析では材端集中塑性、静解析（線形）では弾性として扱う。
         ElementKind::MultiSpring => match analysis {
             ModelingAnalysis::Static => ModelClass::Elastic,
             ModelingAnalysis::Incremental => ModelClass::ConcentratedPlastic,
         },
-        // 壁は耐震壁成立なら壁エレメント、不成立なら雑壁（周辺部材へ剛性算入）。
         ElementKind::Wall => {
             if wall_is_seismic(data, model) {
                 ModelClass::Wall
@@ -197,15 +177,12 @@ pub(super) fn classify_with(
         }
         ElementKind::PanelZone => ModelClass::Panel,
         ElementKind::Brace { .. } => ModelClass::Truss,
-        // 面要素・バネ・免震・ダンパーなど。
         ElementKind::Shell
         | ElementKind::NodalSpring
         | ElementKind::Isolator
         | ElementKind::Damper => ModelClass::Other,
     }
 }
-
-// ===== 描画ヘルパ =====
 
 /// スクリーン座標の線形補間。
 fn lerp(a: egui::Pos2, b: egui::Pos2, t: f32) -> egui::Pos2 {
@@ -305,7 +282,6 @@ fn draw_rigid_zone(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
     painter.line_segment([a - n, a + n], stroke);
     painter.line_segment([b - n, b + n], stroke);
 
-    // 内部の斜めハッチ。区間が長いときは本数を頭打ちにして間隔を広げる。
     let step = (len / RIGID_HATCH_MAX as f32).max(RIGID_HATCH_STEP);
     let hatch = egui::Stroke::new(1.0_f32, theme::translucent(theme::GRAY_900, 170));
     let mut t = 0.0_f32;
@@ -384,7 +360,6 @@ fn draw_shear_spring(
     let mut prev = base(0.0);
     for i in 1..=steps {
         let t = step * i as f32;
-        // 折れ点は山・谷を交互に取り、最後は振幅 0 へ戻して線を閉じる。
         let amp = if i == steps {
             0.0
         } else if i % 2 == 1 {
@@ -428,16 +403,10 @@ pub(super) fn draw_modeling(
 ) {
     let analysis = app.ui.view.modeling_analysis;
 
-    // 凡例に載せる情報を収集する。
     let mut present: Vec<ModelClass> = Vec::new();
     let mut sym = Symbols::default();
-    // 仕口パネルの見付き寸法算定で使う隣接マップ。パネルが 1 つもないモデルでは
-    // 構築しない（遅延初期化）。
     let mut beam_adjacency: Option<NodeAdjacency> = None;
-    // 壁の付帯梁の絞り込みに使う耐震壁の節点集合（描画 1 回につき一度だけ作る）。
     let wall_nodes = seismic_wall_nodes(model);
-    // 側柱判定の事前インデックス（描画 1 回につき一度だけ作る。1 部材ごとの
-    // 全要素走査を避ける）。
     let side_cols = SideColumnEdges::build(model);
 
     for elem in &model.elements {
@@ -516,15 +485,9 @@ fn draw_wall_plates_modeling(
     frame_filter: super::FrameFilter,
     present: &mut Vec<ModelClass>,
 ) {
-    // 壁版の表示可否は「床壁・二次部材」トグルに従う（形状表示と同じ規則。
-    // モデル化図では `lumped_only` が偽・モードが CMQ 以外に確定しているため、
-    // トグルの値がそのまま表示可否になる）。
     if !app.ui.view.show_floor_secondary {
         return;
     }
-    // 描く対象を先に絞る。`misc_stiffness_wall_plates` は壁版ごとに要素を線形走査
-    // するため、毎フレーム呼ぶには重い。全壁版が要素になるモデル（描くものが無い）で
-    // その走査を走らせない。
     let targets: Vec<_> = model
         .wall_plates
         .iter()
@@ -553,8 +516,6 @@ fn draw_wall_plates_modeling(
             present.push(class);
         }
         let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
-        // 壁エレメントでないことを示す破線の輪郭（既存の雑壁描画と同じ書式）。
-        // 自己交差する壁版は塗らない（理由は `scene::plate_fill_is_valid`）。
         if super::scene::plate_fill_is_valid(model, plate) {
             draw_polygon_shape(painter, poly, class.color(), true);
         } else {
@@ -673,18 +634,13 @@ fn draw_line_member(
     let l = vec3::dist(coords3[n0], coords3[n1]);
     let color = class.color();
 
-    // 可とう区間（剛域フェイス間）。すべての線材モデルが剛域を可撓長から控除し、
-    // 可撓端自由度を剛体アームで節点自由度へ写す（`squid_n_element::frame::rigid_arm`）。
     let end_plastic = is_end_plastic_zone_model(elem, class);
     let (s_i, s_j, l_flex) = flexible_span(elem, l);
 
-    // 材端の記号を置く位置（剛域があればそのフェイス）。
     let fa = lerp(p0, p1, s_i);
     let fb = lerp(p0, p1, s_j);
 
     if end_plastic {
-        // 端部 Lp 区間 = ファイバー断面の積分重み（塑性化域）。中央は弾性。
-        // Lp は可撓長基準のため、可とう区間 [fa, fb] のパラメータで置く。
         let lp = if l_flex > 1e-9 {
             (plastic_zone_len(elem, model, l_flex) / l_flex) as f32
         } else {
@@ -700,17 +656,14 @@ fn draw_line_member(
         painter.line_segment([fa, a], zone_stroke);
         painter.line_segment([b, fb], zone_stroke);
     } else {
-        // 可とう区間の基準線。
         painter.line_segment([fa, fb], egui::Stroke::new(3.0_f32, color));
     }
 
-    // 壁の付帯梁（上下大梁）。部材全長に沿わせ、剛域を含む梁全体の性質として示す。
     if is_wall_girder(elem, model, wall_nodes) {
         draw_wall_girder_mark(painter, p0, p1);
         sym.wall_girder = true;
     }
 
-    // 剛域バー（材端）。
     if s_i > 0.0 {
         draw_rigid_zone(painter, p0, fa);
         sym.rigid = true;
@@ -720,14 +673,12 @@ fn draw_line_member(
         sym.rigid = true;
     }
 
-    // ファイバー断面（積分点 ξ=∓1＝可撓部の材端）の位置。剛域バーの上に重ねる。
     if end_plastic {
         draw_fiber_section_marker(painter, fa, fb, color);
         draw_fiber_section_marker(painter, fb, fa, color);
         sym.fiber_section = true;
     }
 
-    // 端部の接合条件・塑性ヒンジ。側柱は面内両端ピンのため両端に○。
     if class == ModelClass::SideColumnPin {
         draw_pin_marker(painter, fa, fb, color);
         draw_pin_marker(painter, fb, fa, color);
@@ -744,9 +695,6 @@ fn draw_line_member(
                 draw_semi_rigid_marker(painter, near, far, color);
                 sym.semi = true;
             }
-            // 剛接端: 材端集中塑性（材端回転ばね）なら塑性ヒンジ位置に ● を置く。
-            // 端部塑性化域モデル（MS）は回転ばねではなくファイバー断面のため、
-            // 断面記号のみとし ● は描かない。
             EndCondition::Fixed => {
                 if class == ModelClass::ConcentratedPlastic && !end_plastic {
                     draw_hinge_marker(painter, near, far, color);
@@ -792,19 +740,14 @@ fn draw_wall_element(
         draw_wall_polygon(painter, pts, elem, color, false);
         return;
     }
-    // 壁面内の直交 2 方向。ex は下辺 a→b、ez は下辺中点→上辺中点。
     let ex = g.ex_bottom;
     let Some(ez) = vec3::unit_from(g.bottom_center, g.top_center) else {
         draw_wall_polygon(painter, pts, elem, color, false);
         return;
     };
 
-    // 内側への寄せ量。ズームに依らず実梁のすぐ内側に見えるよう画面基準（px）で決め、
-    // 極端なズームアウトで壁高さを食い潰さないよう h の 15% で頭打ちにする。
     let inset = (10.0 / (proj.scale() as f64).max(1e-9)).min(0.15 * g.h);
 
-    // 剛梁の四隅（四辺とも内側へ寄せた位置）。a 側は +ex、b 側は −ex、
-    // 下辺は +ez、上辺は −ez へ動かす。
     let corner = |p: [f64; 3], sx: f64, sz: f64| {
         proj.project(vec3::add(
             vec3::add(p, vec3::scale(ex, sx * inset)),
@@ -820,7 +763,6 @@ fn draw_wall_element(
         corner(coords3[t1], -1.0, -1.0),
     );
 
-    // 剛梁端 → 四隅節点の引出線（破線＝実要素ではない）。
     let leader = egui::Stroke::new(1.0_f32, theme::translucent(theme::GRAY_900, 150));
     for (from, to) in [(sb0, b0), (sb1, b1), (st0, t0), (st1, t1)] {
         painter.extend(egui::Shape::dashed_line(
@@ -832,13 +774,10 @@ fn draw_wall_element(
     }
     sym.wall_leader = true;
 
-    // 上下の剛梁（剛域と同じ表記のハッチ入りブロック。剛体アームであることを示す）。
     draw_rigid_zone(painter, sb0, sb1);
     draw_rigid_zone(painter, st0, st1);
     sym.rigid = true;
 
-    // 壁柱（上下剛梁の中点を結ぶ仮想中央柱）。増分解析でファイバー化される壁柱は
-    // 端部 Lp だけが塑性化するため、その比率を可撓長（＝壁高さ h）基準で求めて渡す。
     let bc = proj.project(vec3::add(g.bottom_center, vec3::scale(ez, inset)));
     let tc = proj.project(vec3::add(g.top_center, vec3::scale(ez, -inset)));
     let lp_ratio = if analysis == ModelingAnalysis::Incremental && g.h > 1e-9 {
@@ -849,7 +788,6 @@ fn draw_wall_element(
     };
     draw_wall_column(painter, bc, tc, lp_ratio, color, sym);
 
-    // 面内せん断ばね（Qu 頭打ち）。壁柱が全長で持つ 1 自由度のため材軸に沿わせる。
     if analysis == ModelingAnalysis::Incremental
         && squid_n_element::wall::wall_element::WallElement::shear_capacity_of(elem, model) > 0.0
     {
@@ -857,7 +795,6 @@ fn draw_wall_element(
         sym.wall_shear = true;
     }
 
-    // 剛梁端のピン。四隅節点の回転自由度に壁エレメントが剛性を与えないことを示す。
     draw_pin_marker(painter, sb0, sb1, color);
     draw_pin_marker(painter, sb1, sb0, color);
     draw_pin_marker(painter, st0, st1, color);
@@ -888,12 +825,10 @@ fn draw_wall_column(
     let fiber = ModelClass::Fiber.color();
     let a = lerp(bc, tc, lp);
     let b = lerp(bc, tc, 1.0 - lp);
-    // 中央弾性区間は壁エレメント色の細線、端部 Lp はファイバー色の太線。
     painter.line_segment([a, b], egui::Stroke::new(3.0_f32, color));
     let zone = egui::Stroke::new(5.0_f32, fiber);
     painter.line_segment([bc, a], zone);
     painter.line_segment([b, tc], zone);
-    // ファイバー断面（積分点 ξ=∓1＝壁柱の材端）。
     draw_fiber_section_marker(painter, bc, tc, fiber);
     draw_fiber_section_marker(painter, tc, bc, fiber);
     sym.fiber_section = true;
@@ -955,7 +890,6 @@ fn draw_polygon_shape(
     }
     let stroke = egui::Stroke::new(1.5_f32, color);
     if dashed {
-        // 塗りのみ描き、輪郭は破線で重ねる（雑壁＝構造壁エレメントでないことを示す）。
         painter.add(egui::Shape::convex_polygon(
             poly.clone(),
             theme::translucent(color, 35),
@@ -1045,7 +979,6 @@ fn draw_panel_zone(
     let mut drawn = false;
     if extent.beam_half > 0.0 && extent.column_half > 0.0 {
         for axis in panel_beam_axes(model, adjacency, node) {
-            // 構面内の 4 隅（中心 ± 幅方向 ± 鉛直方向）。
             let corner = |sw: f64, sh: f64| -> [f64; 3] {
                 [
                     c3[0] + sw * extent.column_half * axis[0],
@@ -1057,7 +990,6 @@ fn draw_panel_zone(
                 .iter()
                 .map(|&(sw, sh)| proj.project(corner(sw, sh)))
                 .collect();
-            // 剛域ハッチと重なるため、塗りは輪郭を邪魔しない程度に薄くする。
             painter.add(egui::Shape::convex_polygon(
                 quad,
                 theme::translucent(color, 40),
@@ -1068,7 +1000,6 @@ fn draw_panel_zone(
     }
 
     if !drawn {
-        // 寸法が求まらない場合は位置だけを示す（接続節点へ細線＋ひし形）。
         for n in elem.nodes.iter().skip(1) {
             let i = n.index();
             if i < pts.len() {
@@ -1137,7 +1068,6 @@ fn draw_legend(
         y += LINE_H;
     }
 
-    // 記号の凡例（実際に現れた記号のみ）。
     let text = |painter: &egui::Painter, y: f32, s: &str| {
         painter.text(
             egui::pos2(x0 + 28.0, y),
@@ -1225,7 +1155,6 @@ fn draw_legend(
         y += LINE_H;
     }
     if sym.fiber_section {
-        // 断面記号（材軸を水平とみなした向き）と、太線＝塑性化域 Lp の説明。
         draw_fiber_section_marker(
             painter,
             egui::pos2(x0 + 2.0, y + FONT * 0.5),
@@ -1313,7 +1242,6 @@ pub(super) fn show_modeling_tooltip(
                 show_wall_modeling_detail(ui, model, app.ui.view.modeling_analysis, elem);
                 return;
             }
-            // 耐震壁の付帯梁（上下大梁）。断面性能へ倍率が乗った剛性で解析へ入る。
             if is_wall_girder(elem, model, &seismic_wall_nodes(model)) {
                 ui.label("壁の付帯梁（上下大梁。剛性に倍率）");
             }
@@ -1328,8 +1256,6 @@ pub(super) fn show_modeling_tooltip(
                     end_label(elem.end_cond[0]),
                     end_label(elem.end_cond[1])
                 ));
-                // 梁のねじり剛性を期待しない既定モデル化（i 端ねじれ解放）が
-                // この部材に適用されているかを明示する（適用されない例外がある）。
                 if squid_n_element::frame::beam::i_end_torsion_release(elem, model) {
                     ui.label("ねじれ: i 端ピン（部材全長で Mx=0）");
                 }
@@ -1341,9 +1267,6 @@ pub(super) fn show_modeling_tooltip(
                     ));
                 }
             }
-            // 端部塑性化域モデル（ファイバー／MS）は、可撓部の材端（積分点 ξ=∓1、
-            // 剛域があればそのフェイス）へ置いたファイバー断面で塑性化域 Lp 区間を
-            // 代表し、中央は弾性とする。
             if end_plastic {
                 let l = elem
                     .nodes
@@ -1371,7 +1294,6 @@ pub(super) fn show_modeling_tooltip(
         },
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

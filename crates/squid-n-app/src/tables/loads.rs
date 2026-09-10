@@ -22,14 +22,12 @@ use crate::app::load_case_kind_label;
 pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
-    // --- スラブ荷重（床荷重）への案内 ---
     ui.label(format!(
         "スラブ: {} 枚（モデルタブの「スラブ」で床荷重を追加できます。分配結果は結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと確認できます）",
         app.core.model.floor_regions.len()
     ));
     ui.add_space(4.0);
 
-    // --- 荷重ケース一覧（名称編集・追加・削除・編集対象の選択） ---
     ui.horizontal(|ui| {
         ui.strong("荷重ケース");
         if ui
@@ -42,7 +40,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                 .scoped
                 .undo
                 .run(&mut app.core.model, Box::new(AddLoadCase { name }));
-            // 追加したケースを編集対象として選択
             app.ui.scoped.nav.focus_load_case = app.core.model.load_cases.last().map(|lc| lc.id);
             app.core.scoped.staleness.mark_edited();
         }
@@ -128,8 +125,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    // 削除は `delete_load_case_action` が自前で陳腐化を扱うため、ここには含めない
-    // （組合せから参照中で削除が拒まれた場合に、変更もないのに陳腐化してしまう）。
     let had_name = !pending_name.is_empty() || !pending_kind.is_empty();
     for (i, name) in pending_name {
         let lc_id = LoadCaseId(app.core.model.load_cases[i].id.0);
@@ -145,8 +140,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             .run(&mut app.core.model, Box::new(SetLoadCaseKind { id, kind }));
     }
     if let Some(lc_id) = pending_delete {
-        // 削除は後続の LoadCaseId を繰り上げるため、開いたままの荷重モーダルを
-        // 閉じる必要がある（`App::delete_load_case_action` に一元化）。
         app.delete_load_case_action(lc_id);
     }
     if had_name {
@@ -166,13 +159,11 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(8.0);
 
-    // --- 節点荷重詳細（選択中の荷重ケース） ---
     ui.strong("節点荷重");
     if app.core.model.load_cases.is_empty() {
         ui.label("荷重ケースがありません。「+ ケース追加」で作成してください。");
         return;
     }
-    // 編集対象: ナビゲータ/上表で選択したケース → 最後に実行したケース → 先頭
     let lc_idx = app
         .ui
         .scoped
@@ -181,8 +172,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .and_then(|id| app.core.model.load_cases.iter().position(|lc| lc.id == id))
         .or_else(|| {
             app.core.scoped.last_static.and_then(|key| match key {
-                // 地震静的(Seismic)はユーザー荷重ケースに対応しないため
-                // None（呼び出し元のフォールバックで先頭ケースが選ばれる）。
                 crate::app::StaticKey::Case(crate::app::StaticCaseKey::User(id)) => {
                     app.core.model.load_cases.iter().position(|lc| lc.id == id)
                 }
@@ -198,8 +187,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     ));
 
     let nodal_count = app.core.model.load_cases[lc_idx].nodal.len();
-    // 準備計算が生成した荷重は同期のたびに作り直されるため編集・削除できない。
-    // 表には残す（この画面は準備計算の結果を確認する場でもある）。
     let mut pending_load: Vec<(usize, [f64; 6])> = Vec::new();
     let mut pending_name_edit: Vec<(usize, String)> = Vec::new();
     let mut pending_nodal_delete: Option<usize> = None;
@@ -281,13 +268,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    // モデルが実際に変わったときだけ解析結果を陳腐化させる。`UndoStack::run` は
-    // コマンドが Noop だった場合に false を返すため、その戻り値で判定する
-    // （入力欄で打ち直して元の値に戻した場合など、値が変わらない確定操作で
-    // 解析結果を無効にしない）。
     let mut had_load = false;
-    // 値・名称の変更は `SetNodalLoad`（要素まるごと差し替え）で行うため、
-    // 変更前の内容を読んでから 1 件ずつ発行する。
     for (index, values) in pending_load {
         let mut load = app.core.model.load_cases[lc_idx].nodal[index].clone();
         load.values = values;
@@ -325,7 +306,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         app.core.scoped.staleness.mark_edited();
     }
 
-    // --- 部材荷重セクション ---
     ui.add_space(8.0);
     ui.strong("部材荷重");
 
@@ -486,7 +466,6 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // --- 既存組合せの一覧（内訳表示・削除） ---
     let mut pending_delete: Option<usize> = None;
     if app.core.model.combinations.is_empty() {
         ui.label("組合せがありません。下の「自動生成」で作成できます。");
@@ -525,7 +504,6 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
         app.core.scoped.staleness.mark_edited();
     }
 
-    // --- 自動生成 ---
     ui.add_space(4.0);
     ui.strong("自動生成");
     combo_case_selector(
@@ -620,8 +598,6 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
                         .run(&mut app.core.model, Box::new(AddCombination { combo }));
                 }
                 app.core.scoped.staleness.mark_edited();
-                // 別経路で組合せを作れたため、自動生成の失敗表示は解消する
-                // （残すと解決済みのエラーが欄に出続ける）。
                 app.core.scoped.combo_error = None;
             }
         }
@@ -636,8 +612,6 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
             app.auto_generate_combinations_action();
         }
     });
-    // 組合せ生成に固有のエラーのみ表示する（`last_error` は共用スロットのため、
-    // ここへ出すと他の操作のエラーが無関係な欄に現れる）。
     if let Some(err) = &app.core.scoped.combo_error {
         ui.colored_label(crate::theme::ERROR_RED, err);
     }

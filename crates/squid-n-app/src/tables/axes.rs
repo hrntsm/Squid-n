@@ -125,8 +125,6 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
                     ui.label(source_label(axis.source));
                 });
                 row.col(|ui| {
-                    // セルの既定レイアウトは親（縦並びのパネル）を引き継ぐため、
-                    // ボタンを 2 つ置く場合は横並びに明示しないと行高からはみ出す。
                     ui.horizontal(|ui| {
                         if editing {
                             if ui.button("✔").on_hover_text("名前を確定").clicked() {
@@ -160,7 +158,6 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
     }
     if let Some((gi, ai, name)) = pending_commit {
         app.ui.scoped.axis_name_draft.editing = None;
-        // 空欄は無視する（名前のない通りは識別札として意味を成さない）。
         if !name.is_empty() && app.core.model.axes[gi].axes[ai].name != name {
             app.core.scoped.undo.run(
                 &mut app.core.model,

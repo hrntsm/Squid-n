@@ -9,8 +9,6 @@ use squid_n_core::units::to_display::{force_kn, stiffness_kn_per_mm};
 impl App {
     /// 結果タブ：3Dビューア と 時刻歴グラフを切替。
     pub(crate) fn results_tab_panel(&mut self, ui: &mut egui::Ui) {
-        // 表示対象（荷重ケース／組合せ）の選択肢を先に収集する
-        // （クロージャ内で self を可変借用しないため）。current_key は現在の表示対象。
         let result_options = self.result_display_options();
         let current_key = self
             .ui
@@ -37,7 +35,6 @@ impl App {
                 self.ui.view.results_view = ResultsView::LumpedMass;
             }
             ui.separator();
-            // 結果サマリ
             if let Some(r) = &self.core.scoped.results {
                 ui.label(format!("静的ケース数: {}", r.statics.len()));
                 if let Some(m) = &r.modal {
@@ -49,8 +46,6 @@ impl App {
             } else {
                 ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
             }
-            // 表示対象（荷重ケース／組合せ）の選択。変位図に加え、応力図・断面検定
-            // （その組合せの長期/短期）まで切り替える。
             if !result_options.is_empty() {
                 ui.separator();
                 ui.label("表示対象:");
@@ -93,7 +88,6 @@ impl App {
             return;
         }
 
-        // X/Y 方向切替（結果のない方向は disabled）。
         let has_x = self.pushover_for(SeismicDir::X).is_some();
         let has_y = self.pushover_for(SeismicDir::Y).is_some();
         ui.horizontal(|ui| {
@@ -125,15 +119,10 @@ impl App {
         });
         ui.separator();
 
-        // 必要保有水平耐力の総合判定（Qu ≥ Qun = Ds·Fes·Qud）を先に算定する。
-        // 実行ボタン→結果画面でそのまま OK/NG を確認できるよう、性能曲線より前に
-        // バナー表示する。`compute_holding_capacity` は &mut self を要するため、
-        // 以降の `po` 借用より前にここで所有権付きの結果へ落とす。
         let hc_verdict = self.compute_holding_capacity().ok();
 
         let po = self.displayed_pushover().expect("checked above");
 
-        // ── 必要保有水平耐力 判定バナー ──────────────────────────────
         match &hc_verdict {
             Some((res, _)) if !res.stories.is_empty() => {
                 let ng = res.stories.iter().filter(|s| !s.ok).count();
@@ -163,9 +152,6 @@ impl App {
                 );
             }
         }
-        // 崩壊機構が未形成（部分崩壊形）の警告。崩壊機構が確定しない限り Ds・
-        // 目標未到達のまま打ち切られた解析（非収束・特異化）は Qu が過小評価の
-        // 可能性があるため、終了理由を警告として明示する。
         if po.termination.is_premature() {
             ui.colored_label(
                 crate::theme::SECONDARY_AMBER,
@@ -176,8 +162,6 @@ impl App {
                 ),
             );
         }
-        // 必要保有水平耐力は暫定値であることを明示する（日本の慣行: 崩壊機構の確定が
-        // 必要保有水平耐力算定の前提）。
         if matches!(
             po.mechanism,
             squid_n_solver::nonlinear::pushover::MechanismType::Partial
@@ -198,7 +182,6 @@ impl App {
                     "全体崩壊形".to_string()
                 }
                 squid_n_solver::nonlinear::pushover::MechanismType::StoryCollapse { layer } => {
-                    // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = self
                         .core
                         .model
@@ -222,7 +205,6 @@ impl App {
             };
             ui.label(format!("増分方式: {}", control));
         });
-        // 塑性率（構造力学）の方式と最大値。
         ui.horizontal(|ui| {
             use squid_n_solver::nonlinear::pushover::DuctilityMethod;
             let method = match self.core.analysis_cfg.ductility_method {
@@ -240,10 +222,6 @@ impl App {
             ui.label(format!("最大部材塑性率 μmax = {:.2}", max_mu));
         });
 
-        // 層別の保有水平耐力（性能曲線・層別ピーク層せん断力）。加力方向により
-        // 符号を持ちうるため絶対値を取ってから最大値を求める
-        // （crates/squid-n-app/src/app/actions.rs の `story_qu` 算定と同じ着眼＝
-        // capacity_curve 全点にわたる層せん断力の最大値／βu の分母）。
         let layers = self.core.model.layers();
         let n_stories = layers.len();
         let story_name = |i: usize| -> String {
@@ -273,8 +251,6 @@ impl App {
             ui.label(format!("層別 Qu: {line}"));
         }
 
-        // 性能曲線（層別: 層間変位 - 層せん断力）。層ごとに 1 本の折れ線を描く
-        // （既存の色（`crate::theme` のデータ系色）を層番号で巡回して使用）。
         const STORY_COLORS: [egui::Color32; 8] = [
             crate::theme::DATA_BLUE,
             crate::theme::GOOD_GREEN,
@@ -311,10 +287,6 @@ impl App {
                         .color(color)
                         .width(2.0_f32),
                     );
-                    // 実際に釣合いを解いて確定した増分ステップの点をマーカーで示す。
-                    // 点間を結ぶ折れ線は単なる補間であり計算結果ではないため、
-                    // どこが計算点かをマーカーで判別できるようにする（同名で登録し
-                    // 凡例のエントリは折れ線と共有する）。
                     plot_ui.points(
                         egui_plot::Points::new(story_name(i), egui_plot::PlotPoints::from(points))
                             .color(color)
@@ -324,7 +296,6 @@ impl App {
                 }
             });
 
-        // ヒンジ発生履歴（先頭 20 件）
         ui.separator();
         ui.strong("ヒンジ発生履歴");
         egui::ScrollArea::vertical().show(ui, |ui| {

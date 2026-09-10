@@ -45,7 +45,6 @@ pub fn draw(painter: &egui::Painter, proj: &Projector, model: &Model) {
     }
     let (x0, x1) = span(&grid.x_lines);
     let (y0, y1) = span(&grid.y_lines);
-    // 補助線なので、部材より淡い色で沈める。
     let stroke = egui::Stroke::new(1.0_f32, theme::translucent(theme::GRAY_600, 70));
     for lv in &grid.levels {
         let z = lv.elevation;
@@ -65,7 +64,6 @@ pub fn draw(painter: &egui::Painter, proj: &Projector, model: &Model) {
         }
     }
 
-    // 通り名は最下レベルの端にだけ添える。格子の外側へ少し逃がして線と重ねない。
     let Some(base) = grid.levels.first() else {
         return;
     };
@@ -159,7 +157,6 @@ fn resolve(model: &Model, pending: &mut Vec<[f64; 3]>, point: SnapPoint) -> Node
         SnapPoint::Node(n) => return n,
         SnapPoint::Grid(c) => c,
     };
-    // 既存節点に同じ座標があればそれを使う（表示対象外の節点も拾う）。
     if let Some(n) = model.nodes.iter().find(|n| same_coord(n.coord, c)) {
         return n.id;
     }
@@ -245,7 +242,6 @@ fn is_vertical(model: &Model, pending: &[[f64; 3]], a: NodeId, b: NodeId) -> boo
     };
     is_vertical_pair(ca, cb)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

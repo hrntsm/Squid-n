@@ -1,12 +1,10 @@
-//! TONMANUAL（トンマナガイド）に基づく配色・テーマの単一情報源。
+//! 配色・テーマの単一情報源。
 //!
-//! 色値は本書 §2（カラーパレット）／§3（データビジュアライゼーション）／§3-2（3D ビュー）
-//! の値をそのまま定数化したもの。UI 各所はこの定数を参照し、独自色を散らさない。
+//! 色値を定数化したもの。UI 各所はこの定数を参照し、独自色を散らさない。
 //! テーマ全体（ライト基準・ブルークローム・角丸）は [`apply_theme`] で egui に適用する。
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle};
 
-// ===== §2 プライマリ（スチールブルー。工学系デスクトップのクローム） =====
 /// ツールバー／アクティビティバー背景
 pub const BLUE_200: Color32 = Color32::from_rgb(0xC8, 0xD9, 0xED);
 /// 選択ハイライト、ボタンホバー、ヘッダー帯
@@ -18,7 +16,6 @@ pub const BLUE_500: Color32 = Color32::from_rgb(0x21, 0x71, 0xC1);
 /// アクセントのホバー濃色
 pub const BLUE_600: Color32 = Color32::from_rgb(0x18, 0x5A, 0x9E);
 
-// ===== §2 セカンダリ（青みのあるグレー） =====
 /// 見出し・主要テキスト
 pub const GRAY_900: Color32 = Color32::from_rgb(0x1A, 0x23, 0x32);
 /// ナビゲーションテキスト・サブテキスト
@@ -34,7 +31,6 @@ pub const GRAY_100: Color32 = Color32::from_rgb(0xE6, 0xEC, 0xF5);
 /// 入力欄・2D グラフ・中央キャンバス（3D ビュー）背景
 pub const WHITE: Color32 = Color32::WHITE;
 
-// ===== §2 アクション／セマンティック =====
 /// 重要操作（解析実行・確定）および進捗
 pub const GREEN_500: Color32 = Color32::from_rgb(0x00, 0xB0, 0x50);
 /// アクションのホバー
@@ -42,7 +38,6 @@ pub const GREEN_600: Color32 = Color32::from_rgb(0x00, 0x8F, 0x40);
 /// エラー表示（ブランド対象外の固定色）
 pub const ERROR_RED: Color32 = Color32::from_rgb(0xEA, 0x43, 0x35);
 
-// ===== §3 データビジュアライゼーション配色 =====
 /// 標準・既定（既定の線・要素・変位、グラフの基準系列）
 pub const DATA_BLUE: Color32 = Color32::from_rgb(0x2B, 0x95, 0xFF);
 /// 超過・危険側（検定比 > 1.0＝NG・応力集中・負方向の量・崩壊ヒンジ）
@@ -59,7 +54,6 @@ pub const SECONDARY_AMBER: Color32 = Color32::from_rgb(0xD9, 0x77, 0x06);
 /// 淡色パネル上の注意ラベル（⚠ stale 等）。BEST_YELLOW はグラフ塗り用で文字には薄い。
 pub const WARN_TEXT: Color32 = SECONDARY_AMBER;
 
-// ===== §3-2 3D ビュー =====
 /// 3D 背景（中央キャンバス。ドックより淡く、2D グラフと同じ白）
 pub const VIEW_BG: Color32 = Color32::WHITE;
 /// X 軸（赤系）
@@ -77,7 +71,7 @@ pub fn translucent(c: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
-/// 色を白側へ `t`（0.0–1.0）だけ寄せて淡くする（§3-2 軸ラベル負方向端の淡色など）。
+/// 色を白側へ `t`（0.0–1.0）だけ寄せて淡くする。
 pub fn lighten(c: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let mix = |ch: u8| (ch as f32 + (255.0 - ch as f32) * t).round() as u8;
@@ -95,7 +89,7 @@ pub fn table_row_height(ui: &egui::Ui) -> f32 {
     ui.text_style_height(&TextStyle::Body) + TABLE_ROW_PADDING_PX
 }
 
-/// 検定比などの「状態」を §3 のセマンティック 3 色へ写像する。
+/// 検定比などの「状態」をセマンティック 3 色へ写像する。
 /// 良好(≤0.8)=緑／注意(≤1.0)=黄／超過(>1.0)=赤。
 pub fn status_color(ratio: f64) -> Color32 {
     if ratio <= 0.8 {
@@ -131,7 +125,7 @@ const CHECK_RATIO_LUT: [(f32, Color32); 4] = [
 /// - ≤1.0: 黄→アンバー（注意域。0.8 の境界で緑から明確に色相が変わる）
 /// - >1.0: 赤（NG。連続値ではなく単色）
 ///
-/// 検定表（`design_view.rs`）のセル着色は従来どおり [`status_color`] の3色規約を
+/// 検定表（`design_view.rs`）のセル着色は [`status_color`] の3色規約を
 /// 使う（表では文字と背景色の対比が要るため、淡い連続色は適さない）。
 pub fn check_ratio_color(ratio: f64) -> Color32 {
     if ratio > 1.0 {
@@ -224,13 +218,12 @@ const BLUE_WHITE_RED_LUT: [(f32, Color32); 3] = [(0.0, DATA_BLUE), (0.5, WHITE),
 
 /// コンター等の連続値表示で選択可能なカラーマップ。
 ///
-/// TONMANUAL §3「カラーマップ（連続値）」は「知覚均等で色覚多様性に配慮した Viridis を
-/// 既定とする」と規定しており、この規定は本 enum の `#[default]` を [`ColorMap::Viridis`]
-/// にすることで維持している。他の選択肢は UI からの明示的な切替のためのものであり、
+/// 既定は知覚均等で色覚多様性に配慮した Viridis（本 enum の `#[default]`）。
+/// 他の選択肢は UI からの明示的な切替のためのものであり、
 /// 既定動作を変更するものではない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ColorMap {
-    /// 知覚均等・色覚多様性配慮（TONMANUAL §3 既定）
+    /// 知覚均等・色覚多様性配慮（既定）
     #[default]
     Viridis,
     /// 知覚均等系（紫→赤→黄）
@@ -268,17 +261,14 @@ impl ColorMap {
     }
 }
 
-/// TONMANUAL に沿ったテーマ（ライト基準・スチールブルーのクローム・角丸 4/6px・タイポスケール）を
+/// テーマ（ライト基準・スチールブルーのクローム・角丸 4/6px・タイポスケール）を
 /// egui コンテキストへ適用する。アプリ起動時に一度だけ呼ぶ。
 pub fn apply_theme(ctx: &egui::Context) {
-    // eframe がダークテーマで起動する場合を防ぐため、
-    // visuals を先にライトテーマで上書きしてから詳細設定を重ねる
     ctx.set_visuals(egui::Visuals::light());
 
     let mut style = (*ctx.global_style()).clone();
     let mut v = egui::Visuals::light();
 
-    // 背景の階層（§2）: ドック内部＝gray-100（ツールバーより淡い）。入力欄だけ白。
     v.panel_fill = GRAY_100;
     v.window_fill = GRAY_100;
     v.extreme_bg_color = GRAY_200;
@@ -287,47 +277,39 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.code_bg_color = WHITE;
     v.hyperlink_color = BLUE_500;
 
-    // 選択ハイライト（§6 アクティブ）= blue-500 背景 + 白文字
     v.selection.bg_fill = BLUE_500;
     v.selection.stroke = Stroke::new(1.0_f32, WHITE);
 
     v.window_corner_radius = CornerRadius::same(6);
     v.menu_corner_radius = CornerRadius::same(6);
 
-    let r4 = CornerRadius::same(4); // 小要素（ボタン）
-    let r6 = CornerRadius::same(6); // カード／パネル
+    let r4 = CornerRadius::same(4);
+    let r6 = CornerRadius::same(6);
 
-    // 静かなクローム: 非対話（パネル・ラベル・カード）= gray-100 / gray-200 枠 / gray-700 文字
     v.widgets.noninteractive.bg_fill = GRAY_100;
     v.widgets.noninteractive.weak_bg_fill = GRAY_100;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, GRAY_200);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, GRAY_700);
     v.widgets.noninteractive.corner_radius = r6;
 
-    // ボタン／選択ラベル（rest）: 塗りなし（パネル色が見える）。枠 gray-200。
-    // weak_bg_fill を白にすると selectable_label が幅いっぱいに白カードになる。
-    // チェックボックス等の中身だけ白（bg_fill）。
     v.widgets.inactive.bg_fill = WHITE;
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, GRAY_200);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, GRAY_700);
     v.widgets.inactive.corner_radius = r4;
 
-    // ホバー: 淡いスチールブルー + 暗い文字（淡色の上に白文字はコントラスト不足）
     v.widgets.hovered.bg_fill = BLUE_300;
     v.widgets.hovered.weak_bg_fill = BLUE_300;
     v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BLUE_500);
     v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, GRAY_900);
     v.widgets.hovered.corner_radius = r4;
 
-    // アクティブ（押下・選択）: blue-500 背景 + 白文字
     v.widgets.active.bg_fill = BLUE_500;
     v.widgets.active.weak_bg_fill = BLUE_500;
     v.widgets.active.bg_stroke = Stroke::new(1.0_f32, BLUE_500);
     v.widgets.active.fg_stroke = Stroke::new(1.5_f32, WHITE);
     v.widgets.active.corner_radius = r4;
 
-    // コンボボックス展開トリガ: 入力欄相当（白 / gray-200 枠）
     v.widgets.open.bg_fill = WHITE;
     v.widgets.open.weak_bg_fill = WHITE;
     v.widgets.open.bg_stroke = Stroke::new(1.0_f32, GRAY_200);
@@ -336,7 +318,6 @@ pub fn apply_theme(ctx: &egui::Context) {
 
     style.visuals = v;
 
-    // タイポグラフィスケール（§4）: 見出し / 13 / 12 / 11
     style.text_styles = [
         (
             TextStyle::Heading,
@@ -415,12 +396,11 @@ pub fn apply_status_bar_visuals(ui: &mut egui::Ui) {
     v.selection.bg_fill = BLUE_500;
     v.selection.stroke = Stroke::new(1.0_f32, WHITE);
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// TONMANUAL §3 の規定どおり、既定のカラーマップは Viridis。
+    /// 既定のカラーマップは Viridis。
     #[test]
     fn colormap_default_is_viridis() {
         assert_eq!(ColorMap::default(), ColorMap::Viridis);

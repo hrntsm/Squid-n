@@ -77,9 +77,6 @@ fn resolve_member_hysteresis_for_kind(
         ElementKind::Fiber | ElementKind::MultiSpring => {
             squid_n_element::factory::resolve_fiber_concrete_hysteresis(elem, model, kind)
         }
-        // 耐震壁は面内せん断ばね（支配的挙動）の解決結果を表示する。
-        // 壁柱ファイバのコンクリート除荷則は resolve_wall_concrete_hysteresis で
-        // 別途解決される（同じ指定をそれぞれ解釈可能な範囲で適用）。
         ElementKind::Wall => {
             squid_n_element::factory::resolve_wall_shear_hysteresis(elem, model, kind)
         }
@@ -112,14 +109,12 @@ fn members_table_view<'a>(model: &'a Model) -> MembersTableView<'a> {
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
-    // ── 梁追加フォーム ──────────────────────────────────────────
     if app.core.model.nodes.len() < 2 {
         ui.label("梁を追加するには節点が2つ以上必要です");
     } else {
         let id_i = egui::Id::new("add_member_sel_i");
         let id_j = egui::Id::new("add_member_sel_j");
 
-        // egui 一時メモリから選択済み節点IDを取得。未設定なら先頭/2番目の節点で初期化。
         let mut sel_i: Option<NodeId> = ui
             .data(|d| d.get_temp::<Option<NodeId>>(id_i))
             .flatten()
@@ -129,10 +124,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             .flatten()
             .or_else(|| app.core.model.nodes.get(1).map(|n| n.id));
 
-        // 制振ダンパー追加時に使う「定義から選択」の選択中インデックス。
-        // （インデックス, 選択時点の定義名）を egui 一時メモリに保持し（App
-        // フィールドは増やさない）、定義削除で他の定義がずれても選択中の定義名で
-        // 追従できるようにする（`resolve_damper_def_selection` 参照）。
         let id_damper_def_sel = egui::Id::new("add_member_damper_def_sel");
         let stored_damper_def_sel =
             ui.data(|d| d.get_temp::<Option<(usize, String)>>(id_damper_def_sel));
@@ -143,15 +134,12 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|(i, _)| i);
 
         let mut do_add = false;
-        // 免震支承材の作成（2節点＋種別＋諸元。下の折りたたみフォームで諸元を編集）。
         let mut do_add_isolator = false;
-        // 制振ダンパー（マクスウェル要素等）の追加（下部の一覧で編集する）。
         let mut do_add_damper = false;
 
         ui.horizontal(|ui| {
             ui.label("梁追加:");
 
-            // i 節点 ComboBox
             let i_text = sel_i
                 .map(|n| format!("N{}", n.0))
                 .unwrap_or_else(|| "―".to_string());
@@ -169,7 +157,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
 
-            // j 節点 ComboBox
             let j_text = sel_j
                 .map(|n| format!("N{}", n.0))
                 .unwrap_or_else(|| "―".to_string());
@@ -187,7 +174,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
 
-            // i != j のときのみ追加ボタンを有効化
             let enabled = matches!((sel_i, sel_j), (Some(i), Some(j)) if i != j);
             if ui
                 .add_enabled(enabled, egui::Button::new("+ 部材追加"))
@@ -197,7 +183,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             }
 
             ui.separator();
-            // 免震支承材の作成は下の折りたたみフォーム（諸元入力）から実行する。
             if ui
                 .add_enabled(enabled, egui::Button::new("+ 免震支承材追加"))
                 .on_hover_text(
@@ -207,8 +192,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             {
                 do_add_isolator = true;
             }
-            // 制振ダンパー（マクスウェル要素等）を選択2節点間に追加（下部一覧で編集）。
-            // 「定義から選択」で選んだプリセットがあればその諸元を初期値にする。
             if ui
                 .add_enabled(enabled, egui::Button::new("+ 制振ダンパー追加"))
                 .on_hover_text(
@@ -220,11 +203,9 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             }
         });
 
-        // クロージャ終了後に一時メモリ更新（借用の競合を避ける）
         ui.data_mut(|d| d.insert_temp(id_i, sel_i));
         ui.data_mut(|d| d.insert_temp(id_j, sel_j));
 
-        // ── 制振ダンパー「定義から選択」（damper_defs から選ぶと諸元に反映） ──
         ui.horizontal(|ui| {
             ui.label("制振ダンパーの定義:");
             let text = damper_def_sel
@@ -265,7 +246,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         });
         ui.data_mut(|d| d.insert_temp(id_damper_def_sel, to_store));
 
-        // ── 免震支承材を追加（諸元フォーム） ─────────────────────
         ui.separator();
         egui::CollapsingHeader::new("免震支承材を追加")
             .default_open(false)
@@ -288,7 +268,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             });
 
-        // 追加実行（クロージャ外で app の可変借用を使う）
         if do_add {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
                 let new_id = ElemId(app.core.model.elements.len() as u32);
@@ -314,7 +293,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             }
         }
 
-        // 免震支承材追加（要素＋既定諸元を原子的に作成）。
         if do_add_isolator {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
                 let new_id = ElemId(app.core.model.elements.len() as u32);
@@ -344,7 +322,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             }
         }
 
-        // 制振ダンパー追加（要素＋諸元を原子的に作成。「定義から選択」があればその諸元を使う）。
         if do_add_damper {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
                 let new_id = ElemId(app.core.model.elements.len() as u32);
@@ -376,7 +353,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     ui.separator();
-    // ── ここまで梁追加フォーム ────────────────────────────────────
 
     let (wall_index, pending_section, pending_hysteresis, pending_hysteresis_th, pending_delete) = {
         let view = members_table_view(&app.core.model);
@@ -396,9 +372,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             ui.separator();
         }
 
-        // 本表は解析要素の一覧なので、解析要素にならない壁版（腰壁・垂壁・間柱で
-        // 分割された壁等）は行として現れない。壁版の一覧は「壁版」タブが持つため、
-        // そこへ導線を出す（「入力したはずの壁が見当たらない」を防ぐ）。
         if app
             .core
             .model
@@ -511,26 +484,20 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     .response
                     .on_hover_text(hover);
                 });
-                row.col(|ui| {
-                    // 材料は断面が持つため、この欄は断面から引いた表示のみとする
-                    // （割り当ては断面テーブルで行う）。
-                    match view.model.element_material(elem) {
-                        Some(m) => {
-                            let name = m.name.clone();
-                            ui.label(&name).on_hover_text(format!(
-                                "{name}（断面が持つ材料です。変更は断面テーブルで行ってください）"
-                            ));
-                        }
-                        None => table_util::muted_cell(
-                            ui,
-                            "―",
-                            "断面に材料が割り当てられていません（断面テーブルで割り当てます）",
-                        ),
+                row.col(|ui| match view.model.element_material(elem) {
+                    Some(m) => {
+                        let name = m.name.clone();
+                        ui.label(&name).on_hover_text(format!(
+                            "{name}（断面が持つ材料です。変更は断面テーブルで行ってください）"
+                        ));
                     }
+                    None => table_util::muted_cell(
+                        ui,
+                        "―",
+                        "断面に材料が割り当てられていません（断面テーブルで割り当てます）",
+                    ),
                 });
                 row.col(|ui| {
-                    // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
-                    // 梁=材端曲げバネ、柱（ファイバー）・MS・壁=コンクリート除荷則へ反映。
                     let current = app.core.model.member_hysteresis(elem.id);
                     let selected_text = match current {
                         Some(r) => r.label().to_string(),
@@ -575,7 +542,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 });
                 row.col(|ui| {
-                    // 履歴則（時刻歴応答解析用スロット）。`None`＝増分用の指定に従う。
                     let current_th_raw = app.core.model.member_hysteresis_th_raw(elem.id);
                     let selected_text = match current_th_raw {
                         None => "増分と同じ".to_string(),
@@ -643,7 +609,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         )
     };
 
-    // 確定処理
     let had_pending = !pending_section.is_empty()
         || !pending_hysteresis.is_empty()
         || !pending_hysteresis_th.is_empty()
@@ -652,7 +617,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         let section = if sec_id == u32::MAX {
             None
         } else {
-            // 参照先が存在するか確認
             let sid = SectionId(sec_id);
             if app.core.model.sections.iter().any(|s| s.id == sid) {
                 Some(sid)
@@ -719,14 +683,11 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
     if had_pending {
         app.core.scoped.staleness.mark_edited();
     }
 
-    // ── 制振ダンパー一覧（Kd/C0/α の編集・削除）─────────────────────
     dampers_table(ui, app);
-    // ── 免震支承材一覧（諸元編集・削除）───────────────────────────
     isolators_table(ui, app);
 }
 
@@ -759,11 +720,9 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
         .small(),
     );
 
-    // 変更・削除は借用衝突を避けて確定処理へ回す。
     let mut pending_props: Vec<(ElemId, DamperProps)> = Vec::new();
     let mut pending_del: Option<ElemId> = None;
 
-    // ── 定義から一覧の全ダンパーへ一括適用 ─────────────────────
     if !app.core.model.damper_defs.is_empty() {
         let id_bulk_sel = egui::Id::new("dampers_table_bulk_def_sel");
         let mut bulk_sel: Option<usize> = ui
@@ -836,7 +795,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 table_util::text_cell(ui, &elem_nodes_label(&app.core.model, elem_id));
             });
-            // 種別セレクタ。
             row.col(|ui| {
                 let label = match props.kind {
                     DamperKind::Maxwell => "マクスウェル",
@@ -855,7 +813,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
             });
-            // Kd（両種別で使用。kN/mm 単位で編集）。
             row.col(|ui| {
                 let mut kd_kn = stiffness_kn_per_mm(props.kd);
                 let resp = table_util::cell_drag_value(
@@ -870,7 +827,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // C0（マクスウェルのみ）。
             row.col(|ui| {
                 let mut c0_kn = viscous_c0_kn(props.c0);
                 let resp = table_util::cell_drag_value(
@@ -885,7 +841,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // α（マクスウェルのみ）。
             row.col(|ui| {
                 let resp = table_util::cell_drag_value(
                     ui,
@@ -898,7 +853,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // Qy（履歴型のみ。kN 単位）。
             row.col(|ui| {
                 let mut qy_kn = force_kn(props.qy);
                 let resp = table_util::cell_drag_value(
@@ -913,7 +867,6 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // k2/k1（履歴型のみ）。
             row.col(|ui| {
                 let resp = table_util::cell_drag_value(
                     ui,
@@ -1024,7 +977,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 table_util::text_cell(ui, &elem_nodes_label(&app.core.model, elem_id));
             });
-            // 種別セレクタ。
             row.col(|ui| {
                 table_util::cell_combo(
                     ui,
@@ -1049,11 +1001,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                     },
                 );
             });
-            // K1（両種別で使用。kN/mm 単位で編集）。
-            // ドラッグ中は毎フレーム changed() が真になるため、コマンド発行は
-            // ドラッグ終了（またはフォーカス喪失）まで遅らせる（undo スタックの
-            // 大量消費防止）。表示用の変換自体は毎フレーム行い、ドラッグ中の
-            // ライブ表示は維持する。
             row.col(|ui| {
                 let mut k1_kn = stiffness_kn_per_mm(props.k1);
                 let resp = table_util::cell_drag_value(
@@ -1068,7 +1015,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // K2（積層ゴム系のみ）。
             row.col(|ui| {
                 let mut k2_kn = stiffness_kn_per_mm(props.k2);
                 let resp = table_util::cell_drag_value(
@@ -1083,7 +1029,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // Qd（積層ゴム系のみ。kN 単位）。
             row.col(|ui| {
                 let mut qd_kn = force_kn(props.qd);
                 let resp = table_util::cell_drag_value(
@@ -1098,7 +1043,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // Kv（両種別で使用。kN/mm 単位）。
             row.col(|ui| {
                 let mut kv_kn = stiffness_kn_per_mm(props.kv);
                 let resp = table_util::cell_drag_value(
@@ -1113,7 +1057,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_props.push((elem_id, props));
                 }
             });
-            // μ（すべり支承のみ）。
             row.col(|ui| {
                 let resp = table_util::cell_drag_value(
                     ui,
@@ -1146,9 +1089,6 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
         changed = true;
     }
     if let Some(elem_id) = pending_del {
-        // 対象が支点免震（零長＋接地節点）であれば RemoveSupportIsolator で
-        // 接地節点まで含めて撤去する（通常の DeleteMember だと接地節点だけが
-        // ゴミとして残ってしまうため）。通常の免震要素は従来どおり DeleteMember。
         match app.core.model.support_isolator_ends(elem_id) {
             Some((upper, _ground)) => {
                 app.core.scoped.undo.run(
@@ -1227,7 +1167,6 @@ impl EditCommand for SetIsolatorPropsLocal {
         "免震支承材特性変更"
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

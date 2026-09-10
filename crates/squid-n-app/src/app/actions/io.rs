@@ -24,7 +24,7 @@ impl App {
     /// 起こらない。持ち越すもの（解析条件・設計条件・ドック配置・カメラ・配色等）は
     /// [`AppCore`] 直下と [`UiViewState`] にあり、この代入では触れない。
     ///
-    /// 旧スキーマの自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
+    /// 自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
     /// 標準ケース名（DL・LL(架構用)・LL(地震用)）へ移行する。
     pub fn load_model(&mut self, mut model: squid_n_core::model::Model) {
         model.migrate_legacy_auto_load_cases();
@@ -76,9 +76,7 @@ impl App {
         include_recording: Option<bool>,
     ) {
         self.core.scoped.last_error = None;
-        // 保存直前に表示中方向の増分解析結果を `pushover` 窓口へ同期する。
         self.sync_pushover_for_save();
-        // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
         let prep = self
             .core
             .scoped
@@ -86,11 +84,6 @@ impl App {
             .as_ref()
             .filter(|_| !self.core.scoped.staleness.preparation_stale)
             .map(rmp_serde::to_vec);
-        // 時刻歴の詳細記録（`ThRecording`）も解析結果の一部として保存する。
-        // 実建物規模では数百MB級になり得るため、既定の閾値を超える場合のみ
-        // 確認ダイアログで含める/除外するをユーザーが選ぶ。`Some(false)` の
-        // ときは `take()` で一時的に取り除いて直列化し、直後に戻す
-        // （記録本体の複製コストを避ける。保存はメモリ上の結果に対し非破壊）。
         let exclude_recording = include_recording == Some(false);
         let taken_recordings = if exclude_recording {
             self.core
@@ -123,10 +116,6 @@ impl App {
                 bundle.restore_th_recordings(taken);
             }
         }
-        // 解析タブの設定値は、モデルの新陳（staleness）と無関係に常に同梱する
-        // （結果を生成した条件そのものであり、結果が古くても・結果がなくても
-        // 現在の設定は保存する意味がある）。波形ライブラリの選択（ファイル名・
-        // 実行時点のハッシュ）も同じエントリに含める。
         let analysis_settings = Some(rmp_serde::to_vec(&SavedAnalysisSettings {
             cfg: self.core.analysis_cfg,
             wave_name: self.core.scoped.wave_library_selection.clone(),
@@ -138,8 +127,6 @@ impl App {
         let results_bytes = self.encoded_or_notice(results, "解析結果");
         let analysis_settings_bytes = self.encoded_or_notice(analysis_settings, "解析タブの設定値");
 
-        // サイズ超過の確認（未確認の初回のみ）。詳細記録を含む結果が閾値を
-        // 超える場合は保存せず、確認ダイアログの表示を要求して戻る。
         if include_recording.is_none() {
             let has_recording = self
                 .core
@@ -160,9 +147,6 @@ impl App {
             results: results_bytes.as_deref(),
             analysis_settings: analysis_settings_bytes.as_deref(),
         };
-        // 解析結果を同梱しないときは振動ケースもモデルから外して書く。
-        // 結果なしのケースがナビに残ると、未実行なのに実行済みに見える。
-        // メモリ上のケースは保存後も残す（画面上の結果はまだあるため）。
         let taken_vibration_cases = if persist_results {
             None
         } else {
@@ -178,8 +162,6 @@ impl App {
         }
         match save_result {
             Ok(()) => {
-                // ショートカット保存はダイアログも出ず無反応になるため、
-                // 成功をステータスバーとログで明示する。
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -227,7 +209,7 @@ impl App {
     /// 対して最新である）。準備計算・解析結果は、同梱がない・復号に失敗した場合は
     /// 未実行のままとし、解析実行時または「準備計算 実行」で再計算する。解析タブの
     /// 設定値は、同梱がない・復号に失敗した場合は現状（既定値）のまま変更しない
-    /// （旧プロジェクトファイルには含まれないため）。ただし質量モデルの方式
+    /// （同梱に含まれない場合があるため）。ただし質量モデルの方式
     /// （`mass_method`）だけは、解析タブの設定値の同梱有無によらず、読み込んだ
     /// モデル側の値へ必ず同期する（単一情報源の原則。詳細は本体側のコメント参照）。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
@@ -250,15 +232,6 @@ impl App {
                         saved.lumped_wave_sha256,
                     );
                 }
-                // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
-                // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
-                // 反映される片方向の関係）。解析タブの設定値が同梱されていた
-                // 場合はその復元値と、同梱されていない旧プロジェクトファイルの
-                // 場合は読込前の値（前のプロジェクトや既定値）と、それぞれ食い違い
-                // うる。この行を上の if 節の中に置くと後者（同梱なし）で
-                // スキップされ、パネル表示とモデルが実際に使う方式が食い違ったまま
-                // 気づけなくなるため、同梱の有無によらず必ずモデル側の値で
-                // 上書きする（単一情報源の原則）。
                 self.core.analysis_cfg.mass_method = self.core.model.mass_method;
                 if let Some(prep) =
                     self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
@@ -310,8 +283,6 @@ impl App {
                         saved.view_lumped_vibration_case,
                     );
                     self.core.scoped.staleness.last_run = saved.last_run;
-                    // 保存側が最新のときだけ書き出すため、復元できた結果は
-                    // モデルと整合している（断面検定の結果も同梱されている）。
                     self.core.scoped.staleness.results_stale = false;
                     self.core.scoped.staleness.design_stale = false;
                 }
@@ -366,23 +337,18 @@ impl App {
                 }
                 if model.load_cases.is_empty() {
                     model.load_cases = squid_n_core::model::default_load_cases();
-                    // 荷重ケースを補完した場合は標準荷重組合せも用意する（新規モデルと同じ出発点）。
                     if model.combinations.is_empty() {
                         model.combinations = squid_n_core::model::default_combinations();
                     }
                 }
                 self.load_model(model);
                 self.log_attribute_dispositions(&report);
-                // 欠落・近似（warnings）と自動補完の仮定（notes。支点の自動設定など）が
-                // あれば注意として表示する（致命的ではない）。
                 let mut lines: Vec<String> = report
                     .warnings
                     .iter()
                     .chain(report.notes.iter())
                     .cloned()
                     .collect();
-                // 属性の扱いは件数が多く（実ファイルで数十種類）そのまま並べると読めないため、
-                // ここは要約 1 行に留めて全量はログへ出す。
                 let dropped = report.dropped_attributes().count();
                 if dropped > 0 {
                     lines.push(format!(
@@ -457,8 +423,6 @@ impl App {
                     self.report_error(format!("ST-Bridge書出エラー: {}", e));
                     return;
                 }
-                // 平行芯以外の通り芯（円弧芯・放射芯・作図芯）は幾何を保持して
-                // いないため書き出せない。無言で落とさず利用者へ知らせる。
                 let dropped = self
                     .core
                     .model

@@ -50,9 +50,6 @@ fn test_elem_is_steel_follows_material_category() {
 /// ナビゲータの部材グループは材料を持つ要素だけを振り分ける。
 ///
 /// 準備計算が自動生成する仕口パネル要素は材料を持たないため、材種で分けようがない。
-/// かつては「鋼系でないもの」をすべて RC 部材へ入れていたため、純 S 造の建物でも
-/// 生成されたパネルの本数だけ RC 部材が計上され、選択すると取り付く柱・梁が
-/// ハイライトされて柱が RC と判定されているように見えていた。
 #[cfg(feature = "gui")]
 #[test]
 fn test_member_material_groups_excludes_generated_panel_zones() {
@@ -155,7 +152,7 @@ fn test_report_error_switches_bottom_tab_to_log() {
 }
 
 /// モデル差し替えで作成モードと選択バッファが解除される
-/// （旧モデルの節点 id が残ると意図しない部材が生成されうるため）。
+/// （差し替え前のモデルの節点 id が残ると意図しない部材が生成されうるため）。
 #[cfg(feature = "gui")]
 #[test]
 #[allow(clippy::field_reassign_with_default)]
@@ -182,13 +179,7 @@ fn test_load_model_resets_draw_modes() {
     assert!(app.ui.scoped.slab_draw_nodes.is_empty());
 }
 
-/// モデル差し替えで、旧モデルを指す UI 状態がすべて破棄される。
-///
-/// 従来は `load_model` がフィールドを個別に列挙してリセットしており、列挙から
-/// 漏れた `mn_view`（断面添字とその断面の曲面キャッシュ）・`load_editor`
-/// （荷重ケース／節点／部材の id）・`node_grid`（選択矩形）・`view_mode_idx`
-/// （モード形の番号）・`pending_duplicate_node_coord`（追加保留座標）が旧モデルの
-/// 状態のまま残っていた。
+/// モデル差し替えで、差し替え前のモデルを指す UI 状態がすべて破棄される。
 #[cfg(feature = "gui")]
 #[test]
 fn test_load_model_resets_model_bound_ui_state() {
@@ -216,11 +207,7 @@ fn test_load_model_resets_model_bound_ui_state() {
 
 /// モデル差し替えで、そのモデルに対して選んだ解析側の状態が破棄される。
 ///
-/// 質点系の波形選択は、立体時刻歴の `wave_library_selection` と同じ理由
-/// （一度も選んでいない波形が新しいプロジェクトの `.scz` へ記録される）で
-/// 破棄しなければならないのに、従来は列挙から漏れて持ち越されていた。
-/// `project_path` も同様に列挙になく、呼び出し元 5 箇所が個別に `None` を
-/// 代入することで辛うじて保たれていた。
+/// 質点系の波形選択と `project_path` も破棄される。
 #[test]
 fn test_load_model_resets_model_bound_core_state() {
     let mut app = App::default();
@@ -414,7 +401,7 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
     model
 }
 
-/// 剛域自動算定が解析パイプラインへ接続されていること（設計書 §6.2.1、標準実装）。
+/// 剛域自動算定が解析パイプラインへ接続されていること。
 /// 解析エントリ(`run_linear_static`)を通す前は既定の 0（未適用）のままだが、
 /// 通した後は `apply_rigid_zones_for_analysis` により `elem.rigid_zone` が
 /// 自動算定値へ更新される。
@@ -467,9 +454,9 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
     assert_eq!(col.rigid_zone.face_i_or_zero(), 0.0);
 }
 
-/// `run_design_check` が危険断面位置（§6.2.3、既定は柱フェイスと中央）のみを
+/// `run_design_check` が危険断面位置（既定は柱フェイスと中央）のみを
 /// 検定し、剛域が有る端の節点芯は検定対象外になることを確認する。
-/// 剛域がない端（face=0）では従来どおり節点芯が検定対象に残る。
+/// 剛域がない端（face=0）では節点芯が検定対象に残る。
 #[test]
 fn test_run_design_check_filters_to_design_positions() {
     let mut app = App::default();
@@ -510,7 +497,7 @@ fn test_run_design_check_filters_to_design_positions() {
     );
 
     // 柱(id=0): 脚部(node0)は他要素と接続しない(face_i=0)ため節点芯 0.0 のままが
-    // 危険断面位置に一致し、検定対象に残る(従来挙動と一致)。
+    // 危険断面位置に一致し、検定対象に残る。
     // 頭部(node1)は梁と直交(face_j>0)のため節点芯 1.0 は検定対象外になる。
     let col_positions: Vec<f64> = positions_of(ElemId(0));
     assert!(
@@ -528,7 +515,7 @@ fn test_run_design_check_filters_to_design_positions() {
 /// 部材付帯情報（`MemberDetailAttr`）を持つ部材で設計検定を実行すると、
 /// ハンチ端・継手位置の検定結果が `checks` に含まれること
 /// （`design_positions` が `Model::member_detail` の追加検定位置を
-/// 取り込んでいるかの確認。§6.2.3「位置はユーザが追加・変更可能」）。
+/// 取り込んでいるかの確認）。
 #[test]
 fn test_run_design_check_includes_member_detail_positions() {
     use squid_n_core::model::{Haunch, JointKind, MemberDetailAttr, MemberJoint};
@@ -709,7 +696,7 @@ fn test_seismic_flow_requires_then_uses_stories() {
 
     // 地震静的の結果は StaticCaseKey::Seismic(X) に格納され、直前に実行した
     // ユーザーケース0(StaticCaseKey::User)の結果を上書きしない
-    // (旧実装ではどちらも LoadCaseId(0) を共有し、後勝ちで上書きされていた)。
+
     let r = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(
         r.statics.len(),
@@ -1131,7 +1118,7 @@ fn test_parse_wave_csv_single_column_x_or_y() {
     assert_eq!(accel, vec![100.0, 200.0, 300.0]); // gal→mm/s²(×10)
     assert!(second.is_none());
 
-    // カンマ区切りなら最後の列を使う（従来仕様）。
+    // カンマ区切りなら最後の列を使う。
     let content_csv = "0.0,10.0\n0.01,20.0\n0.02,30.0\n";
     let (accel, second) = parse_wave_csv(content_csv, ThDir::Y).unwrap();
     assert_eq!(accel, vec![100.0, 200.0, 300.0]);
@@ -3433,7 +3420,7 @@ fn cmq_display_load_case_falls_back_to_first_case() {
 
 /// 正方形スラブ（4000×4000）+ 外周4本の梁を持つモデル
 /// （`make_slab_test_model` の正方形版。正方形は `TriTrapezoid` で全辺
-/// 三角形分布になるため §1.1 のスラブ→荷重ケース同期の検算がしやすい）。
+/// 三角形分布になるためスラブ→荷重ケース同期の検算がしやすい）。
 fn make_square_slab_test_model() -> squid_n_core::model::Model {
     use squid_n_core::ids::FloorRegionId;
     use squid_n_core::model::{
@@ -3513,7 +3500,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
     }
 }
 
-/// レビュー §1.1（最重要）: スラブ荷重が `sync_gravity_load_cases_action` で
+/// スラブ荷重が `sync_gravity_load_cases_action` で
 /// 「DL」荷重ケースへ実際に書き込まれ、応力解析から参照可能に
 /// なることを確認する。正方形スラブは全辺三角形分布（2区間）になるため
 /// `MemberLoadKind::Distributed` への変換規則を直接検算できる。
@@ -3639,7 +3626,7 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
             .unwrap_or(0.0)
     }
 
-    // DL ケース: 従来どおり loads(0.005) を分配。
+    // DL ケース: loads(0.005) を分配。
     let dl = app
         .core
         .model
@@ -4236,7 +4223,7 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
     assert_eq!(joists.len(), 1, "床板境界上の二次部材小梁が1件設計される");
 }
 
-/// 床 Phase E レビュー指摘: スラブ設計のスパンは一方向指定に一致する
+/// スラブ設計のスパンは一方向指定に一致する
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]
 fn test_slab_design_span_respects_one_way() {
@@ -4340,7 +4327,7 @@ fn rc_slab_plate(section: squid_n_core::ids::SectionId) -> SlabPlate {
     }
 }
 
-/// 片持ち（線取り付き・矩形）は coef=2（M=wL²/2）。囲まれ矩形は従来どおり 8。
+/// 片持ち（線取り付き・矩形）は coef=2（M=wL²/2）。囲まれ矩形は 8。
 #[test]
 fn test_attached_cantilever_slab_check_coef_2() {
     use squid_n_core::ids::{SectionId, SlabId};
@@ -4506,10 +4493,10 @@ fn test_attached_point_slab_check_coef_2() {
     );
 }
 
-/// レビュー §1.7: 地震用重量に使う荷重ケースの選択が、並び順ではなく
+/// 地震用重量に使う荷重ケースの選択が、並び順ではなく
 /// `LoadCaseKind` に基づくことを確認する（Dead+LiveSeismic 優先、
 /// LiveSeismic がなければ Dead+Live、種別が一つも設定されていなければ
-/// 従来互換で先頭ケースのみ）。
+/// 後方互換で先頭ケースのみ）。
 #[test]
 fn test_gravity_cases_for_seismic_weight_selection() {
     use squid_n_core::model::{LoadCase, LoadCaseKind};
@@ -5358,9 +5345,7 @@ fn test_compute_cft_ultimate_checks() {
     assert!(checks[0].ncu > 0.0 && checks[0].ntu > 0.0);
 }
 
-// ------------------------------------------------------------------
 // 標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）
-// ------------------------------------------------------------------
 
 /// 新規モデル（`Model::with_default_load_cases`）は標準5ケースと標準荷重組合せを持ち、
 /// `load_model` を通しても保持されることを確認する。
@@ -5620,7 +5605,7 @@ fn test_generate_stories_syncs_ex_ey_cases() {
     assert!((fx - fy).abs() < 1e-9, "fx={fx} fy={fy}");
 }
 
-/// `load_model` が旧スキーマの自動生成ケース名を標準名へ移行することを確認する
+/// `load_model` が自動生成ケース名を標準名へ移行することを確認する
 /// （床荷重(自動)→DL、自重(自動)は DL へ統合、床積載(自動)→LL(架構用)）。
 #[test]
 fn test_load_model_migrates_legacy_case_names() {
@@ -6122,7 +6107,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         .sum::<f64>()
         + sw_nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
     // 二次部材の自重は `self_weight_case_content` ではなく逐次伝達が運ぶ
-    // （申し送り §3.4 F6）。期待値には別途足す。
+    // 期待値には別途足す。
     for sm in app.core.model.joists().chain(app.core.model.posts()) {
         if let Some(w) = squid_n_load::floor::joist_self_weight_udl(&app.core.model, sm) {
             let (a, b) = (sm.nodes[0], sm.nodes[1]);
@@ -6253,9 +6238,7 @@ fn test_run_diagnostics_flags_unassigned_section() {
 
 /// 材料未割当の部材も断面と同じく部材単位の Error になる。
 ///
-/// 解析前チェック（`precheck_model`）は断面・材料のどちらが欠けても解析を止めるが、
-/// 診断はかつて断面しか見ておらず、材料だけが未割当のモデルは E0/W0 と表示された
-/// うえで解析だけが止まっていた。判定を `model_issues` へ共通化して解消している。
+/// 解析前チェック（`precheck_model`）は断面・材料のどちらが欠けても解析を止める。
 #[test]
 fn test_run_diagnostics_flags_unassigned_material() {
     let mut model = crate::sample::portal_frame();
@@ -6368,9 +6351,7 @@ fn test_run_preparation_refreshes_diagnostics_even_if_not_stale() {
 /// 準備計算が自動生成した仕口パネル要素は「断面未割当」警告の対象外。
 ///
 /// 仕口パネルの剛性は取り付く柱・梁の断面から求めた実効体積 Ve による（断面参照は
-/// 持たないのが正常）。かつては要素種別で絞らずに `section.is_none()` を拾っていた
-/// ため、S 造モデルを取り込んで準備計算を通すと生成されたパネルの本数だけ警告が並び、
-/// 断面は正しく割り当たっているのに未割当と表示されていた。
+/// 持たないのが正常）。
 #[test]
 fn test_run_diagnostics_ignores_generated_panel_zones() {
     use squid_n_core::model::ElementKind;
@@ -6426,7 +6407,7 @@ fn test_mark_edited_marks_diagnostics_stale() {
     assert!(app.core.scoped.staleness.diagnostics_stale);
 }
 
-// ---- グリッド操作（§9.2 ヘッドレス UI テスト。T5） ----
+// グリッド操作のヘッドレス UI テスト
 // widget（egui）を介さず、grid_core の純ロジックと NodeGridAdapter を
 // widget と同じ順序で呼び、モデル・undo の挙動を検証する。
 
@@ -6499,7 +6480,7 @@ mod grid_headless {
         Ok(plan)
     }
 
-    /// §9.2: ペースト適用が複合コマンド 1 個になり、undo 1 回で行追加ごと戻る。
+    /// ペースト適用が複合コマンド 1 個になり、undo 1 回で行追加ごと戻る。
     /// はみ出し行の自動追加（extra_rows）も検証する
     #[test]
     fn test_grid_paste_composite_single_undo_restores_appended_rows() {
@@ -6529,7 +6510,7 @@ mod grid_headless {
         assert!(app.core.model.eq_ignoring_dofmap(&before));
     }
 
-    /// §9.2: 全体拒否時にモデルが一切変化しない（undo スタックにも積まれない）
+    /// 全体拒否時にモデルが一切変化しない（undo スタックにも積まれない）
     #[test]
     fn test_grid_paste_reject_leaves_model_untouched() {
         let mut app = app_with_nodes(2);
@@ -6548,7 +6529,7 @@ mod grid_headless {
         );
     }
 
-    /// §9.2: 空モデル（節点 0）への貼り付けがプレースホルダ経由で成立し、
+    /// 空モデル（節点 0）への貼り付けがプレースホルダ経由で成立し、
     /// 自動で N 行追加 → undo 1 回で空に戻る
     #[test]
     fn test_grid_paste_into_empty_model() {
@@ -6567,7 +6548,7 @@ mod grid_headless {
         assert!(app.core.model.nodes.is_empty(), "undo 1 回で空に戻る");
     }
 
-    /// §9.2: Delete クリアの適用と undo（節点テーブルのクリア = 0 埋め）
+    /// Delete クリアの適用と undo（節点テーブルのクリア = 0 埋め）
     #[test]
     fn test_grid_clear_cells_and_undo() {
         let mut app = app_with_nodes(3);
@@ -6590,7 +6571,7 @@ mod grid_headless {
         );
     }
 
-    /// §9.2: プレースホルダでの編集確定が行追加＋値設定の 1 コマンドになり、
+    /// プレースホルダでの編集確定が行追加＋値設定の 1 コマンドになり、
     /// undo 1 回で行ごと戻る
     #[test]
     fn test_grid_placeholder_commit_appends_row() {
@@ -6615,7 +6596,7 @@ mod grid_headless {
         assert_eq!(app.core.model.nodes.len(), 1, "undo 1 回で行追加ごと戻る");
     }
 
-    /// §9.2: Backspace（空バッファでの編集開始）→ Enter の空確定は「変更なし」
+    /// Backspace（空バッファでの編集開始）→ Enter の空確定は「変更なし」
     /// であり、範囲クリアもモデル変更も undo 履歴も発生しない
     #[test]
     fn test_grid_empty_commit_is_no_change() {
@@ -6634,7 +6615,7 @@ mod grid_headless {
         assert!(!app.core.scoped.undo.can_undo());
     }
 
-    /// §9.2: 不正値の編集確定は Rejected でモデル無変化
+    /// 不正値の編集確定は Rejected でモデル無変化
     #[test]
     fn test_grid_invalid_commit_is_rejected() {
         let mut app = app_with_nodes(2);
@@ -6652,7 +6633,7 @@ mod grid_headless {
         assert!(!app.core.scoped.undo.can_undo());
     }
 
-    /// §9.2: 行削除が複合コマンド 1 個になり、undo 1 回で ID 繰り上げごと復元される
+    /// 行削除が複合コマンド 1 個になり、undo 1 回で ID 繰り上げごと復元される
     #[test]
     fn test_grid_delete_rows_single_undo_restores_ids() {
         let mut app = app_with_nodes(5);
@@ -6681,7 +6662,7 @@ mod grid_headless {
         );
     }
 
-    /// §9.2: 参照中の節点を含む行削除は validate_row_deletion が拒否し、
+    /// 参照中の節点を含む行削除は validate_row_deletion が拒否し、
     /// （widget が delete_rows を呼ばないため）モデルは一切変化しない
     #[test]
     fn test_grid_delete_referenced_row_is_rejected() {
@@ -6968,7 +6949,7 @@ fn test_preparation_lists_rigid_zones() {
         "剛域の候補は梁要素（線材）"
     );
     // サンプルは S 造のため剛域長 λ は 0 だが、危険断面位置の基準となる
-    // 柱フェース距離は付く（λ とフェース距離は別概念。設計書 §6.2.1）。
+    // 柱フェース距離は付く（λ とフェース距離は別概念）。
     assert!(
         !prep.rigid_zones.is_empty(),
         "柱梁が直交接続するのでフェース距離が付く"
@@ -7111,16 +7092,14 @@ fn test_load_model_resets_preparation() {
     assert!(app.core.scoped.staleness.preparation_stale);
 }
 
-/// モデル差し替え（load_model）は旧モデル由来の結果・表示状態をすべてリセット
-/// する。従来は results/selection 等のみで、質点系応答・仕口パネル一覧・
-/// 時刻歴の選択部材などが旧モデルの ID を指したまま残っていた。
+/// モデル差し替え（load_model）は差し替え前のモデル由来の結果・表示状態をすべてリセットする。
 #[test]
 fn test_load_model_resets_model_derived_state() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
 
-    // 旧モデル由来の状態を擬似的に残す。
+    // 差し替え前のモデル由来の状態を擬似的に残す。
     app.core.scoped.stick_response = Some(squid_n_solver::dynamic::lumped_mass::StickResponse {
         time: vec![0.0],
         roof_disp: vec![0.0],
@@ -7148,7 +7127,7 @@ fn test_load_model_resets_model_derived_state() {
         app.ui.scoped.th_frame = 42;
         app.ui.scoped.th_playing = true;
     }
-    // 波形ライブラリの選択も旧モデル由来の状態。ここが漏れていると、
+    // 波形ライブラリの選択も差し替え前のモデル由来の状態。ここが漏れていると、
     // プロジェクトAで選んだ波形が、一度も選んでいないプロジェクトBへ
     // 持ち越されたまま保存されてしまう。
     app.core.scoped.wave_library_selection = Some("elcentro.csv".to_string());
@@ -7204,10 +7183,8 @@ fn test_set_wave_library_selection_clears_hash_only_on_change() {
 
 /// 質量モデルの方式（`mass_method`）は、解析タブの設定値
 /// （`analysis_settings.msgpack`）の同梱有無によらず、常にモデル側の値へ
-/// 同期される。本機能追加前に保存された旧形式の `.scz`（同エントリを持たない
-/// ファイル）を開いても、`analysis_cfg.mass_method` が読込前の値のまま
-/// 取り残されてはいけない（取り残されると、気づかず「階の自動生成」を実行
-/// した際に古い方式がモデルへ書き戻され、解析結果が静かに変わる）。
+/// 同期される。同エントリを持たない `.scz` を開いても、`analysis_cfg.mass_method` が読込前の値のまま
+/// 取り残されてはいけない。
 #[test]
 fn test_open_legacy_project_without_analysis_settings_syncs_mass_method() {
     use squid_n_core::model::MassMethod;
@@ -8245,9 +8222,6 @@ fn test_frame_view_filters_members_by_axis_and_story() {
 }
 
 /// 解析結果の適用が表示対象（`nav.focus_result`）も新しい結果へ切り替えること。
-/// 従来は `last_static`・`member_forces` だけが差し替わり、`current_static` が
-/// 優先する `focus_result` は旧結果を指したままだったため、変位図（旧結果）と
-/// 応力図・断面検定（新結果）が食い違う表示になっていた。
 #[test]
 fn test_apply_static_result_updates_focus_result() {
     let mut app = App::default();
@@ -8283,9 +8257,7 @@ fn test_apply_static_result_updates_focus_result() {
     );
 }
 
-/// 時刻歴応答解析の完了で stale が解消されること。従来は `last_run` の更新のみで
-/// `results_stale` が立ったままとなり、モデル編集後に時刻歴だけを実行しても
-/// ビューアのアニメーション・部材クリックが無効のまま復帰しなかった。
+/// 時刻歴応答解析の完了で stale が解消されること。
 #[test]
 fn test_time_history_apply_clears_stale() {
     let mut app = App::default();
@@ -8306,9 +8278,7 @@ fn test_time_history_apply_clears_stale() {
     );
 }
 
-/// 増分解析・時刻歴応答解析の実行でも準備計算（剛域・仕口パネル・荷重同期）が
-/// 走ること。従来はこれらの経路だけ ensure_preparation を通らず、仕口パネルの
-/// 生成が省かれて静的解析と剛性の異なるモデルを解いていた。
+/// 増分解析・時刻歴応答解析の実行でも準備計算（剛域・仕口パネル・荷重同期）が走ること。
 #[test]
 fn test_time_history_and_pushover_run_preparation() {
     let mut app = App::default();
@@ -8798,7 +8768,7 @@ fn test_migrate_legacy_time_history_only() {
     assert!(bundle.time_history.is_some());
 }
 
-/// 旧立体時刻歴の移行は、渡した波形名でケースを作る。
+/// 立体時刻歴の移行は、渡した波形名でケースを作る。
 #[test]
 fn test_migrate_legacy_time_history_uses_wave_name() {
     use squid_n_core::model::VibrationThDir;
@@ -9001,7 +8971,7 @@ fn test_set_pushover_view_dir_keeps_window_when_slot_missing() {
     );
 }
 
-/// 質点系固有値のみの再実行は、旧時刻歴の `stick_response` を残さない。
+/// 質点系固有値のみの再実行は、時刻歴の `stick_response` を残さない。
 #[test]
 fn test_lumped_eigen_only_clears_stick_response() {
     let mut app = App {
@@ -9035,7 +9005,7 @@ fn test_lumped_eigen_only_clears_stick_response() {
         .is_none());
 }
 
-/// 旧質点系結果（時刻歴あり）の移行は、渡した波形名でケースを作る。
+/// 質点系結果（時刻歴あり）の移行は、渡した波形名でケースを作る。
 #[test]
 fn test_migrate_legacy_lumped_uses_wave_name() {
     use squid_n_core::model::{LumpedVibrationDim, LumpedVibrationDir};

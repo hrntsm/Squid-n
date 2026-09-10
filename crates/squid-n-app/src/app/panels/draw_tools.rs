@@ -11,8 +11,6 @@ impl App {
         ui.strong("作成");
         ui.separator();
 
-        // 荷重の対象ピック中は 3D のクリックをそちらが受け取るため、作成モードを
-        // ON にできると「切り替えたのに反応しない」状態になる。パネルごと無効にする。
         if self.load_pick_active() {
             ui.colored_label(
                 crate::theme::WARN_TEXT,
@@ -22,12 +20,9 @@ impl App {
             return;
         }
 
-        // --- 梁作成モード ---
-        // ON 中はクリックで節点を選び、2 点目で梁を生成する（OFF 中は部材クリック=断面割当）。
         ui.horizontal(|ui| {
             let beam_was_on = self.ui.scoped.beam_draw_mode;
             ui.toggle_value(&mut self.ui.scoped.beam_draw_mode, "梁作成モード");
-            // 梁作成を ON にしたら壁・スラブ作成は OFF（排他）
             if self.ui.scoped.beam_draw_mode && !beam_was_on {
                 self.ui.scoped.wall_draw_mode = false;
                 self.ui.scoped.slab_draw_mode = false;
@@ -46,23 +41,18 @@ impl App {
                 }
             }
         });
-        // モード OFF 時は始点選択をクリア
         if !self.ui.scoped.beam_draw_mode {
             self.ui.scoped.beam_draw_first = None;
         }
 
-        // --- 壁作成モード ---
-        // ON 中はクリックで柱・梁に囲まれた 4 節点を順に選び、4 点目で壁を生成する。
         ui.horizontal(|ui| {
             let wall_was_on = self.ui.scoped.wall_draw_mode;
             ui.toggle_value(&mut self.ui.scoped.wall_draw_mode, "壁作成モード");
-            // 壁作成を ON にしたら梁・スラブ作成は OFF（排他）
             if self.ui.scoped.wall_draw_mode && !wall_was_on {
                 self.ui.scoped.beam_draw_mode = false;
                 self.ui.scoped.slab_draw_mode = false;
             }
             if self.ui.scoped.wall_draw_mode {
-                // 節点削除などで陳腐化した参照を除去する。
                 let node_count = self.core.model.nodes.len() as u32;
                 self.ui.scoped.wall_draw_nodes.retain(|n| n.0 < node_count);
                 let picked: Vec<String> = self
@@ -106,24 +96,18 @@ impl App {
                 }
             }
         });
-        // モード OFF 時は選択をクリア
         if !self.ui.scoped.wall_draw_mode {
             self.ui.scoped.wall_draw_nodes.clear();
         }
 
-        // --- スラブ作成モード ---
-        // ON 中はクリックで境界節点を外周順に選び、3〜N 節点そろったら「確定」で生成する。
         ui.horizontal(|ui| {
             let slab_was_on = self.ui.scoped.slab_draw_mode;
             ui.toggle_value(&mut self.ui.scoped.slab_draw_mode, "スラブ作成モード");
-            // スラブ作成を ON にしたら梁・壁作成は OFF（排他）
             if self.ui.scoped.slab_draw_mode && !slab_was_on {
                 self.ui.scoped.beam_draw_mode = false;
                 self.ui.scoped.wall_draw_mode = false;
             }
             if self.ui.scoped.slab_draw_mode {
-                // 節点削除などで陳腐化した参照（範囲外 id）を毎フレーム除去し、
-                // 存在しない節点を境界に含むスラブの生成を防ぐ。
                 let node_count = self.core.model.nodes.len() as u32;
                 self.ui.scoped.slab_draw_nodes.retain(|n| n.0 < node_count);
                 let picked: Vec<String> = self
@@ -144,9 +128,6 @@ impl App {
                 ));
                 if self.ui.scoped.slab_draw_nodes.len() >= 3 && ui.button("確定").clicked() {
                     let boundary = self.ui.scoped.slab_draw_nodes.clone();
-                    // 床タブの追加フォームと同じ下書きの断面を使う。消えた断面を
-                    // 指したままだと `AddSlab` が参照検証で Noop になり無反応に
-                    // 見えるため、解決できない下書きは未割当として渡す。
                     let draft_section = self.ui.scoped.slab_draft.section.filter(|sid| {
                         self.core
                             .model
@@ -173,15 +154,11 @@ impl App {
                 }
             }
         });
-        // モード OFF 時は選択をクリア
         if !self.ui.scoped.slab_draw_mode {
             self.ui.scoped.slab_draw_nodes.clear();
         }
 
-        // --- 断面割当 UI ---
-        // focus_member を先にコピーして、後段の可変借用と競合しないようにする
         let focus_id: Option<squid_n_core::ids::ElemId> = self.ui.scoped.nav.focus_member;
-        // 存在確認もここで行い、ローカルに有効性と現在断面を取得
         let elem_info: Option<(squid_n_core::ids::ElemId, Option<SectionId>)> =
             focus_id.and_then(|eid| self.core.model.element(eid).map(|e| (e.id, e.section)));
 
@@ -216,7 +193,6 @@ impl App {
                         }
                     });
             });
-            // クロージャ外で発行（借用ルール）
             if let Some(section) = pending_assign {
                 self.core.scoped.undo.run(
                     &mut self.core.model,

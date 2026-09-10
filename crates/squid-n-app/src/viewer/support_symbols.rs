@@ -1,9 +1,9 @@
 //! 支点ばね・免震支承の 3D シンボル描画。
 //!
-//! 従来の支持記号（矢印＝並進固定・円弧＝回転固定、[`super::support::draw_support_symbol`]）とは
+//! 支持記号（矢印＝並進固定・円弧＝回転固定、[`super::support::draw_support_symbol`]）とは
 //! 別種の支持条件を区別できるよう、専用の記号を追加する。
 //! - 支点ばね（[`squid_n_core::model::Node::support_spring`]）: 並進はジグザグ（コイル）線、
-//!   回転は渦巻線。拘束（`restraint`）で固定済みの成分は従来どおり矢印・円弧のまま
+//!   回転は渦巻線。拘束（`restraint`）で固定済みの成分は矢印・円弧のまま
 //!   （呼び出し側で判定し、ばね記号を描かない）。
 //! - 免震支承（零長 `ElementKind::Isolator` 要素で支持される節点）: 上下の短い水平線
 //!   （フランジプレート）に挟まれた円＋積層を示す横線数本のマーカー。
@@ -36,7 +36,6 @@ pub(super) fn zigzag_points(
     }
     let ux = dir.x / len;
     let uy = dir.y / len;
-    // dir に直交する単位ベクトル（画面内で左右に振る向き）
     let nx = -uy;
     let ny = ux;
     let n = coils * 2;
@@ -65,7 +64,7 @@ pub(super) fn draw_translational_spring(
 ) {
     /// コイルの周期数（多すぎず視認できる程度）
     const COILS: usize = 4;
-    /// ジグザグの振幅 [px]（固定 px＝非テキスト形状のため可、TONMANUAL §4）
+    /// ジグザグの振幅 [px]（非テキスト形状のため固定値）。
     const AMPLITUDE: f32 = 3.0;
     let stroke = egui::Stroke::new(2.0_f32, color);
     let pts = zigzag_points(from, to, COILS, AMPLITUDE);
@@ -149,9 +148,9 @@ pub(super) fn draw_rotational_spring(
 
 /// 支点ばねシンボルを 3D ビューに描画する。
 ///
-/// 拘束（`restraint`）で固定済みの成分は従来の矢印・円弧表示に委ねるため、
+/// 拘束（`restraint`）で固定済みの成分は矢印・円弧表示に委ねるため、
 /// ここでは非固定かつばね値が非ゼロの成分のみジグザグ・渦巻を描く。
-/// 軸色は X=赤 / Y=緑 / Z=青（TONMANUAL §3-2）で [`super::support::draw_support_symbol`] と揃える。
+/// 軸色は X=赤 / Y=緑 / Z=青で [`super::support::draw_support_symbol`] と揃える。
 pub(super) fn draw_spring_symbol(
     painter: &egui::Painter,
     proj: &Projector,
@@ -236,7 +235,6 @@ pub(super) fn isolator_marker_geometry(
         } else {
             i as f32 / (n_layers as f32 - 1.0)
         };
-        // 円の内側（半径の約半分の範囲）に均等配置
         let y = center.y + (t * 2.0 - 1.0) * circle_radius * 0.5;
         layers.push([
             egui::pos2(center.x - layer_half_width, y),
@@ -252,7 +250,7 @@ pub(super) fn isolator_marker_geometry(
     }
 }
 
-/// フランジ線の半幅 [px]（固定 px＝非テキスト形状のため可、TONMANUAL §4）。
+/// フランジ線の半幅 [px]（非テキスト形状のため固定値）。
 const ISOLATOR_FLANGE_HALF_WIDTH: f32 = 8.0;
 /// フランジ線の中心からの上下オフセット [px]。
 const ISOLATOR_FLANGE_GAP: f32 = 9.0;
@@ -362,7 +360,6 @@ pub(super) fn show_isolator_tooltip(ui: &egui::Ui, elem_id: ElemId, props: &Isol
         },
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

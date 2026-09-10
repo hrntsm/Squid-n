@@ -21,7 +21,6 @@ mod lumped_mass;
 mod pushover;
 mod time_history;
 mod wave_library;
-
 #[cfg(test)]
 pub(crate) use io::{needs_recording_confirm, SAVE_RECORDING_CONFIRM_BYTES};
 
@@ -161,8 +160,7 @@ impl App {
         }
     }
 
-    /// 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1「剛域」は
-    /// 標準実装。解析前に1回適用する）。`squid_n_element::frame::beam::apply_auto_rigid_zones`
+    /// 解析前に剛域を自動算定してモデルへ反映する（解析前に1回適用する）。`squid_n_element::frame::beam::apply_auto_rigid_zones`
     /// は `ZoneSource::Auto` の端のみ更新し `Manual` 端を保護するため、
     /// 各解析エントリの先頭で毎回呼んでも冪等で安全。
     fn apply_rigid_zones_for_analysis(&mut self) {
@@ -185,10 +183,7 @@ impl App {
     /// 並列度設定 → エラー/通知クリア → 準備計算（剛域・仕口パネルの反映と
     /// 荷重同期。冪等・ハッシュ判定でスキップされる）。
     ///
-    /// 解析の入口は必ず本メソッドを通ること。かつては経路ごとに前処理を
-    /// 個別に書いており、「増分解析・時刻歴・固有値だけ準備計算を通らず、
-    /// 仕口パネルの生成が省かれて静的解析と異なるモデルを解く」という
-    /// 抜けが実際に起きていた。
+    /// 解析の入口は必ず本メソッドを通ること。
     fn begin_analysis(&mut self) {
         self.apply_parallelism_setting();
         self.core.scoped.last_error = None;
@@ -239,9 +234,9 @@ impl App {
     /// （[`Self::run_preparation`]）の一工程であり、単独の UI 操作ではない。
     ///
     /// 地震重量には kind=Dead/LiveSeismic（なければ Dead+Live、種別未設定なら
-    /// 先頭ケース）の荷重ケースの鉛直下向き荷重を用いる（レビュー §1.7）。
+    /// 先頭ケース）の荷重ケースの鉛直下向き荷重を用いる。
     /// 先立ってスラブ荷重・躯体自重を「DL」等の標準ケースへ同期する
-    /// （レビュー §1.1）ため、面荷重・自重も地震用重量に反映される
+    /// ため、面荷重・自重も地震用重量に反映される
     /// （DL に自重が含まれるため、密度からの自重直接算入は DL がない場合のみ。
     /// `density_self_weight_for_stories`）。主要構造種別は各階の柱・梁の断面形状
     /// から自動判定される（`story_gen`）。

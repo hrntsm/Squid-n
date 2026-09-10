@@ -2,9 +2,6 @@
 //!
 //! `viewer` ハブからの構造分割。アルゴリズム変更は行わない。
 
-// ===== クォータニオン（3Dカメラ回転用, [w, x, y, z]）=====
-// 合成（q_axis_angle / q_mul / q_norm）は CameraState 内部だけが使う。
-// 回転の適用 q_rotate は投影・ViewCube・構面ビューからも呼ぶ。
 type Quat = [f32; 4];
 
 /// 軸 `axis`（正規化済み想定）まわり `ang` ラジアンの回転クォータニオン。
@@ -49,10 +46,9 @@ pub(super) fn q_rotate(q: Quat, v: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// 3D→2D 投影（§3-2: ターンテーブル回転 + 正射影）。
+/// 3D→2D 投影（ターンテーブル回転 + 正射影）。
 ///
-/// 構造モデルは実寸比が意味を持つため、§3-2 の「各軸を [-1,1] に正規化」は採らず、
-/// 全軸一様スケールで投影してプロポーションを保持する。
+/// 構造モデルは実寸比が意味を持つため、全軸一様スケールで投影してプロポーションを保持する。
 /// ビュー軸は X=右・Y=上・Z=手前。
 ///
 /// 回転はターンテーブル方式: 水平ドラッグ＝ワールド Z 軸（鉛直軸）まわりの旋回、
@@ -68,14 +64,12 @@ pub struct CameraState {
     pub(crate) pitch: f32,
     /// 画面パン（px）
     pub(crate) pan: [f32; 2],
-    /// ズーム倍率（§3-2: 既定 3.0、範囲 0.5–10.0）
+    /// ズーム倍率（既定 3.0、範囲 0.5–10.0）
     pub(crate) zoom: f32,
 }
 
 impl Default for CameraState {
     fn default() -> Self {
-        // 45° の斜めビュー（平面を 45° 振ってから 45° 見下ろす）。
-        // XY 平面のグリッドが斜めから見えるようにする。
         let yaw = std::f32::consts::FRAC_PI_4;
         let pitch = -std::f32::consts::FRAC_PI_4;
         Self {
@@ -93,7 +87,7 @@ impl CameraState {
     const ROT_SENS: f32 = 0.005;
     /// スクロール 1 単位あたりのズーム変化率。
     const ZOOM_SENS: f32 = 0.01;
-    /// ズーム倍率の下限・上限（UI設計 §3-2）。
+    /// ズーム倍率の下限・上限。
     const ZOOM_MIN: f32 = 0.5;
     const ZOOM_MAX: f32 = 10.0;
 
@@ -119,7 +113,7 @@ impl CameraState {
     /// 共通とする。**同じ 3D をどのパネルで触っても同じ操作感になることが利用者から
     /// 見た要件**であり、感度やクランプ範囲がパネルごとに割れてはならない。
     ///
-    /// - 左ドラッグ＝ターンテーブル回転（UI設計 §3-2）
+    /// - 左ドラッグ＝ターンテーブル回転
     /// - 右ドラッグ＝パン（規約外の補助操作）
     /// - スクロール／トラックパッドのピンチ＝ズーム
     ///
@@ -172,8 +166,6 @@ impl CameraState {
             return;
         }
         let (dx, dy, dz) = (d[0] / n, d[1] / n, d[2] / n);
-        // ターンテーブル rot = R_x(pitch)∘R_z(yaw) で q_rotate(rot, d) = [0,0,1]（視線正面）
-        // となる角度: yaw は方位角 φ=atan2(dy,dx) から、pitch は仰角から定まる。
         self.yaw = if dx.abs() > 1e-6 || dy.abs() > 1e-6 {
             -std::f32::consts::FRAC_PI_2 - dy.atan2(dx)
         } else {
@@ -183,7 +175,6 @@ impl CameraState {
         self.rot = Self::rot_from(self.yaw, self.pitch);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

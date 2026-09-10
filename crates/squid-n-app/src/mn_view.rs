@@ -26,7 +26,7 @@ use crate::viewer::mn_draw::{self, N_ALPHA, N_BETA};
 /// スライス曲線の分割数。
 const SLICE_PTS: usize = 64;
 
-/// モデル化手法ごとの表示色（§3 データビジュアライゼーション配色）。
+/// モデル化手法ごとの表示色。
 fn model_color(kind: YieldModelKind) -> egui::Color32 {
     match kind {
         YieldModelKind::SimpleSpring => theme::PARETO_RED,
@@ -206,8 +206,6 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(8.0);
     ui.strong("材料強度 [N/mm²]");
-    // RC断面は鉄筋fy/コンクリートFcのみ、鋼断面は鋼材fyのみを表示する
-    // （断面形状未定義の場合は種別が判別できないため両方表示しておく）。
     if is_steel || shape.is_none() {
         ui.horizontal(|ui| {
             ui.label("鋼材 fy:");
@@ -405,8 +403,6 @@ fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShap
     }
 
     let strength = state.strength;
-    // マルチファイバー用の細分割ファイバ配置。単純バネの耐力算定にも流用する
-    // （squid_n_section::mn_surface::plastic_fibers の解像度は SimpleSpring/MultiFiber で同一）。
     let fiber_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiFiber);
     let ms_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiSpring);
 
@@ -463,8 +459,6 @@ fn ensure_m_theta_cache(
     let ms_mphi = m_phi_curve(&cache.ms_fibers, ky, kz, key.n_target, N_STEPS);
     let ms = ms_mphi.as_ref().map(|c| m_theta_curve(c, key.span, key.lp));
 
-    // 単純降伏バネ（材端剛塑性ばね）: 弾性部材の EI0 はマルチファイバーモデルの
-    // MPhiCurve を共用する（弾性部材は共通という前提）。
     let simple = fiber_mphi.as_ref().and_then(|fc| {
         let mp = if key.bend_dir_z {
             cache.simple.mp_z
@@ -526,14 +520,12 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
     ];
     let n_target = n_from_ratio(cache, n_ratio);
 
-    // --- 3D ワイヤーフレーム（上6割） ---
     let total_h = ui.available_height();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), (total_h * 0.6).max(80.0)),
         egui::Sense::click_and_drag(),
     );
 
-    // 操作感はビューアと共通（N 軸＝Z を画面上で縦に保つターンテーブル回転）。
     let mut cam = app.ui.scoped.mn_view.camera.clone();
     cam.apply_pointer_input(ui, &response, true);
 
@@ -542,7 +534,6 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
 
     ui.separator();
 
-    // --- 2D プロット（下4割）: My-Mz相関 または M-θ骨格に切替 ---
     match app.ui.scoped.mn_view.slice_mode {
         SlicePlotMode::MyMz => draw_slice_plot(ui, cache, show, n_target),
         SlicePlotMode::MTheta => {
@@ -575,13 +566,11 @@ fn draw_3d(
     let painter = ui.painter_at(*rect);
     painter.rect_filled(*rect, 0.0, theme::VIEW_BG);
 
-    // 正規化基準はファイバーモデルの曲面から採る（3 曲面を同じ基準で重ねるため）。
     let refs = mn_draw::surface_refs(&cache.fiber);
     let view = mn_draw::MnView::new(rect, cam);
 
     mn_draw::draw_axes(&painter, &view);
 
-    // 3 曲面を重ねるため、線は濃いめ（不透明度 180）に描く。
     for (visible, surf, kind) in [
         (show[0], &cache.simple, YieldModelKind::SimpleSpring),
         (show[1], &cache.ms, YieldModelKind::MultiSpring),
@@ -633,9 +622,6 @@ fn draw_slice_plot(ui: &mut egui::Ui, cache: &MnCache, show: [bool; 3], n_target
         .legend(egui_plot::Legend::default())
         .height(height)
         .show(ui, |plot_ui| {
-            // 単純降伏バネ: 2バネ連成の線形相関 |N|/N許容 + M/M許容 = 1 により、
-            // 軸力に応じて (1 − |N|/N許容) 倍に相似縮小する楕円になる
-            // （軸力によらず線形に縮む点がファイバ積分系モデルとの違い）。
             if show[0] {
                 let n_ref = if n_target >= 0.0 {
                     cache.simple.n_tens.max(1.0)
@@ -696,7 +682,7 @@ fn plot_slice_curve(
         .iter()
         .map(|p| [moment_kn_m(p[0]), moment_kn_m(p[1])])
         .collect();
-    xy.push(xy[0]); // 始点を末尾に複製して閉じる
+    xy.push(xy[0]);
     plot_ui.line(
         egui_plot::Line::new(kind.label(), egui_plot::PlotPoints::from(xy))
             .color(model_color(kind))
@@ -749,7 +735,6 @@ fn plot_m_theta_line(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]], kind
             .width(2.0_f32),
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,11 +766,6 @@ mod tests {
     }
 
     /// 同じ添字のまま断面形状が別物へ変わったら、曲面キャッシュを作り直す。
-    ///
-    /// 従来は鍵が `section_idx` と `strength` だけだったため、断面寸法を編集しても
-    /// 前の断面の曲面を有効と判定して表示し続けていた（断面と一致しない耐力曲面の
-    /// 表示は、実際より大きい耐力を読み取りうる危険側の誤り）。モデルを差し替えて
-    /// 同じ添字に別の断面が来た場合も同様だった。
     #[test]
     fn cache_is_rebuilt_when_shape_changes_at_same_index() {
         let mut state = MnViewState::default();

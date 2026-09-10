@@ -9,8 +9,7 @@ impl App {
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
     /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
-    /// スラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・照合レビュー：
-    /// ③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、階が定義済みなら
+    /// スラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済みなら
     /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
     /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
@@ -41,9 +40,6 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.core.scoped.results = Some(bundle);
                 self.core.scoped.last_static = Some(StaticKey::Case(key));
-                // 表示対象（focus_result）も新しい結果へ切り替える。据え置くと
-                // 変位図・応力図は旧結果、member_forces・断面検定は新結果という
-                // 不整合な表示になる（`current_static` は focus_result を優先する）。
                 self.ui.scoped.nav.focus_result = Some(StaticKey::Case(key));
                 self.core.scoped.staleness.mark_fresh();
                 self.run_design_check();
@@ -81,7 +77,7 @@ impl App {
         }
     }
 
-    /// 線形静的解析をバックグラウンドスレッドで実行する（P8 §5）。
+    /// 線形静的解析をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_linear_static_job(&mut self, lc: LoadCaseId) {
@@ -131,7 +127,7 @@ impl App {
     ///
     /// 解析に先立って準備計算（`ensure_preparation`）を実行し、スラブ荷重・躯体
     /// 自重を「DL」等の標準ケースへ、階が定義済みなら地震荷重を「EX」「EY」
-    /// ケースへ同期する（レビュー §1.1・照合レビュー）。
+    /// ケースへ同期する。
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
@@ -160,8 +156,6 @@ impl App {
         model: squid_n_core::model::Model,
         combo: squid_n_core::model::LoadCombination,
     ) -> Result<squid_n_solver::statics::linear::StaticOnce, String> {
-        // 壁の解析要素は生成物（D5）のため展開してから解く
-        // （`squid_n_job::compute` の各関数と同じ理由）。
         let model = squid_n_load::wall_expand::expand_wall_elements_owned(model).0;
         match Analysis::prepare(&model) {
             Ok(analysis) => analysis
@@ -185,9 +179,6 @@ impl App {
                 let member_forces = res.member_forces.clone();
                 let panel_moments = res.panel_moments.clone();
                 let mut bundle = self.core.scoped.results.take().unwrap_or_default();
-                // StaticKey::Combo は bundle.combos 上の位置を指す規約
-                // （current_static・ナビゲータと共有）。再実行時は既存位置を
-                // その場で差し替え、他の組合せ結果のキーを無効化しない。
                 let pos = match bundle.combos.iter().position(|(n, _)| *n == name) {
                     Some(pos) => {
                         bundle.combos[pos].1 = res;
@@ -202,11 +193,8 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.core.scoped.results = Some(bundle);
                 self.core.scoped.last_static = Some(StaticKey::Combo(pos));
-                // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
                 self.ui.scoped.nav.focus_result = Some(StaticKey::Combo(pos));
                 self.core.scoped.staleness.mark_fresh();
-                // 荷重継続性区分（長期/短期）は組合せ内容から自動判定する
-                // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。
                 self.core.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
                     LoadTerm::Short
                 } else {
@@ -218,7 +206,7 @@ impl App {
         }
     }
 
-    /// 荷重組合せ解析をバックグラウンドスレッドで実行する（P8 §5）。
+    /// 荷重組合せ解析をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_combination_job(&mut self, index: usize) {
@@ -341,8 +329,6 @@ impl App {
         case_keys: Vec<(LoadCaseId, StaticCaseKey)>,
         combos: Vec<squid_n_core::model::LoadCombination>,
     ) -> Result<StaticAllComputed, String> {
-        // 壁の解析要素は生成物（D5）のため展開してから解く
-        // （`squid_n_job::compute` の各関数と同じ理由）。
         let model = squid_n_load::wall_expand::expand_wall_elements_owned(model).0;
         let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {:?}", e))?;
         let ids: Vec<LoadCaseId> = case_keys.iter().map(|(id, _)| *id).collect();
@@ -416,8 +402,6 @@ impl App {
         for (name, res) in items.combos {
             match res {
                 Ok(res) => {
-                    // StaticKey::Combo は bundle.combos 上の位置を指す規約
-                    // （run_combination と同じ「名前一致なら置換、なければ push」）。
                     let pos = match bundle.combos.iter().position(|(n, _)| *n == name) {
                         Some(pos) => {
                             bundle.combos[pos].1 = res;
@@ -439,7 +423,6 @@ impl App {
             None => last_case.map(StaticKey::Case),
         };
         let Some(display) = display else {
-            // 1件も解けなかった場合は既存の結果を壊さない（取り出した結果を戻す）。
             if had_results {
                 self.core.scoped.results = Some(bundle);
             }
@@ -450,8 +433,6 @@ impl App {
             ));
             return;
         };
-        // 応力図・断面検定が参照する member_forces は表示対象の結果へ合わせる
-        // （`select_displayed_result` と同じ規約）。
         let displayed = match display {
             StaticKey::Combo(pos) => bundle
                 .combos
@@ -469,12 +450,8 @@ impl App {
         }
         self.core.scoped.results = Some(bundle);
         self.core.scoped.last_static = Some(display);
-        // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
         self.ui.scoped.nav.focus_result = Some(display);
         self.core.scoped.staleness.mark_fresh();
-        // 荷重継続性区分（長期/短期）は表示対象の組合せ名から自動判定する
-        // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。荷重ケース単体を
-        // 表示対象にした場合は現在の区分を維持する（`apply_static_case_result` と同じ）。
         if let Some((_, name)) = &last_combo {
             self.core.design_term = if squid_n_load::combo::is_short_term_combo(name) {
                 LoadTerm::Short
@@ -489,7 +466,7 @@ impl App {
         }
     }
 
-    /// 一括解析をバックグラウンドスレッドで実行する（P8 §5）。
+    /// 一括解析をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_static_all_job(&mut self) {
@@ -538,7 +515,6 @@ impl App {
     /// 応じた断面算定結果が表示される。単一荷重ケースを選んだ場合は現在の区分を維持する
     /// （`apply_static_case_result` と同じ扱い）。該当キーの解析結果がない場合は何もしない。
     pub fn select_displayed_result(&mut self, key: StaticKey) {
-        // 選択キーに対応する解析結果（内力と、組合せなら名前）を取り出す。
         let resolved = self
             .core
             .scoped
@@ -567,7 +543,6 @@ impl App {
             bundle.member_forces = member_forces;
             bundle.panel_moments = panel_moments;
         }
-        // 組合せは名前から長期/短期を再判定する（単一ケースは現在の区分を維持）。
         if let Some(name) = combo_name {
             self.core.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
                 LoadTerm::Short
@@ -610,7 +585,7 @@ impl App {
         self.apply_static_case_result(StaticCaseKey::Seismic(dir), res);
     }
 
-    /// 地震静的解析をバックグラウンドスレッドで実行する（P8 §5）。
+    /// 地震静的解析をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_seismic_job(&mut self, dir: SeismicDir) {

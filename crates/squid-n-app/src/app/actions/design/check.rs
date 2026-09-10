@@ -2,10 +2,9 @@ use super::super::*;
 
 impl App {
     /// T7: 解析結果の member_forces から検定結果を生成する。
-    /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力に対し、
+    /// 危険断面位置（既定は柱フェイスと中央）の内力に対し、
     /// 材種・部材種別に応じた検定を適用する（令82条・各構造設計規準準拠）。
-    /// 節点芯は剛域が有る場合は検定対象外（節点芯の応力をそのまま使わない、
-    /// 設計書 §6.2.3）。
+    /// 節点芯は剛域が有る場合は検定対象外。
     ///
     /// - 部材種別は部材軸の鉛直成分から判定（柱/梁/ブレース）。
     /// - せん断スパン比 M/(Q·d) 用の代表値は、モーメントが最大となる
@@ -13,20 +12,10 @@ impl App {
     /// - 柱は軸力＋二軸曲げ（n, my, mz）を検定に渡す。
     /// - 検定器は構造種別（`squid_n_core::structure_kind`）で選択する。
     pub fn run_design_check(&mut self) {
-        // rigid_zone（face_i/j）から危険断面位置を決めるため、算定前に自動剛域を
-        // 反映する（設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
         self.apply_rigid_zones_for_analysis();
         let Some(results) = &self.core.scoped.results else {
             return;
         };
-        // 壁の解析要素（`ElementKind::Wall`）は `self.core.model` には存在しない生成物
-        // （D5）だが、`results.member_forces` は壁展開済みモデルで解いた結果の
-        // ため壁の `ElemId` を含む。`run_member_design_checks`（内部の
-        // `joint_wiring::wall::check_walls`）はこの `ElemId` を `model.element`
-        // で引き直すため、`self.core.model` のまま渡すと耐震壁のせん断断面検定が
-        // 常にスキップされる（該当 `ElemId` が見つからず `continue` する）。
-        // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）
-        // では複製を避け、`self.core.model` をそのまま使う。
         let expanded_storage;
         let design_model: &squid_n_core::model::Model =
             if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.core.model) {
@@ -37,9 +26,6 @@ impl App {
             } else {
                 &self.core.model
             };
-        // 地震時短期の設計用せん断力 QD 用の長期内力。
-        // 優先: Q0 と同じ重力ケース集合の解析内力加算。なければ組合せ "DL + LL"。
-        // 長期が未解析なら None（QD 割増なし＝従来動作）。
         let is_seismic_combo = match self.core.scoped.last_static {
             Some(StaticKey::Combo(idx)) => results
                 .combos
@@ -82,11 +68,8 @@ impl App {
             gravity_long_owned
                 .as_deref()
                 .or(long_from_combo.map(|v| v.as_slice()));
-        // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
-        // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides =
             squid_n_design_jp::beam_group_overrides(&self.core.model, &results.member_forces);
-        // 梁 QD1 用の単純梁せん断 Q0（Dead+LiveSeismic 加算の長期相当）。
         let q0_by_elem = if long_member_forces.is_some() {
             squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model)
         } else {
@@ -115,7 +98,6 @@ impl App {
                 outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
             })
             .collect();
-        // 床の中での小梁・スラブ設計（全体 FEM から独立。小梁は大梁を分割しない）。
         let (joist_checks, slab_checks) = self.floor_design_checks();
 
         let member_checks = group_member_checks(report.member_checks);
@@ -154,18 +136,12 @@ impl App {
             })
         };
 
-        // --- 床板（一方向版）ごとの検定 ---
-        // 「版がある」= 断面割当があり板厚が正（`slab_plate_thickness` が `Some` を返す）。
-        // 版なし・厚さ 0 は出さない。
         for slab in &self.core.model.slabs {
             let Some(thickness) = self.core.model.slab_plate_thickness(slab) else {
                 continue;
             };
             let w = self.core.model.slab_intensity(slab, LoadPurpose::Floor);
             if slab.is_attached() {
-                // 取り付き＋版あり: 片持ち M=wL²/2（coef=2）。
-                // スパンは張り出し量の絶対値の大きい方。slab_dimensions が
-                // None（台形など）でも出す。
                 if let Some(span) = slab.attached_design_span() {
                     let r = fd::design_slab_oneway(
                         span,
@@ -182,7 +158,6 @@ impl App {
                 squid_n_load::floor::slab_dimensions(&self.core.model, slab)
             {
                 use squid_n_core::model::OneWayDir;
-                // 囲まれ＋版あり＋矩形: 従来どおり単純支持相当（coef=8）。
                 let span = match slab.one_way() {
                     Some(OneWayDir::X) => lx,
                     Some(OneWayDir::Y) => ly,
@@ -203,7 +178,6 @@ impl App {
             }
         }
 
-        // --- 二次部材小梁（領域内 + 未割当） ---
         self.design_secondary_joist_checks(&mut joist_checks, &beam_between);
 
         (joist_checks, slab_checks)
@@ -214,8 +188,7 @@ impl App {
     ///
     /// 荷重は床領域分配の辺荷重・自重・**架け側の二次部材から渡された集中荷重**の
     /// 重ね合わせである。**荷重同期（`squid-n-job::auto_loads`）と同じ経路を使う**
-    /// （判定が 2 か所に分かれると「解析では受け側が架け側の反力を受けているのに、
-    /// 検定では受けていない」という食い違いになるため。申し送り §3.4 F6）。
+    /// （判定が 2 か所に分かれると解析と検定で荷重が食い違うため）。
     ///
     /// ただし**荷重の値そのものは一致しない**。共有するのは支持関係の判定と伝達の
     /// 手順であって、面荷重強度は用途ごとに違う。検定は床用（`LoadPurpose::Floor`。
@@ -232,7 +205,7 @@ impl App {
     ///   処理している」ことを前提にしている。剛床でない床の小梁は面内力を負担する
     ///   ため前提が成り立たない（`Model::floor_region_on_single_diaphragm`）。
     ///
-    /// 表から消すと検定されていないことに気づけないため、行は残す（§5.40 の前例）。
+    /// 表から消すと検定されていないことに気づけないため、行は残す。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -246,7 +219,6 @@ impl App {
             |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Floor);
         let transfer = squid_n_load::cascade::solve(&self.core.model, w_of, true);
 
-        // 間柱は検定できない（軸力・面外曲げが未対応）。表には「未」の行として残す。
         for sm in self.core.model.posts() {
             let (Some(na), Some(nb)) = (
                 self.core.model.nodes.get(sm.nodes[0].index()),
@@ -304,7 +276,6 @@ impl App {
             let region_slab = region.and_then(|r| r.slab_ids.first().copied());
             let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
 
-            // 剛床でない床の小梁は面内力（軸力）を負担するため検定できない。
             if !region.is_some_and(|r| self.core.model.floor_region_on_single_diaphragm(r)) {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
@@ -329,12 +300,10 @@ impl App {
                 continue;
             };
 
-            // 逐次伝達の対象外（循環・実部材化済み）、または床分配が足りない本は「未」。
             let Some(entry) = entry.filter(|e| e.distribution_ready) else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
-            // `member_loads` は二次部材の節点順（`nodes`）に揃っている。
             let ex = simple_beam_extremes(&entry.member_loads, span, e, sec.iy);
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));

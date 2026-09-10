@@ -125,7 +125,6 @@ pub(crate) fn draw_wireframe(
         _ => return,
     };
 
-    // 周方向（各経線上、j=n_beta-1 と j=0 が接続する閉曲線）
     for row in &surf.grid {
         for j in 0..n_beta {
             let a = view.project_grid(&row[j], refs);
@@ -133,7 +132,6 @@ pub(crate) fn draw_wireframe(
             painter.line_segment([a, b], stroke);
         }
     }
-    // 経線方向（引張極→圧縮極）
     for j in 0..n_beta {
         for i in 0..surf.grid.len().saturating_sub(1) {
             let a = view.project_grid(&surf.grid[i][j], refs);
@@ -149,7 +147,6 @@ pub(crate) fn draw_camera_hint(ui: &mut egui::Ui) {
         egui::RichText::new("左ドラッグ:回転 / 右ドラッグ:移動 / スクロール:ズーム").size(11.0),
     ));
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -189,11 +189,8 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
 }
 
 pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
-    // 節点追加フォーム（座標のみを扱う。境界条件は別パネルで編集する）。
-    // 座標を入力してから「追加」を押すことで、その座標を持つ節点を作成する。
     ui.group(|ui| {
         ui.strong("節点を追加");
-        // 左パネルが狭い場合でも「追加」ボタンが見切れないよう折り返す
         ui.horizontal_wrapped(|ui| {
             for (label, k) in [("X", 0), ("Y", 1), ("Z", 2)] {
                 ui.label(label);
@@ -216,8 +213,6 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                 for (k, slot) in app.ui.scoped.node_draft.iter().enumerate() {
                     coord[k] = slot.trim().parse::<f64>().unwrap_or(0.0);
                 }
-                // 同一座標の既存節点がある場合は確認ダイアログを挟む
-                // （同じ座標の節点を重複して作成してよいかユーザに確認する）
                 const COORD_TOL: f64 = 1e-9;
                 let dup = app.core.model.nodes.iter().any(|n| {
                     (n.coord[0] - coord[0]).abs() < COORD_TOL
@@ -234,8 +229,6 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                             restraint: Dof6Mask::FREE,
                         }),
                     );
-                    // model.nodes が +1 されたので node_edit の長さを再同期
-                    // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
                     app.sync_node_edit();
                     app.core.scoped.staleness.mark_edited();
                 }
@@ -244,16 +237,12 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    // 座標 3 列はグリッド操作レイヤ（スプレッドシート的編集。T4 パイロット）。
-    // 矩形選択・Excel 相互 TSV コピペ・新規行プレースホルダ・行削除に対応し、
-    // モデル編集はアダプタが squid-n-edit の複合コマンドへ落とす（undo 1 回で復元）。
     let edited = {
         let mut adapter = NodeGridAdapter {
             model: &mut app.core.model,
             undo: &mut app.core.scoped.undo,
             edited: false,
         };
-        // 既存の 🗑 ボタン（1 行削除）はグリッドの末尾列として維持する
         app.ui.scoped.node_grid.delete_buttons = true;
         app.ui
             .scoped
@@ -272,12 +261,9 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     if edited {
-        // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
         app.core.scoped.staleness.mark_edited();
         app.sync_node_edit();
     }
-    // 行選択に合わせてナビゲータのフォーカス節点を同期する
-    // （境界条件タブ・3D ビューの強調表示が選択行を追う）
     if app.ui.scoped.node_grid.grid.active {
         let r = app.ui.scoped.node_grid.grid.anchor.row;
         if let Some(node) = app.core.model.nodes.get(r) {
@@ -285,8 +271,6 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // 重複座標の節点追加確認ダイアログ
-    // （追加ボタン押下時に同一座標の既存節点が見つかった場合、ここで確認を取る）
     if app.ui.scoped.pending_duplicate_node_coord.is_some() {
         let mut do_add = false;
         let mut do_cancel = false;
@@ -314,11 +298,9 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
             });
-        // 閉じるボタン（×）またはキャンセルで保留を破棄
         if !open || do_cancel {
             app.ui.scoped.pending_duplicate_node_coord = None;
         }
-        // 追加確定
         if do_add {
             if let Some(coord) = app.ui.scoped.pending_duplicate_node_coord.take() {
                 app.core.scoped.undo.run(
@@ -353,7 +335,6 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
         .unwrap_or(node_ids[0]);
     app.ui.scoped.nav.focus_node = Some(selected);
 
-    // ノード表示ラベル（ばね支持中の節点には「🌀ばね」バッジを付ける）
     let node_label = |id: NodeId| -> String {
         let has_spring = app
             .core
@@ -392,7 +373,6 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_restraint: Option<Dof6Mask> = None;
 
     ui.horizontal(|ui| {
-        // プリセットボタン（自由／ピン／固定）
         if ui.small_button("自由").clicked() {
             pending_restraint = Some(Dof6Mask::FREE);
         }
@@ -404,7 +384,6 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     });
     ui.horizontal_wrapped(|ui| {
-        // 各成分チェックボックス
         use squid_n_core::dof::Dof;
         for (d, lbl) in [
             (Dof::Ux, "X"),
@@ -473,9 +452,6 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
             }
 
             use squid_n_core::dof::Dof;
-            // ドラッグ中は毎フレーム `changed()` が真になるため、フレームごとに
-            // コマンドを発行すると undo スタックを大量消費する。ドラッグ終了
-            // （またはテキスト入力後のフォーカス喪失）で確定する。
             let mut commit = false;
             ui.horizontal_wrapped(|ui| {
                 for (i, (d, label)) in [
@@ -626,7 +602,6 @@ pub fn find_support_isolator(
         })
         .map(|e| e.id)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

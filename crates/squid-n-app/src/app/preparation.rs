@@ -373,8 +373,6 @@ impl App {
     pub fn run_preparation(&mut self) {
         self.core.scoped.last_error = None;
         self.core.scoped.last_notice = None;
-        // 階の生成に失敗しても `last_error` は以降で上書きされない
-        // （`refresh_preparation` と `report_info` はエラーを設定しない）。
         self.generate_stories_action();
         let story_error = self.core.scoped.last_error.is_some();
         self.refresh_preparation();
@@ -413,17 +411,9 @@ impl App {
     /// `self.core.scoped.preparation` へ格納する。モデルの階構成は変更しない。
     fn refresh_preparation(&mut self) {
         self.apply_parallelism_setting();
-        // 剛域の自動算定と DL/LL/EX/EY の同期（内部で冪等・ハッシュによる
-        // スキップ判定あり）。
         self.sync_auto_load_cases_action();
-        // 準備計算タブの診断件数は `build_preparation_result` が
-        // `diagnostics_counts` を読む。stale のときだけ更新すると、モデル未編集の
-        // まま診断タブを開かずに準備計算だけ再実行したときに件数が古いまま残る。
-        // 解析実行時の precheck は都度最新だが、画面上の件数は準備計算の結果に載る。
         self.run_diagnostics();
         self.core.scoped.preparation = Some(self.build_preparation_result());
-        // 荷重同期が `mark_edited`（＝preparation_stale = true）を呼びうるため、
-        // フラグのクリアは必ず集計の後に行う。
         self.core.scoped.staleness.preparation_stale = false;
     }
 
@@ -475,7 +465,6 @@ impl App {
         PrepSummary {
             n_nodes: model.nodes.len(),
             n_elements: model.elements.len(),
-            // 「階数」は法規上の層の数（`Model::layers`）を表示する。
             n_stories: model.layer_count(),
             n_supports: {
                 let generated: std::collections::HashSet<NodeId> =
@@ -494,8 +483,6 @@ impl App {
             ground_elevation: squid_n_solver::statics::analysis::ground_elevation(model),
             height_mm: squid_n_solver::statics::analysis::building_height_mm(model),
             steel_height_ratio: squid_n_solver::statics::analysis::steel_height_ratio(model),
-            // 地震用重量の合計は層の重量の総和。基部の階の重量（柱脚・基礎梁）は
-            // 地盤が直接受けて層せん断力を生まないため含めない。
             total_seismic_weight: model.layers().iter().map(|l| l.weight.unwrap_or(0.0)).sum(),
             mass_method: model.mass_method,
         }
@@ -541,7 +528,6 @@ impl App {
             Err(msg) => return (None, Some(msg)),
         };
         let cfg = squid_n_solver::statics::analysis::SeismicCfg {
-            // Ai 分布は加力方向によらないため方向は結果に影響しない。
             dir: SeismicDir::X,
             mode: self.core.analysis_cfg.ai_mode,
             z: self.core.analysis_cfg.z,
@@ -557,7 +543,6 @@ impl App {
             Err(e) => return (None, Some(format!("地震力(Ai分布)の算定エラー: {}", e))),
         };
         let tc = squid_n_load::ai::tc_of(cfg.soil);
-        // Ai 分布は層ごと。名前は下端の階、重量・階種別は上端の階から採る。
         let layers = self.core.model.layers();
         let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         let rows: Vec<PrepSeismicRow> = layers
@@ -595,7 +580,7 @@ impl App {
     /// 剛域長 λ または柱フェース距離を持つ梁要素を一覧化する。
     /// 返り値は `(該当部材の行, 梁要素の総数)`。
     ///
-    /// λ とフェース距離は別概念であり（設計書 §6.2.1）、S 造の仕口では
+    /// λ とフェース距離は別概念であり、S 造の仕口では
     /// λ = 0 でもフェース距離は付く。危険断面位置の確認のため、
     /// λ = 0 でもフェース距離を持つ部材は一覧に含める。
     fn build_prep_rigid_zones(&self) -> (Vec<PrepRigidZoneRow>, usize) {
@@ -670,7 +655,6 @@ impl App {
             else {
                 continue;
             };
-            // ねじり剛性をもともと持たない部材は載せない（J≤0 または G≤0）。
             let j = e
                 .section
                 .and_then(|sid| model.sections.get(sid.index()))
@@ -695,7 +679,6 @@ impl App {
     /// 断面性能を一覧化する。断面ごとに使用部材数と、断面が持つ主材料を添える。
     fn build_prep_sections(&self) -> Vec<PrepSectionRow> {
         let model = &self.core.model;
-        // 断面 → 使用部材数
         let mut usage: Vec<usize> = vec![0; model.sections.len()];
         let mut count = |sid: Option<squid_n_core::ids::SectionId>| {
             if let Some(slot) = sid.and_then(|s| usage.get_mut(s.index())) {
@@ -705,8 +688,6 @@ impl App {
         for e in &model.elements {
             count(e.section);
         }
-        // 床板も断面を参照する（板厚・自重の情報源）。数えないと、床だけが使う断面が
-        // 「使用部材数 0」として淡色表示され、未使用の断面と見分けられなくなる。
         for s in &model.slabs {
             count(s.section());
         }
@@ -721,7 +702,6 @@ impl App {
                     .material
                     .and_then(|mid| model.materials.get(mid.index()));
                 let material = first_mat.map(|m| m.name.clone());
-                // 断面二次半径 i = √(I/A)。A が 0 の断面（未設定）は 0 とする。
                 let radius = |inertia: f64| {
                     if sec.area > 0.0 && inertia > 0.0 {
                         (inertia / sec.area).sqrt()
@@ -838,12 +818,6 @@ impl App {
             .filter(|e| matches!(e.kind, ElementKind::Beam) && e.nodes.len() >= 2)
             .count();
 
-        // 事前判定: どれか 1 つでも該当しうる場合のみ部材ごとの算定へ進む。
-        // スラブ協力幅・合成梁の板厚は「該当する床板の `slab_plate_thickness`
-        // （複数なら最大）、取れないときの控えが建物一律 `slab_thickness`」の順で
-        // 決まる（`squid_n_element::frame::beam::stiffness_factors`）。事前判定もこれに
-        // 揃え、建物一律だけでなく個々の床板の板厚も見る（さもないと `slab_thickness`
-        // 未設定＝既定 0 のモデルで、実際は割増しが効く床板があっても表が空になる）。
         let slab_stiffness_enabled = (!model.floor_regions.is_empty() || !model.slabs.is_empty())
             && (model.slab_thickness > 0.0
                 || model
@@ -854,7 +828,6 @@ impl App {
             .elements
             .iter()
             .any(|e| matches!(e.kind, ElementKind::Wall) && e.nodes.len() >= 4);
-        // 複合断面（SRC・CFT）の判定は `squid_n_core::structure_kind` に一元化する。
         let has_composite_section = model.sections.iter().any(|s| {
             s.shape
                 .as_ref()
@@ -878,10 +851,6 @@ impl App {
             };
             let factors = squid_n_element::frame::beam::stiffness_breakdown(model, e);
             let composite = squid_n_element::frame::beam::composite_props_of(model, e);
-            // 実効値: 等価換算 → スラブ／合成梁（強軸曲げのみ）→ 壁上下大梁（一律）。
-            // 要素構築（`BeamElement::new`）が適用するのと同じ順序・同じ規則。
-            // SRC で材料から等価換算できない（Fc 未設定等）場合も、軸剛性だけは
-            // 既定の累加（`calc_axial_stiffness_area`）が効く点まで一致させる。
             let base_iy = composite.map(|p| p.iy).unwrap_or(sec.iy);
             let base_area = match (composite, sec.shape.as_ref()) {
                 (Some(p), _) => p.area_ax,
@@ -1028,8 +997,7 @@ pub fn story_level_kind_label(k: StoryLevelKind) -> String {
 /// 荷重ケース種別の表示名（GUI 全体で共有する単一定義）。
 ///
 /// 荷重タブの種別セレクタ・準備計算の荷重集計表・CSV レポートのすべてが
-/// 本関数を用いる。従来は荷重タブに別定義があり、同じ種別が画面によって
-/// 「積載(架構用)」「積載荷重(長期)」と食い違って表示されていた。
+/// 本関数を用いる。
 /// 訳語は標準ケース名（DL・LL(架構用)・LL(地震用)）と同じ「架構用/地震用」の
 /// 区別に揃える。
 pub fn load_case_kind_label(k: LoadCaseKind) -> &'static str {
@@ -1055,8 +1023,6 @@ pub fn zone_source_label(s: ZoneSource) -> &'static str {
 /// 部材種別の表示名（GUI 全体で共有する単一定義）。
 ///
 /// 準備計算の各表・終局検定ビュー・CSV レポートのすべてが本関数を用いる。
-/// 従来は終局検定ビューに別定義があり、`Brace` が画面によって
-/// 「ブレース」「斜材」と食い違って表示されていた。
 pub fn member_kind_label(k: squid_n_design_jp::MemberKind) -> &'static str {
     use squid_n_design_jp::MemberKind;
     match k {

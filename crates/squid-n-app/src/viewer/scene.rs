@@ -43,7 +43,6 @@ pub(super) fn in_plane_offset_dir(
     let t = cross3(normal, axis);
     let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
     if len < 1e-12 {
-        // 材軸が構面の法線と平行（構面を貫く部材）。面内に張り出し方向を採れない。
         return dir;
     }
     let t = [t[0] / len, t[1] / len, t[2] / len];
@@ -165,7 +164,6 @@ pub(super) fn draw_slabs(
         let Some(coords) = slab.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
             continue;
         };
-        // 面は淡い半透明の暖色フィル（壁の青と弁別）。
         draw_load_plate_polygon(painter, &coords, proj, theme::BEST_YELLOW, true);
     }
 }
@@ -201,8 +199,6 @@ pub(super) fn draw_wall_plates(
         else {
             continue;
         };
-        // 色は「壁」を表す青（床板の暖色と弁別）。線種の破線が「解析要素ではない」を
-        // 表し、壁エレメント（青・実線・濃い塗り）と区別が付く。
         draw_load_plate_polygon(
             painter,
             &coords,
@@ -226,9 +222,6 @@ pub(super) fn plate_fill_is_valid(
 ) -> bool {
     use squid_n_core::model::WallPlateShape;
     match &plate.shape {
-        // 高さが解決できない壁版（階高を引けない自立壁）は形が定まらない。
-        // `boundary_coords_with` も `None` を返すのでここへは来ないが、塗って
-        // よいかを判定する側で「解決できたときだけ真」を保っておく。
         WallPlateShape::Attached { .. } => model
             .wall_plate_extent(plate)
             .is_some_and(|e| e[0] * e[1] >= 0.0),
@@ -247,12 +240,10 @@ pub(super) fn wall_plate_visible_on_frame(
             boundary.iter().all(|n| filter.shows_node(n.index()))
         }
         WallPlateShape::Attached { anchor, .. } => match anchor {
-            // 取付き先の節点が構面上にあれば描く（床板の取り付き版と同じ規約）。
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::FloorRegion { nodes, .. } => {
                 nodes.iter().any(|n| filter.shows_node(n.index()))
             }
-            // 壁の取付き先としては使わない（`boundary_coords` も `None` を返す）。
             RegionAnchor::Point(_) => false,
         },
     }
@@ -265,7 +256,6 @@ fn slab_visible_on_frame(slab: &squid_n_core::model::Slab, filter: FrameFilter) 
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::Point(n) => filter.shows_node(n.index()),
-            // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
             RegionAnchor::FloorRegion { .. } => false,
         },
     }
@@ -367,7 +357,6 @@ pub(super) fn order_wall_nodes(
     model: &squid_n_core::model::Model,
     node_ids: &[squid_n_core::ids::NodeId],
 ) -> Vec<squid_n_core::ids::NodeId> {
-    // 各節点の座標を取得（見つからなければ並べ替えせず返す）
     let coords: Vec<[f64; 3]> = node_ids
         .iter()
         .map(|id| model.node(*id).map(|n| n.coord).unwrap_or([0.0; 3]))
@@ -376,7 +365,6 @@ pub(super) fn order_wall_nodes(
         return node_ids.to_vec();
     }
 
-    // 重心
     let n = coords.len() as f64;
     let centroid = [
         coords.iter().map(|c| c[0]).sum::<f64>() / n,
@@ -384,7 +372,6 @@ pub(super) fn order_wall_nodes(
         coords.iter().map(|c| c[2]).sum::<f64>() / n,
     ];
 
-    // 面の法線（最初の非共線な 3 点の外積）。面内基底 u, v を作る。
     let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     let cross = |a: [f64; 3], b: [f64; 3]| {
         [
@@ -404,7 +391,6 @@ pub(super) fn order_wall_nodes(
             [d[0] / len, d[1] / len, d[2] / len]
         }
     };
-    // u に直交し面内に収まる v を、法線×u から作る
     let mut normal = [0.0; 3];
     for c in coords.iter().skip(2) {
         let cand = cross(sub(coords[1], coords[0]), sub(*c, coords[0]));
@@ -417,13 +403,11 @@ pub(super) fn order_wall_nodes(
         let cand = cross(normal, u);
         let len = norm(cand);
         if len < 1e-9 {
-            // 退化（共線）時は並べ替えしない
             return node_ids.to_vec();
         }
         [cand[0] / len, cand[1] / len, cand[2] / len]
     };
 
-    // 重心からの相対ベクトルを (u, v) に投影し偏角でソート
     let mut indexed: Vec<(usize, f64)> = coords
         .iter()
         .enumerate()
@@ -446,15 +430,11 @@ pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, proj
 
     /// グリッド間隔 [mm]（1 m）。
     const STEP: f64 = 1000.0;
-    // ダーク半透明・線幅 0.5（淡グレー背景の上で奥行きを示す）
     let grid_stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_black_alpha(36));
     let origin: [f64; 3] = [0.0; 3];
 
-    // ビューポートに映るワールド範囲を計算。対角ピクセル長 / scale で大まかな半径を得て
-    // 余裕（1.5 倍）を持たせる（回転で端が見切れないように）。
     let view_radius = (rect.width().hypot(rect.height()) / scale) as f64 * 0.75;
 
-    // 各軸の描画範囲: center3 ± view_radius を STEP の倍数に丸める
     let range = [
         (
             ((center3[0] - view_radius) / STEP).floor() * STEP,
@@ -470,9 +450,8 @@ pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, proj
         ),
     ];
 
-    // XY 平面（z=0）の格子線を描く。a=X, b=Y 方向に原点基準で線を引く。
-    let a = 0usize; // X
-    let b = 1usize; // Y
+    let a = 0usize;
+    let b = 1usize;
     let a_lo = (range[a].0 / STEP).round() as i64;
     let a_hi = (range[a].1 / STEP).round() as i64;
     for k in a_lo..=a_hi {
@@ -490,13 +469,11 @@ pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, proj
         painter.line_segment([proj(q0), proj(q1)], grid_stroke);
     }
 
-    // 原点からの座標軸（赤=X / 緑=Y / 青=Z）。正方向=濃色 / 負方向=淡色。
     for (axis, col, name) in [
         (0usize, theme::AXIS_X, "X"),
         (1, theme::AXIS_Y, "Y"),
         (2, theme::AXIS_Z, "Z"),
     ] {
-        // 正方向: 原点 → range の上端
         let mut pe = origin;
         pe[axis] = range[axis].1;
         painter.line_segment([proj(origin), proj(pe)], egui::Stroke::new(1.5_f32, col));
@@ -507,7 +484,6 @@ pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, proj
             egui::FontId::proportional(11.0),
             col,
         );
-        // 負方向: 原点 → range の下端（淡色）
         let mut pn = origin;
         pn[axis] = range[axis].0;
         painter.line_segment(
@@ -523,7 +499,6 @@ pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, proj
         );
     }
 
-    // 原点マーカー（黒点 + "O" ラベル）
     let op = proj(origin);
     painter.circle_filled(op, 3.0, theme::GRAY_900);
     painter.text(
@@ -552,7 +527,6 @@ pub(super) fn draw_axis_gadget(painter: &egui::Painter, cam: &CameraState) {
         ([0.0, 0.0, 1.0], theme::AXIS_Z, "Z"),
     ];
 
-    // 各軸をカメラ回転で投影。r[0]=右, r[1]=上（画面Yは下向きなので反転）, r[2]=手前
     let mut projected: Vec<(egui::Vec2, egui::Color32, &str, f32)> = axes
         .iter()
         .map(|(v, col, name)| {
@@ -560,10 +534,8 @@ pub(super) fn draw_axis_gadget(painter: &egui::Painter, cam: &CameraState) {
             (egui::vec2(r[0], -r[1]), *col, *name, r[2])
         })
         .collect();
-    // r[2]（手前=正）が小さい（奥）順に描く → 手前の軸が最後に描かれ上に来る
     projected.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 背景円（軸が背景と混ざらないよう淡い白）
     painter.circle_filled(center, LEN + 8.0, theme::translucent(theme::WHITE, 200));
 
     for (dir, col, name, _) in &projected {
@@ -578,10 +550,8 @@ pub(super) fn draw_axis_gadget(painter: &egui::Painter, cam: &CameraState) {
             *col,
         );
     }
-    // 中心点
     painter.circle_filled(center, 2.0, theme::GRAY_900);
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,7 +684,7 @@ mod tests {
         assert!(!draws_as_line(ElementKind::PanelZone));
         assert!(!draws_as_line(ElementKind::Wall));
         assert!(!draws_as_line(ElementKind::Shell));
-        // 材軸を持つ 2 節点要素は従来どおり線で描く。
+        // 材軸を持つ 2 節点要素は線で描く。
         assert!(draws_as_line(ElementKind::Beam));
         assert!(draws_as_line(ElementKind::Fiber));
         assert!(draws_as_line(ElementKind::MultiSpring));

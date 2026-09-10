@@ -122,8 +122,6 @@ pub(super) fn pick_nearest_member(
     let mut best: Option<(squid_n_core::ids::ElemId, f32)> = None;
     let mut best_score = f32::INFINITY;
     for elem in &model.elements {
-        // 構面表示で描いていない部材は選べない（見えない部材のツールチップが
-        // 出る・見えない部材が選択されるのを防ぐ）。
         if !filter.shows(elem.id) {
             continue;
         }
@@ -131,10 +129,6 @@ pub(super) fn pick_nearest_member(
             continue;
         }
         let shape = element_draw_shape(elem.kind);
-        // 描かない要素（仕口パネル）はピック対象から外す（`element_draw_shape`）。
-        // 節点列が「接合部の節点 ＋ 取り付く部材の他端」であり、先頭 2 節点を
-        // 結んでも部材の線にはならない（取り付く部材の 1 本と同じ線分になり、
-        // 実部材の選択・ホバーを横取りする）。面要素は描いているので対象に残す。
         if shape == DrawShape::None {
             continue;
         }
@@ -171,7 +165,6 @@ pub(super) fn pick_nearest_member(
     }
     best
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

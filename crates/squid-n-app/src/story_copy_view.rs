@@ -55,9 +55,7 @@ impl Default for StoryCopyState {
             open: false,
             from: None,
             to: Vec::new(),
-            // 複製は削除・解除も行うため、何を配るかは利用者が必ず選ぶ。
             targets: CopyTargets::default(),
-            // 選んだ対象は「複製」の語のとおり完全に写すのが既定。
             overwrite: true,
             report: None,
             preview: None,
@@ -96,7 +94,6 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
     if !app.ui.scoped.story_copy.open {
         return;
     }
-    // 階の追加・削除で並びが変わるため、選択の長さを毎フレームそろえる。
     let n = app.core.model.stories.len();
     app.ui.scoped.story_copy.to.resize(n, false);
     if app
@@ -122,7 +119,6 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
                 );
                 return;
             }
-            // 所属階は準備計算が付けるため、未実行だと配る相手を 1 つも見つけられない。
             if !app.core.model.nodes.iter().any(|nd| nd.story.is_some()) {
                 ui.colored_label(
                     crate::theme::WARN_TEXT,
@@ -141,7 +137,6 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
             run = preview_section(ui, app);
         });
 
-    // 実行ボタンは事前表示が埋まっているときだけ出るため、ここでは両方そろう。
     if let (true, Some(from), Some(cache)) = (
         run,
         app.ui.scoped.story_copy.from,
@@ -188,13 +183,11 @@ fn from_section(ui: &mut egui::Ui, app: &mut App) {
         egui::ComboBox::from_id_salt("story_copy_from")
             .selected_text(current)
             .show_ui(ui, |ui| {
-                // 上階から順に並べる（階の一覧と同じ見え方にする）。
                 for (id, name) in names.iter().rev() {
                     ui.selectable_value(&mut app.ui.scoped.story_copy.from, Some(*id), name);
                 }
             });
     });
-    // 複製元へ配る意味はないため、複製先の選択からは外す。
     if let Some(f) = app.ui.scoped.story_copy.from {
         if let Some(on) = app.ui.scoped.story_copy.to.get_mut(f.index()) {
             *on = false;
@@ -315,7 +308,6 @@ fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
 
     let cache = refresh_preview(app, from, to).clone();
     if cache.report.removes_input() {
-        // 削除・解除を含む実行は、要約に紛れないよう独立した行で強調する。
         ui.colored_label(
             crate::theme::WARN_TEXT,
             format!("⚠ 入力が減ります — 見込み: {}", cache.report.summary()),
@@ -333,8 +325,6 @@ fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
             },
         );
     }
-    // 符号＋階が同じでも中身が違う既存断面は、複製しても寸法がそろわない。
-    // 断面の中身は書き換えないため（範囲外の部材まで変わるため）、名指しで示す。
     if !cache.report.mismatched_sections.is_empty() {
         ui.collapsing(
             format!(

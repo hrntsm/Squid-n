@@ -206,7 +206,6 @@ fn slit_label(plate: &WallPlate, model: &squid_n_core::model::Model) -> Option<S
         .filter(|&k| plate.slit.column_face[k])
         .map(|k| match faces {
             Some(nodes) => format!("柱際N{}", nodes[k].0),
-            // 境界が 4 節点でない等で節点を引けない場合は添字だけ示す。
             None => format!("柱際{}", k + 1),
         })
         .collect();
@@ -269,7 +268,6 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
     );
     ui.separator();
 
-    // ── 複数開口の取り扱い（建物一律） ─────────────────────────
     ui.horizontal(|ui| {
         ui.label("複数開口の取り扱い(建物一律):");
         let current = app.core.model.multi_opening_mode;
@@ -322,8 +320,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_anchor: Vec<(WallPlateId, RegionAnchor)> = Vec::new();
     let mut pending_delete: Option<WallPlateId> = None;
     let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
-    // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
-    // 自重・数量が算定できないため、選ばせない（床板の断面欄と同じ規約）。
     let wall_sections: Vec<(SectionId, String)> = app
         .core
         .model
@@ -376,8 +372,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             row.col(|ui| {
-                // どの壁領域（柱・梁の区画）に属するかは `wall_plate_ids` から逆引きする
-                // （取り付く壁版はどの壁領域からも参照されない）。
                 let owner = app
                     .core.model
                     .wall_regions
@@ -393,7 +387,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                     ),
                 }
             });
-            // 「階高いっぱい」の壁版の高さは、階レベルから解決した値を見せる。
             let resolved_extent = app.core.model.wall_plate_extent(plate);
             row.col(|ui| match &plate.shape {
                 WallPlateShape::Enclosed { boundary } => {
@@ -441,7 +434,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 });
             });
             row.col(|ui| {
-                // 面積は m² 表示（mm² のままでは桁が読めない）。
                 ui.label(format!("{:.2}", plate.area(&app.core.model) / 1.0e6));
             });
             row.col(|ui| {
@@ -463,9 +455,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             row.col(|ui| {
-                // 耐震スリットは、柱・梁と接する 4 辺を持つ囲まれた壁版でだけ意味を持つ。
-                // 取り付く壁版（腰壁・垂れ壁・パラペット・自立壁）はその辺を持たない
-                // ため、値の有無を問わず「―」とする。
                 if plate.is_attached() {
                     table_util::muted_cell(
                         ui,
@@ -517,8 +506,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             .scoped
             .undo
             .run(&mut app.core.model, Box::new(DeleteWallPlate { id }));
-        // 削除は後続の壁版 ID を 1 つずつ繰り上げるため、フォームの対象を
-        // そのまま残すと「別の壁版を編集していた」ことになる。対象を外す。
         app.ui.scoped.wall_plate_draft.target = None;
         app.ui.scoped.wall_plate_draft.synced_for = None;
     }
@@ -603,9 +590,6 @@ fn attached_anchor_cell(
                     ));
                 }
             }
-            // 自立壁。荷重を渡す床領域は保存せず壁の位置から都度求めるため、
-            // ここで編集するのは壁自身の始点・終点だけである
-            // （`RegionAnchor::FloorRegion` のドキュメント）。
             RegionAnchor::FloorRegion { nodes } => {
                 ui.label("自立(始点/終点):");
                 for k in 0..2 {
@@ -624,8 +608,6 @@ fn attached_anchor_cell(
                     }
                 }
             }
-            // 壁の取付き先には使わない（`RegionAnchor::Point` は出隅スラブ専用。
-            // `squid-n-edit::wall_anchor_ok` が弾くため、この分岐へは到達しない）。
             RegionAnchor::Point(_) => {
                 ui.label("(未対応の取付き先)");
             }
@@ -657,8 +639,6 @@ fn height_cell(
             .on_hover_text("壁の下端から直上の階レベルまでを高さにする。階高を変えても追随する")
             .changed()
         {
-            // 階高を外したときは、直前まで表示していた解決後の高さを初期値にする
-            // （0 へ落とすと壁が消えたように見える）。
             let seed = resolved_extent.unwrap_or([0.0, 0.0]);
             pending_extent.push((id, (!story_height).then_some(seed)));
         }
@@ -667,7 +647,6 @@ fn height_cell(
                 Some(e) => {
                     ui.label(format!("{:.0} mm", e[0]));
                 }
-                // 直上に階が無い壁。解析前チェックがエラーで止める。
                 None => {
                     ui.colored_label(crate::theme::WARN_TEXT, "階高が引けません");
                 }
@@ -712,7 +691,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let plate_ids: Vec<WallPlateId> = app.core.model.wall_plates.iter().map(|p| p.id).collect();
-    // 対象が消えている（削除・ID 繰り上げ）場合は未選択へ戻す。
     if app
         .ui
         .scoped
@@ -756,7 +734,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             });
     });
 
-    // 対象が変わったら model の現在値でバッファを再同期する。
     if app.ui.scoped.wall_plate_draft.target != app.ui.scoped.wall_plate_draft.synced_for {
         if let Some(plate) = app
             .ui
@@ -775,8 +752,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             app.ui.scoped.wall_plate_draft.opening_weight = format!("{weight:.0}");
             app.ui.scoped.wall_plate_draft.slit = slit;
             app.ui.scoped.wall_plate_draft.openings = format_openings(&openings);
-            // 面荷重は 1 件だけ扱う（床板の追加フォームと同じ簡略化）。複数件を
-            // 持つ壁版は合計値を見せ、適用すると 1 件へまとめる。
             let total = plate.finish_intensity();
             app.ui.scoped.wall_plate_draft.load_value =
                 format!("{:.3}", to_display::area_load_kn_per_m2(total));
@@ -825,11 +800,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         "コンクリートの増打ち・仕上げの重さを面荷重として加えます。躯体の自重は         断面の板厚と材料から別に求めるため、ここには含めません。増打ちは構造厚に         含めない扱いなので、剛性・耐力には算入しません。",
     );
 
-    // 耐震スリットは囲まれた壁版にしか意味がない（一覧の同名列と同じ理由）。
-    // 取り付く壁版では入力欄自体を出さない。左右どちらの柱際かは節点番号で示す。
     if !is_attached {
-        // スリットは辺の役割（柱際か梁際か、下辺か上辺か）を決められる 4 節点の
-        // 壁版でのみ扱える。効かない壁版では入力を出さず、理由を示す。
         let quad = app
             .core
             .model
@@ -842,7 +813,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             .and_then(|p| p.column_face_nodes(&app.core.model));
         ui.horizontal(|ui| {
             ui.label("耐震スリット:");
-            // 4 節点でない壁版では指定しても効かないため、入力を無効化する。
             ui.add_enabled_ui(quad, |ui| {
                 for k in 0..2 {
                     let label = match faces {
@@ -961,7 +931,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         if let (Ok(opening_area), Ok(opening_weight), Ok(openings)) =
             (parsed_area, parsed_weight, parsed_openings)
         {
-            // 取り付く壁版では入力欄を出さないため、既存値をそのまま書き戻す。
             let slit = if is_attached {
                 app.core
                     .model
@@ -971,8 +940,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 app.ui.scoped.wall_plate_draft.slit
             };
-            // 0 の面荷重は項目自体を持たせない（一覧が「―」になり、空の
-            // 「仕上げ 0.00kN/m²」が並ばない）。
             let value = to_internal::area_load_kn_per_m2(parsed_load.unwrap_or(0.0));
             let kind = app.ui.scoped.wall_plate_draft.load_kind.trim();
             let kind = if kind.is_empty() { "仕上げ" } else { kind }.to_string();
@@ -1162,9 +1129,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
             ui.label("床領域がありません（準備計算を実行すると主架構から生成されます）");
             return;
         }
-        // 荷重を渡す床領域は選ばせない。壁の位置から都度求めるため保存しない
-        // （`RegionAnchor::FloorRegion` のドキュメント）。床領域をまたぐ壁は
-        // 内部で分割して配り、床に載らない壁は解析前チェックが止める。
         ui.label(
             "荷重は壁が載っている床領域の床板へ等価な面荷重としてならします（床領域をまたぐ壁は\
              境界で分割して配ります）。荷重を流せる床の上に無い壁は解析前チェックが止めます。",
@@ -1201,8 +1165,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
-    // 「階高いっぱい」を選べるのは自立壁だけである（`WallPlateShape::Attached` の
-    // ドキュメント）。取付き線に取り付く全高の壁は囲まれた壁版として入力する。
     let use_story_height = to_region && app.ui.scoped.wall_plate_draft.add_story_height;
     ui.horizontal(|ui| {
         if to_region {
@@ -1258,9 +1220,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal(|ui| {
         ui.label("断面:");
-        // 下書きの断面が消えている（削除・ID 繰り上げ）場合は未割当へ戻す。
-        // 残したままだと `AddAttachedWallPlate` が参照検証で Noop になり、
-        // 「追加」を押しても何も起きない状態になる。
         let resolved = app
             .ui
             .scoped
@@ -1292,9 +1251,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     .response
     .on_hover_text("壁の板厚と自重は断面から決まります。断面が未割当の壁版は自重が 0 になります");
 
-    // `AddAttachedWallPlate` は非有限の高さを Noop で弾く。GUI 側でも同じ条件で
-    // 「追加」を無効にしないと、"inf"・"NaN"（`parse::<f64>()` を通る）を入れたとき
-    // ボタンだけ押せて何も起きない状態になる。
     let parsed_extent: Option<[f64; 2]> = {
         let a = app.ui.scoped.wall_plate_draft.add_extent[0]
             .trim()
@@ -1308,8 +1264,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
             .filter(|v| v.is_finite());
         a.zip(b).map(|(a, b)| [a, b])
     };
-    // 階高いっぱいの壁は高さを持たない（`extent = None`）。「未入力」と区別する
-    // ため、追加可否の判定は別のフラグで持つ。
     let extent: Option<[f64; 2]> = if use_story_height {
         None
     } else {
@@ -1356,8 +1310,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
                     anchor,
                     extent,
                     section: app.ui.scoped.wall_plate_draft.add_section,
-                    // 開口は追加後に上の「開口・耐震スリットを設定」で与える
-                    // （床板の追加フォームが版の仕様を後から与えるのと同じ流儀）。
                     opening_area: 0.0,
                     opening_weight: 0.0,
                 }),
@@ -1366,7 +1318,6 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

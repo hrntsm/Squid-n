@@ -50,9 +50,6 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    // 非収束ステップの注記は**表示モードによらず**出す（質点系の表示と同じ規約）。
-    // 収束を確認できていないステップを含む応答が参考値であることは、波形を見て
-    // いても層応答分布を見ていても同じく伝わる必要がある。
     let non_converged = app
         .core
         .scoped
@@ -77,8 +74,7 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-/// 時刻歴波形（代表応答: 節点変位／ベースシア／層間変形角）。従来の
-/// `time_history_panel` の本体（表示モード追加に伴い切り出し）。
+/// 時刻歴波形（代表応答: 節点変位／ベースシア／層間変形角）。
 fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
     if app.ui.scoped.time_history_data.time.is_empty() {
         ui.colored_label(
@@ -127,19 +123,15 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
         .map(|(&t, &v)| [t, v])
         .collect();
 
-    // §3 データビジュアライゼーション配色（系列ごとに弁別可能な 3 色）
     let (ylabel, line_color) = match source {
         TimeHistorySource::NodeDisp => ("変位 [mm]", crate::theme::DATA_BLUE),
         TimeHistorySource::StoryShear => ("ベースシア [N]", crate::theme::PARETO_RED),
         TimeHistorySource::StoryDriftAngle => ("層間変形角 [rad]", crate::theme::GOOD_GREEN),
     };
 
-    // ピーク値サマリ
     let peak = series.iter().cloned().fold(0.0f64, |m, v| m.max(v.abs()));
     ui.label(format!("最大絶対値: {:.4e}", peak));
 
-    // レインフロー計数（累積損傷度計算で用いる ASTM E1049 3 点法）。表示中の代表応答に対する
-    // 等価繰返し数・最大振れ幅を参考表示する（累積損傷度 D の梁端 μ 収集は今後の拡張）。
     let cycles = squid_n_solver::damage::rainflow_cycles(series);
     let neq: f64 = cycles.iter().map(|c| c.count).sum();
     let max_range = cycles.iter().map(|c| c.range).fold(0.0f64, f64::max);
@@ -149,8 +141,6 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
     ))
     .on_hover_text("累積損傷度計算(レインフロー法)の基礎計数（ASTM E1049 3 点法）。");
 
-    // 梁端累積損傷度 D（鉄骨梁端部の累積損傷度計算）。非線形時刻歴で
-    // 各要素の危険断面塑性率 μ 時刻歴からレインフロー法で算定した値を表示する。
     if let Some(res) = app
         .core
         .scoped
@@ -169,7 +159,6 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
             .filter(|&&d| d > 0.0)
             .count();
         if dmax > 0.0 {
-            // 最大 D の要素 ID。
             let imax = res
                 .cumulative_ductility
                 .iter()
@@ -205,7 +194,6 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
             );
         });
 
-    // カーソル位置の値を表示
     if let Some(pointer) = plot.response.hover_pos() {
         let pointer_value = plot.transform.value_from_position(pointer);
         let dt = if data.time.len() >= 2 {
@@ -232,8 +220,7 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
 
 /// 層応答分布（縦軸=階、横軸=層せん断力／層せん断力係数／階加速度／階速度／階変位）。
 /// データは `App.core.scoped.results.time_history.recording`（`ThRecording`）から直接参照する
-/// （コピー保持しない）。`recording` がない（旧い結果、または非線形以前の解析結果でも
-/// ないことはないが念のため）場合は再解析を案内する。
+/// （コピー保持しない）。`recording` がない場合は再解析を案内する。
 fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
     let Some(recording) = app
         .core
@@ -282,8 +269,6 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // 階名（低: 添字ではなく `StoryId` で現モデルと突き合わせる。解析後にモデルの
-    // 階が編集されても別の階の名前を誤って表示しない。見つからなければ「(削除済み階)」）。
     let model_story_names: Vec<(squid_n_core::ids::StoryId, String)> = app
         .core
         .model
@@ -374,7 +359,6 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
             }
         });
 
-    // カーソル位置の値を表示（既存の時刻歴波形グラフと同じ方式）。
     if let Some(pointer) = plot.response.hover_pos() {
         let pointer_value = plot.transform.value_from_position(pointer);
         let idx = hover_story_index(pointer_value.y, n_story, is_story_quantity);

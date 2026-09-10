@@ -113,17 +113,15 @@ pub(crate) fn moment_curve_samples(
         let (x1, m1, q1) = w[1];
         let h = x1 - x0;
         if h <= 1e-12 {
-            // 同一位置の重複サンプル。補間せず値だけ引き継ぐ
             out.push((x1, m1));
             continue;
         }
-        // 区間端の dMz/dξ（せん断 × 部材長）
         let s1 = q1 * length;
-        let sc = (m1 - m0) / h; // 弦勾配
+        let sc = (m1 - m0) / h;
         let s0_raw = q0 * length;
-        let s0_quad = 2.0 * sc - s1; // 2 次と仮定したときの左端勾配
+        let s0_quad = 2.0 * sc - s1;
         let s0 = if s0_raw * s0_quad < 0.0 {
-            s0_quad // 集中荷重による勾配の不連続とみなす（上記ドキュメント参照）
+            s0_quad
         } else {
             s0_raw
         };
@@ -185,7 +183,6 @@ fn push_segment_fill(x0: f64, v0: f64, x1: f64, v1: f64, out: &mut Vec<Vec<(f64,
     if (v0 >= 0.0 && v1 >= 0.0) || (v0 <= 0.0 && v1 <= 0.0) {
         out.push(vec![(x0, 0.0), (x0, v0), (x1, v1), (x1, 0.0)]);
     } else {
-        // 符号反転: 線形補間でゼロ交差を求め、片側符号のみの三角形2つに分割する
         let xc = x0 + (x1 - x0) * v0 / (v0 - v1);
         out.push(vec![(x0, 0.0), (x0, v0), (xc, 0.0)]);
         out.push(vec![(xc, 0.0), (x1, v1), (x1, 0.0)]);
@@ -208,8 +205,7 @@ fn diagram_poly_repr_val(poly: &[(f64, f64)]) -> f64 {
 }
 
 /// コンター配色: `t = val/max_abs ∈ [-1,1]`（範囲外はクランプ）を `map` の色へ写像する。
-/// TONMANUAL §3「カラーマップ（連続値）」は Viridis を既定に定めており（[`theme::ColorMap`]
-/// の `#[default]`）、UI からは他のカラーマップにも切り替えられる。実体は
+/// UI からは他のカラーマップにも切り替えられる。実体は
 /// `map.sample((t+1)/2)` への単純な写像で、独自の配色は持たない（テーマ＝配色の
 /// 単一情報源は theme.rs 側に置く）。
 pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
@@ -237,7 +233,6 @@ fn is_significant(maxes: &[f64; 6], c: ForceComponent) -> bool {
     /// 同次元成分の最大値に対する相対しきい値。
     const REL_TOL: f64 = 1e-9;
     let idx = c.force_index();
-    // 内力ベクトルの並び `[N, Qy, Qz, Mx, My, Mz]`: 前半が力、後半がモーメント。
     let group = if c.is_moment() {
         &maxes[3..6]
     } else {
@@ -352,8 +347,6 @@ pub(super) fn draw_force_diagram(
     let Some(results) = &app.core.scoped.results else {
         return;
     };
-    // 成分ごとのモデル全体最大絶対値（共有スケール算出の入力。描画・凡例には
-    // [`display_scales_for_selection`] の戻り値を使う）。
     let mut maxes = [0.0_f64; 6];
     for (_, mf) in &results.member_forces {
         for (_, f) in &mf.at {
@@ -366,11 +359,6 @@ pub(super) fn draw_force_diagram(
     let display_scales = display_scales_for_selection(&maxes, components);
     let mut legend_rows: Vec<(ForceComponent, f64)> = Vec::new();
     for c in components.selected() {
-        // 実質ゼロの成分（例: 平面フレームの Qz、i 端ねじれ解放時の Mx）は図を
-        // 描けない。丸め誤差を最大値として正規化すると誤差が画面いっぱいに
-        // 描かれてしまうため、スケールも 0 に丸めて凡例へ渡す（[`is_significant`]）。
-        // 成分が選択中であること自体は凡例で示す（「選んだのに何も出ない」理由が
-        // 分かるようにする）。
         let max_abs = display_scales[c.force_index()];
         if max_abs > 0.0 {
             draw_component(
@@ -417,14 +405,11 @@ fn draw_component(
     let scale = proj.scale();
     let force_idx = component.force_index();
     let plot_sign = component.plot_sign();
-    // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
     let amp_world = 60.0 / max_abs / scale as f64;
 
     let contour = app.ui.view.diagram_contour;
     let colormap = app.ui.view.contour_colormap;
-    // 塗りの不透明度: コンターは色そのものが情報を持つためモノクロより濃くする。
     let fill_alpha: u8 = if contour { 160 } else { 60 };
-    // 輪郭は常に成分固定色。コンター中でも「どの図がどの成分か」を判別できる。
     let outline_color = component.color();
     let outline_width: f32 = if contour { 1.0 } else { 1.5 };
 
@@ -438,7 +423,6 @@ fn draw_component(
             continue;
         }
 
-        // 壁は壁柱（上下辺中点）を材軸とする。線材は先頭 2 節点を結ぶ。
         let (p_i, p_j, ref_vec, model_len) = if elem.kind == ElementKind::Wall {
             let Some(axis) = wall_force_axis(elem, model, coords3) else {
                 continue;
@@ -471,16 +455,10 @@ fn draw_component(
             )
         };
         let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
-        // 構面表示では張り出しを構面内へ倒す（面外成分が線に潰れるのを防ぐ）。
         let ey = match frame_normal {
             Some(n) => in_plane_offset_dir(ey, p_i, p_j, n),
             None => ey,
         };
-        // 内部たわみ表示が有効な梁は、張り出しの基準線を変形後の Hermite 曲線に
-        // する（`disp` が Some＝変形重ね時のみ）。梁の線描画と同じ `BeamDeflection`
-        // で評価するため、基準線が梁の描画曲線に厳密一致する。それ以外（梁以外・
-        // 内部たわみ OFF・変形重ね無し）は変形後の節点間直線（弦）を基準線にする
-        // （従来どおり）。未変形材軸端点から一度だけ前処理する。
         let deflection: Option<BeamDeflection> =
             if app.ui.view.show_beam_interpolation && elem.kind == ElementKind::Beam {
                 let n0 = elem.nodes[0].index();
@@ -502,22 +480,13 @@ fn draw_component(
         let p0 = proj.project(p_i);
         let p1 = proj.project(p_j);
 
-        // M 図は曲げ材（梁・柱を表す線材要素）に限り、せん断を区間端の勾配とする
-        // 3 次エルミートで曲線化する（等分布荷重の放物線を復元する。
-        // [`moment_curve_samples`] 参照）。軸材・面要素・ばね類は曲げ内力場を
-        // 持たないため対象外。N 図（一定）・Q 図（等分布下で 1 次）は評価断面を
-        // 直線で結べば厳密なので従来どおり。
         let grad = component.moment_gradient_source().filter(|_| {
             matches!(
                 elem.kind,
                 ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
             )
         });
-        // 張り出し値（= 内力値 × plot_sign）。補間・塗り・輪郭はこの値で行い、
-        // 数値ラベル・コンター色は内力値そのもの（張り出し値 × plot_sign）を使う。
         let samples: Vec<(f64, f64)> = if let Some(q) = grad {
-            // 勾配 d(張り出し値)/dξ = 対応せん断·L に用いる部材長は、変形倍率の
-            // 影響を受けない未変形の材長（内力回復時の材長）とする。
             let tri: Vec<(f64, f64, f64)> = mf
                 .at
                 .iter()
@@ -536,22 +505,17 @@ fn draw_component(
         if samples.len() < 2 {
             continue;
         }
-        // コンター時は色の階調のため各区間を細分する。モノクロ時は単色なので不要。
-        // 曲線補間済みの M 図は既に稠密なので、さらに細分はしない。
         let subdiv = if contour && grad.is_none() {
             CONTOUR_SUBDIV
         } else {
             1
         };
-        // 張り出しピーク px が閾値未満の潰れた図形はスキップ（上記ドキュメント参照）
         let val_max = samples.iter().map(|(_, v)| v.abs()).fold(0.0_f64, f64::max);
         let peak_px = (60.0 * val_max / max_abs) as f32;
         if peak_px < MIN_DIAGRAM_PX {
             continue;
         }
 
-        // (xi, val) → スクリーン座標。val=0 は基準線そのもの（オフセット無し）。
-        // 基準線は deflection があれば梁の変形後 Hermite 曲線、なければ節点間直線。
         let to_screen = |xi: f64, val: f64| -> egui::Pos2 {
             let base3 = match &deflection {
                 Some(bd) => bd.point_at(xi, deform_scale),
@@ -568,12 +532,10 @@ fn draw_component(
             }
         };
 
-        // --- 塗り: 台形/三角形クワッドを個別に塗る（非凸・符号反転にも正しく対応） ---
         for poly in diagram_fill_polygons(&samples, subdiv) {
             let screen_poly: Vec<egui::Pos2> =
                 poly.iter().map(|&(xi, v)| to_screen(xi, v)).collect();
             let fill_color = if contour {
-                // 色は内力値そのもの（張り出し値ではない）で決める。
                 let repr = plot_sign * diagram_poly_repr_val(&poly) / max_abs;
                 theme::translucent(contour_color(repr, colormap), fill_alpha)
             } else {
@@ -586,13 +548,11 @@ fn draw_component(
             ));
         }
 
-        // --- 輪郭: 閉じない折れ線（材軸点→各張り出し点→材軸点。マイター発散対策） ---
         let mut outline_pts: Vec<egui::Pos2> = Vec::with_capacity(samples.len() + 2);
         outline_pts.push(p0);
         let mut last = p0;
         for &(xi, val) in &samples {
             let pt = to_screen(xi, val);
-            // 直前の点とスクリーン距離が近すぎるサンプル点は間引く
             if (pt.x - last.x).hypot(pt.y - last.y) < MIN_SEGMENT_PX {
                 continue;
             }
@@ -605,7 +565,6 @@ fn draw_component(
             egui::Stroke::new(outline_width, outline_color),
         ));
 
-        // --- 数値ラベル: 両端部と中央（ξ=0・0.5・1.0）---
         if app.ui.view.diagram_values {
             draw_value_labels(painter, mf, component, max_abs, plot_sign, &to_screen);
         }
@@ -630,7 +589,6 @@ fn draw_value_labels(
     let threshold = max_abs * 0.01;
     let font = egui::FontId::proportional(11.0);
     for xi_t in LABEL_XI {
-        // 評価断面（危険断面）に ξ=0・0.5・1.0 は常に含まれる（`eval_sections_of`）。
         let Some((xi, f)) = mf
             .at
             .iter()
@@ -644,7 +602,6 @@ fn draw_value_labels(
             continue;
         }
         let pos = to_screen(xi, plot_sign * value);
-        // 張り出し先の外側へ少しずらして図と重ならないようにする。
         painter.text(
             pos,
             egui::Align2::CENTER_BOTTOM,
@@ -683,8 +640,6 @@ fn draw_force_legend(
             2.0,
             c.color(),
         );
-        // 実質ゼロの成分は最大値 0 で渡ってくる（`is_significant`）。数値だけだと
-        // 「図が出ないのは不具合か」と迷うため、全部材でゼロである旨を明示する。
         let text = if max_abs > 0.0 {
             format!(
                 "{}図 max={:.1} {}",
@@ -705,7 +660,7 @@ fn draw_force_legend(
         y += 16.0;
         if contour && max_abs >= 1e-12 {
             for i in 0..STRIPS {
-                let t = (i as f64 + 0.5) / STRIPS as f64 * 2.0 - 1.0; // 短冊中央の t∈[-1,1]
+                let t = (i as f64 + 0.5) / STRIPS as f64 * 2.0 - 1.0;
                 let color = contour_color(t, colormap);
                 let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
                 let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
@@ -741,7 +696,6 @@ fn draw_force_legend(
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,7 +984,7 @@ mod tests {
                 && (axis.top_center[2] - 2700.0).abs() < 1e-6
         );
         assert!((axis.model_height - 2700.0).abs() < 1e-6);
-        // 先頭 2 節点（上辺）を結ぶ旧経路とは z が大きく異なる。
+        // 先頭 2 節点（上辺）を結ぶ経路とは z が大きく異なる。
         let old_axis = vec3::midpoint(coords3[2], coords3[3]);
         assert!((axis.bottom_center[2] - old_axis[2]).abs() > 100.0);
     }

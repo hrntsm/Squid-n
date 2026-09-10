@@ -46,7 +46,7 @@ impl App {
         self.apply_time_history_result(res);
     }
 
-    /// 時刻歴応答解析をバックグラウンドスレッドで実行する（P8 §5、残課題1）。
+    /// 時刻歴応答解析をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_time_history_job(
@@ -58,7 +58,6 @@ impl App {
         }
         let model = self.core.model.clone();
         let cfg = self.core.analysis_cfg;
-        // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
         let label = if cfg.th_nonlinear {
             "時刻歴応答(非線形)"
         } else {

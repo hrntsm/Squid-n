@@ -9,7 +9,7 @@ use super::{camera::q_rotate, CameraState};
 use crate::theme;
 
 /// 立方体の 6 面（外向き法線, ラベル）。
-/// Front はワールド -Y 側（Y=奥行き・Z=鉛直の慣例。ラベルは TONMANUAL に従い英語）。
+/// Front はワールド -Y 側（Y=奥行き・Z=鉛直の慣例。ラベルは英語）。
 pub(crate) const FACES: [([f32; 3], &str); 6] = [
     ([0.0, 0.0, 1.0], "Top"),
     ([0.0, 0.0, -1.0], "Bottom"),
@@ -149,7 +149,6 @@ pub(crate) fn draw(
     layout: &Layout,
     hover: Option<Hit>,
 ) {
-    // 可視面を奥から描く（正射影の凸立体なので重ならないが、順序を保証しておく）
     let mut faces: Vec<(usize, f32)> = FACES
         .iter()
         .enumerate()
@@ -161,7 +160,6 @@ pub(crate) fn draw(
     for (i, nz) in faces {
         let (n, label) = FACES[i];
         let quad = face_vertices(n).map(|v| project_cube(cam, v, layout).0);
-        // ホバー色は TONMANUAL §6 のボタンホバー慣例（blue-300）に合わせる
         let fill = if hover == Some(Hit::Face(i)) {
             theme::BLUE_300
         } else {
@@ -172,7 +170,6 @@ pub(crate) fn draw(
             fill,
             egui::Stroke::new(1.0_f32, theme::GRAY_600),
         ));
-        // ラベルは面が正面に近いほど読めるため、浅い角度では省く
         if nz > 0.35 {
             let (center, _) = project_cube(cam, n, layout);
             painter.text(
@@ -185,14 +182,11 @@ pub(crate) fn draw(
         }
     }
 
-    // ホバー中のコーナーを強調（当たり判定 CORNER_HIT_PX より小さい円で描き、
-    // 立方体の見た目を隠しすぎないようにする）
     if let Some(Hit::Corner(i)) = hover {
         let (p, _) = project_cube(cam, CORNERS[i], layout);
         painter.circle_filled(p, 5.0, theme::BLUE_500);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

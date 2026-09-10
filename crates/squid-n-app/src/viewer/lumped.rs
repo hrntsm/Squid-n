@@ -265,7 +265,6 @@ pub(super) fn draw(
         .unwrap_or(0.0);
     let base = proj.project([rest[0][0], rest[0][1], base_z]);
 
-    // 質点モードは変形前を破線・高透過で先に描き、基準位置からの変化が読めるようにする。
     if mode == ViewMode::LumpedMode && scale > 1e-12 {
         draw_stick_springs(
             painter,
@@ -313,7 +312,6 @@ pub(super) fn draw(
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{align_xy_to_mean, mass_marker_radius};

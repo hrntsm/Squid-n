@@ -43,7 +43,6 @@ impl App {
                 self.nav_load_case_node(ui, i, &mut action);
             }
         });
-        // セクション見出しの右クリック＝どのケースにも属さない操作（ケース追加）。
         resp.header_response.context_menu(|ui| {
             if ui.button("荷重ケースを追加").clicked() {
                 action = Some(LoadTreeAction::AddCase);
@@ -83,8 +82,6 @@ impl App {
             self.ui.scoped.nav.focus_load_case = Some(lc_id);
         }
         if is_sel {
-            // 選択中のケースは見出しの下に細い下線を引く（CollapsingHeader は
-            // selectable_label と違い選択状態を持たないため）。
             let rect = resp.header_response.rect;
             ui.painter().line_segment(
                 [rect.left_bottom(), rect.right_bottom()],
@@ -120,7 +117,6 @@ impl App {
         action: &mut Option<LoadTreeAction>,
     ) {
         let lc_id = self.core.model.load_cases[case_index].id;
-        // 表示するのは手入力分のみ。添字は編集・削除コマンドが使うため一緒に持つ。
         let entries: Vec<(usize, String)> = match group {
             LoadGroup::Nodal => self.core.model.load_cases[case_index]
                 .manual_nodal()
@@ -313,9 +309,6 @@ impl App {
         ) {
             self.ui.view.active_tab = Tab::Model;
         }
-        // 作成モードと排他にする。3D のクリックは荷重の対象ピックが先に受け取るため、
-        // 作成モードを ON のままにすると、選択中の節点が赤く残ったまま操作だけが
-        // 効かない状態になる。
         self.ui.scoped.beam_draw_mode = false;
         self.ui.scoped.beam_draw_first = None;
         self.ui.scoped.wall_draw_mode = false;
@@ -358,7 +351,6 @@ impl LoadGroup {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

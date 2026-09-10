@@ -81,7 +81,6 @@ fn base_color(shape: Option<&SectionShape>) -> egui::Color32 {
             | SectionShape::RcSlab { .. },
         ) => theme::GRAY_300,
         Some(_) => theme::BLUE_300,
-        // 形状定義なし（カタログ数値直入力等）は中立グレー
         None => theme::GRAY_300,
     }
 }
@@ -113,7 +112,6 @@ fn circle_outline(dia: f64) -> Vec<[f64; 2]> {
 /// と合わせて本ファイル外からの唯一の公開窓口）。
 pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
     let Some(shape) = &sec.shape else {
-        // 形状なし: 断面表の depth/width が入っていれば矩形で近似
         return (sec.depth > 0.0 && sec.width > 0.0).then(|| rect_outline(sec.depth, sec.width));
     };
     let outline = match shape {
@@ -145,7 +143,6 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
             leg_b,
             thick,
         } => {
-            // 垂直脚 leg_a（y 方向）× 水平脚 leg_b（z 方向）。バウンディングボックス中心合わせ。
             let (a, b, t) = (*leg_a, *leg_b, *thick);
             let (cy, cz) = (a * 0.5, b * 0.5);
             vec![
@@ -163,7 +160,6 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
             web_thick,
             flange_thick,
         } => {
-            // ウェブを -z 側に置き、開口を +z 側へ向ける
             let (h, b, tw, tf) = (height * 0.5, width * 0.5, *web_thick, *flange_thick);
             vec![
                 [h, -b],
@@ -182,7 +178,6 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
             web_thick,
             flange_thick,
         } => {
-            // フランジを上（+y）に置く
             let (h, b, tw, tf) = (height * 0.5, width * 0.5, web_thick * 0.5, *flange_thick);
             vec![
                 [h, -b],
@@ -233,7 +228,6 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
             lip,
             thick,
         } => {
-            // ウェブを -z 側に置き、+z 側フランジ先端のリップは内向き（y 中心向き）
             let (h, b, c, t) = (height * 0.5, width * 0.5, *lip, *thick);
             vec![
                 [h, -b],
@@ -255,7 +249,6 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
         }
         SectionShape::RcCircle { d, .. } => circle_outline(*d),
         SectionShape::CftBox { height, width, .. } => rect_outline(*height, *width),
-        // 壁は要素側で面ポリゴン表示するため対象外。スラブは線材の断面ではない。
         SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => return None,
     };
     Some(outline)
@@ -312,13 +305,9 @@ pub(super) fn draw_section_solids(
     show_secondary: bool,
     frame_filter: super::FrameFilter,
 ) -> usize {
-    // (奥行き, 描画要素)。奥行きはカメラ空間 z（手前が正）の平均。
     let mut prims: Vec<(f32, SolidPrim)> = Vec::new();
     let mut skipped = 0usize;
 
-    // 1 本の線材を断面押し出しソリッドとして prims へ積む共通処理
-    // （解析部材・二次部材（小梁・間柱）で共用）。`base` は塗りの基本色
-    // （二次部材は解析対象外を示す暖色）。断面輪郭が得られなければ false。
     let mut extrude = |p_i: [f64; 3],
                        p_j: [f64; 3],
                        ref_vector: [f64; 3],
@@ -328,13 +317,10 @@ pub(super) fn draw_section_solids(
         let Some(outline) = section_outline(sec) else {
             return false;
         };
-        // 零長部材は押し出す向きが定まらないので描かない。平方のまま比べて
-        // 平方根を省く（しきい値 1e-6 は材長 1e-3 mm に相当する）。
         let d = squid_n_core::geom::vec3::sub(p_j, p_i);
         if squid_n_core::geom::vec3::dot(d, d) < 1e-6 {
             return true;
         }
-        // 解析と同じ局所座標系で断面を配向（ey=せい方向, ez=幅方向）
         let frame = LocalFrame::from_nodes(p_i, p_j, ref_vector);
         let ey = frame.rot[1];
         let ez = frame.rot[2];
@@ -354,7 +340,6 @@ pub(super) fn draw_section_solids(
         let ring_i = ring(p_i);
         let ring_j = ring(p_j);
 
-        // 側面フェイス（輪郭の各辺 × 材軸方向の四角形）
         let n = outline.len();
         for k in 0..n {
             let k1 = (k + 1) % n;
@@ -376,7 +361,6 @@ pub(super) fn draw_section_solids(
                 },
             ));
         }
-        // 端面は凹型断面（H・溝形等）があるため輪郭線のみ描く
         for ring in [&ring_i, &ring_j] {
             let depth = ring.iter().map(|r| r[2]).sum::<f32>() / n as f32;
             prims.push((
@@ -425,11 +409,6 @@ pub(super) fn draw_section_solids(
         }
     }
 
-    // 二次部材（小梁・間柱）: 解析対象外だが実在部材のため、断面表示では
-    // 解析部材と同じ断面押し出しで大きさが分かるように描く。塗りは解析対象外を
-    // 示す暖色（スラブと同族の BEST_YELLOW。解析部材の青/グレーと弁別）。
-    // 断面の向きは既定の局所座標系（水平材は鉛直上基準、鉛直材は X 基準）とする。
-    // 二次部材が表示対象でないモード・トグル状態では描かない（中心線と同じ規則）。
     if show_secondary {
         for sm in model.joists().chain(model.posts()) {
             let n0 = sm.nodes[0].index();
@@ -444,9 +423,9 @@ pub(super) fn draw_section_solids(
             let (p_i, p_j) = (coords[n0], coords[n1]);
             let dxy = ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2)).sqrt();
             let ref_vector = if dxy < 1.0 {
-                [1.0, 0.0, 0.0] // 鉛直材（間柱）
+                [1.0, 0.0, 0.0]
             } else {
-                [0.0, 0.0, 1.0] // 水平材（小梁）
+                [0.0, 0.0, 1.0]
             };
             if !extrude(p_i, p_j, ref_vector, sec, theme::BEST_YELLOW) {
                 skipped += 1;
@@ -454,7 +433,6 @@ pub(super) fn draw_section_solids(
         }
     }
 
-    // 奥（カメラ空間 z 小）→ 手前の順に描画
     prims.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     for (_, prim) in prims {
         match prim {

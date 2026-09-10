@@ -94,7 +94,6 @@ impl App {
             egui::ComboBox::from_id_salt("analysis_target")
                 .selected_text(text)
                 .show_ui(ui, |ui| {
-                    // 荷重ケースと荷重組合せを 1 つの一覧に並べる（見出しで区切る）。
                     ui.label(egui::RichText::new("荷重ケース").color(crate::theme::GRAY_600));
                     let cases: Vec<(LoadCaseId, String)> = self
                         .core
@@ -234,8 +233,6 @@ impl App {
                 .add_enabled(!running, egui::Button::new("▶ 実行"))
                 .clicked()
             {
-                // UI スレッドをブロックしないようバックグラウンドで実行する
-                // （他の解析と同じジョブ経路）。
                 self.start_eigen_job(self.core.analysis_cfg.n_modes);
             }
         });
@@ -254,8 +251,6 @@ impl App {
             ui.label("ステップ:");
             ui.add(egui::DragValue::new(&mut self.core.analysis_cfg.push_steps).range(1..=100));
         });
-        // 終了目標（いずれかへの到達で解析を打ち切る）。両方とも無効なら
-        // 荷重制御 λ=1 まで解析する（solver 側 PushoverTarget の既定挙動）。
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(
                 &mut self.core.analysis_cfg.push_use_drift_angle,
@@ -520,7 +515,6 @@ impl App {
                     .range(10.0..=10000.0),
             );
         });
-        // 位相差入力（ねじれ加振）。構造動力学の位相差入力解析 t=(L·sinθ)/Vs。
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.core.analysis_cfg.phase_diff_enabled, "位相差入力")
                 .on_hover_text("見かけ速度で地震動が矩形基礎を通過する位相差からねじれ加振を生成");
@@ -579,8 +573,6 @@ impl App {
                 ui.spinner();
             }
         });
-        // 波形ライブラリ（「🌊 波形を保存…」で登録した波形。ファイルメニュー参照）
-        // から選んで実行する。ライブラリ内容は軽量なので毎フレーム再スキャンする。
         ui.horizontal_wrapped(|ui| {
             ui.label("波形ライブラリ:");
             let lib_dir = squid_n_io::wave_library::wave_library_dir();
@@ -597,11 +589,6 @@ impl App {
                     .wave_library_selection
                     .clone()
                     .unwrap_or_else(|| "(選択してください)".to_string());
-                // ドロップダウンでの選び直しは、まだ実行していない＝
-                // 「実行時点のハッシュ」を持たない状態に戻る
-                // （`set_wave_library_selection` 参照）。`self` を直接
-                // `selectable_value` へ渡すとこの破棄処理を経由できない
-                // ため、いったんローカル変数で受ける。
                 let mut picked = self.core.scoped.wave_library_selection.clone();
                 egui::ComboBox::from_id_salt("wave_library_select")
                     .selected_text(selected_text)

@@ -29,7 +29,6 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
     };
     match role {
         SectionMaterialRole::Main => true,
-        // 主筋・せん断補強筋は配筋を持つ断面のみ。
         SectionMaterialRole::Rebar | SectionMaterialRole::ShearRebar => matches!(
             shape,
             SectionShape::RcRect { .. }
@@ -37,8 +36,6 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
                 | SectionShape::SrcRect { .. }
                 | SectionShape::RcWall { .. }
         ),
-        // 内蔵鉄骨は SRC のみ。スラブは配筋も内蔵鉄骨も持たないため、
-        // 主材料（コンクリート）の欄だけが有効になる。
         SectionMaterialRole::Steel => matches!(shape, SectionShape::SrcRect { .. }),
     }
 }
@@ -100,11 +97,6 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_material: Vec<(SectionId, SectionMaterialRole, Option<MaterialId>)> =
         Vec::new();
 
-    // 断面ごとの参照数。行ごとに全部材を走査すると O(断面数×部材数) になるため、
-    // 表の描画前に 1 回だけ数える。数える対象は削除ガード
-    // （`squid_n_edit` の `section_in_use`）と揃える必要がある。ここでの 0 が
-    // そのまま「削除できる」の判定になるため、片方だけ数え漏らすと削除ボタンが
-    // 押せるのにコマンドが Noop になり、無反応に見えてしまう。
     let mut n_elements: Vec<usize> = vec![0; n];
     let count = |sid: Option<SectionId>, n_elements: &mut [usize]| {
         if let Some(sid) = sid {
@@ -117,11 +109,8 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         count(e.section, &mut n_elements);
     }
     for s in &app.core.model.slabs {
-        // 床板も断面を参照する（板厚・自重の情報源）。削除ガードが数える対象と
-        // そろえないと、使用部材数 0 の行で削除ボタンが押せるのに Noop になる。
         count(s.section(), &mut n_elements);
     }
-    // 二次部材（領域内・未割当）は `Model::joists`/`posts` が両方を返す。
     for sm in app.core.model.joists().chain(app.core.model.posts()) {
         count(sm.section, &mut n_elements);
     }
@@ -162,23 +151,14 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 table_util::text_cell(ui, &sec.name);
             });
-            row.col(|ui| {
-                // 階を持たない断面（アプリ内で作成した断面など）は符号だけが同一性キー。
-                match &sec.floor {
-                    Some(f) => table_util::text_cell(ui, f),
-                    None => table_util::muted_cell(ui, "—", "階が設定されていません"),
-                }
+            row.col(|ui| match &sec.floor {
+                Some(f) => table_util::text_cell(ui, f),
+                None => table_util::muted_cell(ui, "—", "階が設定されていません"),
             });
-            row.col(|ui| {
-                match &sec.shape {
-                    Some(shape) => table_util::text_cell(ui, &shape.dimension_label()),
-                    // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
-                    // 算定対象外になるため、数値直入力であることを示す。
-                    None => table_util::muted_cell(
-                        ui,
-                        "—",
-                        "形状定義がありません（断面性能の数値直入力）",
-                    ),
+            row.col(|ui| match &sec.shape {
+                Some(shape) => table_util::text_cell(ui, &shape.dimension_label()),
+                None => {
+                    table_util::muted_cell(ui, "—", "形状定義がありません（断面性能の数値直入力）")
                 }
             });
             row.col(|ui| {
@@ -222,7 +202,6 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             });
             row.col(|ui| {
-                // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
                 if n_elements[i] == 0 {
                     table_util::muted_cell(ui, "0", "どの部材からも参照されていません");
                 } else {

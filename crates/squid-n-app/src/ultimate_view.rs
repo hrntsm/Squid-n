@@ -12,7 +12,6 @@ use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 /// 余裕度セルの色（1.0 未満＝せん断先行で NG を赤系に）。
 fn margin_color(margin: f64) -> egui::Color32 {
     if margin.is_finite() {
-        // status_color は「需要/耐力」を受けるため、逆数（=Qmu/Qsu）を渡す。
         crate::theme::status_color(if margin > 1e-9 { 1.0 / margin } else { 9.9 })
     } else {
         crate::theme::GOOD_GREEN
@@ -24,7 +23,6 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
     ui.strong("終局検定（塑性理論式による終局せん断・付着余裕度）");
     ui.add_space(4.0);
 
-    // ── 算定条件 ─────────────────────────────────────────
     ui.horizontal(|ui| {
         ui.label("ヒンジ回転角 Rp:");
         ui.add(
@@ -135,7 +133,6 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             ui.add_space(4.0);
 
             let bond = app.core.ultimate_include_bond;
-            // 終局せん断強度の列見出し（靭性指針式は Vu／付着考慮 Vbu 表記）。
             let (qsu_hdr, ratio_hdr, qbu_hdr, bond_ratio_hdr) = if app.core.ultimate_shear_ductility
             {
                 ("Vu[kN]", "Vu/Qmu", "Vbu[kN]", "Vbu/Qmu")
@@ -176,7 +173,6 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                         ui.label(format!("{:.1}", force_kn(c.qsu)));
                     });
                     row.col(|ui| {
-                        // 2 軸せん断指定時は合成余裕度を表示（柱のみ Some）。
                         let m = c.biaxial_shear_margin.unwrap_or(c.shear_margin);
                         ui.colored_label(margin_color(m), format!("{m:.2}"));
                     });
@@ -237,7 +233,6 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // ── CFT 柱の軸終局耐力（CFT指針）─────────────
     ui.add_space(12.0);
     ui.strong("CFT柱の軸終局耐力（CFT指針）");
     ui.add_space(4.0);

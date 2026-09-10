@@ -1,4 +1,4 @@
-//! 従来の支持記号（矢印・円弧・凡例）。
+//! 支持記号（矢印・円弧・凡例）の描画。
 //!
 //! `viewer` ハブからの構造分割。アルゴリズム変更は行わない。
 
@@ -35,8 +35,8 @@ pub(super) fn support_kind(restraint: Dof6Mask) -> SupportKind {
         FIXED_BITS => SupportKind::Fixed,
         PINNED_BITS => SupportKind::Pinned,
         _ => {
-            let translational = restraint.0 & 0b000111; // Ux, Uy, Uz
-            let rotational = restraint.0 & 0b111000; // Rx, Ry, Rz
+            let translational = restraint.0 & 0b000111;
+            let rotational = restraint.0 & 0b111000;
             if translational != 0 && rotational == 0 {
                 SupportKind::Roller
             } else {
@@ -135,7 +135,7 @@ pub(super) fn draw_rotation_arc(
 ///
 /// 固定されている並進自由度の方向へ軸色の矢印を引き、
 /// 固定されている回転自由度の軸まわりに円弧を描く。
-/// 軸色は X=赤 / Y=緑 / Z=青（§3-2 規約）で方向を直感的に判別できる。
+/// 軸色は X=赤 / Y=緑 / Z=青で方向を直感的に判別できる。
 ///
 /// 現在は全体座標系（X/Y/Z）の軸方向に描画する。将来的に節点ごとに局所座標系を
 /// 導入した際は、この関数が参照する軸ベクトルを局所座標系の軸へ差し替えればよい。
@@ -150,12 +150,10 @@ pub(super) fn draw_support_symbol(
     if support_kind(restraint) == SupportKind::Free {
         return;
     }
-    // スクリーン上で arrow_px / arc_px になるようワールド長を逆算
     let arrow_world = arrow_px as f64 / proj.scale() as f64;
     let arc_world = arc_px as f64 / proj.scale() as f64;
     let origin = proj.project(node_coord);
 
-    // 並進自由度: 固定方向へ軸色の矢印
     let translational: [(Dof, [f64; 3], egui::Color32); 3] = [
         (Dof::Ux, [1.0, 0.0, 0.0], theme::AXIS_X),
         (Dof::Uy, [0.0, 1.0, 0.0], theme::AXIS_Y),
@@ -172,7 +170,6 @@ pub(super) fn draw_support_symbol(
         }
     }
 
-    // 回転自由度: 軸まわりの円弧
     let rotational: [(Dof, [f64; 3], egui::Color32); 3] = [
         (Dof::Rx, [1.0, 0.0, 0.0], theme::AXIS_X),
         (Dof::Ry, [0.0, 1.0, 0.0], theme::AXIS_Y),
@@ -199,7 +196,6 @@ pub(super) fn draw_support_legend(
     let x0 = rect.min.x + 10.0;
     let mut y0 = rect.max.y - 10.0;
 
-    // 剛床マークの説明（面内拘束 Ux/Uy/Rz）を最下段へ追加する。
     if has_diaphragm {
         painter.text(
             egui::pos2(x0, y0),
@@ -208,11 +204,9 @@ pub(super) fn draw_support_legend(
             egui::FontId::proportional(11.0),
             theme::GRAY_600,
         );
-        // 以降の支持条件凡例を 1 行分上へずらす。
         y0 -= 16.0;
     }
 
-    // 免震支承マーカーの説明（実際に配置されている場合のみ）。
     if has_isolator {
         support_symbols::draw_isolator_marker(
             painter,
@@ -229,7 +223,6 @@ pub(super) fn draw_support_legend(
         y0 -= 16.0;
     }
 
-    // 支点ばねの説明（実際に設定されている場合のみ。回転→並進の順で 2 行）。
     if has_spring {
         support_symbols::draw_spiral_icon_2d(
             painter,
@@ -262,7 +255,6 @@ pub(super) fn draw_support_legend(
         y0 -= 16.0;
     }
 
-    // タイトル
     painter.text(
         egui::pos2(x0, y0 - 30.0),
         egui::Align2::LEFT_BOTTOM,
@@ -270,7 +262,6 @@ pub(super) fn draw_support_legend(
         egui::FontId::proportional(13.0),
         theme::GRAY_700,
     );
-    // 並進固定サンプル: 矢印
     let arrow_y = y0 - 16.0;
     draw_arrow(
         painter,
@@ -285,7 +276,6 @@ pub(super) fn draw_support_legend(
         egui::FontId::proportional(11.0),
         theme::GRAY_600,
     );
-    // 回転固定サンプル: 円
     let arc_y = y0;
     painter.circle_stroke(
         egui::pos2(x0 + 10.0, arc_y - 6.0),
@@ -300,7 +290,6 @@ pub(super) fn draw_support_legend(
         theme::GRAY_600,
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::supports_visible;

@@ -1,4 +1,4 @@
-//! grid_core（純ロジック層）の単体テスト（dev_docs/specs/グリッド操作.md §9.1）。
+//! grid_core（純ロジック層）の単体テスト。
 
 use super::*;
 
@@ -107,7 +107,7 @@ fn test_deactivate_keeps_anchor_and_move_restores() {
     g.click(cell(2, 3), false);
     g.deactivate();
     assert!(!g.active);
-    // 解除中の矢印キーは移動せず、直前のアクティブセルで選択を復帰する（§4.4）
+    // 解除中の矢印キーは移動せず、直前のアクティブセルで選択を復帰する
     g.move_cursor(1, 0, false);
     assert!(g.active);
     assert_eq!(g.anchor, cell(2, 3));
@@ -120,7 +120,7 @@ fn test_select_row_and_extend_spans_all_cols() {
     g.select_row(1, false);
     assert_eq!(g.rect(), rect(1, 1, 0, 3));
     assert_eq!(g.anchor, cell(1, 0));
-    // extend は「起点行〜対象行 × 全列」（Excel 準拠。§3.3）
+    // extend は「起点行〜対象行 × 全列」（Excel 準拠。）
     g.select_row(3, true);
     assert_eq!(g.rect(), rect(1, 3, 0, 3));
     assert_eq!(g.anchor, cell(1, 0));
@@ -132,7 +132,7 @@ fn test_select_col_and_extend_spans_all_rows() {
     g.select_col(2, false);
     assert_eq!(g.rect(), rect(0, 4, 2, 2));
     assert_eq!(g.anchor, cell(0, 2));
-    // extend は「起点列〜対象列 × 全行」（Excel 準拠。§3.3）
+    // extend は「起点列〜対象列 × 全行」（Excel 準拠。）
     g.select_col(0, true);
     assert_eq!(g.rect(), rect(0, 4, 0, 2));
     assert_eq!(g.anchor, cell(0, 2));
@@ -203,7 +203,7 @@ fn test_parse_tsv_basic() {
 
 #[test]
 fn test_parse_tsv_absorbs_crlf_and_trailing_newlines() {
-    // Excel の CRLF と末尾改行を吸収する（§5.2.1）
+    // Excel の CRLF と末尾改行を吸収する
     assert_eq!(
         parse_tsv("1\t2\r\n3\t4\r\n\r\n"),
         vec![vec!["1", "2"], vec!["3", "4"]]
@@ -213,7 +213,7 @@ fn test_parse_tsv_absorbs_crlf_and_trailing_newlines() {
 
 #[test]
 fn test_parse_tsv_keeps_empty_cells() {
-    // 行中の空セルは保持する（「変更なし」マーカー。§5.2.4）
+    // 行中の空セルは保持する（「変更なし」マーカー。）
     assert_eq!(
         parse_tsv("1\t\t3\n\t5\t"),
         vec![vec!["1", "", "3"], vec!["", "5", ""]]
@@ -302,7 +302,7 @@ fn test_plan_paste_normal() {
 
 #[test]
 fn test_plan_paste_skips_empty_cells() {
-    // 空セルは「変更なし」として数だけ報告し、不正には数えない（§5.2.4）
+    // 空セルは「変更なし」として数だけ報告し、不正には数えない
     let plan = plan_paste(&block(&[&["1", "", "3"]]), cell(0, 0), 3, 3, validate_f64)
         .expect("空セル混じりも成功する");
     assert_eq!(
@@ -314,7 +314,7 @@ fn test_plan_paste_skips_empty_cells() {
 
 #[test]
 fn test_plan_paste_rejects_column_overflow() {
-    // データ列の範囲を右に超えたら全体拒否（§5.2.4）
+    // データ列の範囲を右に超えたら全体拒否
     let err = plan_paste(&block(&[&["1", "2"]]), cell(0, 2), 3, 3, validate_f64)
         .expect_err("列はみ出しは拒否される");
     assert_eq!(err.len(), 1);
@@ -323,7 +323,7 @@ fn test_plan_paste_rejects_column_overflow() {
 
 #[test]
 fn test_plan_paste_rejects_validation_failures_listing_all() {
-    // 検証失敗は全体拒否し、不正セルを全件列挙する（§5.2.3）
+    // 検証失敗は全体拒否し、不正セルを全件列挙する
     let err = plan_paste(
         &block(&[&["abc", "2"], &["3", "xyz"]]),
         cell(0, 0),
@@ -340,7 +340,7 @@ fn test_plan_paste_rejects_validation_failures_listing_all() {
 
 #[test]
 fn test_plan_paste_counts_extra_rows() {
-    // 表の末尾を超える行数を算定する（自動行追加の対象。§5.2.5）
+    // 表の末尾を超える行数を算定する（自動行追加の対象。）
     let plan = plan_paste(
         &block(&[&["1"], &["2"], &["3"], &["4"]]),
         cell(1, 0),
@@ -365,7 +365,7 @@ fn test_plan_paste_extra_rows_zero_when_all_cells_empty() {
 
 #[test]
 fn test_plan_paste_rejects_oversized_block() {
-    // サイズ上限（MAX_PASTE_CELLS）超過は検証前に全体拒否する（§5.2.1）
+    // サイズ上限（MAX_PASTE_CELLS）超過は検証前に全体拒否する
     let big = vec![vec!["1".to_string(); MAX_PASTE_CELLS / 1000 + 1]; 1000];
     let err = plan_paste(&big, cell(0, 0), 10, 10, validate_f64).expect_err("上限超過は拒否される");
     assert_eq!(err.len(), 1);

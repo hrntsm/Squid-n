@@ -48,7 +48,7 @@ const ALL_KINDS: [CheckKind; 7] = [
 ///
 /// - [`CheckOutcome::Skipped`]（検定不能）は常に `None`（フィルタ対象外。
 ///   未検定と同様に着色しない）。
-/// - `Max`: `cr.ratio()`／`cr.ok()` を返す（従来動作）。
+/// - `Max`: `cr.ratio()`／`cr.ok()` を返す。
 /// - `Kind(k)`: `cr.components` から `kind == k` の最大検定比を探し
 ///   `Some((r, r <= 1.0))` を返す。該当する式がなければ `None`
 ///   （＝この検定位置は当該式の検定対象外。着色・マーカーとも描かない）。
@@ -191,7 +191,6 @@ pub(super) fn pick_nearest_checked_node(
         results.joint_checks.iter().map(|j| j.node).collect();
     let mut best: Option<(usize, f32)> = None;
     for (idx, node) in app.core.model.nodes.iter().enumerate() {
-        // 構面表示で描いていない節点は選べない（見えない節点の検定詳細が出るのを防ぐ）。
         if idx >= pts.len() || !checked.contains(&node.id) || !frame_filter.shows_node(idx) {
             continue;
         }
@@ -216,8 +215,6 @@ pub(super) fn show_node_check_tooltip(ui: &egui::Ui, app: &App, node: NodeId) {
     if rows.is_empty() {
         return;
     }
-    // `show_tooltip_at_pointer` は egui 0.34 で非推奨だが、ウィジェットに紐付かない
-    // 任意位置への表示という用途に代替がないため、部材側と同じ方針で使用する。
     #[allow(deprecated)]
     egui::show_tooltip_at_pointer(
         ui.ctx(),
@@ -367,8 +364,6 @@ pub(super) fn draw_check_ratio(
         draw_no_result_legend(painter);
         return;
     };
-    // 部材検定・節点検定のどちらかがあれば描画する（耐震壁のみのモデル等では
-    // 部材検定が空でも節点検定だけが存在しうる）。
     if results.member_checks.is_empty() && results.joint_checks.is_empty() {
         draw_no_result_legend(painter);
         return;
@@ -390,13 +385,9 @@ pub(super) fn draw_check_ratio(
             .map(|j| (j.node, ratio_for_filter(&j.outcome, filter))),
     );
 
-    // 部材ごとの検定位置索引（B-2 位置別マーカー・B-4 支配式ラベル用）。
-    // `member_checks` は既に部材単位にグループ化済みのため、部材IDから直接
-    // 引けるよう索引を作るだけでよい（位置ごとの全行線形走査は不要）。
     let checks_by_elem: HashMap<ElemId, &MemberChecks> =
         results.member_checks.iter().map(|m| (m.elem, m)).collect();
 
-    // --- 部材の着色 ---
     for elem in &model.elements {
         if !frame_filter.shows(elem.id) {
             continue;
@@ -406,7 +397,6 @@ pub(super) fn draw_check_ratio(
         };
         let color = theme::check_ratio_color(ratio);
 
-        // 壁（面要素）: 半透明ポリゴンで塗り、輪郭を検定比の色で強調する
         if elem.kind == squid_n_core::model::ElementKind::Wall && elem.nodes.len() >= 3 {
             let poly: Vec<egui::Pos2> = elem
                 .nodes
@@ -426,7 +416,6 @@ pub(super) fn draw_check_ratio(
             continue;
         }
 
-        // 線材: 両端を結ぶ線を検定比の色で描き、中点に数値ラベルを添える。
         if elem.nodes.len() < 2 {
             continue;
         }
@@ -437,7 +426,6 @@ pub(super) fn draw_check_ratio(
         }
         let p0 = pts[n0];
         let p1 = pts[n1];
-        // NG 部材は太さで目立たせる
         let width = if ok { 4.0_f32 } else { 5.0_f32 };
         painter.line_segment([p0, p1], egui::Stroke::new(width, color));
 
@@ -446,8 +434,6 @@ pub(super) fn draw_check_ratio(
             .map(|m| m.positions.as_slice())
             .unwrap_or(&[]);
 
-        // B-2: 位置別マーカー（検定位置ごとに正方形。フィルタ対象外の位置
-        // （検定不能を含む）は描かない）。
         if markers {
             for p in positions {
                 let Some((r, _)) = ratio_for_filter(&p.outcome, filter) else {
@@ -467,7 +453,6 @@ pub(super) fn draw_check_ratio(
                     egui::Stroke::new(1.0_f32, theme::WHITE),
                     egui::StrokeKind::Middle,
                 );
-                // NG の位置のみ数値ラベルを添える（全位置に出すと過密になるため）。
                 if r > 1.0 {
                     painter.text(
                         egui::pos2(mrect.max.x + 2.0, mrect.min.y),
@@ -480,14 +465,10 @@ pub(super) fn draw_check_ratio(
             }
         }
 
-        // B-4: 中点ラベル（部材内最大＝ratio）。過密を避けるため注意域以上
-        // （既定。`should_label` を参照）の部材にのみ描く。
         if !should_label(ratio, label_all) {
             continue;
         }
 
-        // フィルタ=最大のときは支配式を併記する
-        // （検定不能の位置は対象外。Checked の中から最大を選ぶ）。
         let dominant = if filter == CheckRatioFilter::Max {
             positions
                 .iter()
@@ -508,7 +489,6 @@ pub(super) fn draw_check_ratio(
         let (font_size, label_color) = if ok {
             (11.0, theme::GRAY_700)
         } else {
-            // NG はフォントを大きくし赤字で目立たせる
             (12.0, theme::PARETO_RED)
         };
         painter.text(
@@ -520,14 +500,6 @@ pub(super) fn draw_check_ratio(
         );
     }
 
-    // --- 節点検定（接合部・パネルゾーン・耐震壁など）の表示 ---
-    // NodeId の内部値はそのまま配列添字とは限らないため、`app.core.model.nodes` を
-    // 走査してインデックスを求め（`enumerate` の添字が実際の `pts` の添字）、
-    // `node.id` と突き合わせてから `pts` を引く。
-    //
-    // 節点には支点記号・ヒンジ等の他の記号も重なるため、部材の線とは別形状
-    // （ひし形）で描いて識別できるようにする。NG は一回り大きくし、輪郭を
-    // 背景色で縁取って他の記号に埋もれないようにする。
     for (idx, node) in app.core.model.nodes.iter().enumerate() {
         let Some(&(ratio, ok)) = node_ratios.get(&node.id) else {
             continue;
@@ -553,8 +525,6 @@ pub(super) fn draw_check_ratio(
             color,
             egui::Stroke::new(1.5_f32, theme::VIEW_BG),
         ));
-        // 「全ラベル表示」ON、または NG の節点は検定比を数値で添える
-        // （部材の中央ラベルと同じ規約）。
         if label_all || !ok {
             let (font_size, label_color) = if ok {
                 (11.0, theme::GRAY_700)
@@ -592,18 +562,12 @@ pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     if positions.is_empty() {
         return;
     }
-    // ヘッダに添える根拠・理由: 先頭位置の検定結果（Checked なら basis、
-    // Skipped なら reason）を代表値として使う。
     let basis = match &positions[0].outcome {
         CheckOutcome::Checked(cr) => cr.basis.clone(),
         CheckOutcome::Skipped { reason } => reason.clone(),
     };
     let (kinds, rows) = build_tooltip_rows(positions);
 
-    // `show_tooltip_at_pointer` は egui 0.34 で非推奨（`Tooltip` 型を使う新 API へ
-    // 移行中）だが、ウィジェットに紐付かない任意位置へのツールチップ表示という
-    // 用途には他に簡潔な代替がないため、既存コード（app/panels.rs）と同じ方針で
-    // `#[allow(deprecated)]` を付けて使用する。
     #[allow(deprecated)]
     egui::show_tooltip_at_pointer(
         ui.ctx(),
@@ -684,7 +648,6 @@ fn draw_ratio_color_bar(painter: &egui::Painter, x0: f32, y0: f32) -> f32 {
     const SWATCH: f32 = 12.0;
 
     for i in 0..STRIPS {
-        // 短冊の中央に相当する検定比（0〜1.0 を等分）
         let ratio = (i as f64 + 0.5) / STRIPS as f64;
         let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
         let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
@@ -710,7 +673,6 @@ fn draw_ratio_color_bar(painter: &egui::Painter, x0: f32, y0: f32) -> f32 {
         theme::GRAY_600,
     );
 
-    // 目盛り（0 / 0.8 / 1.0）をバーの下端に添える。0.8 は良好域と注意域の境界。
     let ty = y0 + BAR_H + 1.0;
     let tick = painter.text(
         egui::pos2(x0, ty),
@@ -783,10 +745,8 @@ fn draw_legend(
     );
     y = title_rect.max.y + 4.0;
 
-    // 色の凡例: 0〜1.0 の連続グラデーションのカラーバー＋NG（赤）の単色見本
     y = draw_ratio_color_bar(painter, x0, y) + 4.0;
 
-    // 数値ラベルの表示条件（既定は注意域以上のみ）と位置別マーカーの説明
     let mut note = if label_all {
         "数値ラベル: 全部材".to_string()
     } else {
@@ -804,8 +764,6 @@ fn draw_legend(
     );
     y = note_rect.max.y + 4.0;
 
-    // 節点検定（接合部・仕口パネル・耐震壁）の記号説明。部材の線と区別できるよう
-    // ひし形で描くため、凡例でもその旨を示す。
     if !node_ratios.is_empty() {
         let node_note = painter.text(
             egui::pos2(x0, y),
@@ -830,7 +788,6 @@ fn draw_legend(
         );
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

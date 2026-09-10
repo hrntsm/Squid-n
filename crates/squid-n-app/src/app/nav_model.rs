@@ -73,8 +73,6 @@ pub(crate) fn section_floor_groups(
         groups.push((SectionGroupKey::Floor(floor_name), ids));
     }
 
-    // `secondary_members` は領域内・未割当の両方を含む（`Model::joists`/`posts`）ため、
-    // 床領域を別途走査する必要はない。
     let secondary_referenced_ids: HashSet<_> = secondary_members
         .iter()
         .filter_map(|member| member.section)
@@ -235,7 +233,6 @@ impl App {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

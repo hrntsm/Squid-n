@@ -45,9 +45,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
 
     live_load_reduction_section(ui, app);
 
-    // ── 一次設計: 部材検定表 ─────────────────────────────────────
     ui.strong("部材検定（許容応力度）");
-    // 断面算定条件（許容応力度設計・令82条）。
     ui.horizontal(|ui| {
         let mut changed = false;
         changed |= ui
@@ -104,8 +102,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "⚠ モデルが編集されました。解析を再実行してください。",
         );
     }
-    // 1 行 = 1 検定位置。検定不能（Skipped）は ratio/ok を持たないため
-    // `Option` にし、根拠セルには reason を表示する（判定は「検定不能」灰色）。
     struct CheckRow {
         elem: squid_n_core::ids::ElemId,
         pos: f64,
@@ -149,7 +145,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 .collect()
         })
         .unwrap_or_default();
-    // 各行の部材に割り当てられている断面（NG部材→断面編集への遷移用）。
     let section_of: Vec<Option<(squid_n_core::ids::SectionId, String)>> = checks
         .iter()
         .map(|row| {
@@ -167,7 +162,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "検定結果がありません。解析タブから静的解析を実行してください（部材に断面と材料の割当が必要です）。",
         );
     } else {
-        // NG 件数集計には検定不能（ok=None）を含めない。
         let ng_count = checks.iter().filter(|row| row.ok == Some(false)).count();
         ui.label(format!(
             "{} 位置を検定、NG {} 件（部材IDクリックで 3D ビューにハイライト）",
@@ -280,7 +274,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         app.ui.scoped.nav.focus_member = Some(eid);
     }
 
-    // ── 一次設計: 節点単位の検定（柱梁接合部・パネルゾーン・冷間耐力比・耐震壁） ──
     struct JointCheckRow {
         node: squid_n_core::ids::NodeId,
         label: String,
@@ -332,7 +325,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     if !joint_checks.is_empty() {
         ui.add_space(12.0);
         ui.strong("接合部・耐震壁の検定");
-        // NG 件数集計には検定不能（ok=None）を含めない。
         let ng = joint_checks.iter().filter(|j| j.ok == Some(false)).count();
         ui.label(format!("{} 箇所を検定、NG {} 件", joint_checks.len(), ng));
         crate::table_util::standard_table(
@@ -387,7 +379,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    // ── 免震支承材の非線形特性 ────────────
     if !app.core.model.isolator_attrs.is_empty() {
         ui.add_space(12.0);
         ui.strong("免震支承材の非線形特性");
@@ -400,8 +391,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 IsolatorKind::LaminatedRubber
                 | IsolatorKind::LeadRubber
                 | IsolatorKind::HighDampingRubber => {
-                    // 等価水平剛性 keq・等価粘性減衰定数 Heq を設計変位 200mm（参考）で算定
-                    // （LRB 統一型 keq=Qd/δ+Kd、Heq=(2/π)Qd(δ−Qd/((β−1)Kd))/(keq·δ²)）。
                     let disp = 200.0;
                     let keq = squid_n_design_jp::isolator::equivalent_stiffness(p.k2, p.qd, disp);
                     let heq =
@@ -447,7 +436,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // ── 制振ダンパーの非線形特性 ──
     if !app.core.model.damper_attrs.is_empty() {
         ui.add_space(12.0);
         ui.strong("制振ダンパーの非線形特性");
@@ -455,7 +443,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             let p = a.props;
             match p.kind {
                 squid_n_core::model::DamperKind::Maxwell => {
-                    // 緩和時間 τ=C0/Kd。線形マクスウェルの損失は ωτ≈1 で最大。
                     let tau = if p.kd > 0.0 { p.c0 / p.kd } else { 0.0 };
                     ui.label(format!(
                         "部材{}: マクスウェル Kd={:.0} C0={:.0} α={:.2} ／ 緩和時間 τ={:.3}s（時刻歴で作用）",
@@ -463,7 +450,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     ));
                 }
                 squid_n_core::model::DamperKind::HystereticBilinear => {
-                    // 降伏変位 δy=Qy/k1。
                     let dy = if p.kd > 0.0 { p.qy / p.kd } else { 0.0 };
                     ui.label(format!(
                         "部材{}: 履歴型ﾊﾞｲﾘﾆｱ k1={:.0} Qy={:.0} k2/k1={:.3} ／ 降伏変位 δy={:.2}mm（静的・動的で作用）",
@@ -474,7 +460,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // ── 非線形解析の材端履歴則 ──
     ui.add_space(12.0);
     egui::CollapsingHeader::new("非線形解析の材端履歴則(増分)")
         .default_open(false)
@@ -516,12 +501,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             }
         });
 
-    // ── 二次設計: 層指標（層間変形角・剛性率・偏心率） ────────────
     ui.add_space(12.0);
     ui.strong("層指標（二次設計: 層間変形角・剛性率・偏心率）");
-    // 層間変形角・剛性率・偏心率と必要保有水平耐力の判定は、いずれも加力方向ごとに
-    // 評価する（令82条の2・平19国交告594号）。評価方向は解析の実行条件ではなく
-    // 判定の条件なので、設計タブのこの位置で選ぶ。
     ui.horizontal(|ui| {
         use squid_n_solver::statics::analysis::SeismicDir;
         ui.label("加力方向:").on_hover_text(
@@ -537,7 +518,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "階が未定義です。解析タブの「準備計算 実行」を行ってください。",
         );
     } else if let Some(st) = app.current_static() {
-        // 表示対象はナビゲータの結果ケース選択（→最後に実行した結果）に追従する。
         let ctx = crate::summary::metrics_ctx_from_results(app.core.scoped.results.as_ref());
         let metrics = crate::summary::compute_story_metrics_with(
             &app.core.model,
@@ -546,7 +526,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             &ctx,
         );
 
-        // 変形角の制限値は計算条件（令82条の2: 原則 1/200、緩和時 1/120）に追従する。
         let denom = metrics
             .first()
             .map(|m| m.drift_limit_denom)
@@ -616,7 +595,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    // ── 二次設計: 保有水平耐力（ルート3） ──────────────────────
     ui.add_space(12.0);
     ui.strong("保有水平耐力（ルート3）");
     ui.horizontal(|ui| {
@@ -705,7 +683,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 |row| {
                     let i = row.index();
                     let s = &result.stories[i];
-                    // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = app
                         .core
                         .model
@@ -743,15 +720,11 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 },
             );
-            // 崩壊機構（増分解析判定）を表示する。Ds は部材ランクに加えて
-            // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
-            // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
             if let Some(po) = app.displayed_pushover() {
                 use squid_n_solver::nonlinear::pushover::MechanismType;
                 let (mech, warn) = match &po.mechanism {
                     MechanismType::Overall => ("全体崩壊形".to_string(), false),
                     MechanismType::StoryCollapse { layer } => {
-                        // 層の呼び名は下端の階名（法令の「i 階」）。
                         let name = app
                             .core
                             .model
@@ -780,8 +753,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     ),
                 );
             }
-            // βu（耐力壁・筋かいの水平耐力比）の算定状況。Ds 表の行選択に直結するため
-            // 算定値、または算定できなかった旨を明示する。
             if app.core.scoped.ds_beta_u_unavailable {
                 ui.colored_label(
                     crate::theme::SECONDARY_AMBER,
@@ -805,9 +776,6 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     format!("βu（耐力壁・筋かいの水平耐力比、下階→上階）: {}", list),
                 );
             }
-            // rank-auto で 1 本も算定できず選択ランクへフォールバックした層の警告。
-            // 幅厚比表の対象外形状（円形鋼管等）・形状未設定などの層は選択ランク
-            // （既定 FA）のまま Ds が決まり、実状より甘いと危険側になるため明示する。
             if app.core.design_rank_auto && !app.core.scoped.ds_rank_fallback_stories.is_empty() {
                 ui.colored_label(
                     crate::theme::SECONDARY_AMBER,
@@ -877,7 +845,6 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             |row| {
                 let (sid, ji, jr) = &r.joist_checks[row.index()];
                 row.col(|ui| {
-                    // 間柱には床板が無い。小梁でも所属床領域が床板を持たなければ空になる。
                     ui.label(match sid {
                         Some(id) => format!("#{}", id.0),
                         None => "—".into(),

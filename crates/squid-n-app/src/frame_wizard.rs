@@ -62,21 +62,6 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
     }
     let mut open = true;
     let mut generate = false;
-    // 各セクションを個別にスクロールさせても合計の高さは小さい画面を超えうるため、
-    // 中身全体も高さで頭打ちにし、あふれた分はここで拾う。これが無いと下端の
-    // 「この内容で作成」が画面外へ出て押せない。
-    //
-    // `Window::vscroll` は使わない。ウィンドウ側のスクロールは縦に縮まない設定
-    // （`auto_shrink(false)`）で作られるため、既定の 3 階でもウィンドウが規定の高さまで
-    // 広がって余白とスクロールバーが出てしまう。ここで `auto_shrink` の縦を有効にした
-    // 自前のスクロールを置けば、中身が収まるうちはウィンドウが中身どおりの高さになる。
-    //
-    // 残りの 15% はタイトルバーとウィンドウの余白の分。
-    //
-    // 同じ高さを `default_height` にも渡す。スクロールを挟むとウィンドウは中身ではなく
-    // 割り当てられた高さまでしか広がらないため、既定の 420px のままでは画面が広くても
-    // そこで頭打ちになってしまう。ウィンドウ自体は中身の高さで描かれるので、中身が短い
-    // ときにここが余白になることはない。
     let body_max_height = ctx.content_rect().height() * 0.85;
     egui::Window::new("新規（架構ウィザード）")
         .open(&mut open)
@@ -157,8 +142,6 @@ fn spans_section(
     salt: &str,
 ) {
     ui.group(|ui| {
-        // 「＋」はスパン全体の本数を変える操作で、個々のスパンに属する「✖」とは役割が違う。
-        // 列の末尾に置くとスパンが増えるほど右へ流れて押しにくいため、ヘッダ側に固定する。
         let mut added = false;
         ui.horizontal(|ui| {
             ui.strong(format!("{label}のスパン [mm]"));
@@ -172,8 +155,6 @@ fn spans_section(
                 added = true;
             }
         });
-        // 折り返さずに 1 列へ並べ、横スクロールで奥を見る。折り返すとウィンドウ幅で段の
-        // 位置が変わり、左から i 番目という並び順と通り番号の対応が読み取りにくくなる。
         egui::ScrollArea::horizontal()
             .id_salt(salt)
             .auto_shrink([false, true])
@@ -185,11 +166,6 @@ fn spans_section(
                         ui.push_id((salt, i), |ui| {
                             let resp =
                                 ui.add(egui::DragValue::new(s).speed(100.0).range(1.0..=1.0e5));
-                            // 追加した欄は列の右端に現れるので、その回だけ右端まで送る。
-                            // `stick_to_right` では利用者が途中までスクロールしている間
-                            // 追従しないため、追加した欄を名指しで送る。縦の指示も同時に
-                            // 立つが、この ScrollArea が両方向とも回収するので外側の
-                            // 縦スクロールは動かない。
                             if added && i == last {
                                 resp.scroll_to_me(Some(egui::Align::Max));
                             }
@@ -243,13 +219,8 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                 w.spec.story_names.clear();
             }
         });
-        // 階（床）は層より 1 つ多い。行は床ごとに並べ、階高は「その床とすぐ下の床の
-        // 間」＝層の高さなので、基部の床の行には階高欄を置かない。
-        // 階名の既定は `default_story_name`（床基準の連番）。最上階も数字で通す。
         let n = w.spec.story_heights.len();
         w.spec.story_names.resize(n + 1, String::new());
-        // 階は最大 60 まで増やせる。約 10 行分で打ち切り、それを超える分はスクロールで
-        // 見る。階数が少ないうちは縦に縮ませたいので auto_shrink の縦は true。
         egui::ScrollArea::vertical()
             .id_salt("wiz_stories_scroll")
             .max_height(STORY_ROWS_MAX_HEIGHT)
@@ -262,8 +233,6 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                         ui.label("階高 [mm]");
                         ui.label("階名");
                         ui.end_row();
-                        // 床 fi（0 = 基部）を上から順に描く。床 fi の階高は
-                        // 層 fi-1 の高さ（`story_heights[fi - 1]`）。
                         for fi in (0..=n).rev() {
                             ui.label(format!("{}", fi + 1));
                             match fi.checked_sub(1) {
@@ -330,8 +299,6 @@ fn options_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
             });
             ui.horizontal(|ui| {
                 ui.label("コンクリート:");
-                // 選択肢は材料タブと同じ標準材料プリセット（Fc18〜Fc60）。床の自重は
-                // この材料の密度から決まるため、割り当てない選択肢は設けない。
                 egui::ComboBox::from_id_salt("wiz_slab_concrete")
                     .selected_text(&w.spec.slab_concrete)
                     .show_ui(ui, |ui| {

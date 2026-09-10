@@ -93,7 +93,6 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
 
-    // 整合性チェックの要約（エラーがあれば解析前に解消する必要がある）。
     if !prep.is_ready() {
         ui.colored_label(
             crate::theme::ERROR_RED,
@@ -132,8 +131,6 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     let view = app.ui.view.prep_view.view;
-    // 横スクロールは表ごとに `table_util::standard_table` が持つため、ここは縦のみ。
-    // 外側にも横スクロールを置くと、表の横スクロールと二重になって操作が定まらない。
     egui::ScrollArea::vertical()
         .id_salt("prep_view")
         .auto_shrink([false, false])
@@ -191,7 +188,6 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         return;
     }
 
-    // 上階→下階の順で並べる（伏図・軸組図と同じ見え方にする）。
     let rows: Vec<_> = prep.stories.iter().rev().collect();
     crate::table_util::standard_table(
         ui,
@@ -223,9 +219,6 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{}", r.n_nodes));
             });
             row.col(|ui| {
-                // 剛床がない階の水平力は、その階の節点へ質量比で直接分配される。
-                // 解析は通るため、意図した入力かどうかを確かめられるよう強調する
-                // （診断タブにも警告として出る）。
                 if r.n_diaphragms == 0 {
                     ui.colored_label(crate::theme::BEST_YELLOW, "0");
                 } else {
@@ -321,7 +314,6 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         rows.len(),
         |row| {
             let r = rows[row.index()];
-            // αi・Ai は一般階のみ意味を持つ（PH 階・地下階は別式）。
             let normal = matches!(r.level_kind, squid_n_core::model::StoryLevelKind::Normal);
             row.col(|ui| {
                 crate::table_util::text_cell(ui, &r.name);
@@ -500,7 +492,6 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{:.3e}", r.ve));
             });
             row.col(|ui| {
-                // N·mm/rad → kN·m/rad（回転剛性。換算係数はモーメント表示と同じ）
                 ui.label(format!("{:.3e}", moment_kn_m(r.k_panel)));
             });
         },
@@ -583,12 +574,9 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ));
             });
             row.col(|ui| {
-                // 仕口パネル分のオフセット。剛域長とは別の量で、剛体アーム長は
-                // 両者の大きい方になる。
                 ui.label(format!("{:.0} / {:.0}", r.panel_offset_i, r.panel_offset_j));
             });
             row.col(|ui| {
-                // 可とう長が 0 以下だと剛性・応力が算定できない（入力異常）。
                 if r.clear_length <= 0.0 {
                     ui.colored_label(crate::theme::ERROR_RED, format!("{:.0}", r.clear_length));
                 } else {
@@ -643,27 +631,19 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             row.col(|ui| {
                 crate::table_util::text_cell(ui, &r.name);
             });
-            row.col(|ui| {
-                // 同じ符号の断面を階で見分けられるようにする（断面の同一性は符号＋階）。
-                match r.floor.as_deref() {
-                    Some(f) => crate::table_util::text_cell(ui, f),
-                    None => crate::table_util::muted_cell(ui, "—", "階が設定されていません"),
-                }
+            row.col(|ui| match r.floor.as_deref() {
+                Some(f) => crate::table_util::text_cell(ui, f),
+                None => crate::table_util::muted_cell(ui, "—", "階が設定されていません"),
+            });
+            row.col(|ui| match r.shape_label.as_deref() {
+                Some(l) => crate::table_util::text_cell(ui, l),
+                None => crate::table_util::muted_cell(
+                    ui,
+                    "数値直入力",
+                    "形状定義がありません（断面性能の数値直入力）",
+                ),
             });
             row.col(|ui| {
-                match r.shape_label.as_deref() {
-                    Some(l) => crate::table_util::text_cell(ui, l),
-                    // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
-                    // 算定対象外になるため、数値直入力であることを示す。
-                    None => crate::table_util::muted_cell(
-                        ui,
-                        "数値直入力",
-                        "形状定義がありません（断面性能の数値直入力）",
-                    ),
-                }
-            });
-            row.col(|ui| {
-                // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
                 if r.n_elements == 0 {
                     ui.colored_label(crate::theme::GRAY_600, "0");
                 } else {
@@ -673,7 +653,6 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             row.col(|ui| {
                 ui.label(format!("{:.0} × {:.0}", r.depth, r.width));
             });
-            // 断面性能は cm 系で表示する（慣例の情報源は `squid_n_core::units`）。
             row.col(|ui| {
                 ui.label(crate::table_util::fmt_section_prop(area_cm2(r.area)));
             });
@@ -759,7 +738,6 @@ fn width_thickness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             row.col(|ui| {
                 use squid_n_design_jp::secondary::holding_capacity::MemberRank;
                 match r.rank {
-                    // FD は Ds を最も不利にする（幅厚比の入力確認を促す）。
                     Some(rank @ MemberRank::FD) => {
                         ui.colored_label(crate::theme::ERROR_RED, member_rank_label(rank))
                     }
@@ -826,7 +804,6 @@ fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(member_kind_label(r.kind));
             });
             row.col(|ui| {
-                // SRC/CFT は等価換算後の値を使うことが分かるよう印を付ける。
                 let text = if r.composite.is_some() {
                     format!("{}（等価換算）", r.section_name)
                 } else {

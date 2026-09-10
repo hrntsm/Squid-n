@@ -17,7 +17,6 @@ use squid_n_section::shape::SectionShape;
 pub fn portal_frame() -> Model {
     let mut model = Model::default();
 
-    // 節点: 柱脚 2 + 柱頭 2
     let coords = [
         [0.0, 0.0, 0.0],
         [6000.0, 0.0, 0.0],
@@ -39,7 +38,6 @@ pub fn portal_frame() -> Model {
         });
     }
 
-    // 断面: 柱 H-300x300、梁 H-400x200
     let col_shape = SectionShape::SteelH {
         height: 300.0,
         width: 300.0,
@@ -59,7 +57,6 @@ pub fn portal_frame() -> Model {
         .sections
         .push(beam_shape.to_section(SectionId(1), "梁 H-400x200x8x13".into()));
 
-    // 材料: SN400B
     model.materials.push(Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -74,17 +71,11 @@ pub fn portal_frame() -> Model {
         fy: Some(235.0),
     });
 
-    // 材料は断面に割り当てる。
     for sec in &mut model.sections {
         sec.material = Some(MaterialId(0));
     }
 
-    // 部材: 柱 2 本 + 梁 1 本
-    let members = [
-        (0u32, 0u32, 2u32, 0u32), // id, i, j, section
-        (1, 1, 3, 0),
-        (2, 2, 3, 1),
-    ];
+    let members = [(0u32, 0u32, 2u32, 0u32), (1, 1, 3, 0), (2, 2, 3, 1)];
     for (id, i, j, sec) in members {
         model.elements.push(ElementData {
             id: ElemId(id),
@@ -92,7 +83,6 @@ pub fn portal_frame() -> Model {
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: Some(SectionId(sec)),
             local_axis: LocalAxis {
-                // 柱は +X、梁は +Z を参照ベクトルにする
                 ref_vector: if sec == 0 {
                     [1.0, 0.0, 0.0]
                 } else {
@@ -107,7 +97,6 @@ pub fn portal_frame() -> Model {
         });
     }
 
-    // 荷重ケース（kind を設定し、地震用重量の重力ケース選択（kind 基準）に乗せる）
     model.load_cases.push(LoadCase {
         kind: squid_n_core::model::LoadCaseKind::Dead,
         id: LoadCaseId(0),
@@ -137,7 +126,6 @@ pub fn portal_frame() -> Model {
 
     model
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
