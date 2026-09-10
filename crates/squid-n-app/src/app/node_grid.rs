@@ -3,8 +3,7 @@
 //! egui 非依存で、ヘッドレステスト（app/tests.rs）からモデル・undo と
 //! 組み合わせて検証できる。モデル編集はすべて squid-n-edit のコマンド
 //! （複数変更は CompositeCommand 1 個）として UndoStack 経由で行い、
-//! ペースト・クリア・行削除が undo 1 回で丸ごと戻る
-//! （dev_docs/specs/グリッド操作.md §3.5・§5.2.6）。
+//! ペースト・クリア・行削除が undo 1 回で丸ごと戻る。
 
 use std::collections::BTreeMap;
 
@@ -68,13 +67,10 @@ impl GridAdapter for NodeGridAdapter<'_> {
     }
 
     fn row_label(&self, row: usize) -> String {
-        // 節点 ID は 0 始まり（ID＝配列位置の不変条件）。ナビゲータ等の
-        // N0, N1… 表記と行を対応づけられるよう ID そのものを表示する
         row.to_string()
     }
 
     fn cell_text(&self, row: usize, col: usize) -> String {
-        // f64 の Display = 内部値の正準文字列（表示用の丸めはしない。§5.1）
         self.model
             .nodes
             .get(row)
@@ -90,15 +86,12 @@ impl GridAdapter for NodeGridAdapter<'_> {
 
     fn apply_block(&mut self, cells: &[(usize, usize, String)], append_rows: usize) {
         let n0 = self.model.nodes.len();
-        // validate 済みの前提だが、防御的にパース失敗セルは黙って落とさず無視のみ
         let parsed: Vec<(usize, usize, f64)> = cells
             .iter()
             .filter_map(|(r, c, t)| t.parse::<f64>().ok().map(|v| (*r, *c, v)))
             .collect();
         let existing: Vec<_> = parsed.iter().filter(|(r, _, _)| *r < n0).copied().collect();
         let updates = self.coord_updates(&existing);
-        // 追加行は既定座標 [0,0,0] に貼り付け値を重ね、AddNode 自体に座標を持たせる
-        // （AddNode は末尾 ID＝配列位置で追加するため、行順に並べれば ID が対応する）
         let mut added = vec![[0.0f64; 3]; append_rows];
         for (r, c, v) in parsed.iter().filter(|(r, _, _)| *r >= n0) {
             if let Some(coord) = added.get_mut(r - n0) {
@@ -122,7 +115,6 @@ impl GridAdapter for NodeGridAdapter<'_> {
     }
 
     fn clear_cells(&mut self, cells: &[(usize, usize)]) -> usize {
-        // 節点座標のクリア = 0 埋め（本テーブルの決め。§3.4）
         let zeros: Vec<(usize, usize, f64)> = cells
             .iter()
             .filter(|(r, _)| *r < self.model.nodes.len())
@@ -163,8 +155,6 @@ impl GridAdapter for NodeGridAdapter<'_> {
     }
 
     fn delete_rows(&mut self, rows: &[usize]) {
-        // ID＝配列位置の繰り上げと undo の整合のため、行番号の降順で
-        // DeleteNode を並べる（§3.4・§4.6）
         let mut sorted: Vec<usize> = rows
             .iter()
             .copied()

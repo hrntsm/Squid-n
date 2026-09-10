@@ -171,9 +171,6 @@ impl App {
     }
     /// 設計タブ：検定表（許容応力度・保有水平耐力）と MN 相関曲面ビューを切り替える。
     pub(crate) fn design_tab_panel(&mut self, ui: &mut egui::Ui) {
-        // 断面算定の対象荷重（ケース／組合せ）を選ぶドロップダウン用の選択肢。
-        // 長期/短期区分は選んだ組合せ名から自動判定され（令82条の荷重組合せ:
-        // G+P=長期、地震・積雪・風入り=短期）、対象荷重の右に読み取り専用で表示する。
         let result_options = self.result_display_options();
         let current_key = self
             .ui
@@ -199,7 +196,6 @@ impl App {
             if ui.selectable_label(sel_qty, "数量積算").clicked() {
                 self.ui.view.design_view = DesignView::Quantities;
             }
-            // 対象荷重の選択。選ぶとその組合せの内力・長期/短期で断面算定が再実行される。
             if !result_options.is_empty() {
                 ui.separator();
                 ui.label("対象荷重:");
@@ -219,8 +215,6 @@ impl App {
                             }
                         }
                     });
-                // 荷重継続性区分（許容応力度の長期/短期）。対象荷重から自動判定した
-                // 結果の表示のみで、ここでの手動切替は行わない。
                 let term_label = match self.core.design_term {
                     LoadTerm::Long => "長期",
                     LoadTerm::Short => "短期",

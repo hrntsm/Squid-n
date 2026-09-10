@@ -14,7 +14,6 @@ impl App {
     ) -> Result<Vec<squid_n_design_jp::ultimate::UltimateCheck>, String> {
         use squid_n_core::section_shape::SectionShape;
 
-        // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
         self.apply_rigid_zones_for_analysis();
 
         let demand = self.ultimate_demand_by_elem();
@@ -24,8 +23,6 @@ impl App {
             lightweight: self.core.ultimate_lightweight,
             upper_strength_factor: self.core.ultimate_upper_factor.max(0.0),
             sigma_wy: 295.0,
-            // せん断補強筋の材質は部材ごとに断面から解決するため、共通オプションでは
-            // 未指定（普通強度扱い）とし、部材ループ側で上書きする。
             shear_grade: None,
             include_bond: self.core.ultimate_include_bond,
             shear_method: if self.core.ultimate_shear_ductility {
@@ -42,7 +39,6 @@ impl App {
             &opts,
         );
 
-        // RC 矩形部材がない場合の案内。
         let has_rc_rect = self.core.model.elements.iter().any(|e| {
             e.section
                 .and_then(|sid| self.core.model.sections.get(sid.index()))
@@ -75,16 +71,12 @@ impl App {
     /// 曲げは部材内の最大絶対値、Qmu は両端ヒンジ 2·Mu/内法、Rp は UI 一律指定）。
     /// いずれの応答もなければ空（＝需要 0）。
     fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
-        // 増分解析応答からの直接反映（優先、指定時かつ応答があれば）。
         if self.core.ultimate_use_pushover {
             if let Some(demand) = self.ultimate_demand_from_pushover() {
                 return demand;
             }
         }
-        // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
         let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model);
-        // QL も同じ重力ケース集合の解析内力を加算する（先頭ケースのみだと Q0 と積載がずれる）。
         let gravity_long = self.core.scoped.results.as_ref().and_then(|r| {
             squid_n_job::sum_analyzed_gravity_member_forces(&self.core.model, |lc| {
                 r.statics
@@ -129,8 +121,6 @@ impl App {
         &self,
     ) -> Option<Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)>> {
         let po = self.displayed_pushover()?;
-        // 長期せん断力 QL（余裕率の分子控除用）を重力ケース集合の静的結果から引く
-        // （Q0 と同じ Dead+LiveSeismic／Live 集合。先頭ケースのみだと積載がずれる）。
         let gravity_long = self.core.scoped.results.as_ref().and_then(|res| {
             squid_n_job::sum_analyzed_gravity_member_forces(&self.core.model, |lc| {
                 res.statics
@@ -150,8 +140,6 @@ impl App {
                     })
                     .collect()
             });
-        // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
         let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model);
         squid_n_job::member_demand_from_pushover(
             &po.member_response,
@@ -168,7 +156,6 @@ impl App {
         &mut self,
     ) -> Result<Vec<squid_n_design_jp::ultimate::CftUltimateCheck>, String> {
         self.apply_rigid_zones_for_analysis();
-        // CFT の軸終局検定は軸力のみを用いる（MemberDemand から軸力を取り出す）。
         let axial: Vec<(ElemId, f64)> = self
             .ultimate_demand_by_elem()
             .into_iter()

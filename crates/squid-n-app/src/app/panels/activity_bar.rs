@@ -13,7 +13,7 @@ pub(crate) const ACTIVITY_ACCENT_WIDTH: f32 = 3.0;
 /// VSCode の Activity Bar（アイコン約 24px）に合わせる。非テキスト幾何なので固定値。
 const ACTIVITY_ICON_PX: f32 = 24.0;
 
-/// アイコン上下の余白（px）。TONMANUAL のパネル内側余白 8px に、ヒット領域の余裕を足す。
+/// アイコン上下の余白（px）。パネル内側余白 8px にヒット領域の余裕を足す。
 const ACTIVITY_ICON_PAD: f32 = 10.0;
 
 /// アクセント線を描く辺（左列は左端、右列は右端）。

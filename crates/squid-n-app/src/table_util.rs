@@ -1,5 +1,5 @@
 //! 表の共通フォーマット（列幅・縦線・クリップ・見出し・セル）を 1 箇所へまとめる
-//! ヘルパ。TONMANUAL §6「テーブル」の規約は本モジュールだけが実装する。
+//! ヘルパ。
 //!
 //! **表を描くときは必ず [`standard_table`] を通すこと。** `TableBuilder` を直に
 //! 組むと、列区切りの縦線・クリップ・列幅の規約から外れ、表ごとに見た目が割れる。
@@ -7,14 +7,13 @@
 //! （`TextEdit`・`ComboBox` 等）を置く表にも使える。
 //!
 //! 例外はスプレッドシート様式のグリッド（[`crate::grid`]）で、こちらは白地＋共有
-//! 罫線という別様式（`dev_docs/specs/グリッド操作.md` §6）を意図的に採っている。
+//! 罫線という別様式を意図的に採っている。
 
 use egui_extras::{Column, TableBuilder, TableRow};
 
 /// 列幅の用途トークン。同じ意味の列が表ごとに違う幅で並ばないよう、列幅は
 /// 生の pt ではなくこのトークンで指定する。実幅はフォントから実測して決める
-/// （TONMANUAL §4「テキストを内包する箱の寸法を固定 px で書かない」。和文
-/// フォールバックの字幅は欧文フォントの想定と異なるため、定数では合わない）。
+/// （和文フォールバックの字幅は欧文フォントの想定と異なるため、定数では合わない）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ColWidth {
     /// ID 列。5 桁の整数と選択ボタンの余白が収まる幅
@@ -67,7 +66,6 @@ impl ColWidth {
     /// トークンの実幅 [pt]。
     fn to_pt(self, ui: &egui::Ui) -> f32 {
         let sample = match self {
-            // ボタンを置く列は、セル余白の内側にボタン自身の余白が入るため 2 重に見る
             Self::Id => return text_width(ui, SAMPLE_ID) + cell_padding(ui) * 2.0,
             Self::Actions(n) => {
                 let n = n.max(1);
@@ -174,8 +172,7 @@ impl<'a> Col<'a> {
 }
 
 /// 表が横スクロールを要するときの、スクロール領域の縦方向の最小高さ。
-/// 行が数行しか見えない高さまで縮むと表として読めないため、行高から導出する
-/// （TONMANUAL §4: テキストを内包する箱の寸法を固定 px で書かない）。
+/// 行が数行しか見えない高さまで縮むと表として読めないため、行高から導出する。
 fn min_scrolled_height(row_h: f32) -> f32 {
     row_h * 8.0
 }
@@ -213,25 +210,19 @@ pub(crate) fn standard_table(
     let min_w = min_column_width(ui);
     let spacing_x = ui.spacing().item_spacing.x;
 
-    // 表の実幅は利用者の列リサイズで変わるため、前フレームの実測値を使う。
-    // 初回は列定義からの見積もりで代用し、実測値との差が出たら再描画を要求する。
     let estimate: f32 = cols.iter().map(|c| c.width_pt(ui)).sum::<f32>()
         + spacing_x * cols.len().saturating_sub(1) as f32;
     let width_id = egui::Id::new(("table_content_width", salt));
     let content_w = ui.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(estimate);
-    // 表が可視幅より狭いときは可視幅を与える（余白に横スクロールバーを出さない）。
     let table_w = content_w.max(ui.available_width());
 
     let columns: Vec<Column> = cols.iter().map(|c| c.to_column(ui, min_w)).collect();
 
     let out = egui::ScrollArea::both()
         .id_salt((salt, "scroll"))
-        // 横は可視幅いっぱいに広げ（スクロールバーをパネル幅で出す）、
-        // 縦は内容ぶんに縮める（短い表がパネル高さを占有しないように）。
         .auto_shrink([false, true])
         .min_scrolled_height(min_scrolled_height(row_h))
         .show(ui, |ui| {
-            // 横スクロール領域の内側では利用可能幅が無限になるため、表の幅を明示する。
             ui.set_max_width(table_w);
 
             let mut tb = TableBuilder::new(ui)
@@ -260,12 +251,9 @@ pub(crate) fn standard_table(
     let measured = out.content_size.x;
     ui.data_mut(|d| d.insert_temp(width_id, measured));
     if (measured - content_w).abs() > 0.5 {
-        // 見積もりと実幅がずれたフレームは、横スクロールバーの要否が変わる。
         ui.ctx().request_repaint();
     }
 }
-
-// ===== セル =====
 
 /// 文字列セル。列幅で切り詰められても内容を追えるよう、全文をホバーに出す。
 /// 空文字のときはホバーを付けない（空のツールチップが出るのを避ける）。
@@ -366,7 +354,6 @@ pub fn fmt_section_prop(v: f64) -> String {
         format!("{v:.3}")
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

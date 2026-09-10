@@ -55,8 +55,6 @@ impl App {
     ) {
         match res {
             Ok(result) => {
-                // 目標未到達の打ち切り（非収束・特異化）は Qu が過小評価の可能性が
-                // あるため、結果画面の警告に加えてログにも残す。
                 if result.termination.is_premature() {
                     self.report_notice(format!(
                         "⚠ 増分解析は目標到達前に打ち切られました（{}）。Qu はその時点までの最大値です。",
@@ -72,10 +70,6 @@ impl App {
                 bundle.pushover = Some(result);
                 self.core.scoped.results = Some(bundle);
                 self.core.scoped.pushover_view_dir = dir;
-                // mark_fresh で stale を解消する（`apply_static_case_result` と同じ扱い）。
-                // last_run の更新だけでは results_stale が立ったままになり、編集後に
-                // 増分解析だけを実行してもビューアが「再実行してください」表示のまま
-                // 復帰しなかった。
                 self.core.scoped.staleness.mark_fresh();
                 self.core.scoped.last_error = None;
             }
@@ -122,7 +116,7 @@ impl App {
         self.apply_pushover_result(res);
     }
 
-    /// 増分解析（プッシュオーバー）をバックグラウンドスレッドで実行する（P8 §5、残課題1）。
+    /// 増分解析（プッシュオーバー）をバックグラウンドスレッドで実行する。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_pushover_job(&mut self) {

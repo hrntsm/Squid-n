@@ -99,9 +99,6 @@ impl App {
                     self.core.scoped.staleness.mark_non_calc_edited();
                     self.core.scoped.staleness.mark_fresh();
                 } else {
-                    // 固有値のみ。時刻歴ケースは作らず、表示中モデルだけ更新する。
-                    // `stick_response` を残すと、結果パネルが旧時刻歴のピークを
-                    // `lumped.response.or(stick_response)` で拾ってしまう。
                     self.core.scoped.results = Some(bundle);
                     self.set_lumped_mass_view(None, &result);
                     self.core.scoped.staleness.mark_non_calc_edited();
@@ -148,7 +145,6 @@ impl App {
         let Some((dir, content)) = self.read_wave_library_file(&name) else {
             return;
         };
-        // 質点系は刻みと方向を専用の設定で持つため、写しへ差し替えてから渡す。
         let mut cfg = self.core.analysis_cfg;
         cfg.th_dt = cfg.lumped_th_dt;
         cfg.th_dir = match cfg.lumped_dir {

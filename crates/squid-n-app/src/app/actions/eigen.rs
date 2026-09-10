@@ -13,9 +13,7 @@ impl App {
         self.apply_eigen_result(res);
     }
 
-    /// 固有値解析をバックグラウンドスレッドで実行する（解析パネル「▶ 実行」の
-    /// 入口）。かつて固有値だけは UI スレッドで同期実行しており、モード数の
-    /// 多い固有値解析中にアプリが無応答になっていた。
+    /// 固有値解析をバックグラウンドスレッドで実行する（解析パネル「▶ 実行」の入口）。
     pub fn start_eigen_job(&mut self, n_modes: usize) {
         if !self.begin_analysis_job() {
             return;
@@ -38,7 +36,6 @@ impl App {
                 let mut bundle = self.core.scoped.results.take().unwrap_or_default();
                 bundle.modal = Some(modal);
                 self.core.scoped.results = Some(bundle);
-                // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
                 self.core.scoped.staleness.last_run = Some(SystemTime::now());
             }
             Err(e) => self.report_error(e),

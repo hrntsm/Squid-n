@@ -22,7 +22,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
     let mut cmq_axes = app.ui.view.cmq_axes;
     let mut check_ratio_filter = app.ui.view.check_ratio_filter;
     let mut modeling_analysis = app.ui.view.modeling_analysis;
-    // 時刻歴の詳細記録（`ThRecording`）がある場合のみ「時刻歴」モードを選択肢に出す。
     let has_th_recording = app
         .core
         .scoped
@@ -32,9 +31,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
         .and_then(|t| t.recording.as_ref())
         .is_some();
 
-    // --- コントロール ---
-    // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
-    // はみ出さないよう、折り返し可能なレイアウトにする。
     ui.horizontal_wrapped(|ui| {
         ui.label("表示:");
         ui.selectable_value(&mut mode, ViewMode::Shape, "形状");
@@ -53,22 +49,16 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             ui.selectable_value(&mut mode, ViewMode::LumpedTimeHistory, "質点時刻歴");
         }
         ui.separator();
-        // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
         ui.toggle_value(&mut app.ui.view.show_sections, "断面表示");
-        // 床（スラブ・小梁）・壁版・二次部材の表示切替（全モードと併用可。
-        // CMQ 図は主架構の図のため設定によらず常に非表示）
         ui.toggle_value(&mut app.ui.view.show_floor_secondary, "床壁・二次部材")
             .on_hover_text(
                 "床板・小梁・間柱と、解析要素にならない壁版（腰壁・垂壁・パラペット・\
                  自立壁・間柱で分割された壁）の表示",
             );
-        // 支点記号。質点ビューでは立体の柱脚拘束は関係ないので選択肢自体を出さない。
         if !lumped::is_lumped_view(mode) {
             ui.toggle_value(&mut app.ui.view.show_supports, "支点")
                 .on_hover_text("拘束された節点の矢印・円弧、支点ばね、免震マーカー");
         }
-        // 剛床代表点（重心マスター）の表示切替。剛床がある場合のみ選択肢を出す。
-        // ON にすると代表点マーカー・面内拘束マーク・スレーブへの点線を描く。
         let has_diaphragm_constraint = app
             .core
             .model
@@ -78,8 +68,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
         if has_diaphragm_constraint {
             ui.toggle_value(&mut app.ui.view.show_diaphragm_master, "剛床代表点");
         }
-        // 立体グリッド（通り芯 × 階レベル）の表示切替。通り芯と階の両方がある
-        // モデルでしか格子を作れないため、そのときだけ選択肢を出す。
         if space_grid::has_grid(&app.core.model) {
             ui.toggle_value(&mut app.ui.view.show_space_grid, "通り芯グリッド")
                 .on_hover_text(
@@ -88,7 +76,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
                 );
         }
         ui.separator();
-        // §3-2 の操作規約をヒント表示（左ドラッグ=回転／スクロール=ズーム）
         ui.add_enabled(
             false,
             egui::Label::new(
@@ -104,14 +91,10 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             ui.selectable_value(&mut cmq_component, CmqComponent::M, "M(中央)");
             ui.selectable_value(&mut cmq_component, CmqComponent::Q, "Q(せん断)");
             ui.separator();
-            // 応力図の強軸(ey)/弱軸(ez)と同じ面の区別（`ForceComponent::plane`）。
-            // 直交グリッド・ひねりのない部材では弱軸成分はほぼ0になるため既定は強軸のみ。
             ui.label("軸:");
             ui.checkbox(&mut cmq_axes.ey, "強軸(ey)");
             ui.checkbox(&mut cmq_axes.ez, "弱軸(ez)");
             ui.separator();
-            // ケース切替は追加せず、ナビゲータ／荷重タブで選択中のケース
-            // （`nav.focus_load_case`）をそのまま表示する。ここは現在値の案内のみ。
             let case_label = app
                 .cmq_display_load_case()
                 .map(|lc| lc.name.clone())
@@ -119,9 +102,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             ui.label(format!("荷重ケース: {case_label}（ナビゲータで切替）"));
         });
     }
-    // モデル化図: 可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）を切り替える。
-    // 静解析は断面の降伏を考えないため全部材が弾性、増分解析は降伏を考慮するため
-    // ファイバー要素と材端集中塑性を使い分ける、という違いを見比べられる。
     if mode == ViewMode::Modeling {
         ui.horizontal_wrapped(|ui| {
             ui.label("解析種別:");
@@ -145,15 +125,10 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             );
         });
     }
-    // 応力図: 6 成分（N/Qy/Qz/Mx/My/Mz）をチェックボックスで個別に ON/OFF し、
-    // 選んだ成分をすべて同時に描く。よく使う組はプリセットボタンで切り替える。
-    // 単色塗り／コンター（値に応じた色分け）と数値ラベルの表示もここで切替える。
-    // コンター ON 時のみカラーマップ選択（既定 Viridis。TONMANUAL §3）を表示する。
     if mode == ViewMode::Force {
         ui.horizontal_wrapped(|ui| {
             ui.label("成分:");
             for c in ForceComponent::ALL {
-                // ラベルを成分固定色で描き、図・凡例・数値ラベルの色と対応づける。
                 ui.checkbox(
                     force_components.flag_mut(c),
                     egui::RichText::new(c.label()).color(c.color()),
@@ -171,8 +146,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             }
         });
         ui.horizontal_wrapped(|ui| {
-            // 応力図に変形図を重ねる（変位は自動倍率で節点座標に加味され、
-            // 図も変形後の材軸に沿って描かれる）
             ui.toggle_value(&mut app.ui.view.overlay_deform, "変形表示");
             ui.toggle_value(&mut app.ui.view.diagram_contour, "コンター");
             if app.ui.view.diagram_contour {
@@ -199,8 +172,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
                 );
         });
     }
-    // 検定比図: 検定式フィルタ（最大／式別、結果に現れる式のみ選択肢に出す）と
-    // 位置別マーカーの表示切替。
     if mode == ViewMode::CheckRatio {
         fn checked_components(
             outcome: &squid_n_design_jp::CheckOutcome,
@@ -309,14 +280,8 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             ui.checkbox(&mut app.ui.view.lumped_show_frame, "骨組を重ねる");
         });
     }
-    // 時刻歴モード: フレームスライダー・再生制御（§実装内容1）。
-    // 現在フレームは `app.ui.scoped.th_frame`、再生経過時刻は `app.ui.scoped.th_play_time`
-    // （`frame_time` に基づき現在フレームへ写像。末尾でループ）で管理する。
     if mode == ViewMode::TimeHistory {
         if app.core.scoped.staleness.results_stale {
-            // 中-1(a): モデル編集後は添字ずれ（部材削除・並び替え）で別部材のデータを
-            // 表示する恐れがあるため、再解析するまで変形アニメーション・部材クリックを
-            // 無効化する（フレームスライダー自体も表示しない）。
             ui.colored_label(
                 theme::WARN_TEXT,
                 "⚠ モデルが編集されています。解析を再実行してください\
@@ -362,7 +327,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
                     let t = recording.frame_time[app.ui.scoped.th_frame];
                     ui.label(format!("t={:.2}s / {:.2}s", t, duration));
                 });
-                // 再生中は実時間×速度でフレームを進め、連続描画のため毎フレーム再描画を要求する。
                 if app.ui.scoped.th_playing {
                     let dt = ui.input(|i| i.stable_dt);
                     app.ui.scoped.th_play_time = advance_play_time(
@@ -437,10 +401,6 @@ pub(super) fn view_controls(ui: &mut egui::Ui, app: &mut App) {
             ui.colored_label(theme::GRAY_600, "質点系時刻歴の結果がありません。");
         }
     }
-    // 変形表示オプション行: 変形を表示するモード（変形・モード・応力図の変形重ね）で
-    // 表示する。「内部たわみ」トグルで梁の Hermite 曲線表示（＋床・二次部材の曲線
-    // 追従）と直線表示（全体の変形）を切り替え、変形倍率スライダーで自動算定倍率への
-    // 手動係数を対数調整（「リセット」で 1.0）する。
     let show_deform_options = matches!(
         mode,
         ViewMode::Deformed

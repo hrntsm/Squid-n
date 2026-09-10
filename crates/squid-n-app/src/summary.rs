@@ -88,7 +88,7 @@ pub fn compute_story_metrics(
 /// 静的解析の変位から層指標を計算する（構造力学・弾性応力解析）。
 ///
 /// - **層間変形角**: その階の柱の層間変形角の**最大値**（斜め柱除外。
-///   `story_metrics::max_column_drift`）。柱が拾えない層は従来の
+///   `story_metrics::max_column_drift`）。柱が拾えない層は
 ///   階平均変位差にフォールバックする。
 /// - **剛性率 Rs**: 重心位置の層間変位 δg（質量重み付き平均変位の差。
 ///   `story_metrics::cog_story_drifts`）から `Rs = rs/r̄s`。
@@ -109,11 +109,6 @@ pub fn compute_story_metrics_with(
         SeismicDir::Y => 1,
     };
 
-    // 剛性率 Rs・層間変形角は「加力方向の地震時弾性層間変位」で算定すべき
-    // （令82条の2 の層間変形角・令82条の6 の剛性率はいずれも地震力による弾性変位が前提）。
-    // 偏心率 Re は既に `ctx` の地震ケースへ固定されているため、Rs・層間変形角も同じ
-    // 加力方向の地震静的結果へ揃える。当該方向の結果が `ctx` にない場合のみ、呼び出し側が
-    // 渡した `disp`（＝表示中の任意ケース）へフォールバックする（後方互換）。
     let metric_disp: &[[f64; 6]] = match dir {
         SeismicDir::X => ctx.seismic_x,
         SeismicDir::Y => ctx.seismic_y,
@@ -121,8 +116,6 @@ pub fn compute_story_metrics_with(
     .map(|s| s.disp.as_slice())
     .unwrap_or(disp);
 
-    // 各階（床）の平均水平変位（柱が拾えない層の層間変位フォールバック用）。
-    // 基部の階も含めるため、支点ばねで基礎が動くモデルでも下端が実変位になる。
     let avg_disp: Vec<f64> = model
         .stories
         .iter()
@@ -144,8 +137,6 @@ pub fn compute_story_metrics_with(
     let mut drifts = Vec::with_capacity(layers.len());
     for l in &layers {
         heights.push(l.height.max(1e-9));
-        // 層間変形角の確認用変位: 柱ごとの最大値（1/irs = max(δ)/iH）。
-        // 柱は層の上端の階に取り付く。
         let drift = match max_column_drift(model, metric_disp, d, l.top) {
             Some(cd) => cd.drift,
             None => {
@@ -157,11 +148,9 @@ pub fn compute_story_metrics_with(
         drifts.push(drift);
     }
 
-    // 剛性率は重心位置の層間変位 δg で算定（1/irs = iδg/iH）
     let cog_drifts = cog_story_drifts(model, metric_disp, d);
     let rs_all = stiffness_ratios(&heights, &cog_drifts);
 
-    // 層間変形角の制限値（令82条の2。原則 1/200、緩和時 1/120）。
     let denom = if model.stress_cfg.drift_limit_denom > 0.0 {
         model.stress_cfg.drift_limit_denom
     } else {
@@ -172,13 +161,10 @@ pub fn compute_story_metrics_with(
         .iter()
         .map(|l| {
             let i = l.index;
-            // 偏心率は層の上端の階に取り付く柱・節点から求める。
             let ecc = match (ctx.seismic_x, ctx.seismic_y) {
-                // 精算: 剛心 = 地震時応力解析結果の ki=Qi/δi、重心 = 長期軸力
                 (Some(rx), Some(ry)) => {
                     story_eccentricity_from_analysis(model, l.top, rx, ry, ctx.long_term)
                 }
-                // 略算: D値法
                 _ => story_eccentricity(model, l.top),
             };
             let (e_dist, radius) = match dir {
@@ -234,7 +220,6 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
-    // 数量積算（モデルのみから算定できるため解析結果の有無に関わらず出力する）。
     out.push_str(&build_quantity_csv(model));
 
     let Some(results) = &app.core.scoped.results else {
@@ -251,8 +236,6 @@ pub fn build_report_csv(app: &App) -> String {
     }
 
     for (key, st) in &results.statics {
-        // ユーザー荷重ケースは「LC {id} {名前}」、地震静的は方向名でラベル付けする
-        // （StaticCaseKey により両者は別キーで共存するため、ラベルも区別できる）。
         let label = match key {
             StaticCaseKey::User(lc_id) => model
                 .load_cases
@@ -274,7 +257,6 @@ pub fn build_report_csv(app: &App) -> String {
         ));
     }
 
-    // 層指標（最後に実行した静的結果に基づく）
     if let Some((_, st)) = results.statics.last() {
         let ctx = metrics_ctx_from_results(app.core.scoped.results.as_ref());
         let metrics =
@@ -310,9 +292,6 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
-    // 主軸の計算（構造力学）。
-    // X・Y 加力の弾性解析結果が揃っている場合のみ、水平力のなす仕事が極値をとる
-    // 角度 Θ（tan2Θ = −Pᵗ(uy+vx)/Pᵗ(vy−ux)）を出力する。
     {
         let ctx = metrics_ctx_from_results(app.core.scoped.results.as_ref());
         if let (Some(rx), Some(ry)) = (ctx.seismic_x, ctx.seismic_y) {
@@ -323,9 +302,6 @@ pub fn build_report_csv(app: &App) -> String {
                 soil: app.core.analysis_cfg.soil,
                 c0: app.core.analysis_cfg.c0,
             };
-            // 壁の解析要素は入力の正であるモデルには存在しない生成物（D5）のため、
-            // ここで壁展開モデルを組み立ててから解く（`squid_n_job::compute` の
-            // 各関数と同じ理由。忘れると壁がこの副次的な解析からも消える）。
             let (expanded, _wall_index, _wall_report) =
                 squid_n_load::wall_expand::expand_wall_elements(model);
             if let Ok(analysis) = squid_n_solver::statics::analysis::Analysis::prepare(&expanded) {
@@ -371,8 +347,6 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
-    // 節点単位の検定（RC 柱梁接合部・S/SRC 仕口パネル・冷間成形耐力比・耐震壁）。
-    // 部材検定と違い評価位置を持たないため、節点・種別・検定比・判定・根拠を並べる。
     if !results.joint_checks.is_empty() {
         out.push_str("\n[接合部検定]\n節点,種別,検定比,判定,根拠\n");
         for j in &results.joint_checks {
@@ -410,8 +384,6 @@ pub fn build_report_csv(app: &App) -> String {
             force_kn(po.qu),
             po.hinges.len()
         ));
-        // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
-        // 列名は層の名前（下端の階名＝法令の「i 階」）を用い、なければ既定名で補う。
         let layers = model.layers();
         let n_stories = layers.len();
         let story_name = |i: usize| -> String {
@@ -486,7 +458,6 @@ fn push_story_response_table(
     let vel = &story.peak_floor_vel;
     let disp = &story.peak_floor_disp;
 
-    // 低: 添字ではなく `StoryId` で現モデルと突き合わせる（story_display_names 参照）。
     let model_story_names: Vec<(squid_n_core::ids::StoryId, String)> = model
         .stories
         .iter()
@@ -856,7 +827,6 @@ pub fn has_report_content(results: &Option<ResultsBundle>) -> bool {
         })
         .unwrap_or(false)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

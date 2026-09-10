@@ -52,7 +52,6 @@ impl BeamDeflection {
             d_j[5],
         ];
         let u = frame.rotate_to_local(&g);
-        // 端部: 並進(ux,uy,uz)=u[0..3]/u[6..9]、曲げ回転(ry,rz)=u[4..6]/u[10..12]。
         Self {
             frame,
             l,
@@ -68,18 +67,15 @@ impl BeamDeflection {
     /// 同じ評価を共有する）。
     fn disp_at(&self, xi: f64) -> [f64; 3] {
         let l = self.l;
-        // Hermite 3 次形状関数（N2,N4 は L 倍を含む回転項）。
         let n1 = 1.0 - 3.0 * xi * xi + 2.0 * xi * xi * xi;
         let n2 = l * (xi - 2.0 * xi * xi + xi * xi * xi);
         let n3 = 3.0 * xi * xi - 2.0 * xi * xi * xi;
         let n4 = l * (-xi * xi + xi * xi * xi);
         let [uxi, uyi, uzi, ryi, rzi] = self.ui;
         let [uxj, uyj, uzj, ryj, rzj] = self.uj;
-        // ローカル変位場: y 面は θz、z 面は θy（符号反転、member_load の msign=-1 と一致）。
         let ux = (1.0 - xi) * uxi + xi * uxj;
         let uy = n1 * uyi + n2 * rzi + n3 * uyj + n4 * rzj;
         let uz = n1 * uzi - n2 * ryi + n3 * uzj - n4 * ryj;
-        // ローカル→グローバル（rot 行 = ex,ey,ez。global = ux·ex + uy·ey + uz·ez）。
         let r = &self.frame.rot;
         [
             r[0][0] * ux + r[1][0] * uy + r[2][0] * uz,
@@ -115,10 +111,6 @@ fn interpolate_unreferenced_disp(
 ) -> Vec<[f64; 6]> {
     let n = model.nodes.len().min(disp.len());
 
-    // 解析自由度を持ち変位が直接求まる節点（構造節点。判定は解析
-    // （`DofMap::build`）と共通の `structural_nodes`）。剛床代表節点（階自動生成が
-    // 重心に置く仮想節点）は要素に接続しないが拘束のマスターとして正しい解析変位を
-    // 持つため、補間で上書きしてはいけない。
     let mut referenced = squid_n_core::dof::structural_nodes(model);
     referenced.truncate(n);
     referenced.resize(n, false);
@@ -126,12 +118,6 @@ fn interpolate_unreferenced_disp(
         return disp;
     }
 
-    // 補間ソースとなる主架構の線材（2 節点要素）。端点は必ず参照済み（正しい解析
-    // 変位を持つ）ため、射影補間は他の未参照節点に依存しない。梁（`Beam`）は
-    // 変形図で Hermite 3 次曲線として描画されるため、その線上に載る節点は端点変位
-    // の線形補間ではなく梁の Hermite 変位で追従させる（描画曲線から浮かないよう
-    // 端点回転を含めて評価する）。梁以外（ブレース等）は従来どおり線形補間とする
-    // ため、要素種別と局所座標参照ベクトルを保持する。
     struct AnchorSeg {
         a: usize,
         b: usize,
@@ -151,15 +137,8 @@ fn interpolate_unreferenced_disp(
         .filter(|s| s.a < n && s.b < n)
         .collect();
 
-    // 「大梁に直付き（線上に載る）」と判定する許容垂線距離。モデル寸法に対する
-    // 相対値（バウンディングボックス対角長の 0.1%）。これより近い射影は主架構への
-    // 直付きアンカーとして主架構変位を直接採用し、遠い節点は二次部材の接続を
-    // 辿って追従させる。
     let anchor_tol = (model_bbox_size(model) * 1e-3).max(1e-9);
 
-    // 段階 1: 各未参照節点を最寄り線分へ射影し、垂線距離が許容値以内なら主架構
-    // 直付きアンカーとして確定する。射影変位は、伝播が届かなかった場合の
-    // フォールバックとしても保持する。
     let mut finalized = referenced.clone();
     let mut proj_disp = vec![[0.0_f64; 6]; n];
     let mut proj_ok = vec![false; n];
@@ -168,8 +147,7 @@ fn interpolate_unreferenced_disp(
             continue;
         }
         let p = model.nodes[i].coord;
-        // 射影点までの距離が最小の線分を探す（射影パラメータ t は [0,1] にクランプ）。
-        let mut best: Option<(f64, usize, f64)> = None; // (垂線距離², 線分 index, 射影 t)
+        let mut best: Option<(f64, usize, f64)> = None;
         for (si, s) in segments.iter().enumerate() {
             let pa = model.nodes[s.a].coord;
             let pb = model.nodes[s.b].coord;
@@ -190,9 +168,6 @@ fn interpolate_unreferenced_disp(
         if let Some((d2, si, t)) = best {
             let s = &segments[si];
             let (da, db) = (disp[s.a], disp[s.b]);
-            // 梁で内部たわみ表示が有効なときのみ Hermite 変位で追従（並進 3 成分は
-            // 描画曲線上へ載せ、回転は端点の線形補間で補う）。梁以外、または内部
-            // たわみ表示 OFF（梁を直線で描く）のときは全 6 成分を線形補間する。
             let interp: [f64; 6] = if s.beam && use_beam_hermite {
                 let hermite = BeamDeflection::new(
                     model.nodes[s.a].coord,
@@ -218,8 +193,6 @@ fn interpolate_unreferenced_disp(
         }
     }
 
-    // 段階 2: 二次部材（小梁・間柱）の接続グラフを辿り、大梁に直付きしない節点を
-    // 最寄りの確定節点の変位へ追従させる。
     let mut sec_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for sm in model.joists().chain(model.posts()) {
         let a = sm.nodes[0].index();
@@ -235,11 +208,9 @@ fn interpolate_unreferenced_disp(
         ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt()
     };
 
-    // 追従元候補（確定節点から二次部材でつながる未確定節点への辺長と追従変位）。
     let mut best_dist = vec![f64::INFINITY; n];
     let mut src_disp = vec![[0.0_f64; 6]; n];
     let mut has_source = vec![false; n];
-    // 確定節点（参照済み＋主架構直付きアンカー）から隣接未確定節点を緩和する。
     for u in 0..n {
         if !finalized[u] {
             continue;
@@ -256,8 +227,6 @@ fn interpolate_unreferenced_disp(
             }
         }
     }
-    // 最寄りの確定節点から順に確定させる（辺長を距離とする Dijkstra 的貪欲法）。
-    // 二次部材の連鎖が長くても、主架構に最も近い側から変位が伝播する。
     loop {
         let mut pick: Option<(usize, f64)> = None;
         for i in 0..n {
@@ -271,7 +240,6 @@ fn interpolate_unreferenced_disp(
         let Some((u, _)) = pick else { break };
         disp[u] = src_disp[u];
         finalized[u] = true;
-        // u を追従元として、二次部材でつながる未確定の隣接節点を緩和する。
         for &j in &sec_adj[u] {
             if finalized[j] {
                 continue;
@@ -285,8 +253,6 @@ fn interpolate_unreferenced_disp(
         }
     }
 
-    // フォールバック: まだ確定しない節点（大梁にも直付きせず、二次部材でも確定
-    // 節点に到達しない孤立した床境界節点など）は、最寄り線分への射影変位を採る。
     for i in 0..n {
         if !finalized[i] && proj_ok[i] {
             disp[i] = proj_disp[i];
@@ -448,9 +414,6 @@ pub(super) fn time_history_deform_scale(app: &mut App, model_size: f64) -> f64 {
             .expect("reuse implies Some")
             .auto_scale
     } else {
-        // ピーク変位（全ノード・全ステップの並進絶対値最大）を仮想的な変位配列とし、
-        // 既存の `deform_display_scale`（バウンディングボックス基準＋梁スパン基準）を
-        // 手動係数 1.0 でそのまま流用する（倍率算定ロジックの重複を避ける）。
         let peak_disp_field: Vec<[f64; 6]> = result.peak_disp.clone();
         let auto = deform_display_scale(
             &app.core.model,
@@ -507,8 +470,6 @@ fn beam_deflection_scale_limit(
             continue;
         }
         let (d_i, d_j) = (disp[a], disp[b]);
-        // 無倍率での弦からの最大逸脱（弦＝端部並進の線形補間、曲線＝Hermite 変位）。
-        // 端部 DOF のローカル化は ξ に依らないため、梁ごとに 1 回だけ前処理する。
         let bd = BeamDeflection::new(p_i, p_j, d_i, d_j, elem.local_axis.ref_vector);
         let mut max_dev = 0.0_f64;
         for k in 1..SAMPLES {
@@ -588,7 +549,6 @@ pub(super) fn model_bbox_size(model: &squid_n_core::model::Model) -> f64 {
     let (min, max) = model_bbox(model);
     ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2)).sqrt()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

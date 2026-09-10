@@ -61,7 +61,6 @@ fn apply_src_toggle(name: &str, fc: f64) -> (String, f64) {
 pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
-    // ── プリセット追加 ─────────────────────────────────────────
     let presets = material_presets();
     let id_preset_draft = egui::Id::new("material_preset_draft");
     let mut draft = ui
@@ -145,10 +144,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.data_mut(|d| d.insert_temp(id_preset_draft, draft));
 
-    // ── 直接入力（カスタム）フォーム ─────────────────────────────
-    // プリセットにない材料は直接入力する。
     let id_draft = egui::Id::new("material_custom_draft");
-    // (名称, E, ν, 密度, Fc, Fy, 強度割増係数) の文字列ドラフト
     let mut draft: [String; 7] = ui
         .data(|d| d.get_temp::<[String; 7]>(id_draft))
         .unwrap_or_else(|| {
@@ -156,7 +152,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 "新規材料".into(),
                 "205000".into(),
                 "0.3".into(),
-                // 鋼材の γs=77 kN/m³ を質量密度へ換算した既定値（プリセットと同一）。
                 format!(
                     "{:.4e}",
                     mass_density_from_unit_weight_kn_m3(
@@ -169,8 +164,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             ]
         });
     let mut do_add_custom = false;
-    // 直接入力材料の区分。部材が S 造か RC 造かはこの値で決まるため、
-    // E・ν・ρ と同じく入力が必須の項目として扱う。
     let id_cat = ui.id().with("custom_material_category");
     let mut custom_category: MaterialCategory = ui
         .data_mut(|d| d.get_temp(id_cat))
@@ -244,7 +237,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     ui.data_mut(|d| d.insert_temp(id_draft, draft));
     ui.separator();
 
-    // ── 一覧テーブル（編集・削除） ──────────────────────────────
     let n = app.core.model.materials.len();
     ui.label(format!("材料一覧（{} 件）", n));
     let mut pending_name: Option<(u32, String)> = None;
@@ -306,7 +298,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_category = Some((mat_id.0, category));
                 }
             });
-            // 数値セル: フォーカス喪失時に確定
             let cells: [(MaterialField, String, bool); 6] = [
                 (MaterialField::Young, format!("{}", mat.young), true),
                 (MaterialField::Poisson, format!("{}", mat.poisson), true),
@@ -349,8 +340,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 });
             }
             row.col(|ui| {
-                // 削除ガード（`squid_n_edit` の `material_in_use`）と数える対象を
-                // 揃える。材料は断面が持つため、断面の 4 つの欄すべてを見る。
                 let in_use = app.core.model.sections.iter().any(|s| {
                     [
                         s.material,
@@ -368,7 +357,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    // 確定処理（テーブル描画後に model を可変借用）
     let mut edited = false;
     if let Some((id, name)) = pending_name {
         app.core.scoped.undo.run(
@@ -420,7 +408,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         app.core.scoped.staleness.mark_edited();
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,8 +445,7 @@ mod tests {
         );
     }
 
-    /// 鋼材プリセットの密度が γs=77 kN/m³ 由来であることを確認する
-    /// （旧実装の 7.85e-9 ハードコードとは異なる値になる点に注意）。
+    /// 鋼材プリセットの密度が γs=77 kN/m³ 由来であることを確認する。
     #[test]
     fn test_steel_presets_match_unit_weight_table() {
         let presets = material_presets();
@@ -470,7 +456,7 @@ mod tests {
             .expect("preset SS400 not found");
         assert_eq!(ss400.category, MaterialCategory::Steel);
         assert!((ss400.density - steel_density).abs() < 1e-18);
-        // 旧実装の固定値 7.85e-9 とは厳密には一致しない（77/9.80665 が真値）。
+        // 7.85e-9 とは厳密には一致しない（77/9.80665 が真値）。
         assert!((steel_density - 7.85e-9).abs() < 1e-11);
         assert_ne!(steel_density, 7.85e-9);
     }

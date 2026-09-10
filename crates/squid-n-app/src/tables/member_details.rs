@@ -7,7 +7,7 @@
 //!
 //! ここで設定した付帯情報は剛性・応力解析には影響せず、断面算定の検定位置
 //! 追加（`squid_n_app::app::design_positions`）と `squid_n_element` の評価断面
-//! 追加に用いられる（§6.2.3「位置はユーザが追加・変更可能」）。
+//! 追加に用いられる。
 
 use crate::app::App;
 use squid_n_core::ids::ElemId;
@@ -177,7 +177,6 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // ── 既存の付帯情報一覧 ─────────────────────────────────
     let mut pending_remove: Option<ElemId> = None;
     let mut pending_edit: Option<MemberDetailAttr> = None;
     if app.core.model.member_detail_attrs.is_empty() {
@@ -251,7 +250,6 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
     ui.strong("付帯情報を設定");
 
-    // 対象部材の選択(変更時に model 値でバッファを再同期)
     ui.horizontal(|ui| {
         ui.label("対象部材:");
         let text = app
@@ -456,7 +454,6 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,10 +1,8 @@
 //! グリッド操作の純ロジック層（egui 非依存）。
 //!
-//! 座標系（`CellRef.col`）は**データ列のみ**を数える（dev_docs/specs/グリッド操作.md
-//! §3.2）。行ヘッダ列（ID）はグリッドの関知外で、テーブル側が描画し、クリックを
-//! `select_row` 呼び出しに変換する。この分離により「編集不可の ID 列への貼り付け」
-//! という不正カテゴリが構造的に消滅し、ペースト検証の不正は「列はみ出し」
-//! 「値パース失敗」の 2 種だけになる。
+//! 座標系（`CellRef.col`）は**データ列のみ**を数える。行ヘッダ列（ID）はグリッドの関知外で、
+//! テーブル側が描画し、クリックを `select_row` 呼び出しに変換する。ペースト検証の不正は
+//! 「列はみ出し」「値パース失敗」の 2 種だけになる。
 
 /// セル参照（0 始まりの行・データ列）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,7 +38,7 @@ pub struct GridState {
     pub editing: Option<CellRef>,
     /// 選択が生きているか。false の間は選択なし（表外クリック・Esc で解除）。
     /// Excel と異なり「選択なし」状態を持つ: 本実装ではテーブルが 3D ビュー等と
-    /// 同居するため、他パネル作業中に選択表示が残るのはノイズになる（§4.4）。
+    /// 同居するため、他パネル作業中に選択表示が残るのはノイズになる。
     /// anchor/cursor は解除中も保持し、矢印キー等での復帰位置に使う。
     pub active: bool,
 }
@@ -101,7 +99,7 @@ impl GridState {
 
     /// 通常移動はアクティブセル（anchor）基準・選択を畳む。
     /// Shift 拡張は cursor 側だけを動かす（Excel と同じ）。
-    /// 選択解除中は移動せず、直前のアクティブセルで選択を復帰する（§4.4）。
+    /// 選択解除中は移動せず、直前のアクティブセルで選択を復帰する。
     pub fn move_cursor(&mut self, dr: isize, dc: isize, extend: bool) {
         if self.is_empty() {
             return;
@@ -202,7 +200,7 @@ impl GridState {
 }
 
 /// 矩形範囲を TSV 化する（コピー用）。セル文字列は**内部値の正準文字列**を
-/// 渡すこと（表示用に丸めた文字列を使うと、コピーで精度が落ちる。§5.1）
+/// 渡すこと（表示用に丸めた文字列を使うと、コピーで精度が落ちる）。
 pub fn rect_to_tsv(rect: SelRect, cell_text: impl Fn(usize, usize) -> String) -> String {
     (rect.r0..=rect.r1)
         .map(|r| {
@@ -230,7 +228,7 @@ pub fn parse_tsv(text: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// コピー元ブロックを選択範囲へタイル展開する（Excel 互換。§5.2.2）。
+/// コピー元ブロックを選択範囲へタイル展開する（Excel 互換）。
 /// 選択範囲の行数・列数が**ともに**ブロックの整数倍（かつどちらかが拡大）の
 /// ときだけ繰り返しで埋めたブロックを返し、それ以外は元のブロックをそのまま返す。
 /// 例: 1×1 のコピーを 3×2 の選択へ → 3×2 に複製。2×1 を 4×1 へ → 2 回繰り返し。
@@ -255,7 +253,7 @@ pub fn tile_block(block: &[Vec<String>], sel_rows: usize, sel_cols: usize) -> Ve
         .collect()
 }
 
-/// テーブルアダプタ（§3.4）。汎用グリッドレイヤとテーブルの境界で、
+/// テーブルアダプタ。汎用グリッドレイヤとテーブルの境界で、
 /// ドメイン知識（セルの型・行追加の可否と方法）はすべてこちら側に置く。
 /// 第 2 弾以降のテーブル展開は「アダプタ実装の追加」だけで済む。
 pub trait GridAdapter {
@@ -263,7 +261,7 @@ pub trait GridAdapter {
     fn cols(&self) -> usize;
 
     /// コピー・編集開始用のセル文字列。**内部値の正準文字列**を返す
-    /// （表示用に丸めた文字列を返さない。§5.1）
+    /// （表示用に丸めた文字列を返さない）。
     fn cell_text(&self, row: usize, col: usize) -> String;
 
     /// 行ヘッダ（ID 列）の表示文字列。既定は 1 始まりの行番号。
@@ -273,13 +271,13 @@ pub trait GridAdapter {
     }
 
     /// ペースト・編集確定の 1 セル分の検証。Err はセル単位の不正理由。
-    /// [`plan_paste`]（§3.3）がこれを全セルに適用する
+    /// [`plan_paste`]がこれを全セルに適用する
     fn validate_cell(&self, row: usize, col: usize, text: &str) -> Result<(), String>;
 
-    /// 検証済みセル群の適用。squid-n-edit の複合コマンド 1 個に落とす（§3.5）。
+    /// 検証済みセル群の適用。squid-n-edit の複合コマンド 1 個に落とす。
     /// append_rows > 0 なら先に行を追加する（追加行の貼り付け対象外の列は
     /// アダプタの既定値）。呼び出し規約:
-    /// - 通常のペースト: cells 全部 + append_rows = はみ出し行数（自動追加。§5.2.5）
+    /// - 通常のペースト: cells 全部 + append_rows = はみ出し行数（自動追加。）
     /// - 行追加非対応テーブル: widget が cells を row < rows() にフィルタして渡し、
     ///   append_rows = 0（はみ出し分は切り捨て）
     /// - 新規行プレースホルダでの編集確定: cells = その 1 セル、append_rows = 1
@@ -311,7 +309,7 @@ pub trait GridAdapter {
 /// 編集確定の結果。widget がログ・フラッシュ表示に変換する
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommitOutcome {
-    /// 空のまま確定 = 「変更なし」（§4.3。Backspace→Enter は no-op）
+    /// 空のまま確定 = 「変更なし」
     NoChange,
     /// 適用した（appended = 新規行プレースホルダで行追加を伴ったか）
     Applied { appended: bool },
@@ -320,7 +318,7 @@ pub enum CommitOutcome {
 }
 
 /// 編集確定（1 セル）の純ロジック。検証・空確定の扱い・プレースホルダの
-/// 行追加判定を egui 非依存で行い、適用はアダプタへ委譲する（§4.3・§4.5）。
+/// 行追加判定を egui 非依存で行い、適用はアダプタへ委譲する。
 pub fn commit_cell_text(adapter: &mut dyn GridAdapter, cell: CellRef, raw: &str) -> CommitOutcome {
     let t = raw.trim();
     if t.is_empty() {
@@ -330,12 +328,11 @@ pub fn commit_cell_text(adapter: &mut dyn GridAdapter, cell: CellRef, raw: &str)
         return CommitOutcome::Rejected(reason);
     }
     let appended = cell.row >= adapter.rows();
-    // プレースホルダへの確定 = 行追加＋値設定（アダプタが複合コマンド 1 個に落とす）
     adapter.apply_block(&[(cell.row, cell.col, t.to_string())], appended as usize);
     CommitOutcome::Applied { appended }
 }
 
-/// ペーストブロックのセル数上限（行数×最大列数。§5.2.1）。
+/// ペーストブロックのセル数上限（行数×最大列数。）。
 /// Excel の「列全体コピー」（104 万行）の誤ペーストで UI がフリーズするのを
 /// 防ぐ暴発ガードであり、実務のモデル規模（数千〜数万セル）には影響しない。
 pub const MAX_PASTE_CELLS: usize = 100_000;
@@ -346,7 +343,7 @@ pub struct PastePlan {
     /// 適用するセル（行, データ列, セル文字列）。行は表の末尾を超えることがある。
     /// 値の型変換はアダプタが適用時に行う（検証済みなので失敗しない）
     pub set: Vec<(usize, usize, String)>,
-    /// 表の末尾を超える行数（自動追加の対象。§5.2.5）
+    /// 表の末尾を超える行数（自動追加の対象。）
     pub extra_rows: usize,
     /// 空セルとしてスキップした数（既存値維持）
     pub skipped_empty: usize,
@@ -358,14 +355,14 @@ pub struct PastePlan {
 }
 
 /// ペースト検証: 1 セルでも不正があれば Err（理由の一覧）を返し、何も適用しない
-/// （all-or-nothing。§5.2.3）。検証を全部通ってから初めて適用する、という順序を
+/// （all-or-nothing。）。検証を全部通ってから初めて適用する、という順序を
 /// 変えないこと。
 ///
-/// - 空セルは「変更なし」マーカーとして扱い、不正には数えない（§5.2.4）
+/// - 空セルは「変更なし」マーカーとして扱い、不正には数えない
 /// - セル値の検証はアダプタの `validate_cell` へ委譲する（引数 `validate`）。
 ///   行ヘッダ列は座標系に存在しないため、不正カテゴリは「列はみ出し」と
 ///   「validate の Err（値パース失敗等）」の 2 つだけになる
-/// - ブロックが [`MAX_PASTE_CELLS`] を超える場合は全体拒否（§5.2.1）
+/// - ブロックが [`MAX_PASTE_CELLS`] を超える場合は全体拒否
 pub fn plan_paste(
     block: &[Vec<String>],
     anchor: CellRef,

@@ -37,10 +37,8 @@ pub(super) fn view_direction(normal: [f64; 3]) -> [f32; 3] {
     for cand in candidates {
         let mut cam = CameraState::default();
         cam.snap_to_direction(cand);
-        // グローバル X・Y が画面横方向のどちら向きに写るか（画面右が正）。
         let rx = super::camera::q_rotate(cam.rot, [1.0, 0.0, 0.0])[0];
         let ry = super::camera::q_rotate(cam.rot, [0.0, 1.0, 0.0])[0];
-        // X が構面内にあれば X の向きで、なければ Y の向きで判定する。
         let score = if rx.abs() > 0.5 { rx } else { ry };
         if score > best_score {
             best_score = score;
@@ -100,7 +98,6 @@ fn draw_elevation_grid(
     let m = margin(&bbox);
     let stroke = grid_stroke();
 
-    // 構面の面内水平方向 h ＝ 法線 × Z（鉛直な構面でのみ意味を持つ）。
     let n = frame.normal;
     let h = [n[1], -n[0], 0.0];
     let h_len = (h[0] * h[0] + h[1] * h[1]).sqrt();
@@ -108,13 +105,10 @@ fn draw_elevation_grid(
         return;
     }
     let h = [h[0] / h_len, h[1] / h_len];
-    // 構面上の基準点（外接直方体の中心を構面へ載せたもの）。面内位置は h 方向の
-    // 座標で表し、両端へ余白を足して基準線を引く。
     let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
     let s_of = |x: f64, y: f64| (x - c[0]) * h[0] + (y - c[1]) * h[1];
     let p_at = |s: f64, z: f64| [c[0] + h[0] * s, c[1] + h[1] * s, z];
     let (s_lo, s_hi) = {
-        // 外接直方体の 4 隅を面内座標へ写して範囲を採る。
         let corners = [
             (lo[0], lo[1]),
             (hi[0], lo[1]),
@@ -129,7 +123,6 @@ fn draw_elevation_grid(
     };
     let (z_lo, z_hi) = (lo[2] - m, hi[2] + m);
 
-    // 階の床レベル（水平線）と階名。
     for story in &model.stories {
         let z = story.elevation;
         if z < z_lo || z > z_hi {
@@ -147,8 +140,6 @@ fn draw_elevation_grid(
         );
     }
 
-    // 構面と交差する通り（鉛直線）と通り名。自分自身のグループは、同じ向きの
-    // 平行線なので交差せず、描いても構面と重なるだけなので除く。
     for (gi, group) in model.axes.iter().enumerate() {
         if gi == own_group {
             continue;
@@ -161,11 +152,9 @@ fn draw_elevation_grid(
         };
         for ax in &group.axes {
             let Some(t) = ax.distance else { continue };
-            // 通りの直線 p·d = t + origin·d と、構面（h 方向の直線）の交点を面内座標で求める。
-            // 構面上の点は c + h·s なので、(c + h·s)·d = t + origin·d を s について解く。
             let denom = h[0] * d[0] + h[1] * d[1];
             if denom.abs() < 1e-9 {
-                continue; // 構面と平行な通り（交差しない）
+                continue;
             }
             let rhs = t + origin[0] * d[0] + origin[1] * d[1];
             let s = (rhs - (c[0] * d[0] + c[1] * d[1])) / denom;
@@ -196,9 +185,7 @@ fn draw_plan_grid(
     let (lo, hi) = bbox;
     let m = margin(&bbox);
     let stroke = grid_stroke();
-    // 基準線は構面の標高に引く（伏図なので外接直方体の上面＝床レベル）。
     let z = hi[2];
-    // 通りの直線を引く長さ（平面の対角長 + 余白）。
     let half = ((hi[0] - lo[0]).hypot(hi[1] - lo[1])) * 0.5 + m;
     let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
 
@@ -209,16 +196,13 @@ fn draw_plan_grid(
         let Some(d) = group.kind.offset_dir() else {
             continue;
         };
-        // 芯線の方向（離れを測る向きを 90° 戻したもの）。
         let rad = angle_deg.to_radians();
         let dir = [rad.cos(), rad.sin()];
         for ax in &group.axes {
             let Some(t) = ax.distance else { continue };
-            // 通りの直線上で、平面中心にもっとも近い点を基準に前後へ伸ばす。
             let base = [origin[0] + d[0] * t, origin[1] + d[1] * t];
             let along = (c[0] - base[0]) * dir[0] + (c[1] - base[1]) * dir[1];
             let mid = [base[0] + dir[0] * along, base[1] + dir[1] * along];
-            // 平面の範囲から外れた通りは描かない（離れが範囲外）。
             let off = (mid[0] - c[0]).hypot(mid[1] - c[1]);
             if off > half {
                 continue;
@@ -227,7 +211,6 @@ fn draw_plan_grid(
             let b3 = [mid[0] + dir[0] * half, mid[1] + dir[1] * half, z];
             let (a, b) = (proj.project(a3), proj.project(b3));
             painter.line_segment([a, b], stroke);
-            // 名前は線の両端のうち、画面の左上に近いほうへ置く（図の外側になる）。
             let anchor = if a.x + a.y <= b.x + b.y { a } else { b };
             painter.text(
                 anchor,
@@ -239,6 +222,5 @@ fn draw_plan_grid(
         }
     }
 }
-
 #[cfg(test)]
 mod tests;

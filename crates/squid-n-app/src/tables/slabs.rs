@@ -148,7 +148,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     );
     ui.separator();
 
-    // ── 床領域一覧（表示名の編集のみ） ──────────────────────
     ui.strong("床領域（大梁の区画）");
     let mut pending_region_name: Vec<(FloorRegionId, String)> = Vec::new();
     table_util::standard_table(
@@ -213,7 +212,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(8.0);
     ui.strong("床板（スラブ）");
 
-    // ── 一覧表 ──────────────────────────────────────────
     let n = app.core.model.slabs.len();
     let mut pending_delete: Option<SlabId> = None;
     let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
@@ -222,8 +220,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_extent: Vec<(SlabId, [f64; 2])> = Vec::new();
     let mut pending_anchor: Vec<(SlabId, RegionAnchor)> = Vec::new();
     let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
-    // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
-    // 自重・数量が算定できないため、選ばせない。
     let slab_sections: Vec<(squid_n_core::ids::SectionId, String)> = app
         .core
         .model
@@ -256,8 +252,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 table_util::id_label(ui, slab.id.0);
             });
             row.col(|ui| {
-                // どの床領域（大梁の区画）に属するかは `slab_ids` から逆引きする
-                // （取り付く床板・浮き床板はどの床領域からも参照されない）。
                 let owner = app
                     .core
                     .model
@@ -309,8 +303,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 table_util::text_cell(ui, method_label(slab.method()));
             });
             row.col(|ui| {
-                // 床板の種別（囲まれた床板か取り付く床板か）は形そのものなので、
-                // 表からは変更しない（作図・取り込みで決まる）。
                 table_util::text_cell(ui, kind_label(slab));
             });
             row.col(|ui| {
@@ -428,7 +420,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     ui.separator();
-    // ── 床板追加フォーム ──────────────────────────────────
     ui.strong("床板を追加");
 
     if app.core.model.nodes.len() < 3 {
@@ -436,11 +427,8 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // 借用衝突を避けるため、節点一覧は先にローカルへ複製しておく
-    // （app.core.model への参照を保持したまま app.ui.scoped.slab_draft を可変参照しないため）。
     let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
 
-    // 境界頂点は 3〜N の可変長。スロット数は +/− ボタンで調整する。
     if app.ui.scoped.slab_draft.nodes.len() < 3 {
         app.ui.scoped.slab_draft.nodes.resize(3, None);
     }
@@ -501,12 +489,8 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     });
 
     ui.horizontal(|ui| {
-        // 断面（板厚・コンクリート材料）。板厚を持つ断面だけを候補にする。
         ui.horizontal(|ui| {
             ui.label("断面:");
-            // 下書きの断面が消えている（削除・ID 繰り上げ）場合は未割当へ戻す。
-            // 残したままだと `AddSlab` が参照検証で Noop になり、「追加」を押しても
-            // 何も起きない状態になる。
             let resolved = app
                 .ui
                 .scoped
@@ -550,7 +534,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             });
         if let Some(u) = app.ui.scoped.slab_draft.usage {
             use squid_n_core::model::LoadPurpose;
-            // 表示は kN/m²。
             ui.label(format!(
                 "床用 {:.2} / 骨組用 {:.2} / 地震用 {:.2} kN/m²",
                 area_load_kn_per_m2(u.live_load(LoadPurpose::Floor)),
@@ -590,7 +573,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut dedup = selected.clone();
     dedup.sort_by_key(|n| n.0);
     dedup.dedup();
-    // 全スロットが埋まり（selected.len == slots）、3頂点以上、重複がないこと。
     let n_slots = app.ui.scoped.slab_draft.nodes.len();
     let can_add = selected.len() == n_slots && n_slots >= 3 && dedup.len() == n_slots;
 
@@ -781,7 +763,6 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
                 Box::new(squid_n_edit::AddAttachedSlab {
                     anchor,
                     extent,
-                    // 版の仕様（断面・仕上荷重・室用途）は、追加後に一覧表から与える。
                     plate: squid_n_core::model::SlabPlate::default(),
                 }),
             );
@@ -861,8 +842,6 @@ fn attached_boundary_cell(
                     pending_anchor.push((id, RegionAnchor::Point(sel)));
                 }
             }
-            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
-            // 参照。壁側〔自立壁〕専用のアンカーであり、床板の編集 UI では到達しない）。
             RegionAnchor::FloorRegion { .. } => {}
         }
         ui.horizontal(|ui| {

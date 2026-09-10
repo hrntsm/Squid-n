@@ -183,7 +183,7 @@ impl AxialComponent {
 
 /// 零長要素（免震・節点ばね）の N-δ ループで既定表示する成分（中-2）。
 /// 免震支承は水平せん断力 Qy を既定にする（水平ループの確認が主目的のため）。
-/// それ以外（節点ばね等）は従来どおり軸方向を既定にする。
+/// それ以外（節点ばね等）は軸方向を既定にする。
 pub(super) fn default_axial_component(kind: &ElementKind) -> AxialComponent {
     match kind {
         ElementKind::Isolator => AxialComponent::ShearY,
@@ -273,8 +273,6 @@ pub(crate) fn show_th_detail_window(ui: &egui::Ui, app: &mut App) {
 /// `app: &mut App` の同時使用を避け、最後にまとめて書き戻す
 /// （§実装内容2 のループ本体は `app.core.model`／`app.core.scoped.results` の共有参照のみで完結する）。
 fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
-    // 中-1(b): モデル編集後（他タブの ⚠ 表示と同じ判定条件）は添字ずれにより
-    // 別部材のデータを表示する恐れがあるため、プロット・検定を出さず警告のみ表示する。
     if app.core.scoped.staleness.results_stale {
         ui.colored_label(
             theme::WARN_TEXT,
@@ -297,10 +295,6 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
         ui.colored_label(theme::GRAY_600, "時刻歴の詳細記録がありません。");
         return;
     };
-    // 解析時のフラグ（`ResponseResult::nonlinear`/`applied_long_term`）を、後段の
-    // `draw_peak_check`/`draw_long_term_note` へ渡すために先に取り出しておく
-    // （借用の都合上、`app: &mut App` の可変借用と `recording` の共有借用を
-    // 同時に保持できないため、値だけコピーする）。
     let th_nonlinear = th_result.nonlinear;
     let th_applied_long_term = th_result.applied_long_term;
     let display = super::wall_expanded_view_model(&app.core.model);
@@ -330,7 +324,6 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
 
     ui.strong("荷重変形関係の履歴ループ");
     let mut axis_z = app.ui.view.th_detail_axis_z;
-    // 中-2: 零長要素の成分選択は部材ごとに保持し、部材が変われば要素種別の既定へ戻す。
     let mut axial_component = match app.ui.scoped.th_detail_axial_component {
         Some((id, c)) if id == elem_id => c,
         _ => default_axial_component(&elem.kind),
@@ -446,7 +439,6 @@ fn draw_axial_loop(
             }
         });
     }
-    // 通常長の要素は成分切替UIを出さず、従来どおり軸方向のみ（材軸射影）を表示する。
     let component = if zero_length {
         *component
     } else {
@@ -722,8 +714,6 @@ fn draw_peak_check(
         .map(|(_, f)| (f[4].abs(), f[2].abs()))
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 非線形 TH かつ長期重畳済みのときのみ QD / 柱メカニズムを配線する。
-    // 線形 TH の包絡ピークに静的長期を足すと、組合せ内力の前提が崩れ危険側になり得る。
     let wire_qd = th_nonlinear && th_applied_long_term;
     let long_mf = wire_qd
         .then(|| {
@@ -793,8 +783,6 @@ fn draw_peak_check(
         bond_method: app.core.analysis_cfg.bond_method,
         end_moments_z,
         mid_moment_z: m_at(0.5),
-        // 材料は断面が持つ。RC・SRC の検定は主筋・せん断補強筋・内蔵鉄骨の材料を
-        // 要求するため、設計タブの検定（`actions.rs`）と同じく断面から解決して渡す。
         rebar_material: app.core.model.element_rebar_material(elem).cloned(),
         shear_rebar_material: app.core.model.element_shear_rebar_material(elem).cloned(),
         steel_material: app.core.model.element_steel_material(elem).cloned(),
@@ -804,8 +792,6 @@ fn draw_peak_check(
         column_sum_my,
         ..Default::default()
     };
-    // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。
-    // 設計タブの検定と同じ規則）。
     let checker: Box<dyn DesignCheck> = squid_n_design_jp::checker_for(
         squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
     );
@@ -829,8 +815,7 @@ fn draw_peak_check(
 ///
 /// `nonlinear`/`applied_long_term` は `ResponseResult` に記録された**解析時**の
 /// フラグを渡す（解析タブの現在の設定値ではない）。解析後に設定を変更しても
-/// 注記が実際の解析条件と食い違わないようにするための判断
-/// （`dev_docs/handoff/時刻歴アニメーション表示_申し送り.md` 参照）。
+/// 注記が実際の解析条件と食い違わないようにするため。
 fn draw_long_term_note(ui: &mut egui::Ui, nonlinear: bool, applied_long_term: bool) {
     let note = if !nonlinear {
         "線形時刻歴のため、この応答は地震動による応答成分のみです（長期荷重との重ね合わせは含みません）。"
@@ -871,7 +856,6 @@ fn draw_outcome_row(ui: &mut egui::Ui, pos: f64, outcome: &CheckOutcome) {
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

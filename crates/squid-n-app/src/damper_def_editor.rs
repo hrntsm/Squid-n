@@ -111,11 +111,6 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
         );
         ui.separator();
 
-        // 描画のたびに、undo/redo 等で damper_defs の長さが変わり編集対象が
-        // 範囲外になっていないか確認する（既に選ばれていた定義が消えた場合の
-        // 取りこぼし防止。以前から「選択定義へ適用」ボタンの `can_update` で
-        // 無効化はしていたが、edit_index 自体は残り続けていたため、ここで
-        // 明示的にクリアする）。
         if app
             .ui.scoped.damper_def_draft
             .edit_index
@@ -125,7 +120,6 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
             app.ui.scoped.damper_def_draft.edit_target_name = None;
         }
 
-        // ── 一覧 ──────────────────────────────────────────
         let mut pending_edit: Option<usize> = None;
         let mut pending_delete: Option<usize> = None;
         if app.core.model.damper_defs.is_empty() {
@@ -171,12 +165,9 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
             app.core.scoped.undo
                 .run(&mut app.core.model, Box::new(RemoveDamperDef { index: i }));
             app.core.scoped.staleness.mark_edited();
-            // 削除位置に応じて編集中インデックスを補正する（index ずれ対策）。
             let old_index = app.ui.scoped.damper_def_draft.edit_index;
             app.ui.scoped.damper_def_draft.edit_index = remap_edit_index_after_delete(old_index, i);
             if old_index.is_some() && app.ui.scoped.damper_def_draft.edit_index.is_none() {
-                // 削除対象そのものを編集中だった場合は edit_target_name もクリアする
-                // （後方が繰り上がった場合は同じ定義を指し続けるため変更不要）。
                 app.ui.scoped.damper_def_draft.edit_target_name = None;
             }
         }
@@ -238,9 +229,6 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
                 .clicked()
             {
                 if let Some(i) = app.ui.scoped.damper_def_draft.edit_index {
-                    // 読み込み時点の定義名と現在その位置にある定義名が一致するかを
-                    // 確認してから上書きする（undo/redo 等で並びが変わり、index は
-                    // 有効範囲内でも別の定義を指してしまっているケースの誤上書き防止）。
                     let current_name = app.core.model.damper_defs.get(i).map(|d| d.name.as_str());
                     if edit_target_still_matches(
                         current_name,
@@ -388,7 +376,6 @@ fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
         );
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

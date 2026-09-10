@@ -210,7 +210,6 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // ── 既存の S造検定属性一覧 ─────────────────────────────
     let mut pending_remove: Option<ElemId> = None;
     let mut pending_edit: Option<SteelDesignAttr> = None;
     if app.core.model.steel_design_attrs.is_empty() {
@@ -264,7 +263,6 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
     ui.strong("S造検定属性を設定");
 
-    // 対象部材の選択(変更時に model 値でバッファを再同期)
     ui.horizontal(|ui| {
         ui.label("対象部材:");
         let text = app
@@ -496,7 +494,6 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

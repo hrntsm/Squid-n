@@ -2,8 +2,7 @@
 //!
 //! 描画ソースは表示中荷重ケース（`nav.focus_load_case`。応力図と異なり解析実行を
 //! 要しない）の `member`（部材荷重）そのもの。床分配・自重・取り付く壁版の線
-//! アンカー・手入力荷重のいずれも同じ図に重ねて描く（CMQ図を荷重ケースの全荷重へ
-//! 揃える改修。`dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
+//! アンカー・手入力荷重のいずれも同じ図に重ねて描く。
 
 use std::collections::HashMap;
 
@@ -55,7 +54,6 @@ fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementDat
         return false;
     }
     let (n0, n1) = (elem.nodes[0], elem.nodes[1]);
-    // 二次部材の小梁を実部材化しただけの梁は主架構の大梁ではない。
     let is_materialized_joist = model.joists().any(|sm| {
         (sm.nodes[0] == n0 && sm.nodes[1] == n1) || (sm.nodes[0] == n1 && sm.nodes[1] == n0)
     });
@@ -189,7 +187,7 @@ fn cmq_m_sample_xis(loads: &[MemberLoadKind], l: f64) -> Vec<f64> {
 }
 
 /// ポリゴンを塗り（`convex_polygon`, `Stroke::NONE`）と輪郭（閉じない折れ線
-/// `Shape::line`）に分けて描画する。塗り+輪郭を1シェイプにする従来方式（閉路）だと、
+/// `Shape::line`）に分けて描画する。塗り+輪郭を1シェイプ（閉路）にすると、
 /// p0/p1 で軸線と曲線が浅い角度で接する折り返し点の epaint マイター結合が発散し、
 /// 部材軸方向に画面外まで伸びるスパイク描画になるため、輪郭は閉じない折れ線にする。
 pub(super) fn paint_diagram_polygon(
@@ -288,8 +286,6 @@ pub(super) fn draw_cmq_diagram(
         return;
     }
 
-    // 表示中ケースの部材荷重を要素（大梁）単位でグループ化し、座標が有効
-    // （範囲内・非ゼロ長）なものだけを対象にする。
     let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(&app.core.model, case)
         .into_iter()
         .filter(|g| {
@@ -301,12 +297,6 @@ pub(super) fn draw_cmq_diagram(
         .collect();
 
     if groups.is_empty() {
-        // DL・LL(架構用)・LL(地震用) は、準備計算（またはいずれかの解析実行）を
-        // 一度も行っていないモデル（読込直後・スラブ編集直後等）では `member` が空の
-        // ままになる（`sync_gravity_load_cases_action` が準備計算の入口でしか
-        // 呼ばれないため）。原因を汎用の「荷重がない」だけで片付けず、これらの
-        // ケースのときはその可能性を案内する（EX/EY は水平力が常に節点荷重のみで
-        // `member` を持たないため対象外。`is_gravity_auto_case_name`）。
         let sync_hint = if is_gravity_auto_case_name(&case.name) {
             "。モデル読込直後やスラブ編集直後で「準備計算」タブをまだ実行していない場合、\
              実行すると内容が更新されます"
@@ -324,7 +314,6 @@ pub(super) fn draw_cmq_diagram(
         return;
     }
 
-    // 各大梁・各表示軸ごとに、荷重を局所軸へ投影したトレースを作る。
     let traces: Vec<CmqTrace> = groups
         .iter()
         .flat_map(|g| {
@@ -332,10 +321,7 @@ pub(super) fn draw_cmq_diagram(
             let p_j = coords3[g.n1];
             let l = member_len3(p_i, p_j);
             axes.iter().map(move |&plane| {
-                // 局所 ey/ez の単位ベクトル（世界座標）。荷重の投影軸として使う。
                 let axis_dir = diagram_offset_dir(p_i, p_j, g.ref_vec, plane);
-                // 構面表示では張り出しを構面内へ倒す（応力図と同じ規約）。投影に使う
-                // `axis_dir` 自体はここでは倒さない（物理的な軸を変えないため）。
                 let offset_dir = match frame_normal {
                     Some(n) => in_plane_offset_dir(axis_dir, p_i, p_j, n),
                     None => axis_dir,
@@ -356,8 +342,6 @@ pub(super) fn draw_cmq_diagram(
         })
         .collect();
 
-    // 選択中の軸をまとめて 1 つのスケールで正規化する（応力図の同単位成分の
-    // 共有スケールと同じ規約）。
     let max_c = traces
         .iter()
         .map(|t| {
@@ -372,7 +356,6 @@ pub(super) fn draw_cmq_diagram(
             q_i.abs().max(q_j.abs())
         })
         .fold(0.0_f64, f64::max);
-    // M（単純梁中央モーメント）の最大値: スパンをサンプリングして評価する。
     let max_m = traces
         .iter()
         .map(|t| {
@@ -386,12 +369,6 @@ pub(super) fn draw_cmq_diagram(
         })
         .fold(0.0_f64, f64::max);
     if max_c < 1e-12 && max_q < 1e-12 && max_m < 1e-12 {
-        // 直交グリッド・ひねりのない部材が大半のモデルで「弱軸(ez)のみ」を選ぶと、
-        // 荷重（大半は鉛直）が局所 ez 面へほぼ投影されず、全トレースが 0 になる
-        // （物理的に正しい結果であり不具合ではない）。無言で何も描かないと
-        // 「表示が壊れた」と区別が付かないため、案内を出す。選択中の軸をそのまま
-        // 案内に含める（「強軸のみ選択中に強軸が0」のとき「強軸を追加してください」
-        // と勧めるような、選択済みの軸を勧め直す矛盾を避けるため）。
         info_text(
             painter,
             &format!(
@@ -402,21 +379,16 @@ pub(super) fn draw_cmq_diagram(
         );
         return;
     }
-    // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
     let c_amp = 60.0 / max_c.max(1e-12) / scale as f64;
     let q_amp = 60.0 / max_q.max(1e-12) / scale as f64;
     let m_amp = 60.0 / max_m.max(1e-12) / scale as f64;
 
-    // 張り出しピーク px が閾値未満の潰れた図形はスキップ（マイター発散対策。
-    // N/Q/M 図と共有する `diagram::MIN_DIAGRAM_PX`）。
     for t in &traces {
         let p_i = coords3[t.group.n0];
         let p_j = coords3[t.group.n1];
         let p0 = proj.project(p_i);
         let p1 = proj.project(p_j);
         let ey = t.offset_dir;
-        // 2D 構面表示で強軸・弱軸が同一直線上に重なっても判別できるよう、
-        // 弱軸(ez)は半透明にする（`plane_alpha_scale`）。
         let alpha = plane_alpha_scale(t.plane);
         let fill_alpha = (60.0 * alpha).round() as u8;
         let stroke_alpha = (255.0 * alpha).round() as u8;
@@ -424,23 +396,16 @@ pub(super) fn draw_cmq_diagram(
         match app.ui.view.cmq_component {
             CmqComponent::C => {
                 let (c_i, c_j) = sum_fixed_end_moments(&t.loads, t.l);
-                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
                 let peak_px = (60.0 * c_i.abs().max(c_j.abs()) / max_c.max(1e-12)) as f32;
                 if peak_px < diagram::MIN_DIAGRAM_PX {
                     continue;
                 }
-                // C 図（モーメント）: 両端の合算 c_i, c_j を結ぶ折れ線ポリゴン。M図の規約
-                // （引張側に描く。sagging 正=-ey側=下、hogging 負=+ey側=上）に合わせ、
-                // 固定端モーメント（hogging=引張は上端）は +ey 側=梁上側に描く。
-                // c_i/c_j は固定端モーメントの符号規約上、両端で逆符号（i端+, j端-）で
-                // 保持されているため、j 端は符号反転して i 端と同じ側（+ey 側）に描く。
                 let c_poly = vec![
                     p0,
                     proj.project_offset(p_i, ey, c_i * c_amp),
                     proj.project_offset(p_j, ey, -c_j * c_amp),
                     p1,
                 ];
-                // C 図（モーメント）= 通常データ（青）
                 paint_diagram_polygon(
                     painter,
                     c_poly,
@@ -449,12 +414,7 @@ pub(super) fn draw_cmq_diagram(
                 );
             }
             CmqComponent::M => {
-                // M 図（単純梁としての中央モーメント）: スパンを分割サンプリングし、
-                // グループ内の全荷重の simple_beam_moment_at を合算した値を、N/Q/M 図と
-                // 同じ規約（正の sagging モーメントが梁下側=-ey 側）でプロットする。
-                // 区間分布荷重の境界・集中荷重は折れ点 ξ=a/L, b/L を含める。
                 let xis = cmq_m_sample_xis(&t.loads, t.l);
-                // 先に値と対応するワールド位置を求め、ピーク px を判定してから描画する
                 let mut val_max = 0.0_f64;
                 let samples: Vec<(f64, [f64; 3])> = xis
                     .into_iter()
@@ -470,16 +430,12 @@ pub(super) fn draw_cmq_diagram(
                         (val, base3)
                     })
                     .collect();
-                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
                 let peak_px = (60.0 * val_max / max_m.max(1e-12)) as f32;
                 if peak_px < diagram::MIN_DIAGRAM_PX {
                     continue;
                 }
                 let mut m_poly = Vec::with_capacity(samples.len() + 2);
                 m_poly.push(p0);
-                // 直前の点とスクリーン距離が近すぎるサンプル点は重複点として除外する
-                // （ゼロ長セグメントも epaint のマイター結合発散の原因になるため。
-                // N/Q/M 図と共有する `diagram::MIN_SEGMENT_PX`）。p0/p1 は常に残す。
                 let mut last = p0;
                 for (val, base3) in samples {
                     let pt = proj.project_offset(base3, ey, -val * m_amp);
@@ -490,7 +446,6 @@ pub(super) fn draw_cmq_diagram(
                     m_poly.push(pt);
                 }
                 m_poly.push(p1);
-                // M 図（中央モーメント）= 強調紫。C（青）・Q（緑）と弁別する
                 paint_diagram_polygon(
                     painter,
                     m_poly,
@@ -500,19 +455,16 @@ pub(super) fn draw_cmq_diagram(
             }
             CmqComponent::Q => {
                 let (q_i, q_j) = sum_simple_reactions(&t.loads, t.l);
-                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
                 let peak_px = (60.0 * q_i.abs().max(q_j.abs()) / max_q.max(1e-12)) as f32;
                 if peak_px < diagram::MIN_DIAGRAM_PX {
                     continue;
                 }
-                // Q 図（せん断）: 両端の合算 q_i, q_j を結ぶ折れ線ポリゴン（+ey 側に描画）
                 let q_poly = vec![
                     p0,
                     proj.project_offset(p_i, ey, q_i * q_amp),
                     proj.project_offset(p_j, ey, q_j * q_amp),
                     p1,
                 ];
-                // Q 図（せん断）= 良好系（緑）。C（青）と弁別する
                 paint_diagram_polygon(
                     painter,
                     q_poly,
@@ -523,9 +475,6 @@ pub(super) fn draw_cmq_diagram(
         }
     }
 
-    // 凡例（選択中の成分・軸のみ表示）。両軸表示中は弱軸(ez)を半透明で描く旨を付記する
-    // （`plane_alpha_scale`。2D 構面表示では強軸・弱軸の張り出し方向が同一直線上に
-    // 潰れるため、色だけでは判別できない）。
     let axis_label = selected_axis_label(app.ui.view.cmq_axes);
     let both_axes_note = if app.ui.view.cmq_axes.ey && app.ui.view.cmq_axes.ez {
         "・弱軸は半透明"
@@ -557,7 +506,6 @@ pub(super) fn draw_cmq_diagram(
         theme::GRAY_700,
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,23 +687,12 @@ mod tests {
         assert_eq!(p, 0.0);
     }
 
-    /// **回帰テスト（敵対的レビューで発見）**: 既定ケース（強軸のみ表示・標準的な
-    /// 水平梁・鉛直荷重）で投影後の符号・大きさが在来のまま保たれること。
-    ///
-    /// 標準的な水平梁（`ref_vector=[0,0,1]`）の局所 ey は世界 +Z（上向き）になる
-    /// （`squid_n_element::transform::LocalFrame::from_nodes` の導出。全ての標準
-    /// 生成経路が使う既定値: `crates/squid-n-io/src/scz.rs`・`checkpoint.rs`、
-    /// `crates/squid-n-edit/src/node_member.rs`）。鉛直荷重の作用方向は常に
-    /// `dir=[0,0,-1]`（`squid_n_load::self_weight::DIR_DOWN`、
-    /// `slab_load_case_content` の `DIR` 定数と同一）。
+    /// **回帰テスト**: 既定ケース（強軸のみ表示・標準的な水平梁・鉛直荷重）で
+    /// 投影後の符号・大きさが保たれること。
     ///
     /// この既定ケースで `dot(dir,ey) = -1` となるため、素朴な `dot` で投影すると
     /// 全ての梁の C/M/Q が符号反転する（サギング/ホギングが入れ替わり、逆側に
-    /// 描かれる）。CMQ 図のソース付け替え自体はこの改修（本コミット）で入ったため
-    /// 「サインが反転した」ことを検出できる旧実装のスナップショットは存在しないが、
-    /// この改修より前は投影を一切行わず `w` をそのまま `fixed_end_moments` 等へ
-    /// 渡していた（＝実質的に `s=+1` 固定）。本テストはその基準（`s=+1`）を
-    /// 既定ケースで再現し続けることを固定する。
+    /// 描かれる）。本テストは基準（`s=+1`）を既定ケースで再現し続けることを固定する。
     #[test]
     fn project_load_preserves_legacy_sign_for_default_horizontal_beam_under_gravity() {
         let ey = [0.0, 0.0, 1.0]; // 標準的な水平梁（ref_vector=[0,0,1]）の局所 ey

@@ -48,8 +48,6 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(left_rect, |ui| {
             ui.horizontal(|ui| {
-                // 下ドック切替アイコン。対象ドックが開いていて対象タブが
-                // アクティブなら閉じる。それ以外は開いてそのタブをアクティブにする。
                 let is_log_active =
                     self.ui.view.bottom_dock_open && self.ui.view.bottom_tab == BottomTab::Log;
                 if ui
@@ -101,7 +99,6 @@ impl App {
                     self.ui.view.bottom_tab = BottomTab::Diagnostics;
                 }
                 ui.separator();
-                // プロジェクトファイル名 + 未保存マーカー
                 let file_label = self
                     .core
                     .scoped
@@ -117,7 +114,6 @@ impl App {
                 };
                 ui.label(format!("{}{}", file_label, marker));
                 ui.separator();
-                // バックグラウンド解析ジョブの実行状況
                 if let Some(job) = &self.core.scoped.job {
                     let elapsed = job.started.elapsed().unwrap_or_default().as_secs_f64();
                     ui.colored_label(
@@ -126,7 +122,6 @@ impl App {
                     );
                     ui.separator();
                 }
-                // stale アイコン。意味色は下ドック／ログ側。青地のバー上は白。
                 if self.core.scoped.staleness.results_stale {
                     ui.colored_label(crate::theme::WHITE, "⚠ stale");
                 } else if self.core.scoped.results.is_some() {
@@ -136,11 +131,6 @@ impl App {
                 }
                 if let Some(err) = &self.core.scoped.last_error {
                     ui.separator();
-                    // ST-Bridge 取込警告（複数件を \n 区切りで連結）など改行を含む
-                    // メッセージは1行に畳んでから truncate する（\n はレイアウト上
-                    // 明示的な改行として扱われ、行の高さ・幅の見積りが崩れるため）。
-                    // 全文はホバーで表示する。クリックでログタブを前面にする
-                    // （エラーの詳細な経緯はログに残っているため）。
                     let one_line = err.replace('\n', " ");
                     let clicked = ui
                         .add(
@@ -157,9 +147,6 @@ impl App {
                         self.open_log_dock();
                     }
                 }
-                // last_error（処理を止める）とは別枠の注意事項（例: 精算周期
-                // (SemiPrecise)選択時に固有値解析が未実行で EX/EY が未更新である旨）。
-                // バー上は白。意味色（黄）はログ側。解析自体は継続してよい。
                 if let Some(notice) = &self.core.scoped.last_notice {
                     ui.separator();
                     let one_line = notice.replace('\n', " ");

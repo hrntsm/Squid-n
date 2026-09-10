@@ -91,7 +91,6 @@ pub(super) fn aggregate_hinges(hinges: &[HingeEvent]) -> Vec<HingeMarker> {
             });
     }
     let mut result: Vec<HingeMarker> = map.into_values().collect();
-    // 表示・テストの安定のため部材ID→端の順で並べる。
     result.sort_by_key(|m| (m.elem.0, m.end_j));
     result
 }
@@ -170,7 +169,6 @@ pub(super) fn draw_hinge(
     };
 
     let markers = aggregate_hinges(&po.hinges);
-    // レベル別の件数（凡例用。0=ひび割れ／1=降伏／2=終局）。
     let mut counts = [0usize; 3];
 
     for m in &markers {
@@ -189,7 +187,6 @@ pub(super) fn draw_hinge(
 
         painter.circle_filled(center, MARKER_R, color);
         if matches!(m.level, HingeLevel::Ultimate) {
-            // 終局は外周リングを重ねて目立たせる。
             painter.circle_stroke(center, MARKER_R + 2.5, egui::Stroke::new(1.5_f32, color));
         }
     }
@@ -211,8 +208,6 @@ pub(super) fn show_hinge_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     }
     rows.sort_by_key(|m| m.end_j);
 
-    // `show_tooltip_at_pointer` は egui 0.34 で非推奨だが、モデル化図・検定比図と
-    // 同じ方針（`#[allow(deprecated)]`）で使用する。
     #[allow(deprecated)]
     egui::show_tooltip_at_pointer(
         ui.ctx(),
@@ -286,10 +281,6 @@ fn draw_hinge_legend(painter: &egui::Painter, counts: &[usize; 3]) {
         y += LINE_H;
     }
 }
-
-// ============================================================================
-// ヒンジ詳細ウィンドウ（クリックで部材のヒンジ状態を確認する図）
-// ============================================================================
 
 /// N-M 相関図用の曲線キャッシュ（部材のファイバー分割・曲面構築は数十ms
 /// かかりうるため、選択部材・ステップ数が変わらない限り再計算しない）。
@@ -477,11 +468,8 @@ fn build_mn_curve_cache(
     let mat = app.core.model.element_material(elem);
     let rebar_mat = app.core.model.element_rebar_material(elem);
 
-    // 保有水平耐力計算（プッシュオーバー）と整合する材料強度割増を適用する
-    // （`pushover/hinge.rs::member_moment_thresholds` と同じ規約）。
     let steel_fy = mat.and_then(|m| m.fy).unwrap_or(235.0)
         * mat.map(material_strength_factor_steel).unwrap_or(1.0);
-    // 主筋の σy は断面の主筋材料 → 主材料の fy の順で解決する。
     let rebar_fy = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
         .or_else(|| mat.and_then(|m| m.fy))
         .unwrap_or(345.0)
@@ -586,7 +574,6 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         return;
     };
 
-    // 共通ヘッダ: i端・j端それぞれの集約ヒンジ情報（第1ラウンドの集約を再利用）。
     let mine: Vec<HingeMarker> = aggregate_hinges(&po.hinges)
         .into_iter()
         .filter(|m| m.elem == elem_id)
@@ -610,8 +597,6 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     }
     ui.separator();
 
-    // 応答履歴（M-θ・N-M 応答経路の元データ）。旧プロジェクトファイル等で
-    // 空の場合は再解析を促す（`MemberStepState` は Copy のため複製は軽量）。
     let records: Vec<MemberStepState> = match po.member_history.iter().find(|h| h.elem == elem_id) {
         Some(h) if !h.records.is_empty() => h.records.clone(),
         _ => {
@@ -622,7 +607,6 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
             return;
         }
     };
-    // 終局時のファイバー断面状態（なければファイバー要素以外、または旧データ）。
     let fiber_sections: Option<Vec<FiberSectionState>> = po
         .fiber_states
         .iter()
@@ -642,17 +626,13 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         }
     ));
 
-    // 1. M-θ カーブ（荷重変形カーブ）: 応答履歴があれば常に表示。
     ui.strong("M-θ カーブ（荷重変形カーブ）");
     draw_m_theta_plot(ui, elem_id, &records, bend_dir_z, &mine);
     ui.separator();
 
-    // 2. N-M 相関図: 軸力を受ける部材（柱、またはファイバー系要素）のみ。
     if is_axial {
         ui.strong("N-M 相関図");
         ensure_mn_cache(app, &elem_snapshot, elem_id, bend_dir_z, records.len());
-        // カメラ状態は `app` からローカルへ複製して使う（`app.ui.scoped.hinge_mn_cache`
-        // の借用と同時に `app` を可変借用しないため）。描画後に書き戻す。
         let mut cam = app.ui.view.hinge_mn_camera.clone();
         match app
             .ui
@@ -673,9 +653,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         ui.separator();
     }
 
-    // 3. ファイバー断面の塑性化マップ: ファイバー要素のみ（fiber_states に記録あり）。
     if let Some(sections) = fiber_sections {
-        // 断面外形線の重ね描き用（断面が引けなければ輪郭なしでファイバーのみ描く）。
         let sec = elem_section.and_then(|sid| app.core.model.sections.get(sid.index()));
         ui.strong("ファイバー断面の塑性化マップ（終局時）");
         draw_fiber_maps(ui, elem_id, &sections, &mine, sec);
@@ -744,7 +722,7 @@ fn plot_m_theta_end(
     }
 }
 
-/// N-M 相関図: N-My-Mz 曲面の 3D ワイヤーフレーム（上段）＋従来の 2D スライス
+/// N-M 相関図: N-My-Mz 曲面の 3D ワイヤーフレーム（上段）＋ 2D スライス
 /// （採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路、下段）を続けて描く。
 fn draw_mn_plot(
     ui: &mut egui::Ui,
@@ -785,7 +763,6 @@ fn draw_mn_plot_3d(
     let view = mn_draw::MnView::new(&rect, cam);
 
     mn_draw::draw_axes(&painter, &view);
-    // 曲面の内側に応答経路の赤線を重ねるため、線は薄め（不透明度 160）に描く。
     mn_draw::draw_wireframe(&painter, &cache.surface, refs, &view, theme::DATA_BLUE, 160);
     draw_mn_response_path_3d(&painter, records, refs, &view);
 
@@ -800,13 +777,9 @@ fn draw_mn_response_path_3d(
     view: &mn_draw::MnView<'_>,
 ) {
     let path = n_my_mz_response_path_3d(records);
-    // 原点のみ（記録なし）なら描く経路がない。
     if path.len() < 2 {
         return;
     }
-    // 応答経路は `n_my_mz_response_path_3d` が既に [My, Mz, N] の順で返すため、
-    // 曲面の格子点 [N, My, Mz] のような並べ替えは要らず、成分ごとに正規化する
-    // だけでよい。
     let pts: Vec<egui::Pos2> = path
         .iter()
         .map(|p| view.project([p[0] / refs[0], p[1] / refs[1], p[2] / refs[2]]))
@@ -815,7 +788,6 @@ fn draw_mn_response_path_3d(
     for w in pts.windows(2) {
         painter.line_segment([w[0], w[1]], stroke);
     }
-    // 始点(原点=無載荷状態)を明示する。
     painter.circle_stroke(pts[0], 4.0, egui::Stroke::new(1.5_f32, theme::GRAY_600));
     if let Some(&last) = pts.last() {
         painter.circle_filled(last, 5.0, theme::PARETO_RED);
@@ -857,8 +829,6 @@ fn draw_mn_plot_2d(
                 .color(theme::GRAY_300)
                 .width(1.5_f32),
             );
-            // 応答経路は原点 [0,0]（無載荷状態）を前置済み（`n_m_response_path`）
-            // のため、記録が 1 件もない場合でも要素数は必ず 1 以上になる。
             plot_ui.line(
                 egui_plot::Line::new(
                     "応答経路",
@@ -890,7 +860,6 @@ fn draw_fiber_maps(
     mine: &[HingeMarker],
     sec: Option<&Section>,
 ) {
-    // 外形線は i端・j端で共通（同一断面）のため 1 回だけ算定する。
     let outline = sec.and_then(fiber_frame_outline);
     let want_i = mine.iter().any(|m| !m.end_j);
     let want_j = mine.iter().any(|m| m.end_j);
@@ -929,7 +898,6 @@ fn draw_one_fiber_map(
         yielded,
         sec.fibers.len()
     ));
-    // 材料色の凡例（材料区分ごとに 1 行、色見本＋名称）。
     for &(material, label, _) in FIBER_MATERIALS {
         ui.horizontal(|ui| {
             ui.colored_label(fiber_material_color(material), "■");
@@ -965,7 +933,6 @@ fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
     if pts.is_empty() {
         return;
     }
-    // 閉多角形にするため先頭点を末尾に再掲する。
     let mut closed: Vec<[f64; 2]> = pts.to_vec();
     closed.push(pts[0]);
     plot_ui.line(
@@ -1047,7 +1014,6 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
             continue;
         }
 
-        // 未降伏: 材料色の淡色。
         let elastic: Vec<[f64; 2]> = of_material
             .iter()
             .filter(|f| fiber_category(f) == 0)
@@ -1065,7 +1031,6 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
             );
         }
 
-        // 降伏(引張): 材料色＋外周リング（円）。
         let tension: Vec<[f64; 2]> = of_material
             .iter()
             .filter(|f| fiber_category(f) == 1)
@@ -1088,7 +1053,6 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
             );
         }
 
-        // 降伏(圧縮): 材料色＋外周リング（ひし形。引張降伏と形状で区別）。
         let compression: Vec<[f64; 2]> = of_material
             .iter()
             .filter(|f| fiber_category(f) == 2)
@@ -1115,7 +1079,6 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

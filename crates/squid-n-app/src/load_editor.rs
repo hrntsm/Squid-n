@@ -174,7 +174,6 @@ impl LoadEditor {
                 format!("{}", p),
             ),
             MemberLoadKind::Distributed { a, b, w1, w2 } => {
-                // 全長かつ強度一定なら等分布、それ以外は台形として開く。
                 let full = model
                     .element(load.elem)
                     .map(|e| model.member_length(e))
@@ -217,8 +216,6 @@ impl LoadEditor {
     pub fn begin_pick(&mut self) {
         self.pick_backup = Some(match &self.draft {
             LoadDraft::Nodal(d) => PickBackup::Node(d.node),
-            // 方向も一緒に控える。ピック中にブレースを選ぶと方向が材軸方向へ
-            // 切り替わるため、対象だけ戻すと方向がブレース用のまま残る。
             LoadDraft::Member(d) => PickBackup::Member(d.elem, d.dir),
         });
         self.picking = true;
@@ -364,7 +361,6 @@ impl App {
         };
         let mut confirm = false;
         let mut cancel = false;
-        // 3D ビューを覆わないよう画面上端に固定する（移動・折り畳み不可）。
         egui::Window::new("load_pick_bar")
             .title_bar(false)
             .resizable(false)
@@ -395,7 +391,6 @@ impl App {
                 });
             });
 
-        // キー入力は 3D ビューにフォーカスがなくても効くよう ctx から直接読む。
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && current.is_some() {
             confirm = true;
         }
@@ -626,8 +621,6 @@ impl App {
                 close = ui.button("キャンセル").clicked();
             });
         });
-        // Esc・背景クリックによる閉じ操作もキャンセルとして扱う
-        // （モーダルの作法どおりに閉じられないと、閉じる手段がボタンだけになる）。
         close |= modal.should_close();
 
         if begin_pick {
@@ -636,7 +629,7 @@ impl App {
             return;
         }
         if close {
-            return; // editor は take 済みなので、戻さなければ閉じる
+            return;
         }
         if commit {
             match self.commit_load_editor(&editor) {
@@ -703,10 +696,6 @@ impl App {
                 if length <= 1e-9 {
                     return Err(format!("部材 #{} の材長が 0 です", elem.0));
                 }
-                // 方向は下書きの選択肢番号ではなく、対象部材から決める。
-                // ブレースかどうかが唯一の条件であり、下書き側の番号を信じると、
-                // ピックの取り消しなどで番号だけがブレース用に残った場合に
-                // 選択肢の範囲外を引く。
                 let dir = if is_brace(&self.core.model, elem) {
                     brace_axis_dir(&self.core.model, elem)
                 } else {
@@ -817,7 +806,6 @@ impl App {
 /// 編集対象が入れ替わっていたときの案内。
 const STALE_TARGET_MESSAGE: &str =
     "編集中に対象の荷重が変更・削除されました。閉じてから選び直してください";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,7 +871,7 @@ mod tests {
     /// ピック中にブレースを選んでから取り消すと、対象だけでなく作用方向も元へ戻る。
     ///
     /// 方向が戻らないと、対象が梁に戻ったのに方向だけ「材軸方向」を指したままになり、
-    /// 確定時に選択肢の範囲外を引く（かつて追加時に落ちていた経路）。
+    /// 確定時に選択肢の範囲外を引く。
     #[test]
     fn cancel_pick_restores_direction_together_with_target() {
         let model = beam_and_brace_model();

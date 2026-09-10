@@ -95,7 +95,6 @@ fn elem_value_table(
         {
             if let (Some(elem), Ok(value)) = (*sel_elem, value_buf.trim().parse::<f64>()) {
                 let mut new_rows = rows.to_vec();
-                // 同一部材の既存行は置換（重複行を作らない）。
                 if let Some(pos) = new_rows.iter().position(|(e, _)| *e == elem) {
                     new_rows[pos].1 = value;
                 } else {
@@ -139,7 +138,6 @@ fn elem_selector(
 pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
     let cfg = app.core.model.load_cfg.clone().unwrap_or_default();
 
-    // ── 鉄骨重量割増率 ─────────────────────────────────────
     if !app.ui.scoped.load_cfg_draft.steel_factor_active {
         app.ui.scoped.load_cfg_draft.steel_factor = cfg.steel_weight_factor;
     }
@@ -158,14 +156,10 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
         {
             let mut new_cfg = cfg.clone();
             new_cfg.steel_weight_factor = app.ui.scoped.load_cfg_draft.steel_factor;
-            // ドラッグ終了/フォーカス喪失と同一フレームで他の操作は発生しない
-            // （egui の1フレーム1操作）ため、以降の描画が旧 cfg を参照しても
-            // 次フレームで model の新値に再同期される。
             commit(app, new_cfg);
         }
     });
 
-    // ── K型ブレース配分規則 ─────────────────────────────────
     ui.horizontal(|ui| {
         ui.label("K型ブレース重量配分:");
         let mut new_rule: Option<KBraceWeightRule> = None;
@@ -192,7 +186,6 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
-    // ── 積載荷重低減 ─────────────────────────────────────
     {
         let mut reduction = cfg.live_load_reduction;
         if ui
@@ -215,7 +208,6 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(4.0);
 
-    // ── 付加線重量 ─────────────────────────────────────────
     ui.label(egui::RichText::new("付加線重量（耐火被覆等の直接入力）").strong());
     if let Some(new_rows) = elem_value_table(
         ui,
@@ -234,7 +226,6 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(4.0);
 
-    // ── 仕上げ面重量 ────────────────────────────────────────
     ui.label(egui::RichText::new("仕上げ面重量（断面周長×面重量で線重量に換算）").strong());
     if let Some(new_rows) = elem_value_table(
         ui,
@@ -253,7 +244,6 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(4.0);
 
-    // ── ダンパー諸元 ────────────────────────────────────────
     ui.label(egui::RichText::new("ダンパー自重諸元（断面自重を装置+支持部重量で置換）").strong());
     let mut new_dampers: Option<Vec<DamperSpec>> = None;
     for (i, d) in cfg.dampers.iter().enumerate() {

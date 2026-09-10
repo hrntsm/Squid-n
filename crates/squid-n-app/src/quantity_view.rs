@@ -44,7 +44,6 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // 集計単位の切替とエクスポート。
     ui.horizontal(|ui| {
         for (g, label) in [
             (QuantityGrouping::ByCategory, "部位別"),
@@ -79,7 +78,6 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
-    // 全体合計のサマリ行。
     let totals = takeoff.totals();
     ui.horizontal(|ui| {
         ui.label(format!("コンクリート {:.1} m³", totals.concrete_m3));
@@ -241,7 +239,6 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             }
         }
 
-        // 前提・未対応事項。
         ui.add_space(8.0);
         egui::CollapsingHeader::new("注記（算定の前提・未対応事項）")
             .default_open(false)

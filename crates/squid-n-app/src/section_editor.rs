@@ -27,7 +27,6 @@ pub struct SectionEditorDraft {
     /// その断面の符号・階を欄へ写すための記録で、同じ断面を選び直しても
     /// 編集途中の入力を上書きしないようにする。
     pub synced_focus: Option<SectionId>,
-    // 鋼共通パラメータ
     pub h: f64,
     pub b: f64,
     pub tw: f64,
@@ -35,24 +34,18 @@ pub struct SectionEditorDraft {
     pub t: f64,
     /// 角形鋼管の角部外半径 r [mm]（0 は角部を直角とみなす）。
     pub r: f64,
-    // リップ溝形（リップ長）
     pub lip: f64,
-    // 非対称組立 H（上下フランジ）
     pub upper_width: f64,
     pub upper_thick: f64,
     pub lower_width: f64,
     pub lower_thick: f64,
-    // L 形
     pub leg_a: f64,
     pub leg_b: f64,
     pub leg_thick: f64,
-    // 丸鋼管
     pub outer_dia: f64,
     pub thick: f64,
-    // RC 共通
     pub rc_b: f64,
     pub rc_d: f64,
-    // RC 配筋
     pub main_x_count: u32,
     pub main_x_dia: f64,
     pub main_x_layers: u32,
@@ -265,8 +258,6 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
             entry.area, entry.iy, entry.iz, entry.j
         ));
 
-        // カタログ断面の符号はカタログ名（`H-400x200x8x13` 等）で、階は持たない。
-        // 同じ断面を 2 回追加すると符号＋階が衝突するため、追加を止めて理由を示す。
         let new_id = SectionId(app.core.model.sections.len() as u32);
         let sec = squid_n_section::catalog::to_section(entry, new_id);
         let taken =
@@ -289,13 +280,8 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
 
 /// 断面作成パネル。モデルタブの断面サブタブに併置。
 pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
-    // 仕口パネル板厚の欄はモデルを読むが、編集要求は `draft` の可変借用が
-    // 切れたあと（閉包の外）で適用する。
     let mut pending_tp: Option<(SectionId, f64)> = None;
 
-    // 断面テーブルで断面を選んだら、その符号・階を欄へ読み込む。断面テーブルは
-    // 読み取り専用で、既存断面の符号・階を直す手段がこのパネルしかないため、
-    // 選んだ断面の現在値から編集を始められるようにする。
     let focused = focused_section_index(app.ui.scoped.nav.focus_section, &app.core.model.sections)
         .map(|idx| &app.core.model.sections[idx]);
     if let Some(sec) = focused {
@@ -337,7 +323,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 
         let mut predicted_id = SectionId(app.core.model.sections.len() as u32);
 
-        // 寸法入力
         match draft.kind {
             ShapeKind::SteelH => {
                 steel_h_fields(ui, draft);
@@ -376,7 +361,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                 rc_circle_fields(ui, draft);
             }
             ShapeKind::RcSlab => {
-                // スラブは板厚だけを持つ（平面形状は床の境界節点から得る）。
                 ui.horizontal(|ui| {
                     ui.label("板厚 t [mm]");
                     ui.add(egui::DragValue::new(&mut draft.thick).speed(1.0));
@@ -391,7 +375,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             SectionId(app.core.model.sections.len() as u32),
             draft.name.clone(),
         );
-        // プレビュー：A/Iy/Iz/J を表示
         ui.label(format!(
             "算定: A = {:.3e} mm²   Iy = {:.3e} mm⁴   Iz = {:.3e} mm⁴   J = {:.3e} mm⁴",
             sec.area, sec.iy, sec.iz, sec.j
@@ -401,8 +384,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 
         let draft_floor = non_empty(&draft.floor);
         let focus = focused_section_index(app.ui.scoped.nav.focus_section, &app.core.model.sections);
-        // 符号＋階は断面の同一性キーなので、既存断面と衝突する追加・改名はできない。
-        // 改名では対象の断面自身を衝突判定から外す。
         let key_free_for_add = !squid_n_core::model::section_key_taken(
             &app.core.model.sections,
             (draft.name.as_str(), draft_floor.as_deref()),
@@ -439,7 +420,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                     }),
                 );
                 app.core.scoped.staleness.mark_edited();
-                // 生成後、次の断面をすぐ作れるよう符号を更新
                 let n = app.core.model.sections.len();
                 draft.name = format!("断面{}", n + 1);
             }
@@ -470,8 +450,6 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         );
                         app.core.scoped.staleness.mark_edited();
                     }
-                    // 断面テーブルは読み取り専用なので、既存断面の符号・階を直す手段は
-                    // ここに置く（フォームの符号・階を選択中の断面へ書き込む）。
                     let can_rename = key_free_for_rename && !draft.name.trim().is_empty();
                     let rename_resp =
                         ui.add_enabled(can_rename, egui::Button::new("✏ 符号・階を変更"));
@@ -882,7 +860,6 @@ fn panel_thickness_field(
              （H 形＝ウェブ厚、角形・円形＝板厚）",
         );
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            // 空欄・数値でない入力は未入力（0）として扱う。
             let value = buf.trim().parse::<f64>().unwrap_or(0.0).max(0.0);
             if (value - current).abs() > 1e-9 {
                 *pending = Some((sid, value));
@@ -895,7 +872,6 @@ fn panel_thickness_field(
 
     ui.data_mut(|d| d.insert_temp(id_buf, buf));
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

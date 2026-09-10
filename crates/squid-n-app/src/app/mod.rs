@@ -10,7 +10,7 @@ use squid_n_solver::statics::analysis::{AiMode, Analysis, SeismicDir};
 /// 解析条件。実体は [`squid_n_job::settings`]（GUI と MCP で同一の条件を使う）。
 pub use squid_n_job::settings::{AnalysisSettings, ThDampingModel, ThDir};
 
-/// 工程タブ（UI設計 §1.1）。進行ロックしない。
+/// 工程タブ。進行ロックしない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -175,7 +175,7 @@ pub enum StaticKey {
     Combo(usize),
 }
 
-/// stale（要再計算）状態（UI設計 §5）。
+/// stale（要再計算）状態。
 #[derive(Clone, Debug)]
 pub struct Staleness {
     pub results_stale: bool,
@@ -450,7 +450,7 @@ impl ResultsBundle {
             .map(|(_, s)| s)
     }
 
-    /// 旧 `.scz`（`pushover` のみ）を `push_dir` のスロットへ移す。
+    /// `.scz`（`pushover` のみ）を `push_dir` のスロットへ移す。
     pub fn migrate_legacy_pushover(&mut self, push_dir: SeismicDir) {
         if self.pushover_x.is_none() && self.pushover_y.is_none() {
             if let Some(po) = self.pushover.clone() {
@@ -538,7 +538,7 @@ pub enum JobResult {
 }
 
 /// バックグラウンド解析ジョブ。重い解析(増分解析・時刻歴・静的解析の単体実行と
-/// 一括解析)を UI スレッドから逃がす(P8 §5)。
+/// 一括解析)を UI スレッドから逃がす。
 /// 結果は poll_job で受け取り適用する。
 pub struct AnalysisJob {
     pub label: &'static str,
@@ -641,23 +641,18 @@ impl EventLog {
                 .size()
                 .x
         };
-        // レベル列は最長ラベル「エラー」に合わせ、時刻列は 3 桁分まで桁が増えても揃う幅にする。
         let level_w = measure(LogLevel::Error.label());
         let time_w = measure("[000:00]");
         let line_h = ui.text_style_height(&egui::TextStyle::Body);
 
-        // id_salt: 下ドックの 5 タブは同一パネル内で切り替わるため、明示しないと
-        // ScrollArea の Id が衝突しスクロール位置がタブ間で共有される。
         egui::ScrollArea::vertical()
             .id_salt("bottom_log")
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                // 件と件の隙間をなくし、ゼブラが連続した帯になるようにする。
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (i, entry) in self.entries.iter().enumerate() {
                     let bg = if i % 2 == 1 {
-                        // gray-100 でもログには濃い。パレット外の色は足さず白へ寄せる。
                         crate::theme::lighten(crate::theme::GRAY_100, 0.6)
                     } else {
                         crate::theme::WHITE
@@ -668,10 +663,7 @@ impl EventLog {
                         .inner_margin(egui::Margin::symmetric(4, 2))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
-                            // レベル・時刻は 1 行、本文は残り幅で折り返す（続き行はメッセージ列から）。
                             ui.horizontal_top(|ui| {
-                                // allocate_ui は使い分だけ確保するため、短い「情報」「注意」だと
-                                // 列が縮み時刻の開始位置がずれる。min_width で「エラー」幅を保つ。
                                 ui.allocate_ui(egui::vec2(level_w, line_h), |ui| {
                                     ui.set_min_width(level_w);
                                     ui.label(egui::RichText::new(entry.level.label()).color(color));
@@ -771,7 +763,6 @@ impl Default for AppCore {
             model: squid_n_core::model::Model::default(),
             design_term: LoadTerm::Long,
             log: EventLog::default(),
-            // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
             design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
             design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
             design_rank_auto: false,
@@ -816,10 +807,10 @@ pub struct ModelScoped {
     /// `last_error` とは別枠。
     pub last_notice: Option<String>,
     /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・静的解析の単体実行と
-    /// 一括解析、P8 §5）。
+    /// 一括解析）。
     /// 完了は `poll_job` で検知して結果を適用する。
     ///
-    /// モデル差し替えで破棄する。残したままだと、旧モデルで計算中の結果が完了時に
+    /// モデル差し替えで破棄する。残したままだと、差し替え前のモデルで計算中の結果が完了時に
     /// `poll_job` 経由で新モデルへ「最新結果」として適用され、別モデルの変位・応力が
     /// stale 警告なしに表示される（受信側 `Receiver` の破棄だけでよい。ワーカー
     /// スレッドの送信は失敗して静かに終了する）。
@@ -828,7 +819,7 @@ pub struct ModelScoped {
     /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
     /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
     ///
-    /// モデル差し替えで破棄する（旧モデル用に選んだパスへ新モデルを保存して
+    /// モデル差し替えで破棄する（差し替え前のモデル用に選んだパスへ保存して
     /// しまうのを防ぐ）。
     pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
     /// stale（要再計算）状態と最終実行時刻
@@ -936,7 +927,7 @@ pub struct UiState {
 
 /// 現在のモデルに紐づく画面状態（モデル従属状態）。
 ///
-/// 旧モデルの ID・添字・キャッシュを握るもの（選択・ナビゲータの注目対象・入力途中の
+/// モデルの ID・添字・キャッシュを握るもの（選択・ナビゲータの注目対象・入力途中の
 /// ドラフト・詳細ウィンドウの選択部材とそのキャッシュ・作成モードの選択節点）を
 /// ここへ置く。[`App::load_model`] が `Default::default()` の代入で丸ごと破棄する。
 pub struct UiModelScoped {
@@ -967,7 +958,7 @@ pub struct UiModelScoped {
     /// モード形の表示インデックス
     #[cfg(feature = "gui")]
     pub view_mode_idx: usize,
-    /// 2D 構面表示の対象（`None` は全体表示＝従来の 3D ビュー）。
+    /// 2D 構面表示の対象（`None` は全体表示）。
     /// 通り芯の再生成・モデルの入れ替えで添字がずれるため、描画のたびに
     /// 実在を検証し、解決できなければ全体表示へ戻す。
     #[cfg(feature = "gui")]
@@ -1056,7 +1047,7 @@ pub struct UiModelScoped {
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
     /// 階への複製ダイアログ（`① 準備計算 > 階の定義 > ⧉`）の入力状態。
-    /// 旧モデルの階を指したままにすると新モデルの別の階へ配ってしまうため、
+    /// 差し替え前のモデルの階を指したままにすると別の階へ配ってしまうため、
     /// モデル差し替えでは選択ごと閉じる。
     #[cfg(feature = "gui")]
     pub story_copy: crate::story_copy_view::StoryCopyState,
@@ -1237,7 +1228,7 @@ pub struct UiViewState {
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
-    /// コンター表示のカラーマップ（既定は TONMANUAL §3 準拠の Viridis）
+    /// コンター表示のカラーマップ（既定は Viridis）
     #[cfg(feature = "gui")]
     pub contour_colormap: crate::theme::ColorMap,
     /// N/Q/M 図で変形図を重ねて表示するか（応力と変形を同時に確認する）
@@ -1426,18 +1417,14 @@ pub struct ComboDraft {
 /// 見つからない場合は何もしない（英数字は既定フォントで表示される）。
 #[cfg(feature = "gui")]
 pub fn install_japanese_fonts(ctx: &egui::Context) {
-    // OS ごとの代表的な日本語フォント候補（先に見つかったものを使用）。
     const CANDIDATES: &[&str] = &[
-        // Windows
         "C:/Windows/Fonts/meiryo.ttc",
         "C:/Windows/Fonts/YuGothR.ttc",
         "C:/Windows/Fonts/YuGothM.ttc",
         "C:/Windows/Fonts/msgothic.ttc",
-        // macOS
         "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/Library/Fonts/Osaka.ttf",
-        // Linux (Noto / IPA / VL)
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -1460,7 +1447,6 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
         "jp".to_owned(),
         std::sync::Arc::new(egui::FontData::from_owned(bytes)),
     );
-    // プロポーショナル・等幅の両ファミリーで日本語フォントを最優先にする。
     if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         family.insert(0, "jp".to_owned());
     }
@@ -1476,7 +1462,7 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
 ///
 /// - `DL_CASE_NAME`: `sync_gravity_load_cases_action` がスラブの固定荷重
 ///   （仕上げ等）の分配と躯体自重（柱梁・壁・ダンパー・フレーム外雑壁・二次部材）を
-///   合算して同期する（レビュー §1.1・照合レビュー③梁自重/②壁荷重）。
+///   合算して同期する。
 /// - `LL_FRAME_CASE_NAME`: スラブ用途（`SlabUsage`）から令別表第1 の
 ///   骨組用積載を分配する（長期骨組解析用。令85条1項）。
 /// - `LL_SEISMIC_CASE_NAME`（kind=LiveSeismic）: スラブ用途から令別表第1 の
@@ -1489,13 +1475,11 @@ pub use squid_n_core::model::{
     DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
 };
 
-/// 旧スキーマの自重自動生成ケース名（読込時に DL へ移行される。
+/// 読込時に DL へ移行される自重自動生成ケース名（
 /// 未移行モデルに対する二重計上防止の除外判定にのみ使う）。
 pub const SELF_WEIGHT_AUTO_LOAD_CASE_NAME: &str =
     squid_n_load::self_weight::SELF_WEIGHT_AUTO_LOAD_CASE_NAME;
 
-// 節点ペアが鉛直材（柱）かどうかの判定。判定規則は `squid-n-core` を情報源とし、
-// 荷重集計（`squid_n_load::story_gen`）・通り芯の自動生成と共通にする。
 use squid_n_core::geom::is_vertical_pair;
 
 /// 柱要素ごとの「支持する床数」と「積載荷重低減率」（令85条2項）を一覧する。
@@ -1535,11 +1519,11 @@ pub fn column_live_load_factors(model: &squid_n_core::model::Model) -> Vec<(Elem
         .collect()
 }
 
-/// 地震用重量に算入する重力ケースを `LoadCaseKind` から選択する（レビュー §1.7）。
+/// 地震用重量に算入する重力ケースを `LoadCaseKind` から選択する。
 ///
 /// - `kind == Dead` の全ケースを対象とする（標準構成では「DL」に躯体自重＋
-///   スラブ固定荷重が自動同期される）。ただし旧スキーマの「自重(自動)」
-///   （[`SELF_WEIGHT_AUTO_LOAD_CASE_NAME`]。未移行の場合のみ存在）は除外する
+///   スラブ固定荷重が自動同期される）。ただし「自重(自動)」
+///   （未移行の場合のみ存在）は除外する
 ///   （その場合は密度からの自重直接算入と二重計上になるため。
 ///   [`density_self_weight_for_stories`] 参照）。
 /// - `kind == LiveSeismic`（地震用積載）のケースがあれば併せて対象とする。
@@ -1551,8 +1535,8 @@ pub fn column_live_load_factors(model: &squid_n_core::model::Model) -> Vec<(Elem
 ///   0 の用途で骨組用値へフォールバックし地震用重量が過大になるのを防ぐ。
 ///   スラブの地震用積載は常に [`LL_SEISMIC_CASE_NAME`] が担う）。
 /// - いずれのケースも `kind` が設定されていない（全ケースが既定値 `Other`）
-///   場合は、旧スキーマ・後方互換のため先頭ケースのみを返す
-///   （並び順に依存する旧規約。新規モデルは kind 設定を推奨）。
+///   場合は、後方互換のため先頭ケースのみを返す
+///   （並び順に依存する規約。新規モデルは kind 設定を推奨）。
 fn gravity_cases_for_seismic_weight(model: &squid_n_core::model::Model) -> Vec<LoadCaseId> {
     squid_n_job::gravity_case_ids_for_seismic_weight(model)
 }
@@ -1561,8 +1545,8 @@ fn gravity_cases_for_seismic_weight(model: &squid_n_core::model::Model) -> Vec<L
 ///
 /// 標準構成では躯体自重は「DL」（kind=Dead・[`DL_CASE_NAME`]）へ自動同期され、
 /// `gravity_cases_for_seismic_weight` が DL を重力ケースに含めるため、密度からの
-/// 直接算入は行わない（`false`）。DL ケースがない旧モデル・手動構成では従来
-/// どおり密度から直接算入する（`true`）。
+/// 直接算入は行わない（`false`）。DL ケースがないモデル・手動構成では
+/// 密度から直接算入する（`true`）。
 fn density_self_weight_for_stories(model: &squid_n_core::model::Model) -> bool {
     !model
         .load_cases
@@ -1592,7 +1576,6 @@ fn story_gen_changes_model(
     {
         return true;
     }
-    // 剛床代表節点: 範囲外なら追加が必要＝変化あり。
     if gen
         .rep_nodes
         .iter()
@@ -1600,10 +1583,6 @@ fn story_gen_changes_model(
     {
         return true;
     }
-    // 所属階（`ApplyStories` は model.nodes と node_story を zip して設定する）。
-    // ただし剛床代表節点は node_story の適用後に `rep_nodes` で丸ごと置換されるため、
-    // その節点の所属階は rep_nodes 側が正（node_story 側は None のまま）。
-    // 上で rep_nodes の一致を確認済みなので、ここでは代表節点を除いて比較する。
     let rep: std::collections::HashSet<NodeId> = gen.rep_nodes.iter().map(|n| n.id).collect();
     if model
         .nodes
@@ -1613,7 +1592,6 @@ fn story_gen_changes_model(
     {
         return true;
     }
-    // 剛床拘束の並び替えも変化として扱う（適用後の並びをそのまま組み立てて比較）。
     let mut applied: Vec<Constraint> = model
         .constraints
         .iter()
@@ -1627,7 +1605,7 @@ fn story_gen_changes_model(
 /// 波形 CSV/テキストの内容を解析する（ヘッドレステスト可能な純粋関数）。
 ///
 /// - `ThDir::X` / `ThDir::Y`: 1 行 1 値（カンマ区切りなら最後の列）を加速度(gal)として
-///   読む（従来仕様）。数値化できない行は無視する。戻り値の第 2 要素は常に `None`。
+///   読む。数値化できない行は無視する。戻り値の第 2 要素は常に `None`。
 /// - `ThDir::Xy`: 1 行をカンマ区切り 2 列（1 列目 X、2 列目 Y、ともに gal）として読む。
 ///   2 列に満たない行があればエラーを返す（「X+Y には2列のCSVが必要です」）。
 ///   数値化できない行（ヘッダ等）は無視する。
@@ -1673,7 +1651,6 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
                     fields[0].trim().parse::<f64>(),
                     fields[1].trim().parse::<f64>(),
                 ) else {
-                    // ヘッダ行等、数値化できない行は無視する。
                     continue;
                 };
                 xs.push(x * 10.0);
@@ -1701,11 +1678,7 @@ pub(crate) fn ground_motion_from_wave_content(
 ) -> Result<squid_n_solver::dynamic::timehistory::GroundMotion, String> {
     let (col1, col2) = parse_wave_csv(content, cfg.th_dir)?;
     Ok(match cfg.th_dir {
-        // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
         ThDir::X | ThDir::Y => squid_n_job::build_ground_motion(cfg.th_dt, cfg.th_dir, col1),
-        // X+Y は CSV の 2 列がそのまま X・Y の入力になる
-        // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
-        // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。
         ThDir::Xy => squid_n_solver::dynamic::timehistory::GroundMotion {
             dt: cfg.th_dt,
             accel_x: col1,
@@ -1768,7 +1741,6 @@ fn rc_capacity_input_from_rect(
     shear_mat: Option<&squid_n_core::model::Material>,
     clear_span: f64,
 ) -> Option<squid_n_design_jp::secondary::rc_capacity::RcCapacityInput> {
-    // 組み立て本体は core。app の保有水平耐力入口は強軸（main_x）のみ。
     squid_n_core::rc_capacity::rc_capacity_input_from_rect(
         b,
         d,
@@ -1782,26 +1754,15 @@ fn rc_capacity_input_from_rect(
 }
 
 /// 長期軸力の簡易近似として先頭荷重ケース(`model.load_cases.first()`)の結果を優先し、
-/// `bundle.statics` になければ従来どおり最後に実行した静的解析結果(`member_forces`)を
+/// `bundle.statics` になければ最後に実行した静的解析結果(`member_forces`)を
 /// 用いて部材の軸力を取得する。圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。
 /// 引張・軸力なし・対象部材の結果がない場合は 0.0（安全側）。
 ///
 /// `statics` は `StaticCaseKey` をキーとするため、ユーザー荷重ケースの結果
 /// (`StaticCaseKey::User`)と地震静的の結果(`StaticCaseKey::Seismic`)は別々に
-/// 格納される（旧実装では両者とも `LoadCaseId(0)` を共有し、後から実行した方が
-/// 先頭荷重ケースの結果を上書きしてしまう問題があったが、型で区別したことで解消済み）。
+/// 格納される。
 /// 先頭荷重ケースが `statics` にない（未実行）場合のみ `fallback_member_forces`
 /// （最後に実行した静的解析の内力）を用いる。
-///
-/// # 符号規約（要確認済み・推測ではない）
-/// `squid_n_element::frame::beam::BeamElement::recover_forces` は局所剛性 K・u を
-/// そのまま評価値とするため、始端(pos=0.0、`eval_sections`\[0\])では
-/// `n = f_local[0] = -N`（N は引張正）となる。これは
-/// `squid_n_solver::statics::linear::test_linear_static_axial_cantilever` で
-/// N=+1000N（引張）を与えたとき `forces.at[0].1[0]` ≈ -1000 になることで
-/// 確認済み（すなわち f_local\[0\] は「圧縮正」）。よって `mf.at.first()`
-/// (= pos=0.0、始端)の n は「圧縮正」（n>0 のとき圧縮）であり、
-/// n<=0（引張または軸力なし）なら σ0=0（安全側）とする。
 fn rc_sigma_0_from_gravity_or_last_static(
     statics: &[(StaticCaseKey, squid_n_solver::statics::linear::StaticOnce)],
     fallback_member_forces: &[(ElemId, squid_n_element::frame::beam::MemberForces)],
@@ -1819,8 +1780,6 @@ fn rc_sigma_0_from_gravity_or_last_static(
         .map(|(_, s)| s.member_forces.as_slice())
         .unwrap_or(fallback_member_forces);
 
-    // 軸力 N は引張正の部材内力（beam.rs recover_forces）。圧縮（N<0）のみ
-    // σ0 に反映し、引張は 0 とする（安全側）。
     member_forces
         .iter()
         .find(|(id, _)| *id == elem_id)
@@ -1898,40 +1857,25 @@ pub(crate) const SHORTCUT_SAVE_AS: egui::KeyboardShortcut = egui::KeyboardShortc
 
 #[cfg(feature = "gui")]
 impl eframe::App for App {
-    // eframe のデフォルトは (12,12,12) ≒ 黒なので、パネル間の隙間もクローム色にする
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         crate::theme::BLUE_200.to_normalized_gamma_f32()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // 階の定義表で確定した編集の適用待ちを 1 フレーム 1 コマンドで反映する。
-        // 表は右ドックの「① 準備計算」パネル（`preparation.rs`）にしかないが、
-        // 編集の適用はパネルの表示・切替と無関係に毎フレーム行う。パネルを閉じている間に
-        // モデルを使う操作（準備計算の実行・保存など）が、未反映の階編集に基づいて走るのを避ける。
-        // モデルを書き換えても、表の描画は `story_rows`（セクション内で先に複製した
-        // 行データ）を使うため、残りの行が古い ID を指すことはない。
         if let Some(cmd) = self.ui.scoped.pending_story_cmds.pop_front() {
             self.core.scoped.undo.run(&mut self.core.model, cmd);
             self.core.scoped.staleness.mark_edited();
         }
-        // バックグラウンド解析ジョブ（P8 §5）: 完了していれば結果を適用し、
-        // 実行中は完了検知のため再描画を要求し続ける。
         if self.core.scoped.job.is_some() {
             self.poll_job();
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
 
-        // 作成パレットが見えていない間は作成モードを強制解除する。モードのトグル・
-        // 進捗表示・クリア処理はパレット内にしかないため、非表示のままモードが残ると
-        // 3D クリックで意図しない部材が無言で生成される（可視性と発動可能性を一致させる）。
         if !(self.ui.view.left_dock_open && self.ui.view.left_panel == LeftPanel::DrawTools) {
             self.reset_draw_modes();
         }
 
-        // 保存ショートカット。consume_shortcut がイベントを消費するため後続の
-        // ウィジェットには流れない。セル編集中でも発火する（保存されるのは
-        // 確定済みの状態。未確定の編集は確定時に未保存マーカーが再点灯する）。
         if ui
             .ctx()
             .input_mut(|i| i.consume_shortcut(&SHORTCUT_SAVE_AS))
@@ -1941,12 +1885,9 @@ impl eframe::App for App {
             self.save_project_dialog(false);
         }
 
-        // 架構作成ウィザードと階への複製（どのタブからでも開けるようここで描画する）。
         crate::frame_wizard::frame_wizard_window(ui.ctx(), self);
         crate::story_copy_view::story_copy_window(ui.ctx(), self);
 
-        // 保存サイズ超過の確認ダイアログ（時刻歴の詳細記録を含めるかの選択）。
-        // どのタブからの保存でも表示できるよう、ここで描画する。
         if self.core.scoped.pending_save_recording.is_some() {
             let mut choice: Option<bool> = None;
             let mut do_cancel = false;
@@ -1988,8 +1929,6 @@ impl eframe::App for App {
             }
         }
 
-        // 波形ライブラリ登録の上書き確認ダイアログ（「🌊 波形を保存…」で同名の
-        // 波形が既にある場合）。どのタブからでも表示できるよう、ここで描画する。
         if self.ui.view.pending_wave_register.is_some() {
             let mut do_confirm = false;
             let mut do_cancel = false;
@@ -2028,14 +1967,12 @@ impl eframe::App for App {
             }
         }
 
-        // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo
         egui::Panel::top("top_toolbar")
             .frame(crate::theme::toolbar_frame())
             .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button("ファイル", |ui| {
                     if ui.button("📄 新規").clicked() {
-                        // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
                         self.load_model(squid_n_core::model::Model::with_default_load_cases());
                         ui.close();
                     }
@@ -2110,13 +2047,10 @@ impl eframe::App for App {
                 for (label, tab) in &tabs {
                     let selected = self.ui.view.active_tab == *tab;
                     let stale_marker = match *tab {
-                        // 進行中の下流タブに stale バッジを付与（§5）
                         Tab::Results | Tab::Design if self.core.scoped.staleness.results_stale => "⚠",
                         _ => "",
                     };
                     let label_str = format!("{} {}", label, stale_marker);
-                    // プリセットは工程が実際に変わったときのみ適用する。選択中タブの
-                    // 再クリックで手動調整したドック配置が巻き戻らないようにするため。
                     if ui.selectable_label(selected, label_str).clicked() && !selected {
                         self.ui.view.active_tab = *tab;
                         self.apply_tab_preset(*tab);
@@ -2139,16 +2073,9 @@ impl eframe::App for App {
                     self.core.scoped.undo.redo(&mut self.core.model);
                     self.core.scoped.staleness.mark_edited();
                 }
-                // 荷重継続性区分（長期/短期）の手動切替はツールバーに置かない。
-                // 区分は表示対象の荷重ケース／組合せから自動判定される
-                // （`select_displayed_result` → `is_short_term_combo`）ため、
-                // 手動で切り替えても次の選択・再解析で必ず上書きされ、設定として
-                // 機能していなかった。現在の区分は設計タブに読み取り専用で表示する。
             });
         });
 
-        // 下：ステータスバー（高さは本文1行分。egui::Panel が枠線を描くため、
-        // 内部の区切り線・矩形分割は不要になった）
         egui::Panel::bottom("status_bar")
             .exact_size(ui.text_style_height(&egui::TextStyle::Body) + 8.0)
             .frame(crate::theme::status_bar_frame())
@@ -2157,7 +2084,6 @@ impl eframe::App for App {
                 self.status_bar(ui);
             });
 
-        // 左：アクティビティバー（常時表示。ナビゲータ／作成パレットの切替）
         let left_bar_width = panels::activity_bar_width();
         egui::Panel::left("left_activity_bar")
             .resizable(false)
@@ -2167,7 +2093,6 @@ impl eframe::App for App {
                 self.left_activity_bar(ui);
             });
 
-        // 右：アクティビティバー（常時表示。インスペクタ・準備計算・各解析パネルの切替）
         let right_bar_width = panels::activity_bar_width();
         egui::Panel::right("right_activity_bar")
             .resizable(false)
@@ -2177,7 +2102,6 @@ impl eframe::App for App {
                 self.right_activity_bar(ui);
             });
 
-        // 左：パネル切替式（ナビゲータ／作成パレット）。アイコン列で切り替える。
         if self.ui.view.left_dock_open {
             egui::Panel::left("left_dock")
                 .resizable(true)
@@ -2194,9 +2118,6 @@ impl eframe::App for App {
                 });
         }
 
-        // 右：パネル切替式（インスペクタ／準備計算／各解析パネル）。アイコン列で
-        // 切り替える。準備計算・解析は 3D ビューを見ながら設定・実行できるようここに
-        // 置くため、他パネルより縦に長くなりがちで、右ドック全体をスクロール可能にする。
         if self.ui.view.right_dock_open {
             egui::Panel::right("right_dock")
                 .resizable(true)
@@ -2218,10 +2139,6 @@ impl eframe::App for App {
                 });
         }
 
-        // 下（中央領域内）：タブ切替（ログ／モデル編集／荷重編集）。
-        // 横長テーブルは幅の狭い左ドックより下ドックの方が視認性が良いため、
-        // モデル/荷重の編集テーブルもここに収容する。
-        // 左右ドックより後に show_inside することで、中央領域の下部（左右ドックの間）に出す。
         if self.ui.view.bottom_dock_open {
             egui::Panel::bottom("bottom_dock")
                 .resizable(true)
@@ -2229,10 +2146,6 @@ impl eframe::App for App {
                 .size_range(80.0..=520.0)
                 .frame(crate::theme::central_panel_frame())
                 .show_inside(ui, |ui| {
-                    // egui の上下パネルは「中身の高さ＝パネルの高さ」となり、その高さが
-                    // PanelState として保存される。中身の短いタブ（準備計算の未実行時・
-                    // ログ 0 件など）を開くとドックが最小高さまで縮み、他タブへ戻しても
-                    // 縮んだままになる。割り当て済みの高さを下限に固定して高さを保つ。
                     ui.set_min_height(ui.available_height());
                     ui.horizontal(|ui| {
                         let log_label = format!("ログ ({})", self.core.log.entries.len());
@@ -2254,7 +2167,6 @@ impl eframe::App for App {
                         {
                             self.ui.view.bottom_tab = BottomTab::Loads;
                         }
-                        // 準備計算タブ: 未実行・要再実行なら「*」を付けて再実行を促す。
                         let prep_label = if self.core.scoped.staleness.preparation_stale {
                             "準備計算 *"
                         } else {
@@ -2269,8 +2181,6 @@ impl eframe::App for App {
                         {
                             self.ui.view.bottom_tab = BottomTab::Preparation;
                         }
-                        // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
-                        // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
                         let (diag_errors, diag_warnings) = self.diagnostics_counts();
                         let diag_label = if !self.core.scoped.staleness.diagnostics_stale
                             && (diag_errors > 0 || diag_warnings > 0)
@@ -2305,8 +2215,6 @@ impl eframe::App for App {
                         });
                     });
                     ui.separator();
-                    // 診断タブを開いた時点で stale なら遅延実行する（編集の度に毎フレーム
-                    // 走らせるとモデル/荷重編集操作が重くなるため）。
                     if self.ui.view.bottom_tab == BottomTab::Diagnostics
                         && self.core.scoped.staleness.diagnostics_stale
                     {
@@ -2317,17 +2225,12 @@ impl eframe::App for App {
                             self.core.log.show(ui);
                         }
                         BottomTab::Model => {
-                            // 横スクロールは表ごとに `table_util::standard_table` が
-                            // 持つため、ここは縦のみ。外側にも横スクロールを置くと、
-                            // 表を横へ送ったつもりでサブタブ行や追加フォームまで
-                            // 一緒に流れてしまう。
                             egui::ScrollArea::vertical()
                                 .id_salt("bottom_model")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| self.model_tab_panel(ui));
                         }
                         BottomTab::Loads => {
-                            // 横スクロールは表側が持つ（BottomTab::Model と同じ理由）。
                             egui::ScrollArea::vertical()
                                 .id_salt("bottom_loads")
                                 .auto_shrink([false, false])
@@ -2347,9 +2250,6 @@ impl eframe::App for App {
                                     .id_salt("bottom_diag")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
-                                        // インデックスで回す（クリック時に selection/nav を
-                                        // 書き換えるため self を可変借用する必要があり、
-                                        // diagnostics への不変参照と両立できない）。
                                         for i in 0..self.core.scoped.diagnostics.len() {
                                             let (color, icon, message, target) = {
                                                 let d = &self.core.scoped.diagnostics[i];
@@ -2410,9 +2310,6 @@ impl eframe::App for App {
                 });
         }
 
-        // 中央：モデル/荷重/解析タブでは常に3Dビュー（作成状況・モデルを見ながら
-        // 設定・実行できるようにする。解析の設定フォームは右ドック側にある）。
-        // それ以外の工程タブは各内容を表示する。
         egui::CentralPanel::default()
             .frame(crate::theme::central_panel_frame())
             .show_inside(ui, |ui| match self.ui.view.active_tab {
@@ -2422,8 +2319,6 @@ impl eframe::App for App {
                 Tab::Report => self.report_tab_panel(ui),
             });
 
-        // 荷重の追加・編集モーダル（とピック待ちの案内バー）。3D クリックを先に
-        // 処理させるため、ビューアの描画より後に呼ぶ。
         self.load_editor_ui(ui.ctx());
     }
 }
@@ -2463,6 +2358,5 @@ fn member_material_groups(model: &squid_n_core::model::Model) -> (Vec<ElemId>, V
     }
     (steel, rc)
 }
-
 #[cfg(test)]
 mod tests;

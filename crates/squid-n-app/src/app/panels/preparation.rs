@@ -17,7 +17,6 @@ impl App {
         ui.heading("① 準備計算");
         ui.separator();
 
-        // バックグラウンドジョブ実行中は実行ボタンを無効化する（P8 §5）。
         let running = self.core.scoped.job.is_some();
         self.preparation_section(ui, running);
     }
@@ -349,9 +348,6 @@ impl App {
 
                 use squid_n_core::model::StoryLevelKind;
 
-                // model.stories を借用したまま undo.run（model の削除）ができないため、
-                // 行データを先に複製してから描画・編集確定を行う。並びは伏図・
-                // 階の分布タブと同じ上階→下階の順にする（model.stories は下から上）。
                 #[allow(clippy::type_complexity)]
                 let story_rows: Vec<(
                     squid_n_core::ids::StoryId,
@@ -381,14 +377,7 @@ impl App {
                     })
                     .collect();
 
-                // 確定待ちの編集コマンド。表ループの途中で model を書き換えると
-                // 残りの行が古い ID を指すため、ここでは集めるだけに留める。
-                // 適用はループを抜けた後にキューへ積み、この関数の先頭で
-                // 1 フレーム 1 コマンドずつ行う。同一フレームで複数セルが確定
-                // しても破棄されない（確定 → 適用に 1 フレームの遅延が付く）。
                 let mut pending_delete: Option<squid_n_core::ids::StoryId> = None;
-                // 階への複製ダイアログを開く階（ダイアログは `self` を要するため、
-                // 表ループを抜けてから開く）。
                 let mut pending_copy: Option<squid_n_core::ids::StoryId> = None;
                 let mut pending_level_kind: Option<(squid_n_core::ids::StoryId, StoryLevelKind)> =
                     None;
@@ -412,7 +401,6 @@ impl App {
                              準備計算で再生成しても上書きされません（undo 可）",
                         ),
                         Col::wide_num("種別"),
-                        // 階への複製（⧉）と削除（🗑）の 2 つ。
                         Col::actions_n(2),
                     ],
                     story_rows.len(),
@@ -428,11 +416,8 @@ impl App {
                             level_kind,
                         ) = &story_rows[row.index()];
                         let story = *story;
-                        // 基部の階（床レベル列の先頭）。標高の変更・削除を禁じ、
-                        // 層の属性（種別・重量）は上端の階が持つため編集させない。
                         let is_base = story.index() == 0;
 
-                        // 階名（編集可）。空文字は無視する（確定はフォーカス喪失時）。
                         row.col(|ui| {
                             let cell_id = egui::Id::new(("story_name", story.0));
                             let mut buf = ui
@@ -452,10 +437,6 @@ impl App {
                                 ui.data_mut(|d| d.remove::<String>(cell_id));
                             }
                         });
-                        // レベル（編集可。ドラッグ中は行ごとの一時値を持ち、終了時に確定）。
-                        // 基部の階だけは表示のみ。基部の標高は構造の最下端そのもので
-                        // あり、階の列の先頭が基部であることは層の算定が依拠する
-                        // 不変条件のため（`squid_n_core::model::story`）。
                         row.col(|ui| {
                             if is_base {
                                 ui.label(format!("{elevation:.0}")).on_hover_text(
@@ -483,15 +464,12 @@ impl App {
                                 ui.data_mut(|d| d.remove::<f64>(cell_id));
                             }
                         });
-                        // 節点数（準備計算で決まる導出値。表示のみ）。
                         row.col(|ui| {
                             ui.label(format!("{n_nodes}"));
                         });
-                        // 構造（準備計算で決まる導出値。表示のみ）。
                         row.col(|ui| {
                             ui.label(crate::app::preparation::story_structure_label(*structure));
                         });
-                        // 地震用重量 W。手入力すると確定値として固定され、自動は予想値で示す。
                         row.col(|ui| {
                             let cell_id = egui::Id::new(("story_weight", story.0));
                             let mut w = ui
@@ -531,9 +509,6 @@ impl App {
                                 }
                             });
                         });
-                        // 種別（変更可）。PH の k と地下の深さは数値編集で確定する。
-                        // 種別は**層**の属性で、層の上端の階が持つ。基部の階は
-                        // どの層の上端でもないため編集させない（`Layer` 参照）。
                         row.col(|ui| {
                             if is_base {
                                 ui.colored_label(crate::theme::GRAY_600, "—").on_hover_text(
@@ -642,7 +617,6 @@ impl App {
                                 pending_level_kind = Some((story, level_kind_new));
                             }
                         });
-                        // 操作（階への複製・行削除）。
                         row.col(|ui| {
                             if ui
                                 .small_button("⧉")
@@ -654,8 +628,6 @@ impl App {
                             {
                                 pending_copy = Some(story);
                             }
-                            // 基部の階は削除できない（階の列の先頭が基部であることが
-                            // 層の算定の不変条件。消すと最下層が落ちる）。
                             if is_base {
                                 ui.add_enabled(false, egui::Button::new("🗑").small())
                                     .on_disabled_hover_text(
@@ -672,11 +644,6 @@ impl App {
                         });
                     },
                 );
-                // 描画ループの後で、確定した編集コマンドを適用待ちキューへ積む。
-                // 積む順序は「StoryId を変えない操作を先に、削除を最後」とする。
-                // （`SetStoryLevelKind`・`SetStoryWeight` は ID を変えず、
-                // `SetStoryLevel` は標高の変更時のみ並べ替える。`DeleteStory` が
-                // 後を観るコマンドの ID を古くしないよう、削除は最後に積む。）
                 if let Some((story, level_kind)) = pending_level_kind {
                     self.ui.scoped.pending_story_cmds.push_back(Box::new(
                         squid_n_edit::SetStoryLevelKind { story, level_kind },

@@ -10,8 +10,6 @@ impl App {
     /// 右ペイン：選択要素のインスペクタ。
     /// 3D/ナビゲータ/テーブルの選択（現時点では focus_*）を表示。断面編集は UI-4 で拡充。
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) {
-        // 遅延アクション（借用チェーン回避：UI 内で self.core.model を immutable borrow 中に
-        // mut borrow できないため、複製ボタンクリックは一旦 here に保存）
         let mut duplicate_member = None;
         let mut highlight_section_members: Option<Vec<ElemId>> = None;
         ui.group(|ui| {
@@ -75,7 +73,6 @@ impl App {
                 }
             }
 
-            // 選択された部材の諸元
             if let Some(elem_id) = self.ui.scoped.nav.focus_member {
                 if let Some(e) = self.core.model.element(elem_id) {
                     ui.label(format!("部材 ID: {}", e.id.0));
@@ -103,7 +100,6 @@ impl App {
                                 "  Iz= {} cm⁴",
                                 fmt_section_prop(inertia_cm4(sec.iz))
                             ));
-                            // 影響数: 同一断面を使う部材数
                             let n_used = self
                                 .core
                                 .model
@@ -115,8 +111,6 @@ impl App {
                                 crate::theme::BLUE_500,
                                 format!("この断面を使う {} 部材に影響", n_used),
                             );
-                            // UI-4: 複製ボタン（UI設計 §3）。同断面を新規IDで複製し、
-                            // 当該部材のみ新断面に割当。
                             if ui.button("📋 複製してこの部材だけ別断面に").clicked()
                             {
                                 duplicate_member = Some(elem_id);
@@ -125,7 +119,6 @@ impl App {
                     } else {
                         ui.label("断面: 未割当");
                     }
-                    // 材料は断面が持つ。ここでは断面から引いた実効値を表示する。
                     if let Some(mat) = self.core.model.element_material(e) {
                         ui.label(format!("材料: {} ({})", mat.name, mat.id.0));
                         ui.label(format!("  E = {:.1} N/mm²", mat.young));
@@ -134,7 +127,6 @@ impl App {
                         }
                     }
                     ui.separator();
-                    // 検定結果サマリ（同一部材）
                     if let Some(r) = &self.core.scoped.results {
                         let positions = r
                             .member_checks
@@ -175,7 +167,6 @@ impl App {
                 );
             }
 
-            // 選択された断面の諸元（断面テーブルの行選択と連動）
             if let Some(sec_id) = self.ui.scoped.nav.focus_section {
                 if let Some(sec) = self.core.model.section(sec_id) {
                     ui.separator();
@@ -209,7 +200,6 @@ impl App {
             }
 
             ui.separator();
-            // 選択された節点の諸元
             if let Some(node_id) = self.ui.scoped.nav.focus_node {
                 if let Some(node) = self.core.model.node(node_id) {
                     ui.label(format!("節点 ID: {}", node.id.0));
@@ -217,7 +207,6 @@ impl App {
                         "座標: ({:.3}, {:.3}, {:.3})",
                         node.coord[0], node.coord[1], node.coord[2]
                     ));
-                    // 拘束情報
                     let is_fixed = node.restraint.0 != 0;
                     if is_fixed {
                         ui.label("拘束: あり");
@@ -228,7 +217,6 @@ impl App {
             }
         });
 
-        // 遅延実行: 複製ボタンが押されていたら EditCommand を叩く
         if let Some(member) = duplicate_member {
             self.core.scoped.undo.run(
                 &mut self.core.model,
@@ -236,7 +224,6 @@ impl App {
             );
             self.core.scoped.staleness.mark_edited();
         }
-        // 遅延実行: 断面の使用部材ハイライトボタン
         if let Some(members) = highlight_section_members {
             self.ui.scoped.selection.members = members;
         }

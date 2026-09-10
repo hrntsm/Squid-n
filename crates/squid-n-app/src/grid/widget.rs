@@ -1,15 +1,14 @@
 //! グリッド操作の egui グルー（描画・入力処理。gui feature 限定）。
 //!
-//! ロジックは持ち込まず薄く保つ（dev_docs/specs/グリッド操作.md §3.1）。
-//! 見た目は §6（スプレッドシート様式・TONMANUAL 準拠）、操作は §4、
-//! egui 固有の落とし穴への対処は §7 に従う。テーブルごとの差は
-//! [`GridAdapter`] に隔離し、本モジュールはテーブル固有の知識を持たない。
+//! ロジックは持ち込まず薄く保つ。
+//! スプレッドシート様式のグリッドウィジェット。
+//! テーブルごとの差は [`GridAdapter`] に隔離し、本モジュールはテーブル固有の知識を持たない。
 
 use super::{parse_tsv, plan_paste, rect_to_tsv, tile_block};
 use super::{CellRef, GridAdapter, GridState, PastePlan, SelRect, MAX_PASTE_CELLS};
 use crate::theme;
 
-/// 失敗フラッシュの表示時間（TONMANUAL §8: モーションは控えめ・短く）
+/// 失敗フラッシュの表示時間（モーションは控えめ・短く）
 const FLASH_SECS: f64 = 1.0;
 
 /// イベントログの保持上限（呼び出し元が take_log で回収するまでのバッファ）
@@ -31,26 +30,26 @@ pub struct GridWidget {
     pending_row_delete: Option<usize>,
     edit_buf: String,
     edit_needs_focus: bool,
-    /// セル起点のドラッグ選択が進行中か（スクロールバー等のドラッグと区別する。§7.2）
+    /// セル起点のドラッグ選択が進行中か（スクロールバー等のドラッグと区別する。）
     drag_selecting: bool,
     /// ドラッグ選択の起点が行ヘッダか（行単位選択モード）
     drag_rows: bool,
     /// ドラッグ選択の起点が列ヘッダか（列単位選択モード）
     drag_cols: bool,
     /// テーブル領域（スクロールバー含む外形矩形）。この外の押下を
-    /// 「表外クリック」として選択解除に使う（§7.3。セル単位ではなく領域で判定し、
+    /// 「表外クリック」として選択解除に使う（セル単位ではなく領域で判定し、
     /// スクロールバー操作で選択が消えないようにする）
     table_rect: egui::Rect,
     /// このフレームでコンテキストメニューが開いているか。メニュー操作の
-    /// クリックが「表外クリック＝選択解除」に誤判定されるのを防ぐ（§7.7）
+    /// クリックが「表外クリック＝選択解除」に誤判定されるのを防ぐ
     menu_open: bool,
-    /// フィードバックのフラッシュ対象範囲・終了時刻・色（egui の time 基準。§6.4）。
+    /// フィードバックのフラッシュ対象範囲・終了時刻・色（egui の time 基準。）。
     /// 赤 = 全体拒否・編集失敗（何も適用されていない）、
     /// 黄 = サイズ不一致の貼り付け（適用されたが確認を促す）
     flash_rect: Option<SelRect>,
     flash_until: f64,
     flash_color: egui::Color32,
-    /// イベントログ（本文, エラーか）。エラー行は赤字で描画すること（§6.4）
+    /// イベントログ（本文, エラーか）。エラー行は赤字で描画すること
     log: Vec<(String, bool)>,
 }
 
@@ -81,7 +80,7 @@ impl GridWidget {
     }
 
     /// 溜まったイベントログ（本文, エラーか）を取り出す。
-    /// 呼び出し元がアプリのイベントログへ転記する（エラー行は赤字で。§6.4）
+    /// 呼び出し元がアプリのイベントログへ転記する（エラー行は赤字で。）
     pub fn take_log(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.log)
     }
@@ -100,14 +99,14 @@ impl GridWidget {
         }
     }
 
-    /// フィードバック: 対象範囲を指定色でフラッシュする（赤=拒否、黄=注意。§6.4）
+    /// フィードバック: 対象範囲を指定色でフラッシュする（赤=拒否、黄=注意。）
     fn start_flash(&mut self, rect: SelRect, now: f64, color: egui::Color32) {
         self.flash_rect = Some(rect);
         self.flash_until = now + FLASH_SECS;
         self.flash_color = color;
     }
 
-    /// セルの表示文字列。新規行プレースホルダは空（§4.5: コピー対象は空文字列）
+    /// セルの表示文字列。新規行プレースホルダは空
     fn cell_display(&self, adapter: &dyn GridAdapter, row: usize, col: usize) -> String {
         if row >= adapter.rows() {
             String::new()
@@ -139,9 +138,9 @@ impl GridWidget {
         self.grid.clamp_selection();
     }
 
-    /// 編集確定。空のまま確定は「変更なし」（§4.3。Backspace→Enter は no-op）。
+    /// 編集確定。空のまま確定は「変更なし」。
     /// 不正値は変更せず理由をログ＋当該セルを赤フラッシュ。
-    /// プレースホルダへの確定は「行追加＋値設定」としてアダプタに渡す（§4.5）
+    /// プレースホルダへの確定は「行追加＋値設定」としてアダプタに渡す
     fn commit_edit(
         &mut self,
         adapter: &mut dyn GridAdapter,
@@ -151,8 +150,6 @@ impl GridWidget {
     ) {
         let t = self.edit_buf.trim().to_string();
         let outcome = super::commit_cell_text(adapter, cell, &t);
-        // セル名は確定後に引く（プレースホルダ確定では行が実データ化し
-        // 「N行目のX」と表示できる）
         let name = self.cell_name(adapter, headers, cell);
         match outcome {
             super::CommitOutcome::NoChange => {}
@@ -180,7 +177,7 @@ impl GridWidget {
         }
     }
 
-    /// 選択範囲を TSV コピー（§5.1）。選択なしはログに理由を出す（§4.4）
+    /// 選択範囲を TSV コピー。選択なしはログに理由を出す
     fn do_copy(&mut self, ctx: &egui::Context, adapter: &dyn GridAdapter) {
         if !self.grid.active {
             self.push_log("選択がないためコピーをスキップ（セルをクリックして選択してください）");
@@ -196,8 +193,8 @@ impl GridWidget {
         ));
     }
 
-    /// TSV ペースト（§5.2: パース → タイル展開 → 検証 all-or-nothing → 適用）。
-    /// 選択なしは無言で無視する（§4.4: 貼り付け先が定まっていない操作に
+    /// TSV ペースト。
+    /// 選択なしは無言で無視する（貼り付け先が定まっていない操作に
     /// フィードバックは出さない）
     fn do_paste(&mut self, adapter: &mut dyn GridAdapter, text: &str, now: f64) {
         if !self.grid.active {
@@ -213,9 +210,6 @@ impl GridWidget {
             row: rect.r0,
             col: rect.c0,
         };
-        // 巨大ペーストの暴発防止（§5.2.1）。plan_paste にも同じガードがあるが、
-        // サイズ超過は「選択範囲」をフラッシュする決まり（§6.4）のため
-        // タイル展開の前にここで判定する
         let orig_rows = block.len();
         let orig_cols = block.iter().map(Vec::len).max().unwrap_or(0);
         if orig_rows.saturating_mul(orig_cols) > MAX_PASTE_CELLS {
@@ -225,14 +219,10 @@ impl GridWidget {
             self.start_flash(rect, now, theme::ERROR_RED);
             return;
         }
-        // 選択範囲がブロックの整数倍ならタイル展開（Excel 互換。§5.2.2）
         let (sel_rows, sel_cols) = (rect.r1 - rect.r0 + 1, rect.c1 - rect.c0 + 1);
         let block = tile_block(&block, sel_rows, sel_cols);
         let tiled_cols = block.iter().map(Vec::len).max().unwrap_or(0);
         let tiled = block.len() != orig_rows || tiled_cols != orig_cols;
-        // 選択サイズとブロックサイズの不一致（タイル倍数でもない）。
-        // Excel 互換で「起点から貼る」成功動作だが、選択ミスに気づけるよう
-        // ログ＋貼り付け範囲の黄フラッシュ（注意色）で知らせる（§5.2.2）
         let mismatch = !tiled
             && (sel_rows, sel_cols) != (orig_rows, orig_cols)
             && (sel_rows > 1 || sel_cols > 1);
@@ -260,8 +250,6 @@ impl GridWidget {
                 if errors.len() > 10 {
                     self.push_err(format!("  …ほか {} 件", errors.len() - 10));
                 }
-                // 貼り付け先になるはずだった範囲（表内に収まる部分）を赤フラッシュし、
-                // 「どこに貼ろうとして失敗したか」を表上で示す（§6.4）
                 let fr = SelRect {
                     r0: anchor.row,
                     r1: (anchor.row + block.len().saturating_sub(1))
@@ -274,18 +262,16 @@ impl GridWidget {
             Ok(plan) => {
                 self.apply_plan(adapter, plan);
                 if mismatch {
-                    // 適用後の選択＝貼り付けられた範囲。注意色でフラッシュし、
-                    // 「思っていた選択と違う場所・大きさに入った」ことに気づかせる
                     self.start_flash(self.grid.rect(), now, theme::BEST_YELLOW);
                 }
             }
         }
     }
 
-    /// ペースト計画の適用。行追加対応テーブルでははみ出し行を自動追加し（§5.2.5）、
-    /// 非対応テーブルでははみ出し分を確認なしで切り捨ててログに通知する（§3.4）。
-    /// 適用結果は 1 行でログに報告し（§5.2.6）、貼り付けブロックの矩形を
-    /// 選択状態にする（§5.3）
+    /// ペースト計画の適用。行追加対応テーブルでははみ出し行を自動追加し、
+    /// 非対応テーブルでははみ出し分を確認なしで切り捨ててログに通知する。
+    /// 適用結果は 1 行でログに報告し、貼り付けブロックの矩形を
+    /// 選択状態にする
     fn apply_plan(&mut self, adapter: &mut dyn GridAdapter, plan: PastePlan) {
         let (applied, dropped, extra_rows);
         if adapter.can_append_rows() {
@@ -318,8 +304,6 @@ impl GridWidget {
         }
         self.push_log(msg);
         self.sync_rows(adapter);
-        // 貼り付けたブロック範囲を選択状態にする（Excel と同じ挙動。§5.3。
-        // どこに何が入ったかが一目で分かり、続けてコピーや Delete もできる）
         if applied > 0 && plan.block_rows > 0 && plan.block_cols > 0 {
             self.grid.anchor = plan.anchor;
             self.grid.cursor = CellRef {
@@ -330,8 +314,8 @@ impl GridWidget {
         }
     }
 
-    /// 選択範囲のクリア（Delete）。クリアの意味はアダプタが決める（§3.4）。
-    /// プレースホルダ行は対象にならない（§4.5）
+    /// 選択範囲のクリア（Delete）。クリアの意味はアダプタが決める。
+    /// プレースホルダ行は対象にならない
     fn clear_selection(&mut self, adapter: &mut dyn GridAdapter) {
         if !self.grid.active {
             return;
@@ -360,7 +344,7 @@ impl GridWidget {
     }
 
     /// 行削除メニューのラベル。対象行数を明示し、
-    /// 「複数行選択したのに 1 行しか消えない／逆」の驚きを防ぐ（§4.6）
+    /// 「複数行選択したのに 1 行しか消えない／逆」の驚きを防ぐ
     fn delete_menu_label(&self, adapter: &dyn GridAdapter) -> String {
         let rect = self.grid.rect();
         let rows = adapter.rows();
@@ -376,7 +360,7 @@ impl GridWidget {
         }
     }
 
-    /// 行削除（右クリックメニュー／Ctrl+Delete。§4.6）。対象は選択が跨ぐ実データ行
+    /// 行削除（右クリックメニュー／Ctrl+Delete。）。対象は選択が跨ぐ実データ行
     /// （プレースホルダは対象外）。参照中の行が 1 つでもあれば全体拒否
     /// （ペーストと同じ all-or-nothing）
     fn delete_selected_rows(&mut self, adapter: &mut dyn GridAdapter, now: f64) {
@@ -426,13 +410,11 @@ impl GridWidget {
             r1 + 1
         ));
         self.sync_rows(adapter);
-        // 削除位置に続く行を行選択状態にする（Excel と同じ。§4.6。
-        // 最終行まで消えた場合は clamp によりプレースホルダが選択される）
         self.grid.select_row(r0, false);
         self.grid.clamp_selection();
     }
 
-    /// 全選択（実データ行のみ。新規行プレースホルダは含めない。§4.5）
+    /// 全選択（実データ行のみ。新規行プレースホルダは含めない。）
     fn select_all_real(&mut self, adapter: &dyn GridAdapter) {
         if adapter.rows() == 0 {
             return;
@@ -443,7 +425,7 @@ impl GridWidget {
         }
     }
 
-    /// 選択モード時のグローバル入力（§7.1: 編集モード中は一切処理しない。
+    /// 選択モード時のグローバル入力（編集モード中は一切処理しない。
     /// TextEdit が Ctrl+C/V・矢印・文字入力を消費する）
     fn handle_events(&mut self, ctx: &egui::Context, adapter: &mut dyn GridAdapter) {
         if self.grid.editing.is_some() {
@@ -458,8 +440,6 @@ impl GridWidget {
                     self.do_paste(adapter, &t, now);
                 }
                 egui::Event::Text(t) => {
-                    // 文字キー入力で即編集開始（Excel 同様。§4.3）。制御文字は無視。
-                    // 選択がない間は編集開始しない（§4.4）
                     let clean: String = t.chars().filter(|ch| !ch.is_control()).collect();
                     if !clean.is_empty() && self.grid.active {
                         self.begin_edit_with(clean);
@@ -474,8 +454,6 @@ impl GridWidget {
                     egui::Key::A if modifiers.command => {
                         self.select_all_real(adapter);
                     }
-                    // 行削除は Ctrl+Delete（Delete=クリアの「強い版」として段階的。
-                    // Excel の Ctrl+マイナスは egui の UI ズームと競合するため不採用。§4.6）
                     egui::Key::Delete if modifiers.command => {
                         let now = ctx.input(|i| i.time);
                         self.delete_selected_rows(adapter, now);
@@ -502,8 +480,6 @@ impl GridWidget {
                             ));
                         }
                     }
-                    // Excel 準拠: Backspace はアクティブセルを空の状態で編集開始
-                    // （範囲クリアは Delete のみ。§4.3）
                     egui::Key::Backspace => {
                         if self.grid.active {
                             self.begin_edit_with(String::new());
@@ -522,7 +498,7 @@ impl GridWidget {
 
     /// 行ヘッダ（ID 列）の描画。データセルではないためフラットなラベルで描き、
     /// クリック＝行全体選択、ドラッグ/Shift＝行範囲拡張（Excel の行番号ヘッダ）。
-    /// プレースホルダ行は「＋」（§4.5）
+    /// プレースホルダ行は「＋」
     fn row_header_cell(&mut self, ui: &mut egui::Ui, adapter: &mut dyn GridAdapter, row: usize) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.interact(
@@ -530,8 +506,6 @@ impl GridWidget {
             ui.id().with(("grid_row_header", row)),
             egui::Sense::click_and_drag(),
         );
-        // 右クリックメニュー（発見可能性のため。Ctrl+Delete と同じ操作）。
-        // 選択外の行を右クリックした場合は、その行を選択してからメニューを出す（§4.6）
         let is_real = row < adapter.rows();
         if is_real && adapter.can_delete_rows() {
             if resp.secondary_clicked() {
@@ -552,7 +526,6 @@ impl GridWidget {
         }
         let sp = ui.spacing().item_spacing;
         let g = rect.expand2(egui::vec2(sp.x * 0.5, sp.y * 0.5));
-        // ヘッダ地は gray-100、罫線は本体と共有（§6.3）
         ui.painter()
             .rect_filled(g, egui::CornerRadius::ZERO, theme::GRAY_100);
         let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
@@ -560,10 +533,8 @@ impl GridWidget {
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
             .line_segment([g.left_bottom(), g.right_bottom()], grid_stroke);
-        // 表の左外周は行ヘッダ列が担当する（各セルは右・下辺のみ描くため。§6.1）
         ui.painter()
             .line_segment([g.left_top(), g.left_bottom()], grid_stroke);
-        // 行が選択に含まれる間は薄いハイライトで示す（Excel の行番号ヘッダと同じ合図。§6.3）
         let sel = self.grid.rect();
         if self.grid.active && (sel.r0..=sel.r1).contains(&row) {
             ui.painter().rect_filled(
@@ -597,7 +568,6 @@ impl GridWidget {
             )
         });
         let contains_pointer = pointer_pos.is_some_and(|p| rect.contains(p));
-        // 押下は hovered()（レイヤ考慮あり）、ドラッグ継続の追従のみ座標判定（§7.2/7.2b）
         if primary_pressed && resp.hovered() {
             self.grid.select_row(row, shift);
             self.drag_selecting = true;
@@ -608,7 +578,7 @@ impl GridWidget {
         }
     }
 
-    /// 左上コーナー（ID 見出し）の描画。クリック＝全選択（実データ行のみ。§6.3）
+    /// 左上コーナー（ID 見出し）の描画。クリック＝全選択（実データ行のみ。）
     fn corner_header_cell(&mut self, ui: &mut egui::Ui, adapter: &dyn GridAdapter) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.interact(
@@ -625,7 +595,6 @@ impl GridWidget {
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
             .line_segment([g.left_bottom(), g.right_bottom()], grid_stroke);
-        // コーナーは格子の左上角を兼ねるため上辺・左辺も描く
         ui.painter()
             .line_segment([g.left_top(), g.right_top()], grid_stroke);
         ui.painter()
@@ -645,7 +614,7 @@ impl GridWidget {
     }
 
     /// 列ヘッダの描画。行ヘッダと対称: 列が選択に含まれる間は薄いハイライト、
-    /// クリック＝列全体選択、ドラッグ/Shift＝列範囲拡張（§6.3）
+    /// クリック＝列全体選択、ドラッグ/Shift＝列範囲拡張
     fn col_header_cell(&mut self, ui: &mut egui::Ui, headers: &[&str], col: usize) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.interact(
@@ -662,7 +631,6 @@ impl GridWidget {
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
             .line_segment([g.left_bottom(), g.right_bottom()], grid_stroke);
-        // 表の上外周はヘッダ行が担当する（§6.1）
         ui.painter()
             .line_segment([g.left_top(), g.right_top()], grid_stroke);
         let sel = self.grid.rect();
@@ -701,9 +669,9 @@ impl GridWidget {
     }
 
     /// 選択モードのデータセル描画（スプレッドシート風＋クリック/ドラッグ判定）。
-    /// 罫線は各セルが右辺・下辺のみを描き、隣接セルと 1 本の線を共有する（§6.1）。
+    /// 罫線は各セルが右辺・下辺のみを描き、隣接セルと 1 本の線を共有する。
     /// 選択は Excel 式: 範囲の外周を青枠で囲い、中を薄く塗り、
-    /// アクティブセルだけ白抜き（§6.2）
+    /// アクティブセルだけ白抜き
     fn select_mode_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -716,7 +684,6 @@ impl GridWidget {
             ui.id().with(("grid_cell", cell.row, cell.col)),
             egui::Sense::click_and_drag(),
         );
-        // セル間スペーシングを跨いで罫線・塗りが連続するよう半スペース分広げる（§7.5）
         let sp = ui.spacing().item_spacing;
         let g = rect.expand2(egui::vec2(sp.x * 0.5, sp.y * 0.5));
         let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
@@ -724,7 +691,6 @@ impl GridWidget {
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
             .line_segment([g.left_bottom(), g.right_bottom()], grid_stroke);
-        // 新規行プレースホルダはごく薄い地色で「まだデータではない」ことを示す（§6.1）
         let is_real = cell.row < adapter.rows();
         if !is_real {
             ui.painter().rect_filled(
@@ -736,8 +702,6 @@ impl GridWidget {
         let sel = self.grid.rect();
         let selected = self.grid.active && sel.contains(cell.row, cell.col);
         let is_anchor = self.grid.active && self.grid.anchor == cell;
-        // 選択範囲は薄い blue-300 で塗る。アクティブセル（anchor）だけ白抜きにして
-        // 「入力が向かう先」を示す（§6.2）
         if selected && !is_anchor {
             ui.painter().rect_filled(
                 g,
@@ -745,7 +709,6 @@ impl GridWidget {
                 theme::translucent(theme::BLUE_300, 70),
             );
         }
-        // 選択範囲の外周に blue-500 の枠。単一セル選択ではこれがカーソル枠になる（§6.2）
         if selected {
             let b = egui::Stroke::new(2.0_f32, theme::BLUE_500);
             if cell.row == sel.r0 {
@@ -764,7 +727,6 @@ impl GridWidget {
                     .line_segment([g.right_top(), g.right_bottom()], b);
             }
         }
-        // フィードバックフラッシュ: 対象範囲を色付きでフェードアウト表示（§6.4）
         if let Some(fr) = self.flash_rect {
             let now = ui.input(|i| i.time);
             if now < self.flash_until && fr.contains(cell.row, cell.col) {
@@ -785,8 +747,6 @@ impl GridWidget {
             font,
             theme::GRAY_700,
         );
-        // ドラッグ中は egui がドラッグ元以外の hovered() を false にするため、
-        // 範囲選択の追従はポインタ座標とセル矩形の包含判定で行う（§7.2）
         let (shift, primary_pressed, primary_down, pointer_pos) = ui.input(|i| {
             (
                 i.modifiers.shift,
@@ -800,9 +760,6 @@ impl GridWidget {
             self.grid.click(cell, false);
             self.begin_edit_with(self.cell_display(adapter, cell.row, cell.col));
         } else if primary_pressed && resp.hovered() {
-            // 押下判定は resp.hovered()（egui のレイヤ考慮あり）で行うこと。
-            // 生のポインタ座標×矩形だと、表の上に浮いたメニュー等への
-            // クリックが真下のセルに貫通し、選択が意図せず潰れる（§7.2b）
             self.grid.click(cell, shift);
             self.drag_selecting = true;
             self.drag_rows = false;
@@ -815,8 +772,6 @@ impl GridWidget {
         {
             self.grid.drag_to(cell);
         }
-        // セル上の右クリックにも行削除メニューを出す（セルドラッグで行範囲を
-        // 選んでから右クリックする流れに対応。§4.6）。選択外のセルならまず選択を移す
         if is_real && adapter.can_delete_rows() {
             if resp.secondary_clicked() {
                 let sel = self.grid.rect();
@@ -836,12 +791,12 @@ impl GridWidget {
         }
     }
 
-    /// 1 行削除の 🗑 ボタンセル（`delete_buttons` 有効時のみ。§4.6 の
+    /// 1 行削除の 🗑 ボタンセル（`delete_buttons` 有効時のみ。 の
     /// メニュー削除と同じ検証を通す）。削除は行数変化を避けるため
     /// テーブル描画後に処理する
     fn delete_button_cell(&mut self, ui: &mut egui::Ui, adapter: &dyn GridAdapter, row: usize) {
         if row >= adapter.rows() {
-            return; // プレースホルダ行にはボタンを出さない
+            return;
         }
         let deletable = adapter.validate_row_deletion(row);
         let resp = ui.add_enabled(deletable.is_ok(), egui::Button::new("🗑").small());
@@ -859,7 +814,7 @@ impl GridWidget {
 
     /// 編集モードのセル描画（TextEdit＋確定/キャンセル判定）。
     /// 選択モードのセルと同じ矩形・同じ左余白（4px）へ `put` で固定し、
-    /// モード切替時に文字が動かないようにする（§7.4）
+    /// モード切替時に文字が動かないようにする
     fn edit_mode_cell(
         &mut self,
         ui: &mut egui::Ui,
@@ -900,8 +855,6 @@ impl GridWidget {
                     self.grid.move_cursor(0, 1, false);
                 }
             }
-            // Tab 確定時に egui のフォーカスが次のウィジェット（ボタン等）へ移ると、
-            // 直後の Enter がそのボタンを押してしまう。確定後はフォーカスを放棄する（§7.4）
             ui.ctx().memory_mut(|m| {
                 if let Some(f) = m.focused() {
                     m.surrender_focus(f);
@@ -914,15 +867,11 @@ impl GridWidget {
     /// `headers` はデータ列の見出し（`adapter.cols()` と同数）。
     pub fn show(&mut self, ui: &mut egui::Ui, adapter: &mut dyn GridAdapter, headers: &[&str]) {
         let ctx = ui.ctx().clone();
-        // 行数が増減したフレームでも選択が表内に収まるよう毎フレーム同期する（§7.7）
         self.sync_rows(adapter);
         if !ctx.input(|i| i.pointer.primary_down()) {
             self.drag_selecting = false;
         }
-        // メニュー表示状態はフレームごとに再判定（開いていれば描画中に true になる）
         self.menu_open = false;
-        // フラッシュ中はアニメーションのため再描画を要求し、終了したら消す
-        // （TONMANUAL §8: アニメーション中のみ再描画）
         if self.flash_rect.is_some() {
             if ctx.input(|i| i.time) < self.flash_until {
                 ctx.request_repaint();
@@ -934,11 +883,7 @@ impl GridWidget {
 
         use egui_extras::{Column, TableBuilder};
         let n = self.grid.rows;
-        // 行高は固定 px でなくフォントから導出する（TONMANUAL §4。§6.5）
         let row_h = theme::table_row_height(ui);
-        // スプレッドシート風: ストライプではなく白地＋共有罫線で見せる（§6.1）。
-        // scope で囲み、テーブル領域（スクロールバー含む）の矩形を
-        // 表外クリック判定用に取得する（§7.3）
         let delete_buttons = self.delete_buttons && adapter.can_delete_rows();
         let table_scope = ui.scope(|ui| {
             let mut builder = TableBuilder::new(ui)
@@ -965,11 +910,9 @@ impl GridWidget {
                 .body(|body| {
                     body.rows(row_h, n, |mut row| {
                         let r = row.index();
-                        // 行ヘッダ（グリッド座標系の外。§3.2）
                         row.col(|ui| {
                             self.row_header_cell(ui, adapter, r);
                         });
-                        // データセル（グリッド座標系: col 0..cols）
                         for c in 0..adapter.cols() {
                             row.col(|ui| {
                                 let cell = CellRef { row: r, col: c };
@@ -990,21 +933,16 @@ impl GridWidget {
         });
         self.table_rect = table_scope.response.rect;
 
-        // 🗑 ボタンの 1 行削除（描画後に処理して行数変化の齟齬を避ける）
         if let Some(r) = self.pending_row_delete.take() {
             if adapter.validate_row_deletion(r).is_ok() {
                 adapter.delete_rows(&[r]);
                 self.push_log(format!("{} 行目を削除", r + 1));
                 self.sync_rows(adapter);
-                // 削除位置に続く行を行選択状態にする（§4.6 と同じ後処理）
                 self.grid.select_row(r, false);
                 self.grid.clamp_selection();
             }
         }
 
-        // 表外クリックで選択を完全解除する（§4.4。編集中・メニュー表示中は対象外）。
-        // 「表外」= テーブル領域（スクロールバー含む外形矩形）の外（§7.3。
-        // セル単位の判定にするとスクロールバー操作で選択が消えてしまう）
         let (pressed, pos) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.interact_pos()));
         if pressed
             && pos.is_some_and(|p| !self.table_rect.contains(p))
