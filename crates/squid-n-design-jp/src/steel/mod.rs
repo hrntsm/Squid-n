@@ -123,7 +123,6 @@ fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64,
                     2.0 * (t * (b - 2.0 * r).max(0.0) + corner),
                 )
             } else {
-                // 角部直角（未入力・CftBox・名前推定フォールバック）。
                 (
                     2.0 * t * (h - 2.0 * t).max(0.0),
                     2.0 * t * (b - 2.0 * t).max(0.0),
@@ -182,7 +181,6 @@ impl DesignCheck for SteelDesign {
         ctx: &DesignCtx,
     ) -> CheckOutcome {
         let t = plate_thickness(sec);
-        // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
         let f = steel_f_value_prefix(&mat.name, t)
             .or(mat.fy)
             .unwrap_or(235.0);

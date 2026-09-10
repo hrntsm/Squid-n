@@ -49,8 +49,6 @@ pub fn src_beam_shear_ultimate_tech_standard(inp: &SrcBeamShearInput) -> f64 {
     if inp.b <= 0.0 || inp.rj <= 0.0 || inp.fc <= 0.0 || inp.clear_span <= 0.0 {
         return 0.0;
     }
-    // 定数 5 は kgf/cm²（長期許容せん断応力度の定数項）。N/mm² 入力に対しては
-    // 0.4903 に換算する（5 をそのまま使うと第2項を約10倍過大評価する）。
     const FIVE_KGF_IN_SI: f64 = 5.0 * 0.098_066_5;
     let fs = (inp.fc / 20.0).min((FIVE_KGF_IN_SI + inp.fc / 100.0) * 1.5);
     let alpha = (4.0 / (inp.m_over_qrd.max(0.0) + 1.0)).clamp(1.0, 2.0);
@@ -187,7 +185,6 @@ pub fn src_beam_shear_lattice(inp: &SrcNonSolidWebShearInput) -> f64 {
     let concrete = k * inp.rpt.max(0.0).powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
     let hoop_r = 0.85 * (inp.rpw * inp.rw_sigma_y).max(0.0).sqrt();
     let rc_part = (concrete + hoop_r) * inp.be * inp.rj;
-    // ラチス鉄骨の寄与 sQu。
     let squ_bending = if inp.clear_span > 0.0 {
         2.0 * inp.s_m0 / inp.clear_span
     } else {

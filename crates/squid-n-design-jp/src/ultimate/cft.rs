@@ -190,7 +190,6 @@ pub fn cft_axial_ultimate(inp: &CftAxialInput) -> CftAxialUltimate {
         CftColumnClass::Long => cft_ncu3_at_lk(inp, inp.lk),
         CftColumnClass::Medium => {
             let ncu1 = cft_ncu1(inp);
-            // lk/D=12 として算定した Ncu3。
             let ncu3_at_12 = cft_ncu3_at_lk(inp, 12.0 * inp.d_section);
             let ld = if inp.d_section > 0.0 {
                 inp.lk / inp.d_section

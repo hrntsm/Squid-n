@@ -55,7 +55,6 @@ pub(crate) fn check_brace(
             }],
         }
     } else {
-        // 引張: σt/ft（座屈を考慮しない単純検定）。
         let sigma_t = forces.n / area;
         let ft_val = steel_ft(f, term);
         let ratio = sigma_t / safe_denom(ft_val);

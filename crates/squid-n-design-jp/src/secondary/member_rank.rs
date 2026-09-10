@@ -41,10 +41,8 @@ pub fn worst_rank(ranks: &[MemberRank]) -> Option<MemberRank> {
 ///    - [`MechanismType::Overall`] は補正なし。
 /// 3. 補正後のランクと `frame` を [`ds_value`] に渡して返す。
 pub fn story_ds(ranks: &[MemberRank], frame: FrameType, mechanism: &MechanismType) -> f64 {
-    // 代表ランク: ranks が空なら FA とみなす
     let worst_index = ranks.iter().map(|r| rank_index(*r)).max().unwrap_or(0);
 
-    // 崩壊機構補正: StoryCollapse または Partial → 1段階不利
     let corrected_index = match mechanism {
         MechanismType::StoryCollapse { .. } | MechanismType::Partial => (worst_index + 1).min(3),
         MechanismType::Overall => worst_index,
