@@ -13,8 +13,6 @@ mod ratio;
 pub use member_rank::{s_member_rank_by_kihon, SteelMemberUse};
 pub use ratio::max_width_thickness;
 
-// tests は `use super::*` で MemberRank を参照する。抽出により mod.rs 本体では
-// 未使用となるため、テストビルドでのみ再エクスポートして super::* からの解決を維持する。
 #[cfg(test)]
 use super::holding_capacity::MemberRank;
 
@@ -381,8 +379,7 @@ mod tests {
 
     /// 高強度鋼（F>325）は幅厚比限界が √(235/F) 側へ厳しくなる（技術基準解説書 表 備考2）。
     /// 柱H形フランジ (W/2)/tf = 79/10 = 7.9 は、F=325（SM490A）で FA限界 8.0 以下 → FA だが、
-    /// F=355（SM520）では FA限界 8.0×√(325/355)=7.65 を超えるため FB になる。従来は F>325 も
-    /// F=325 の限界値をそのまま使い FA と甘く（非保守側に）判定していた。
+    /// F=355（SM520）では FA限界 8.0×√(325/355)=7.65 を超えるため FB になる。
     #[test]
     fn test_s_member_rank_by_kihon_high_strength_over_325_tightens_limit() {
         let shape = SectionShape::SteelH {

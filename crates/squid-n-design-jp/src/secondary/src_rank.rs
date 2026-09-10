@@ -1,20 +1,8 @@
-//! SRC 造の部材種別（保有水平耐力計算の Ds 算定）。
+//! SRC 造の部材種別（保有水平耐力計算の Ds 算定、技術基準解説書 表 2.6.6-5）。
 //!
-//! - [`src_column_rank`] — SRC 柱の部材種別（技術基準解説書 表 2.6.6-5）
+//! - [`src_column_rank`] — SRC 柱の部材種別（曲げ・せん断破壊モード別）
 //! - [`src_wall_type`] — SRC 耐震壁の種別（せん断破壊 WC・それ以外 WA）
 //! - [`src_column_rank_ratios`] — 判定比 N/N0・sM0/M0 の算定
-//!
-//! 表 2.6.6-5（SRC 柱の部材種別）:
-//!
-//! | 破壊モード | N/N0≤0.3 かつ sM0/M0≥0.4 | N/N0≤0.3 かつ sM0/M0<0.4 | N/N0≤0.4 かつ sM0/M0≥0.4 | N/N0≤0.4 かつ sM0/M0<0.4 | N/N0>0.4 |
-//! |---|---|---|---|---|---|
-//! | 曲げ破壊   | FA | FB | FB | FC | FD |
-//! | せん断破壊 | FB | FC | FC | FD | FD |
-//!
-//! - N: メカニズム時の軸方向力（圧縮正）
-//! - N0: SRC 断面の圧縮耐力
-//! - sM0: 鉄骨の曲げ耐力
-//! - M0: SRC 断面の曲げ耐力（N=0 とした時）
 
 use super::holding_capacity::MemberRank;
 use squid_n_core::section_shape::{bar_set_area, SectionShape};
@@ -31,7 +19,6 @@ pub fn src_column_rank(n_over_n0: f64, smo_over_m0: f64, shear_failure: bool) ->
     if n_over_n0 > 0.4 {
         return MemberRank::FD;
     }
-    // 曲げ破壊の基本ランク（表の上段）。
     let base: u8 = match (n_over_n0 > 0.3, smo_over_m0 < 0.4) {
         (false, false) => 0,                // FA
         (false, true) | (true, false) => 1, // FB
@@ -105,28 +92,22 @@ pub fn src_column_rank_ratios(
     if sh <= 0.0 || sb <= 0.0 || tw <= 0.0 || tf <= 0.0 || sh <= 2.0 * tf {
         return None;
     }
-    // 内蔵鉄骨の基準強度（板厚区分はフランジ厚で解決）。
     let s_f = crate::steel::steel_f_value_prefix(steel_grade, tf).unwrap_or(235.0);
 
-    // 内蔵 H 形鋼の断面積と強軸全塑性断面係数。
     let hw = sh - 2.0 * tf;
     let s_a = 2.0 * sb * tf + hw * tw;
     let s_zp = sb * tf * (sh - tf) + tw * hw * hw / 4.0;
     let s_m0 = s_zp * s_f;
 
-    // 主筋量（全量と、強軸曲げの片側引張量）。
     let ar_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
     let at = bar_set_area(&rebar.main_x) / 2.0;
 
-    // N0 = c·Ac·Fc + sA·sF + ar·σy（コンクリートは鉄骨・主筋を控除した正味断面）。
     let ac = (b * d - s_a - ar_total).max(0.0);
     let n0 = ac * fc + s_a * s_f + ar_total * rebar_sy;
     if n0 <= 0.0 {
         return None;
     }
 
-    // rM0 = 0.9·at·σy·de（N=0 の RC 部分略算曲げ耐力。de は引張縁主筋重心まで
-    // の距離を控除した有効せい）。
     let dt = crate::rc::tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x);
     let de = (d - dt).max(0.0);
     let r_m0 = 0.9 * at * rebar_sy * de;

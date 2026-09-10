@@ -1,53 +1,16 @@
-//! PCa（プレキャスト）梁の水平接合面の検討（プレキャスト鉄筋コンクリート
-//! 構造の水平接合面の許容応力度・終局検討）。
-//!
-//! 材軸平行接合部（打継ぎ面）のせん断強度が設計用せん断応力度を上回ることを
-//! 確認する。使用限界状態・終局限界状態の 2 種類の検討がある。
-//!
-//! # 位置付け・簡略化
-//! - 本モジュールは [`crate::rc::joint`] と同様の**純関数群**（[`pca_horizontal_joint_service`]・
-//!   [`pca_horizontal_joint_ultimate`]・[`moment_zero_distance`]）を中心とし、
-//!   [`crate::joint_wiring`] と同様に `Model`（[`squid_n_core::model::PcaBeamAttr`]）と
-//!   部材内力から入力を組み立てて一括実行する配線関数 [`collect_pca_checks`] を提供する。
-//!
-//! # 配線関数（[`collect_pca_checks`]）の簡略化（doc 兼申し送り）
-//! - 対象断面は `SectionShape::RcRect { b, d, rebar }` のみ（T形協力幅は未対応。
-//!   SRC/PCa 専用形状も未対応で、登録されていてもスキップする）。
-//! - 検定対象位置は「鉛直荷重時: 両端上端、地震荷重時: 上端引張となる端部のみ」と
-//!   するのが原則だが、内力の符号規約（引張正負の向き）が呼び出し元次第で
-//!   一意に定まらないため、**両端で常に検定する保守側の簡略化**とする。
-//! - 終局限界の `ΔT`（長期）は `Md/(0.9・d)` の `Md = α・MDL + β・MLL` を
-//!   `α=β=1.0` として当該ケースの端部モーメントをそのまま用いる近似
-//!   （荷重組合せの分離情報が呼び出し側にないため）。
-//! - 終局限界の `ΔT`（地震時想定＝`long_term=false`）は引張鉄筋の降伏耐力
-//!   `at・σy` とし、強度倍率（割増係数）は未考慮。
-//! - 終局限界の `Δl`（区間長さ）は [`moment_zero_distance`] により部材 1 本に
-//!   つき 1 つだけ求め、両端の検定で共用する（「区間長さ」は
-//!   端部から M=0 位置までの距離であり、対称でない分布でも近い方の解を
-//!   採用する近似）。M=0 位置が求まらない場合（全長同符号）は `Δl = L/2`
-//!   とする。
+//! PCa（プレキャスト）梁の水平接合面の検討（許容応力度・終局検討）。
 
 use crate::{CheckComponent, CheckKind, CheckResult};
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::Model;
 use squid_n_core::section_shape::SectionShape;
 
-/// モーメント 2 次曲線分布（採用応力の分布仮定）の M=0 となる
-/// 端部からの距離（近い方）[mm]。
-///
-/// `M(x) = M1 + (−M1 − M2 + 4・M0)・x/L − 4・M0・x²/L²`
-///
-/// - `m1`, `m2`: 端部モーメント（`m1` は下側引張を正、`m2` は上側引張を正）
-/// - `m0`: 単純梁の中央モーメント（下側引張を正）
-/// - `l`: 部材長 [mm]
-///
-/// 終局限界状態の検討の区間長さ Δl の算定（端部から M=0 位置まで）に用いる。
-/// 実数解が (0, L) にない場合は None（全長で同符号のモーメント分布）。
+/// モーメント 2 次曲線分布の M=0 となる端部からの距離（近い方）[mm]。
+/// 実数解が (0, L) にない場合は None。
 pub fn moment_zero_distance(m1: f64, m2: f64, m0: f64, l: f64) -> Option<f64> {
     if l <= 0.0 {
         return None;
     }
-    // M(x) = a・x² + b・x + c、a = −4M0/L²、b = (−M1−M2+4M0)/L、c = M1
     let a = -4.0 * m0 / (l * l);
     let b = (-m1 - m2 + 4.0 * m0) / l;
     let c = m1;
@@ -64,7 +27,6 @@ pub fn moment_zero_distance(m1: f64, m2: f64, m0: f64, l: f64) -> Option<f64> {
         let sq = disc.sqrt();
         vec![(-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a)]
     };
-    // (0, L) 内の解のうち、いずれかの端部に最も近いもの（端部からの距離）。
     roots
         .into_iter()
         .filter(|x| *x > 0.0 && *x < l)
@@ -92,11 +54,7 @@ pub struct PcaServiceInput {
     pub sigma_y: f64,
 }
 
-/// PCa 水平接合面・使用限界状態の検討。
-///
-/// - 設計用せん断応力度 `τxy = Q・Sy/(b・I)`
-/// - せん断強度 `τu = 0.5・μ・p′w・σy`
-/// - 検定比 = τxy / τu（1.0 以下で OK）
+/// PCa 水平接合面の使用限界状態の検討。検定比 = τxy / τu（1.0 以下で OK）。
 pub fn pca_horizontal_joint_service(inp: &PcaServiceInput) -> CheckResult {
     let denom = inp.b * inp.i;
     let tau_xy = if denom.abs() > 1e-9 {
@@ -108,16 +66,7 @@ pub fn pca_horizontal_joint_service(inp: &PcaServiceInput) -> CheckResult {
     finish("使用限界", tau_xy, tau_u)
 }
 
-/// PCa 水平接合面・終局限界状態の検討。
-///
-/// - 設計用せん断応力度 `τxy = ΔT/(b・Δl)`
-///   - `ΔT`: 区間長さにおいて水平接合面より外側に含まれる引張鉄筋の応力変化量
-///     [N]。鉛直荷重に対する検討では `ΔT = Md/(0.9・d)`（Md = α・MDL + β・MLL）、
-///     地震時荷重に対する検討では引張鉄筋の降伏耐力（強度倍率考慮）とする
-///     （いずれも呼び出し側で算定して渡す）。
-///   - `Δl`: 区間長さ [mm]（端部から M=0 位置まで。[`moment_zero_distance`]）。
-/// - せん断強度 `τu = μ・p′w・σy`（使用限界の 2 倍＝0.5 係数なし）
-/// - 検定比 = τxy / τu（1.0 以下で OK）
+/// PCa 水平接合面・終局限界状態の検討。検定比 = τxy / τu（1.0 以下で OK）。
 pub fn pca_horizontal_joint_ultimate(
     delta_t: f64,
     delta_l: f64,
@@ -136,8 +85,6 @@ pub fn pca_horizontal_joint_ultimate(
     finish("終局限界", tau_xy, tau_u)
 }
 
-/// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
-/// 算定の情報源は [`squid_n_core::rc_rebar_geom::rebar_tension_dt`]。
 use squid_n_core::rc_rebar_geom::rebar_tension_dt as rc_dt;
 
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
@@ -151,14 +98,7 @@ fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option
 }
 
 /// PCa 属性が登録された梁部材の水平接合面検定を一括実行する。
-///
-/// `long_term` は終局限界の設計用引張力 ΔT の算定方法を切り替える（冒頭 doc
-/// 参照）。`true`: 鉛直荷重時（`Md/(0.9・d)` 近似）、`false`: 地震時想定
-/// （引張鉄筋の降伏耐力）。
-///
-/// 戻り値: `(要素ID, 評価位置, 検定結果)` のリスト（使用限界・終局限界の
-/// 2 行 × 両端部）。属性が登録されていない要素・`RcRect` 以外の断面・
-/// 内力が見つからない要素はスキップする。
+/// `long_term`: 終局限界の設計用引張力 ΔT の算定方法を切り替える。
 pub fn collect_pca_checks(
     model: &Model,
     member_forces: &[(ElemId, crate::joint_wiring::ForcesAt<'_>)],
@@ -182,7 +122,6 @@ pub fn collect_pca_checks(
         let Some(mat) = model.element_material(elem) else {
             continue;
         };
-        // 主筋の材料も断面が持つ。
         let rebar_mat = model.element_rebar_material(elem);
         if mat.fc.unwrap_or(0.0) <= 0.0 {
             continue;
@@ -194,7 +133,6 @@ pub fn collect_pca_checks(
             continue;
         }
 
-        // 断面諸元（矩形。T形協力幅は未対応、冒頭 doc 参照）。
         let i = b * d.powi(3) / 12.0;
         let yj = attr.joint_depth_from_top;
         if yj <= 0.0 || yj >= d {
@@ -202,16 +140,13 @@ pub fn collect_pca_checks(
         }
         let s_y = b * yj * (d - yj) / 2.0;
         let d_eff = d - rc_dt(rebar);
-        // 引張鉄筋断面積 at（`rect_axis_props` と同じ「count/2 が片側」仮定）。
         let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
 
-        // 部材長 L は `Model::member_length` が単一情報源（節点参照の欠落は 0.0）。
         let length = model.member_length(elem);
         if length < 1e-9 {
             continue;
         }
 
-        // Δl（区間長さ）は部材 1 本につき 1 つ求め、両端の終局限界検定で共用する。
         let Some(f_end0) = closest_forces(forces, 0.0) else {
             continue;
         };
@@ -228,7 +163,6 @@ pub fn collect_pca_checks(
         let delta_l =
             moment_zero_distance(-m1.abs(), -m2.abs(), m0_simple, length).unwrap_or(length / 2.0);
 
-        // 補強筋の降伏強度 σy: 断面（配筋）の主筋材質 → 材料の fy → 材料名の順。
         let sigma_y_steel = crate::material_strength::rebar_sigma_y_of(rebar_mat);
 
         for (pos, f_end) in [f_end0, f_end1] {
@@ -271,8 +205,6 @@ fn finish(state: &str, tau_xy: f64, tau_u: f64) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    // 単一式（Shear）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis: format!("PCa 水平接合面（{state}状態）せん断検定"),
         detail: String::new(),
@@ -283,7 +215,6 @@ fn finish(state: &str, tau_xy: f64, tau_u: f64) -> CheckResult {
         }],
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

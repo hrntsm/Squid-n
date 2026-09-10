@@ -473,7 +473,7 @@ fn test_cft_box_seismic_qd1_governs_when_smaller() {
     );
 }
 
-/// ctx.seismic_qd が None のときは CFT も従来どおり解析せん断力の
+/// ctx.seismic_qd が None のときは CFT も解析せん断力の
 /// ままとなる（回帰確認）。
 #[test]
 fn test_cft_box_seismic_qd_none_uses_raw_shear() {

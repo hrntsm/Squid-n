@@ -4,27 +4,13 @@
 //! - [`sum_column_area`] — 当該層の柱断面積の和 ΣAc。
 //! - [`append_misc_wall_stiffnesses`] — 雑壁を等価剛性要素として `cols` に追加。
 //!
-//! # 対象は自立壁だけである
-//!
-//! 層剛性に効くのは**階と階をつないでいる壁**だけである。腰壁・垂れ壁・パラペット
-//! （取付き線に取り付く壁版）はフロア間で壁がつながっていないので、層剛性には
-//! 影響しない。これらの壁が周辺の柱梁へ及ぼす剛性は、袖壁・腰壁として部材の断面
-//! 性能へ算入する経路（`squid_n_element::wall::misc_wall`）が既に受け持っており、ここで
-//! 等価剛性要素としても数えると二重計上になる。剛性を過大に、偏心率を過小に見る
-//! 危険側の評価である。
-//!
-//! 残るのは自立壁（[`RegionAnchor::FloorRegion`] の取り付く壁版）で、柱梁に囲まれて
-//! いないため断面性能へ算入する相手がなく、本モジュールが唯一の経路になる。自立壁も
-//! 同じ基準で切り分け、**立ち上がりが直上の階レベルに達しているものだけ**を対象と
-//! する。床上の腰高のパーティションを層剛性に算入すると、やはり剛性の過大評価に
-//! なるためである。
+//! 対象は自立壁（立ち上がりが直上の階レベルに達しているもの）だけである。
+//! 腰壁・垂壁・パラペットは断面性能への算入経路が受け持つため、ここでは数えない。
 
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::{Model, RegionAnchor, WallPlate, WallPlateShape, DIAPHRAGM_LEVEL_TOL_MM};
 
 use super::core::ColumnStiffness;
-
-// ===== 雑壁の剛性評価（n 倍法）=====
 
 /// 雑壁 1 枚の等価水平剛性 `Kw' = n·Aw'·ΣKc/ΣAc`。
 ///
@@ -91,12 +77,8 @@ fn self_standing_stiffness(model: &Model, plate: &WallPlate) -> Option<SelfStand
     if len <= 0.0 || t <= 0.0 {
         return None;
     }
-    // 壁が載るレベルは下端線分の平均標高（`Model::self_standing_wall_coverage`・
-    // `Model::wall_plate_extent` と同じ規約）。
     let z_base = (a[2] + b[2]) / 2.0;
     let story_height = model.story_height_above(z_base)?;
-    // 台形の壁は低いほうの端で判定する。片端しか上階に届いていない壁は、
-    // 階と階をつないでいるとは言えない。
     let reach = extent[0].min(extent[1]);
     if reach < story_height - DIAPHRAGM_LEVEL_TOL_MM {
         return None;
@@ -105,8 +87,6 @@ fn self_standing_stiffness(model: &Model, plate: &WallPlate) -> Option<SelfStand
         pos: [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0],
         dir: [dx / len, dy / len],
         aw: len * t,
-        // 直上の階までの中間高さ。壁が階高より高くても、寄与させるのは下端が載る
-        // 床の直上の層 1 つだけである（複数層にまたがる自立壁の分割は未対応）。
         z_mid: z_base + story_height / 2.0,
     })
 }
@@ -133,7 +113,7 @@ pub fn append_misc_wall_stiffnesses(
     }
     let sum_ac = sum_column_area(model, story);
     if sum_ac <= 0.0 {
-        return; // ΣAc = 0 → ΣKw' = 0
+        return;
     }
     let sum_kx: f64 = cols.iter().map(|c| c.dx).sum();
     let sum_ky: f64 = cols.iter().map(|c| c.dy).sum();

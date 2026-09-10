@@ -1,28 +1,4 @@
 //! RC 造の許容応力度と断面検定（RC 規準13〜18条・令82条による許容応力度計算）。
-//!
-//! 準拠する規準:
-//! - 許容応力度・ヤング係数比: 2010年版 RC 規準・構造規定
-//! - 梁の曲げ・せん断検定: RC 規準 13条
-//! - 柱の軸力＋曲げ検定: RC 規準 14条
-//!
-//! # 実装方針（全体）
-//! - `Section.shape` が `RcRect`/`RcCircle` でない場合（配筋情報なし）は
-//!   検定をスキップし `ok=true` で返す（旧実装と同じフォールバック）。
-//! - `Material.fc` が未設定/0 の場合も同様にスキップする。
-//! - 梁は強軸曲げ（`mz`）とそれに対のせん断（`qy`）のみを検定する
-//!   （RC 規準の梁断面検定の対象と一致）。
-//! - 柱は軸力（M=0）・軸力＋二軸曲げ・二方向せん断を検定する。
-//! - `MemberKind::Brace` は RC 部材としては未対応のため、梁の検定式で代用する。
-//!
-//! # モジュール構成（RC 規準の許容応力度検定の対象部材に対応）
-//! - 本ファイル（`rc/mod.rs`）: 断面諸元の抽出・許容応力度のまとめ・
-//!   せん断スパン比 α・せん断耐力・地震時設計用せん断力・`RcDesign`
-//!   （`DesignCheck` 実装、梁/柱への振り分け）。
-//! - [`beam`]: 鉄筋コンクリート造梁の断面検定（RC 規準13条の曲げ・せん断）。
-//! - [`column`]: 鉄筋コンクリート造柱の断面検定（RC 規準14条の軸力+曲げ）。
-//! - [`bond`]: 鉄筋コンクリート造梁付着の断面検定（RC 規準1999/1991 方式）。
-//! - [`joint`]: 鉄筋コンクリート造柱梁接合部の断面検定（RC 規準15条）。
-//! - [`wall`]: 鉄筋コンクリート造耐震壁の断面検定（RC 規準18条）。
 
 use crate::{CheckOutcome, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
@@ -30,7 +6,6 @@ use squid_n_core::section_shape::SectionShape;
 
 mod beam;
 /// 鉄筋コンクリート造梁の非線形復元力特性（曲げトリリニア・せん断・軸）。
-/// 非線形解析の材端バネ骨格に用いる（技術基準解説書「部材の復元力特性」）。
 pub mod beam_nonlinear;
 mod bond;
 mod column;
@@ -42,10 +17,8 @@ pub mod joint;
 mod provisions;
 pub mod wall;
 /// 鉄筋コンクリート造耐震壁のせん断非線形特性（トリリニア Qc/βu/Qu）。
-/// 非線形解析のせん断ばね骨格に用いる（技術基準解説書「耐震壁のせん断非線形特性」）。
 pub mod wall_nonlinear;
 
-// 共有ヘルパ（1 ファイル 1 責務で分割した非公開サブモジュール）。
 mod allowable;
 mod design_shear;
 pub(crate) mod section_props;
@@ -61,9 +34,6 @@ pub use wall_nonlinear::{
     WallShearTrilinear, WallShearTrilinearInput,
 };
 
-// 材料強度・許容応力度は `crate::material_strength`（RC 規準の材料強度・許容応力度）へ
-// 集約した。RC 造の検定で用いるものを再エクスポートし、従来の
-// `crate::rc::concrete_allowable_shear` 等のパスも維持する。
 pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
     concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
@@ -72,17 +42,11 @@ pub use crate::material_strength::{
     shear_rebar_grade, young_ratio_n, HighStrengthGroup,
 };
 
-// 分割した共有ヘルパを従来の `crate::rc::X`（他モジュール）・`super::X`
-// （rc 直下の兄弟モジュール）パスで参照できるよう再エクスポートする。
 pub(crate) use allowable::*;
 pub(crate) use column::interp_ma;
 pub(crate) use design_shear::*;
 pub(crate) use section_props::*;
 pub(crate) use shear_capacity::*;
-
-// ============================================================================
-// 8. DesignCheck 実装（梁は rc/beam.rs、柱は rc/column.rs へ振り分け）
-// ============================================================================
 
 pub struct RcDesign;
 
@@ -113,8 +77,6 @@ impl DesignCheck for RcDesign {
             }
         };
 
-        // 主筋・せん断補強筋の材料は断面が持つ。未割当のまま既定グレードで検定すると
-        // 許容応力度・降伏点の根拠が消えるため、検定せず理由を返す。
         if ctx.rebar_material.is_none() {
             return CheckOutcome::Skipped {
                 reason: "RC 検定: 主筋の材料が未割当（断面タブで主筋の材料を割り当ててください）"
@@ -138,10 +100,6 @@ impl DesignCheck for RcDesign {
         CheckOutcome::Checked(cr)
     }
 }
-
-// ============================================================================
-// テスト（断面諸元・許容応力度・せん断耐力・地震時せん断力・RcDesign 統合系）
-// ============================================================================
 
 #[cfg(test)]
 mod tests;

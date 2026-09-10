@@ -12,10 +12,6 @@ use squid_n_core::section_shape::SectionShape;
 
 use super::section_modulus;
 
-// ---------------------------------------------------------------------
-// 許容曲げ応力度（横座屈考慮）と断面二次半径（鋼構造設計規準 1973）
-// ---------------------------------------------------------------------
-
 /// 「圧縮フランジ＋せいの 1/6 のウェブ」からなる T 形断面の、ウェブ軸まわり
 /// 断面二次半径 `i = √(I_T/A_T)`（鋼構造設計規準 1973、横座屈許容曲げ fb1 用）。
 ///
@@ -43,7 +39,7 @@ pub fn steel_i_t(b: f64, tf: f64, h: f64, tw: f64) -> f64 {
 ///   （荷重の向き）によらないよう、上下フランジそれぞれについて
 ///   [`steel_i_t`] を計算し、断面二次半径 `i` が小さい側（横座屈に対して
 ///   不利な側）の `(i, af=B·tf)` を採用する。
-/// - 上記以外（`shape` 無し等）は従来通り `sec.width` を B、呼び出し側が
+/// - 上記以外（`shape` 無し等）は `sec.width` を B、呼び出し側が
 ///   渡す `tf`/`tw` をそのまま用いた `(steel_i_t(B, tf, H, tw), B·tf)`。
 pub(crate) fn steel_lateral_buckling_i_af(sec: &Section, tf: f64, tw: f64) -> (f64, f64) {
     match &sec.shape {
@@ -132,10 +128,9 @@ pub fn steel_fb_h(f: f64, term: LoadTerm, lb: f64, i: f64, h: f64, af: f64, c: f
 ///   より大きい場合は、区間内の最大曲げが端部にないため安全側の `C=1.0`
 ///   とする。
 /// - [`DesignCtx::end_moments_z`] が `None` の場合は、端部モーメント比の
-///   情報がないため従来通り `C=1.0`（安全側・最も不利な等曲げ分布相当）
+///   情報がないため `C=1.0`（安全側・最も不利な等曲げ分布相当）
 ///   とする。
 pub(crate) fn steel_lateral_buckling_c(ctx: &DesignCtx) -> f64 {
-    // 端部モーメント比が代表できない場合は安全側の C=1.0（等曲げ分布相当）。
     let Some(m2_over_m1) = end_moment_ratio_m2_m1(ctx) else {
         return 1.0;
     };
@@ -170,8 +165,6 @@ fn end_moment_ratio_m2_m1(ctx: &DesignCtx) -> Option<f64> {
         return Some(0.0);
     }
     let ratio_abs = m2 / m1;
-    // 異符号（反曲点あり＝複曲率）なら正、同符号（単曲率）なら負。
-    // 片端がほぼゼロなら ratio_abs=0 で符号は結果に影響しない。
     let double_curvature = m_i * m_j < 0.0;
     Some(if double_curvature {
         ratio_abs
@@ -187,7 +180,7 @@ fn end_moment_ratio_m2_m1(ctx: &DesignCtx) -> Option<f64> {
 ///    自動算定の上限 `2.3` はこの場合適用しない）。
 /// 2. 直接入力がない場合、`lb_is_partial=true`（横補剛等により座屈区間が
 ///    部材の部分区間となり区間端モーメント比が不明）であれば安全側の `1.0`。
-/// 3. それ以外は従来の自動算定 [`steel_lateral_buckling_c`]（`ctx.end_moments_z`/
+/// 3. それ以外は自動算定 [`steel_lateral_buckling_c`]（`ctx.end_moments_z`/
 ///    `ctx.mid_moment_z` から `M2/M1` により算定）。
 ///
 /// `c_direct` が `0` 以下の場合は無効な入力（未入力相当）として無視し、
@@ -204,28 +197,11 @@ pub(crate) fn steel_c_factor(ctx: &DesignCtx, lb_is_partial: bool) -> f64 {
     steel_lateral_buckling_c(ctx)
 }
 
-// ---------------------------------------------------------------------
-// 許容曲げ応力度 fb（新基準・AIJ 鋼構造許容応力度設計規準 2019）
-// ---------------------------------------------------------------------
-
-/// H 形鋼強軸の許容曲げ応力度 fb [N/mm²]（新基準・AIJ 鋼構造許容応力度設計規準
-/// 2019）。降伏モーメント My と弾性横座屈モーメント Me から求めた限界細長比
-/// λb により、全塑性域・非弾性域（直線補間）・弾性域の 3 領域で式を切り替える。
-///
-/// - `My = F·Z強軸`（降伏モーメント。`z_strong` は強軸断面係数）
-/// - `Me = C・√(π⁴・E・Iz・E・Iw/lb⁴ + π²・E・Iz・G・J/lb²)`（弾性横座屈モーメント。
-///   `iz`: 弱軸断面二次モーメント、`iw`: 曲げねじり定数、`j`: サンブナンねじり
-///   定数、`e`,`g`: ヤング係数・せん断弾性係数、`c`: 修正係数。[`steel_fb_h`]
-///   と同じ [`steel_lateral_buckling_c`] を用いてよい）
-/// - `λb = √(My/Me)`（横座屈限界細長比）
-/// - `eλb = 1/√0.6`（弾性限界細長比）
-/// - `ν = 3/2 + (2/3)・(λb/eλb)²`（安全率）
-/// - `λb ≤ pλb`（塑性限界細長比。[`steel_p_lambda_b`]）→ `fb = F/ν`
-/// - `pλb < λb ≤ eλb` → `fb = (1 − 0.4・(λb−pλb)/(eλb−pλb))・F/ν`
-/// - `eλb < λb` → `fb = F/(2.17・λb²)`（弾性座屈域）
-///
-/// 上限は長期許容引張 `F/1.5`。短期は長期の 1.5 倍（上限 F）。`lb ≤ 0`
-/// （横座屈長さ無し）の場合は横座屈を考慮しない `fb = ft` を返す。
+/// H 形鋼強軸の許容曲げ応力度 fb [N/mm²]（新基準）。
+/// 降伏モーメント My と弾性横座屈モーメント Me から求めた限界細長比
+/// λb により、全塑性域・非弾性域・弾性域の 3 領域で式を切り替える。
+/// 上限は長期 F/1.5（短期は 1.5 倍・上限 F）。`lb ≤ 0` の場合は
+/// 横座屈を考慮しない `fb = ft` を返す。
 #[allow(clippy::too_many_arguments)]
 pub fn steel_fb_h_new(
     f: f64,
@@ -283,7 +259,6 @@ pub fn steel_fb_h_new(
 /// - [`DesignCtx::end_moments_z`] が `None` の場合も同様に安全側の `pλb=0.3`。
 /// - `M1≈0`（両端とも曲げがほぼない）のときは `M2/M1=0` 扱いで `pλb=0.6`。
 pub(crate) fn steel_p_lambda_b(ctx: &DesignCtx) -> f64 {
-    // 端部モーメント比が代表できない場合は安全側の pλb=0.3。
     let Some(m2_over_m1) = end_moment_ratio_m2_m1(ctx) else {
         return 0.3;
     };
@@ -325,11 +300,6 @@ pub(crate) fn steel_warping_constant(sec: &Section, tf: f64) -> f64 {
         }
     }
 }
-
-// ---------------------------------------------------------------------
-// 断面欠損（継手部・スカラップ）と横座屈長さ
-// （鋼構造設計規準「鉄骨の断面検定における断面性能」）
-// ---------------------------------------------------------------------
 
 /// H形鋼の欠損考慮断面係数 Z'（強軸）。
 ///
@@ -407,7 +377,6 @@ pub fn resolve_lb(
     }
     length
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,7 +486,7 @@ mod tests {
         assert!((c - 1.0).abs() < 1e-9, "c={}", c);
     }
 
-    /// end_moments_z が None の場合は従来通り C=1.0。
+    /// end_moments_z が None の場合は C=1.0。
     #[test]
     fn test_c_factor_none_end_moments_is_1_0() {
         let ctx = DesignCtx {
@@ -595,7 +564,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(steel_c_factor(&ctx, true), 1.0);
-        // 部分区間でなければ従来通り自動算定（2.3）になること。
+        // 部分区間でなければ自動算定（2.3）になること。
         let auto = steel_c_factor(&ctx, false);
         assert!((auto - 2.3).abs() < 1e-9, "auto={auto}");
     }

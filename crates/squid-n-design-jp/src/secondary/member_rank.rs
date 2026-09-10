@@ -1,10 +1,4 @@
 //! 部材ランク（FA..FD）の集約と層 Ds の自動分類。
-//!
-//! 個々の部材ランクの判定は各判定モジュール
-//! （鋼: [`crate::secondary::width_thickness::s_member_rank_by_kihon`]、
-//! SRC: [`crate::secondary::src_rank`]、RC: 告示の部材種別表）が担い、
-//! 本モジュールは複数部材ランクの集約（[`worst_rank`]）と
-//! 層 Ds の算定（[`story_ds`]）のみを持つ。
 use super::holding_capacity::{ds_value, FrameType, MemberRank};
 use squid_n_solver::nonlinear::pushover::MechanismType;
 

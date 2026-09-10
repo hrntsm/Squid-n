@@ -205,8 +205,6 @@ pub struct MemberQuantity {
 impl MemberQuantity {
     /// 鉄筋重量の合計 [t]。
     pub fn rebar_weight_t(&self) -> f64 {
-        // 空イテレータの f64 Sum は -0.0 を返し表示が "-0.0000" になるため
-        // +0.0 で正の 0 に正規化する。
         self.rebar.iter().map(|r| r.weight_t).sum::<f64>() + 0.0
     }
 
@@ -496,8 +494,6 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
 
     let mut slab_edges: HashMap<(u32, u32), (u32, f64)> = HashMap::new();
     for slab in &model.slabs {
-        // 型枠控除は板厚が定まる床板（`slab_plate_thickness`）の辺だけ。断面未割当は控除しない。
-        // 厚さは `slab_plate_thickness`。欠落時のみ建物一律 `slab_thickness`（通常は到達しない）。
         let Some(t) = model.slab_plate_thickness(slab) else {
             continue;
         };
@@ -562,14 +558,6 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     }
 
     for plate in &model.wall_plates {
-        // 解析要素になった壁版は `wall_quantity` が要素経由で数える。それ以外
-        // （取り付く壁版・間柱で分割された壁版・腰壁・垂れ壁など）は要素にならない
-        // ため、壁版から直接数える。ここを漏らすと数量が黙って落ちる。
-        //
-        // 判定は `wall_plate_covers_region` ではなく `wall_plate_becomes_element`
-        // を使う。壁領域を覆っていても断面が無ければ要素にならず、要素経由でも
-        // 数えられない。断面が無い壁版は板厚が引けず数量も 0 になるので現状は結果が
-        // 変わらないが、「要素経由で数えたか」を問うている以上そちらで判定する。
         if !plate.is_attached() && model.wall_plate_becomes_element(plate) {
             continue;
         }
@@ -722,7 +710,6 @@ fn column_quantity(
     h: f64,
     structure: StructureKind,
 ) -> MemberQuantity {
-    // 柱長さは床上〜床上（＝節点間距離。フェイス控除しない）。
     let lower = if ctx.model.nodes[ni].coord[2] <= ctx.model.nodes[nj].coord[2] {
         ni
     } else {
@@ -746,7 +733,6 @@ fn column_quantity(
 
     match (structure, sec.shape.as_ref()) {
         (StructureKind::Rc | StructureKind::Src, shape) => {
-            // 矩形: Dx×Dy×H・2(Dx+Dy)×H。円形は等価に πD²/4・πD×H。
             let (vol, form, rebar): (f64, f64, Option<&RcRebar>) = match shape {
                 Some(SectionShape::RcRect { b, d, rebar }) => (
                     member::column_concrete_volume(*b, *d, h),
@@ -773,7 +759,6 @@ fn column_quantity(
             item.formwork_m2 = form * 1e-6;
 
             if let Some(rebar) = rebar {
-                // 主筋: すべての柱は H で計算。X・Y 方向の重なりは差し引かない。
                 let mut main_bars = 0u32;
                 for bs in [&rebar.main_x, &rebar.main_y] {
                     if bs.count == 0 || bs.dia <= 0.0 {
@@ -788,7 +773,6 @@ fn column_quantity(
                         weight_t: rebar::rebar_weight_t(total_len, bs.dia),
                     });
                 }
-                // フープ: 一組長さ nx×Dx+ny×Dy、本数 H/ピッチ。
                 let (dx, dy, circle) = match shape {
                     Some(SectionShape::RcRect { b, d, .. })
                     | Some(SectionShape::SrcRect { b, d, .. }) => (*b, *d, false),
@@ -798,7 +782,6 @@ fn column_quantity(
                 let sh = &rebar.shear;
                 if sh.dia > 0.0 && sh.pitch > 0.0 {
                     let set_len = if circle {
-                        // 円形柱: 円形フープ 1 本の周長 ≒ πD（組数分）。
                         sh.legs.max(1) as f64 * std::f64::consts::PI * dx
                     } else {
                         member::hoop_set_length(dx, dy, sh.legs.max(1), sh.legs.max(1))
@@ -812,12 +795,9 @@ fn column_quantity(
                         weight_t: rebar::rebar_weight_t(total_len, sh.dia),
                     });
                 }
-                // 鉄筋継手: 柱頭・柱脚通し主筋（同一断面のため全主筋）×
-                // 階ごと 1 個所（階高 7m 以上は 7m 毎に +1）。
                 item.rebar_joints = main_bars as f64 * member::column_joint_count(h);
             }
 
-            // SRC: 内蔵鉄骨の重量を加算（コンクリートから差し引かない）。
             if structure == StructureKind::Src {
                 if let Some(a_s) = sec.shape.as_ref().and_then(src_steel_area) {
                     item.steel = Some(SteelItem {
@@ -841,7 +821,6 @@ fn column_quantity(
             });
         }
         (StructureKind::Cft, shape) => {
-            // 鋼管重量 + 充填コンクリート体積（型枠は不要）。
             let a = shape.map(|s| s.calc_area()).unwrap_or(sec.area);
             item.steel = Some(SteelItem {
                 section_name: sec.name.clone(),
@@ -871,7 +850,6 @@ fn beam_quantity(
     structure: StructureKind,
 ) -> MemberQuantity {
     let model = ctx.model;
-    // 分類: 最下層レベルの梁は基礎梁、柱に取り付く梁は大梁、それ以外は小梁。
     let at_base =
         (ci[2] - ctx.min_z).abs() < LEVEL_TOL_MM && (cj[2] - ctx.min_z).abs() < LEVEL_TOL_MM;
     let touches_column = ctx.column_nodes.contains(&ni) || ctx.column_nodes.contains(&nj);
@@ -897,7 +875,6 @@ fn beam_quantity(
         rebar_joints: 0.0,
     };
 
-    // 鉄骨系（S）は種類別の長さ・重量のみ（節点間距離で算定）。
     if structure == StructureKind::S || structure == StructureKind::Cft {
         let a = sec
             .shape
@@ -912,7 +889,6 @@ fn beam_quantity(
         return item;
     }
 
-    // RC/SRC: 内法長さ（柱フェイス間）で算定。フェース距離が未算定なら節点間長。
     let lo = elem.rigid_zone.clear_span_from(len).unwrap_or(len);
     let (b, d, rebar): (f64, f64, Option<&RcRebar>) = match sec.shape.as_ref() {
         Some(SectionShape::RcRect { b, d, rebar }) => (*b, *d, Some(rebar)),
@@ -921,7 +897,6 @@ fn beam_quantity(
     };
 
     if category == MemberCategory::Joist {
-        // 小梁: B×D×L、型枠 (B+2D)×L、鉄筋は体積比（主筋 0.8%・スターラップ 0.1%）。
         let vol = member::joist_concrete_volume(b, d, lo);
         item.concrete_m3 = vol * 1e-9;
         item.formwork_m2 = member::joist_formwork_area(b, d, lo) * 1e-6;
@@ -939,9 +914,6 @@ fn beam_quantity(
             weight_t: vol_m3 * ctx.cfg.joist_stirrup_ratio * STEEL_UNIT_WEIGHT_T_PER_M3,
         });
     } else {
-        // 大梁・基礎梁。ハンチは部材付帯情報（`Model::member_detail_attrs`。
-        // 剛性には影響しない）から取得し、増分寸法（せい増分・幅増分）を
-        // ハンチ端の全幅 Bi・全せい Di へ換算して算定式へ渡す。
         let to_haunch = |h: &squid_n_core::model::Haunch| Haunch {
             b: b + h.width_increase.max(0.0),
             d: d + h.depth_increase.max(0.0),
@@ -959,7 +931,6 @@ fn beam_quantity(
         let vol = member::girder_concrete_volume(b, d, lo, haunch_i, haunch_j);
         item.concrete_m3 = vol * 1e-9;
 
-        // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）と隣接版厚で側面せいを決める。
         let n_adj = ctx.adjacent_slab_count(ni, nj);
         let t_slab = if n_adj == 0 {
             0.0
@@ -967,7 +938,6 @@ fn beam_quantity(
             ctx.adjacent_slab_t(ni, nj, d)
         };
         let form = if category == MemberCategory::FoundationGirder {
-            // 基礎梁: 側面 1 面＋底面（スラブ＝耐圧版があれば側面せいから控除）。
             let d_side = if n_adj >= 1 { d - t_slab } else { d };
             member::foundation_girder_formwork_area(b, d_side, lo, haunch_i, haunch_j)
         } else {
@@ -981,7 +951,6 @@ fn beam_quantity(
         item.formwork_m2 = form * 1e-6;
 
         if let Some(rebar) = rebar {
-            // 主筋: 1 断面（全断面）配筋。端部条件は梁の連続性から判定する。
             let dir_xy = {
                 let dx = cj[0] - ci[0];
                 let dy = cj[1] - ci[1];
@@ -1013,7 +982,6 @@ fn beam_quantity(
                     weight_t: rebar::rebar_weight_t(total_len, bs.dia),
                 });
             }
-            // スターラップ: 一組 2B+nD、本数 L/ピッチ。
             let sh = &rebar.shear;
             if sh.dia > 0.0 && sh.pitch > 0.0 {
                 let set_len = member::stirrup_set_length(b, d, sh.legs.max(1));
@@ -1026,11 +994,9 @@ fn beam_quantity(
                     weight_t: rebar::rebar_weight_t(total_len, sh.dia),
                 });
             }
-            // 鉄筋継手: 梁毎 0.5 個所/本（5m 以上は 5m 毎に +0.5）。
             item.rebar_joints = main_bars as f64 * member::beam_joint_count(lo);
         }
 
-        // SRC 梁: 内蔵鉄骨重量を加算。
         if structure == StructureKind::Src {
             if let Some(a_s) = sec.shape.as_ref().and_then(src_steel_area) {
                 item.steel = Some(SteelItem {
@@ -1080,7 +1046,6 @@ fn brace_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
         .map(|s| s.calc_area())
         .unwrap_or(sec.area);
     if structure == StructureKind::Rc {
-        // RC ブレース（稀）: コンクリート体積のみ計上する。
         item.concrete_m3 = a * lb * 1e-9;
     } else {
         item.steel = Some(SteelItem {
@@ -1168,7 +1133,6 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
         return None;
     }
 
-    // 寸法のとり方: 幅は柱内法・高さは梁内法（4 節点壁）。それ以外は芯々。
     let (l_clear, h_clear, gross_area) = match wall_clear_dims(model, elem, &pts) {
         Some((l, h)) => (l, h, l * h),
         None => {
@@ -1181,7 +1145,6 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
         }
     };
 
-    // 開口控除。
     let opening = model
         .wall_attrs
         .iter()
@@ -1215,10 +1178,6 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
         rebar_joints: 0.0,
     };
 
-    // 壁筋: 横筋 (L+2S)×W・縦筋 (H+2S)×h。壁の配筋はせん断補強筋比 ps のみ
-    // 保持するため、本数×一本長さを ps による等価体積
-    // （横筋 ps·t·H·(L+2S)、縦筋 ps·t·L·(H+2S)）に換算して算定する。
-    // S = 35d（仮定径 D10）。開口部補強筋は考慮しない。
     if ps > 0.0 && l_clear > 0.0 && h_clear > 0.0 {
         let dia = ctx.cfg.assumed_wall_bar_dia;
         let s = ctx.cfg.anchorage_dia_factor * dia;
@@ -1227,7 +1186,6 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
             (RebarUsage::WallHorizontal, l_clear, h_clear),
             (RebarUsage::WallVertical, h_clear, l_clear),
         ] {
-            // 本数 = ps×t×直交方向長さ / 1本断面積（配筋列数を含む等価本数）。
             let count = ps * t * other / one;
             let total_len = member::wall_bar_length(span, s, count);
             item.rebar.push(RebarItem {
@@ -1246,17 +1204,14 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 /// 解析要素を持たない（D5）ため `WallPlate` から直接算定する（[`slab_quantity`] と
 /// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4 節点の耐震壁）
 /// のみを数える）。取り付く壁版はフレーム外雑壁にあたる
-/// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
+/// ため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
 /// ラベルは囲まれた壁と同じく割り当てた断面の符号（`wall_quantity` と同じ）。
 fn wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
     let model = ctx.model;
-    // 階の帰属を決めるための代表節点。取り付く壁版は取付き線の両端、囲まれた
-    // 壁版は境界の全節点から、最も低いものを選ぶ。
     let anchor_nodes: Vec<squid_n_core::ids::NodeId> = match &plate.shape {
         WallPlateShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::FloorRegion { nodes, .. } => nodes.to_vec(),
-            // 壁の取付き先としては使わない（`WallPlate::boundary_coords` と同じ理由）。
             RegionAnchor::Point(_) => return None,
         },
         WallPlateShape::Enclosed { boundary } => boundary.clone(),
@@ -1307,10 +1262,7 @@ fn slab_quantity(ctx: &Ctx, slab: &Slab) -> Option<MemberQuantity> {
         return None;
     }
     let area = polygon_area_3d(&pts);
-    // 床板ごとの板厚は断面から解決する（建物一律の `slab_thickness` は
-    // 剛性計算に見込む厚さであり、実際の板厚とは別概念）。
     let t = model.slab_plate_thickness(slab).unwrap_or(0.0);
-    // 主架構に取り付く領域（片持ち・バルコニー・出隅）は片持ち床として拾う。
     let category = if slab.is_attached() {
         MemberCategory::CantileverSlab
     } else {
@@ -1336,7 +1288,6 @@ fn slab_quantity(ctx: &Ctx, slab: &Slab) -> Option<MemberQuantity> {
         rebar_joints: 0.0,
     };
     if vol_m3 > 0.0 {
-        // 鉄筋重量: 床コンクリート体積×1.0%（片持ち床も同率）を鋼比重で重量化。
         item.rebar.push(RebarItem {
             usage: RebarUsage::SlabBar,
             dia: None,

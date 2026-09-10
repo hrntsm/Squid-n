@@ -1,34 +1,14 @@
-//! 鉄筋コンクリート造梁の**非線形復元力特性**（技術基準解説書による
-//! 梁の曲げ・せん断・軸復元力特性）。
-//!
-//! # 位置付け
-//! [`super::beam`] が許容応力度検定を扱うのに対し、本モジュールは非線形解析の
-//! 材端剛塑性回転バネ（曲げトリリニア）・せん断ばね・軸ばねの骨格諸元を算定する
-//! 純関数群である。曲げは (ひび割れ Mc, 降伏 My＋剛性低下率 αy) のトリリニア、
-//! せん断はひび割れ Qc、軸は (引張ひび割れ Nct, 引張降伏 Nut, 圧縮降伏 Nuc)。
-//!
-//! # 準拠する規準・出典
-//! - 曲げひび割れ Mc=κ·√Fc·Ze（κ=0.56、Fc [N/mm²]）: 技術基準解説書 P.621-623。
-//! - 曲げ降伏時剛性低下率 αy（菅野式）: 梅村魁『鉄筋コンクリート建物の動的
-//!   耐震設計法』P.106-108（[`squid_n_core::rc_capacity::rc_alpha_y_sugano`]）。
-//! - 曲げ終局 My=0.9·at·σy·d（d=有効せい）: 技術基準解説書 P.623
-//!   （[`squid_n_core::rc_capacity::rc_mu_simple`]）。
-//! - せん断ひび割れ Qc=(0.061·(Fc+49)/(M/(Q·d)+1.7))·b·j: 実務式（要原典照合）。
-//! - 軸: Nct=κ·√Fc·Ac（κ=0.56）, Nut=at·σy, Nuc=at·σy+Fc·(Ac−at)。
+//! 鉄筋コンクリート造梁の非線形復元力特性（曲げトリリニア・せん断・軸）。
 
 use squid_n_core::rc_capacity::{rc_alpha_y_sugano, rc_mu_simple, RcCapacityInput};
 
-/// RC 梁の曲げひび割れ強度 Mc [N·mm]（技術基準解説書 P.621-623）。
-/// `Mc = κ·√Fc·Ze`（κ=0.56、Fc [N/mm²]、Ze=鉄筋を考慮した引張側断面係数
-/// Ie/(D−g) または Ie/g）。√Fc を 1 乗の Fc としていた従来実装は Mc を
-/// √Fc 倍（Fc=24 で約 4.9 倍）過大評価する誤りだった。
+/// RC 梁の曲げひび割れ強度 Mc [N·mm]。`Mc = κ·√Fc·Ze`。
 /// 不正入力（Fc・Ze のいずれかが 0 以下）は 0.0。
 pub fn rc_beam_crack_moment(fc: f64, ze: f64) -> f64 {
     squid_n_core::rc_capacity::rc_crack_moment(fc, ze)
 }
 
-/// RC 梁のせん断ひび割れ強度 Qc [N]（実務式・トリリニア用。要原典照合）。
-/// `Qc = (0.061·(Fc+49)/(M/(Q·d)+1.7))·b·j`。
+/// RC 梁のせん断ひび割れ強度 Qc [N]。
 /// 不正入力（Fc・b・j のいずれかが 0 以下）は 0.0。
 pub fn rc_beam_shear_crack(fc: f64, m_over_qd: f64, b: f64, j: f64) -> f64 {
     if fc <= 0.0 || b <= 0.0 || j <= 0.0 {
@@ -38,10 +18,6 @@ pub fn rc_beam_shear_crack(fc: f64, m_over_qd: f64, b: f64, j: f64) -> f64 {
 }
 
 /// RC 梁の軸復元力特性（引張ひび割れ・引張降伏・圧縮降伏）[N]。
-/// - 引張ひび割れ `Nct = κ·√Fc·Ac`（κ=0.56、Fc [N/mm²]、引張正。
-///   曲げひび割れ Mc と同じ κ·√Fc 系の略算）
-/// - 引張降伏 `Nut = at·σy`
-/// - 圧縮降伏 `Nuc = at·σy + Fc·(Ac − at)`
 #[derive(Clone, Copy, Debug)]
 pub struct RcAxial {
     pub tension_crack: f64,
@@ -52,7 +28,6 @@ pub struct RcAxial {
 /// RC 梁の軸復元力特性を算定する。`ac`: コンクリート断面積、`at`: 鉄筋断面積、
 /// `sigma_y`: 鉄筋降伏、`fc`: コンクリート強度。
 pub fn rc_beam_axial(fc: f64, ac: f64, at: f64, sigma_y: f64) -> RcAxial {
-    // 引張ひび割れも曲げひび割れと同じ κ·√Fc 系（係数の情報源は core に置く）。
     let nct = if fc > 0.0 && ac > 0.0 {
         squid_n_core::rc_capacity::RC_CRACK_COEF * fc.sqrt() * ac
     } else {
@@ -103,7 +78,7 @@ pub struct RcBeamBending {
     pub alpha_y: f64,
 }
 
-/// RC 梁の曲げトリリニア骨格（Mc・My・αy）を算定する（技術基準解説書・菅野式）。
+/// RC 梁の曲げトリリニア骨格（Mc・My・αy）を算定する。
 pub fn rc_beam_bending(inp: &RcBeamBendingInput) -> RcBeamBending {
     let mc = rc_beam_crack_moment(inp.fc, inp.ze);
     let cap = RcCapacityInput {
@@ -140,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_rc_beam_crack_moment() {
-        // Mc = 0.56·√24·(300·600²/6)（技術基準解説書 P.621-623）
+        // Mc = 0.56·√24·(300·600²/6)
         let ze = 300.0 * 600.0_f64.powi(2) / 6.0;
         let mc = rc_beam_crack_moment(24.0, ze);
         assert!((mc - 0.56 * 24.0_f64.sqrt() * ze).abs() < 1e-3);
@@ -182,7 +157,7 @@ mod tests {
             ec: 21000.0,
         };
         let b = rc_beam_bending(&inp);
-        // My = 0.9·at·σy·d の手計算一致（技術基準解説書 P.623。d = 有効せい）。
+        // My = 0.9·at·σy·d の手計算一致（d = 有効せい）。
         assert!((b.my - 0.9 * 1935.0 * 345.0 * 540.0).abs() < 1e-3);
         // ひび割れ < 降伏（健全な折れ点順序）。
         assert!(b.mc > 0.0 && b.mc < b.my, "Mc={} My={}", b.mc, b.my);

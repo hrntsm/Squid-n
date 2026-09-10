@@ -8,7 +8,7 @@
 /// 設計用曲げモーメント（応答値。二軸曲げ余裕度に用いる）。
 ///
 /// `shear`・`rp` は**プッシュオーバー応答からの直接反映**（[`MemberDemand::from_pushover`]）
-/// に用いる任意項目で、`None`（既定）のときは従来どおり両端ヒンジ `Qmu=2·Mu/内法` と
+/// に用いる任意項目で、`None`（既定）のときは両端ヒンジ `Qmu=2·Mu/内法` と
 /// UI 一律指定 Rp（[`UltimateShearOptions::rp`]）を用いる。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MemberDemand {
@@ -30,7 +30,7 @@ pub struct MemberDemand {
     pub rp: Option<f64>,
     /// 長期せん断力 QL [N]（絶対値で扱う）。`Some` のとき梁のせん断・付着余裕率の
     /// 分子を `(Qsu − QL)`・`(Qbu − QL)` とする（余裕率
-    /// `(Qsu−QL)/Qmu ≥ 1.0` の定義。`None` は従来どおり QL=0 扱い）。
+    /// `(Qsu−QL)/Qmu ≥ 1.0` の定義。`None` は QL=0 扱い）。
     pub q_long: Option<f64>,
     /// 長期荷重による単純梁せん断力 Q0 [N]（絶対値で扱う）。せん断補強筋に
     /// MK785/SPR785/SPR685 を使用した部材では、余裕率の QL 控除を `QL=Q0` と

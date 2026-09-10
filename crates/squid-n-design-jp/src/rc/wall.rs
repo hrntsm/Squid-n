@@ -53,26 +53,8 @@ pub struct RcWallInput {
 
 /// RC 造耐震壁のせん断検定（RC 規準 18 条）。
 ///
-/// ## コンクリート負担分
-/// `Q1 = r・t・l・fs`（`fs` は [`crate::rc::concrete_allowable_shear`] による
-/// 長期/短期許容せん断応力度）
-///
-/// ## 壁筋＋側柱負担分（短期のみ有効）
-/// `Q2 = r・(Qw + ΣQc)`
-/// - `Qw = ps・t・le・w_ft`
-/// - RC 側柱1本あたり `Qc = b・j・(1.5・fs + 0.5・w_ft・(pw − 0.002))`
-///   （`j = 7/8・d`、`(pw − 0.002)` が負の場合は 0 とする。係数 `1.5・fs` は
-///   RC 規準の規定値をそのまま用いる。）
-/// - SRC 側柱（内蔵鉄骨あり）は鉄骨のせん断負担分を加え
-///   `Qc = b・j・(1.5・fs + 0.5・w_ft・(pw − 0.002)) + sfs・As`
-///   （[`WallSideColumn::steel_shear`] = `sfs・As`。`sfs`: 鉄骨の許容せん断
-///   応力度、`As`: 側柱内蔵鉄骨のせん断断面積）。RC 側柱は `steel_shear=0` で
-///   従来式に一致する。
-///
-///   **注記（再構成）**: SRC 造耐震壁の Qc は `0.5・wft・pw`
-///   （`pw` に `−0.002` のオフセットがない）と読める資料もあるが、
-///   RC 造耐震壁の式（本関数の `(pw − 0.002)`）と整合させ、既存の RC 実装
-///   （オフセット付き）をそのまま維持する（鉄骨項の加算のみ SRC 固有とする）。
+/// コンクリート負担 `Q1` と壁筋＋側柱負担 `Q2`（短期のみ有効）の大きい方を
+/// 許容値とする。開口低減 r を乗じる。
 /// - 壁の有効長さ `le`: 側柱2本 = `l′`、側柱1本 = `0.9・l′`、側柱なし = `0.8・l′`
 ///
 /// ## 開口低減係数
@@ -88,15 +70,10 @@ pub struct RcWallInput {
 pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
     let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
 
-    // 開口低減係数 r。RC規準18条の `min(1−l0/l, 1−√(h0l0/hl), 1−h0/h)` は
-    // 恒等的に `1 − max(l0/l, r0, h0/h)`（終局側と同一式）であるため、
-    // Layer 0 の `squid_n_core::rc_wall_capacity::wall_opening_reduction_strength`
-    // へ集約する（別実装のままだと片方だけ直したときに静かに乖離する）。
     let r = squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(inp.opening);
 
     let q1 = r * inp.t * inp.l * fs;
 
-    // 壁の有効長さ le。
     let le = match inp.side_columns.len() {
         n if n >= 2 => inp.l_clear,
         1 => 0.9 * inp.l_clear,
@@ -124,8 +101,6 @@ pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
     };
     let term_label = if inp.long_term { "長期" } else { "短期" };
     let basis = format!("RC規準18条 耐震壁せん断検定 ({})", term_label);
-    // 単一式（Shear）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),
@@ -139,7 +114,6 @@ pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
         }],
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

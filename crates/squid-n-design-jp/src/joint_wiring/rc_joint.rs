@@ -13,7 +13,6 @@ pub(super) fn check_rc_joint(
     nid: NodeId,
     out: &mut Vec<(NodeId, String, CheckResult)>,
 ) {
-    // ── RC 柱梁接合部 ────────────────────────────────────────
     let rc_col = cols.iter().find(|c| {
         matches!(c.sec.shape, Some(SectionShape::RcRect { .. })) && c.mat.fc.unwrap_or(0.0) > 0.0
     });
@@ -37,11 +36,6 @@ pub(super) fn check_rc_joint(
         } else {
             0.8 * beam0.sec.depth
         };
-        // Qdj1 の ΣMy は「大梁の降伏モーメント」の和（技術基準解説書
-        // Qdj1 = ΣMy/j・(1−ξ)）。弾性解析の梁端モーメントではなく、
-        // 梁の QD1 と同じ略算降伏モーメント（rc_mu_simple、対称配筋・
-        // スラブ筋非考慮）を用いる。RcRect でない梁（情報不足）は
-        // 従来どおり弾性端モーメントで代用する。
         let sum_beam_moments: f64 = rc_beams
             .iter()
             .map(|b| {
@@ -93,17 +87,9 @@ pub(super) fn check_rc_joint(
         };
         out.push((nid, "接合部(RC)".to_string(), rc_joint_shear_check(&inp)));
 
-        // ── RC 柱梁接合部の終局検定（Vju/Qdu）───────
-        // 接合部有効幅 bj = bb + 2·bai。終局検定の bai は bi/2 と D/4 の
-        // **小さい方**（許容応力度検定の「大きい方」とは規定が異なる。
-        // 終局は靭性保証型指針系の有効幅で、小さい方が安全側）。
         let bi = (col.sec.width - beam0.sec.width) / 2.0;
         let bai = (bi / 2.0).min(col.sec.depth / 4.0).max(0.0);
         let bj = beam0.sec.width + 2.0 * bai;
-        // 上端・下端鉄筋引張力 T・T′。梁の main_x（せい方向主筋）を上下対称配筋
-        // と仮定し、片側（総断面積の半分）が降伏引張力を負担するとみなす。
-        // スラブ筋の寄与は本配線では未加算（モデルに接合部位置のスラブ筋情報が
-        // ないため。T にスラブ筋を含める場合と比べ Qdu を安全側に過小評価しうる）。
         let (t_top, t_bottom) = if let Some(SectionShape::RcRect { rebar, .. }) = &beam0.sec.shape {
             let half_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
             let sigma_y = crate::material_strength::rebar_sigma_y_of(beam0.rebar_mat);
@@ -111,7 +97,6 @@ pub(super) fn check_rc_joint(
         } else {
             (0.0, 0.0)
         };
-        // 上下柱の存在せん断力の平均 Qcu（存在応力の場合）。
         let col_shears: Vec<f64> = cols
             .iter()
             .filter_map(|c| c.end_forces(nid))
@@ -122,9 +107,6 @@ pub(super) fn check_rc_joint(
         } else {
             col_shears.iter().sum::<f64>() / col_shears.len() as f64
         };
-        // 直交梁の有無による補正係数 φ（両側直交梁付き=1.0、上記外=0.85）。
-        // 節点に取り付く水平梁が 4 本以上（2 方向×両側）なら両側直交梁付きと
-        // みなす簡略判定とする。
         let phi = if beams.len() >= 4 { 1.0 } else { 0.85 };
         let u = crate::ultimate::rc_joint_ultimate(&crate::ultimate::RcJointUltimateInput {
             shape,
@@ -142,8 +124,6 @@ pub(super) fn check_rc_joint(
         } else {
             f64::INFINITY
         };
-        // 単一式（Shear）の検定のため、全文を component の detail に置き、
-        // 共通 detail は空文字列とする。
         out.push((
                 nid,
                 "接合部終局(RC)".to_string(),

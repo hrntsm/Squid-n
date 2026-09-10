@@ -33,7 +33,6 @@ pub fn steel_beam_lateral_buckling_ratio(lb: f64, h: f64, af: f64, sigma_y: f64)
         return 1.0;
     }
     let x = lb.max(0.0) * h / af;
-    // (e1, e2, slope, tail_coeff): 中間域 1−slope·(x−e1)、末尾域 tail_coeff/x。
     let (e1, e2, slope, tail_coeff) = if (sigma_y - 235.0).abs() < 1.0 {
         (300.0, 835.0, 0.00075, 500.0)
     } else if (sigma_y - 325.0).abs() < 1.0 {

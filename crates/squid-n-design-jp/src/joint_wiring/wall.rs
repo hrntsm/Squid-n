@@ -17,7 +17,6 @@ pub(super) fn check_walls(
     term: LoadTerm,
     out: &mut Vec<(NodeId, String, CheckResult)>,
 ) {
-    // ── 耐震壁（Wall 要素 × RcWall 形状） ────────────────────────
     for (eid, forces) in member_forces {
         let Some(elem) = model.element(*eid) else {
             continue;
@@ -38,8 +37,6 @@ pub(super) fn check_walls(
         if fc <= 0.0 {
             continue;
         }
-        // 壁筋の材質は断面が持つ。縦筋は主筋欄、横筋はせん断補強筋欄から引き、
-        // 未割当のときは規格上の最小グレードである SD295 相当（295 N/mm²）を既定とする。
         let wall_shear_mat = model.element_shear_rebar_material(elem);
         let sigma_y_wall =
             squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))
@@ -48,7 +45,6 @@ pub(super) fn check_walls(
             .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
         let high_strength_shear_rebar =
             squid_n_core::material_grade::is_high_strength_shear_material(wall_shear_mat);
-        // 壁の平面寸法: 節点群の水平距離の最大 = l、鉛直 extent = h。
         let coords: Vec<[f64; 3]> = elem
             .nodes
             .iter()
@@ -72,26 +68,12 @@ pub(super) fn check_walls(
         let h = coords.iter().map(|c| c[2]).fold(f64::MIN, f64::max)
             - coords.iter().map(|c| c[2]).fold(f64::MAX, f64::min);
 
-        // 壁自重属性（開口面積合計・個別開口寸法）。未登録の壁は開口ゼロ
-        // （無開口の耐震壁）として扱う。柱際スリットの有無は耐震壁判定でのみ効き、
-        // その判定は `wall_is_seismic` へ委ねている。
         let attr = model.wall_attrs.iter().find(|w| w.elem == elem.id);
 
-        // 開口寸法 (l0',h0') の評価。h・l ≤ 0（寸法不定）の場合は開口ゼロ扱い
-        // とする。
         let (mut l0p, mut h0p) = if h > 1e-9 && l > 1e-9 {
             match attr.and_then(|a| a.opening_dims_for(model.multi_opening_mode)) {
-                // モード適用後の開口が単一（複数開口の包絡・統合の結果 1 個に
-                // なった場合を含む）: 実寸法をそのまま使う（γ1=1-l0/l・
-                // γ3=1-h0/h へ実寸法が直接効くため、等価開口への置換はしない）。
                 Some(dims) if dims.len() == 1 => dims[0],
-                // モード適用後も複数開口が残る場合（Auto で包絡しきれない対
-                // が残る・Envelope で位置不明の開口が残る・Equivalent で
-                // 複数開口のまま）は、面積総和を保つ単一の等価開口に統合する
-                // （RC規準（耐震壁の複数開口の等価化））。
                 Some(dims) => equivalent_opening(&dims, l, h),
-                // 個別寸法が未入力（合計面積のみ）の場合は従来どおり、壁と
-                // 同じ辺長比を持つ擬似ペアから等価開口を復元する（後方互換）。
                 None => {
                     let area = attr
                         .map(|a| a.total_opening_area_for(model.multi_opening_mode))
@@ -106,35 +88,21 @@ pub(super) fn check_walls(
         } else {
             (0.0, 0.0)
         };
-        // 開口寸法が壁寸法を超える場合のガード（実寸法入力の誤り等に対する
-        // 安全側処理）。
         l0p = l0p.clamp(0.0, l);
         h0p = h0p.clamp(0.0, h);
 
-        // 耐震壁判定（RC規準（耐震壁判定））。四周が柱・梁に囲まれていない・
-        // スリットあり・壁厚 <120mm・開口周比 r0>0.4 のいずれかに該当する壁は
-        // 耐震壁として扱わないため、RC規準18条の耐震壁せん断検定自体を対象外とする。
-        //
-        // 判定は解析側（`squid_n_element::wall::misc_wall::wall_is_seismic`）へ委ねる。
-        // 検定側で同じ規定を独立に実装すると、解析では雑壁なのに検定では耐震壁と
-        // いった食い違いが生じるため、耐震壁か否かの答えは 1 か所に持つ。
         if !squid_n_element::wall::misc_wall::wall_is_seismic(elem, model) {
             continue;
         }
-        // 本検定は RC 規準 18 条の RC 耐震壁の式のため、RC 壁のみを対象とする。
-        // 鋼板耐震壁も耐震壁としては成立する（`wall_is_seismic`）が、RC の式を
-        // 適用すると根拠のない検定比を返すため対象外とする。
         if !squid_n_element::wall::misc_wall::is_rc_wall(elem, model) {
             continue;
         }
-        // 側柱: 壁節点のうち 2 節点を両端に持つ鉛直部材。
         let wall_nodes = &elem.nodes;
         let mut side_columns = Vec::new();
         let mut sum_col_depth = 0.0;
-        // せん断非線形トリリニア（Qc/βu/Qu）用の側柱諸元の集計。
-        let mut col_gross_area = 0.0_f64; // Σ b·d（Aw の側柱分）
-        let mut col_main_area_max = 0.0_f64; // 引張側柱1本の主筋量の代表値
-        let mut dc_max = 0.0_f64; // 圧縮側柱せい Dc の代表値
+        let mut col_gross_area = 0.0_f64;
+        let mut col_main_area_max = 0.0_f64;
+        let mut dc_max = 0.0_f64;
         for m in members {
             if !m.is_column() {
                 continue;
@@ -144,9 +112,6 @@ pub(super) fn check_walls(
             if !(wall_nodes.contains(&n0) && wall_nodes.contains(&n1)) {
                 continue;
             }
-            // SRC 側柱（内蔵鉄骨あり）はウェブせん断断面積 As と鋼種の F 値から
-            // sfs・As を Qc への加算項として算定する（冒頭 doc 参照）。RC 側柱
-            // （内蔵鉄骨なし）は 0。
             let steel_shear = match m.sec.shape {
                 Some(SectionShape::SrcRect {
                     steel_height,
@@ -156,7 +121,6 @@ pub(super) fn check_walls(
                 }) => {
                     let as_web =
                         (steel_web_thick * (steel_height - 2.0 * steel_flange_thick)).max(0.0);
-                    // 内蔵鉄骨の鋼種は断面の材料が持つ。
                     let steel_name = m.steel_mat.map(|mm| mm.name.as_str()).unwrap_or("");
                     let f = crate::steel::steel_f_value_prefix(
                         steel_name,
@@ -183,7 +147,6 @@ pub(super) fn check_walls(
                 b,
                 d_eff: d - dt,
                 pw,
-                // せん断補強筋の材質は断面が持つ材料の名前で決まる。
                 w_ft: crate::rc::rebar_allowable_shear(
                     m.shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),
                     term == LoadTerm::Long,
@@ -191,7 +154,6 @@ pub(super) fn check_walls(
                 steel_shear,
             });
             sum_col_depth += d;
-            // 非線形トリリニア用: 側柱の全断面積・主筋量・せいを集計。
             col_gross_area += b * d;
             dc_max = dc_max.max(d);
             let main_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
@@ -199,7 +161,6 @@ pub(super) fn check_walls(
             col_main_area_max = col_main_area_max.max(main_area);
         }
         let l_clear = (l - sum_col_depth / 2.0).max(0.1 * l);
-        // 設計用せん断力: 等価梁化された壁要素内力の最大水平せん断成分（暫定）。
         let q_design = forces
             .iter()
             .map(|(_, f)| f[1].abs().max(f[2].abs()))
@@ -210,15 +171,11 @@ pub(super) fn check_walls(
             l_clear,
             fc,
             ps,
-            // 壁筋の材質も断面が持つ材料の名前で決まる。
             w_ft: crate::rc::rebar_allowable_shear(
                 wall_shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),
                 term == LoadTerm::Long,
             ),
             side_columns,
-            // 開口寸法 (l0',h0')（単一開口は実寸法・複数開口は等価開口・
-            // 面積のみは擬似等価開口）を 18条のγ式（r=min(γ1,γ2,γ3)）へ
-            // 供給する（冒頭 doc 参照。02章の r0/r とは別式のため流用しない）。
             opening: if l0p > 1e-9 && h0p > 1e-9 {
                 Some((l0p, h0p, h, l))
             } else {
@@ -230,18 +187,12 @@ pub(super) fn check_walls(
         let cr = rc_wall_shear_check(&inp);
         out.push((elem.nodes[0], "耐震壁(RC)".to_string(), cr));
 
-        // ── せん断非線形トリリニア骨格（Qc/βu/Qu、技術基準解説書）──
-        // 非線形解析のせん断ばね骨格。付帯柱の主筋量が得られる耐震壁のみ算定する。
         let aw = thickness * l + col_gross_area;
         let d_wall = l + sum_col_depth / 2.0;
         if col_main_area_max > 0.0 && aw > 0.0 && d_wall > 0.0 {
-            // 等価壁厚 te = Aw/D（壁厚 t の 1.5 倍以下、t 以上）。
             let te = (aw / d_wall).clamp(thickness, 1.5 * thickness);
-            // 平均軸方向応力度 σ0 = 圧縮軸力/Aw（引張は 0）。
             let n_comp = forces.iter().map(|(_, f)| -f[0]).fold(0.0_f64, f64::max);
             let sigma_0 = n_comp / aw;
-            // せん断スパン比 M/(Q·D): |M| 最大位置の M/Q を D で割る。
-            // せん断力が実質 0 の位置しかない場合は h/(2·D)（反曲点中央）で代用。
             let shear_span_ratio = forces
                 .iter()
                 .max_by(|a, b| {
@@ -278,10 +229,7 @@ pub(super) fn check_walls(
                 },
             };
             let tri = wall_shear_trilinear(&tri_inp);
-            // 終局せん断強度に対する設計用せん断力の比（Qu 検定）。
             let ratio = if tri.qu > 0.0 { q_design / tri.qu } else { 0.0 };
-            // 単一式（Shear）の検定のため、全文を component の detail に置き、
-            // 共通 detail は空文字列とする。
             let detail = format!(
                 "Qc={:.1} kN, βu={:.3}, Qu={:.1} kN, r={:.3}, QD={:.1} kN（せん断非線形トリリニア骨格）",
                 tri.qc / 1000.0,

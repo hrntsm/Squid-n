@@ -109,14 +109,6 @@ pub(super) fn column_mu(
 
 /// 靭性指針式による終局せん断信頼強度 `Vu` [N]（[`rc_shear_ductility`]）を断面諸元から
 /// 算定する。`b_dir`=幅, `d_dir`=せい, `je`=トラス機構有効せい（`jt` を用いる）。
-///
-/// # 簡略化（doc 兼申し送り）
-/// 靭性指針の `be`（トラス機構有効幅＝外側横補強筋の芯々間隔）・`Ns`（中子筋本数）は
-/// モデルに直接保持されないため、以下で近似する:
-/// - `be = 幅 − 2·(かぶり + 補強筋径/2)`（せん断補強筋のコア芯々幅）。
-/// - `pwe = aw/(be·s)`（`aw`＝1 組の補強筋断面積、`s`＝ピッチ）。
-/// - `Ns = legs/2 − 1`（2 本脚→Ns=0、4 本脚→Ns=1、…）。
-/// - 引張軸力（`n_axial < 0`）の柱は `tanθ=0`（アーチ機構無効）。
 #[allow(clippy::too_many_arguments)]
 fn member_vu_ductility(
     b_dir: f64,
@@ -176,8 +168,6 @@ fn resolve_hoop_ultimate(
         ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy,
     };
     let grade = opts.shear_grade.as_deref();
-    // 高強度品は製品表（Fc 依存の頭打ち込み）、普通強度（SD*/SR*）は規格の基準強度、
-    // 材質未設定のみ既定値へ落とす。
     let sigma_wy = grade
         .and_then(|g| ultimate_hoop_sigma_wy(g, fc))
         .or_else(|| {

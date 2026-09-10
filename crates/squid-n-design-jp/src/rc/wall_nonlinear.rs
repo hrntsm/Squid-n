@@ -1,25 +1,8 @@
-//! RC 造耐震壁の**せん断非線形特性（トリリニア）**（技術基準解説書
-//! 「耐震壁のせん断非線形特性」）。
+//! RC 造耐震壁の**せん断非線形特性（トリリニア）**。
 //!
-//! # 位置付け
-//! [`super::wall`] が許容応力度検定（RC 規準18条）を扱うのに対し、本モジュールは
-//! 非線形（プッシュオーバー・時刻歴）解析で用いる**せん断ばねの骨格曲線**
-//! （トリリニア）を算定する。ひび割れ・降伏（剛性低下）・終局の3点を求める。
-//!
-//! # 準拠する規準・出典
-//! - せん断ひび割れ強度 Qc・せん断降伏時剛性低下率 βu:
-//!   国土交通省「2007年版建築物の構造関係技術基準解説書」P.635-637。
-//! - 終局せん断強度 Qu（荒川mean式系・耐震壁）:
-//!   同 P.281-282, 638-639／日本建築学会「鉄筋コンクリート終局強度設計に関する
-//!   資料」P.132。
-//! - 開口低減率 r: 同 資料 P.132。
-//!
-//! # 単位系の注意（要・原典照合）
-//! Qc・βu の原式は**工学単位系（kgf/cm²・cm²）**で与えられている。本実装は
-//! 入力を SI 系（N/mm²・mm²）で受け取り、Qc は内部で kgf/cm² 系へ換算して
-//! 評価し、結果を N へ戻す。βu は σy/Fc の比のため単位に依存しない。Qu は
-//! 荒川mean式系（N/mm²・mm）でそのまま評価する（[`squid_n_core::rc_capacity`]
-//! の梁・柱 Qsu と同じ単位規約）。
+//! 非線形解析で用いるせん断ばねの骨格曲線（トリリニア）を算定する。
+//! ひび割れ・降伏（剛性低下）・終局の3点を求める。入力は SI 系で受け取り、
+//! Qc の評価は内部で工学単位系へ換算する。
 
 /// 単位換算: 1 kgf/cm² = 0.0980665 N/mm²。N/mm² → kgf/cm² は逆数を乗じる。
 const NMM2_TO_KGFCM2: f64 = 1.0 / 0.0980665;
@@ -83,36 +66,29 @@ pub struct WallShearTrilinear {
 impl WallShearTrilinear {
     /// せん断トリリニアの (せん断変形角 γ, せん断力 Q) 折れ点を返す。
     ///
-    /// `k_elastic` は初期弾性せん断剛性 K1（せん断力 Q [N] と せん断変形角 γ
-    /// [rad] の関係 Q = K1·γ、すなわち K1 = G·Aw [N]）。トリリニアは:
-    /// - 原点 → ひび割れ点 (γc, Qc)、γc = Qc/K1
-    /// - ひび割れ点 → 終局点 (γu, Qu)、γu = Qu/(βu·K1)（割線剛性 βu·K1）
+    /// `k_elastic` は初期弾性せん断剛性 K1 [N]（Q = K1·γ）。
+    /// 原点・ひび割れ点・終局点の 3 点を返し、単調増加を保つ。
     ///
-    /// `k_elastic <= 0` の場合は変形を 0 とした縮退点列を返す（呼び出し側で
-    /// 剛性が定義できない異常入力の保護）。
+    /// `k_elastic <= 0` の場合は変形を 0 とした縮退点列を返す。
     pub fn skeleton_points(&self, k_elastic: f64) -> [(f64, f64); 3] {
         if k_elastic <= 0.0 {
             return [(0.0, 0.0), (0.0, self.qc), (0.0, self.qu)];
         }
         let gamma_c = self.qc / k_elastic;
-        // 終局点は割線剛性 βu·K1 上にある（せん断降伏時剛性低下率の定義）。
         let gamma_u = if self.beta_u > 0.0 {
             self.qu / (self.beta_u * k_elastic)
         } else {
             gamma_c
         };
-        // ひび割れ後に変形が戻る（Qu 割線がひび割れ点より内側）異常入力では
-        // 少なくとも単調増加を保つよう終局点をひび割れ点の外側へ丸める。
         let gamma_u = gamma_u.max(gamma_c);
         [(0.0, 0.0), (gamma_c, self.qc), (gamma_u, self.qu)]
     }
 }
 
-/// せん断ひび割れ強度 Qc [N]（技術基準解説書 P.635-637・耐震壁）。
+/// せん断ひび割れ強度 Qc [N]（耐震壁）。
 ///
 /// `Qc = (0.043·pg + 0.051)·Fc·Aw`（Fc [kgf/cm²]・Aw [cm²]・pg [%] → Qc [kgf]）。
-/// `pg = 100·(引張側最端の柱1本の主筋量)/Aw` [%]。Fc は 1 乗で用いる
-/// （√Fc としていた従来実装は Qc を大幅に過小評価する誤りだった）。
+/// `pg = 100·(引張側最端の柱1本の主筋量)/Aw` [%]。Fc は 1 乗で用いる。
 ///
 /// 入力は SI 系で受け取り、内部で工学単位系へ換算して評価し N へ戻す。
 /// 不正入力（Fc・Aw のいずれかが 0 以下）は 0.0 を返す。
@@ -122,7 +98,6 @@ pub fn wall_shear_crack(inp: &WallShearTrilinearInput) -> f64 {
     }
     let fc_kgf = inp.fc * NMM2_TO_KGFCM2;
     let aw_cm2 = inp.aw / 100.0;
-    // pg [%]（面積比は単位に依存しないため mm² のまま比を取り 100 倍する）。
     let pg_pct = 100.0 * inp.tension_column_main_area.max(0.0) / inp.aw;
     let qc_kgf = (0.043 * pg_pct + 0.051) * fc_kgf * aw_cm2;
     qc_kgf * KGF_TO_N
@@ -144,7 +119,6 @@ pub fn wall_shear_beta_u(inp: &WallShearTrilinearInput) -> f64 {
 /// `r = 1 − max(r0, l0/lw, h0/h)`、`r0 = √(h0·l0/(h·lw))`。
 /// 無開口（`opening == None`）は 1.0。極端な開口で負になる場合は 0 にクランプする。
 pub fn wall_shear_opening_reduction(opening: Option<(f64, f64, f64, f64)>) -> f64 {
-    // 本体は Layer 0 の squid_n_core へ移設（壁要素の非線形化から参照するため）。
     squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(opening)
 }
 
@@ -166,7 +140,6 @@ pub fn wall_shear_opening_reduction(opening: Option<(f64, f64, f64, f64)>) -> f6
 /// 開口低減 r を乗じた値を返す。不正入力（Fc・te・D・at のいずれかが 0 以下、
 /// または d ≤ 0）は 0.0 を返す。
 pub fn wall_shear_ultimate(inp: &WallShearTrilinearInput) -> f64 {
-    // 本体は Layer 0 の squid_n_core へ移設（壁要素の非線形化から参照するため）。
     squid_n_core::rc_wall_capacity::wall_shear_ultimate(
         &squid_n_core::rc_wall_capacity::RcWallShearInput {
             fc: inp.fc,

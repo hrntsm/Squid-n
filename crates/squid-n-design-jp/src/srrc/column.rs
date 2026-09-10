@@ -123,11 +123,8 @@ fn src_column_nm_curve(
         let ratio = (log_min + t * (log_max - log_min)).exp();
         let xn = axis.props.d_full * ratio;
         if let Some(pt) = src_column_nm_at_xn(axis, fc_prime, n_ratio, xn) {
-            if pt.0.is_finite() && pt.1.is_finite() {
-                // 引張側アンカーより外の点は含めない（rNt が最小 N）。
-                if pt.0 >= rnt {
-                    pts.push(pt);
-                }
+            if pt.0.is_finite() && pt.1.is_finite() && pt.0 >= rnt {
+                pts.push(pt);
             }
         }
     }
@@ -152,7 +149,6 @@ fn src_column_axis_ma(
     curve: &[(f64, f64)],
 ) -> f64 {
     if n_design >= rnt && n_design <= rnc {
-        // N-M 相関曲線の補間は RC 柱と共通の実装を使う（`crate::rc::interp_ma`）。
         s_mo + interp_ma(curve, n_design)
     } else if n_design > rnc {
         let sn = n_design - rnc;
@@ -180,11 +176,8 @@ pub(crate) fn src_column_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋の材質は**断面が持つ材料**の名前で決まる（未割当は検定前に弾く）。
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
 
-    // 軽量コンクリート1種・2種は許容応力度（圧縮・せん断）を 0.9 倍に低減
-    // （SRC規準1987。class 対応版を使用）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
     let fs = concrete_allowable_shear_class(fc_raw, mat.concrete_class, long_term);
     let n_ratio = young_ratio_n(fc_raw);
@@ -197,7 +190,7 @@ pub(crate) fn src_column_check(
     let f_value = steel_f_value_prefix(steel_grade, thickness).unwrap_or(235.0);
     let s_ft = steel_ft(f_value, ctx.term);
     let s_fs = steel_fs(f_value, ctx.term);
-    let s_fc = s_ft; // 座屈考慮なし（モジュール doc 参照）
+    let s_fc = s_ft;
 
     let (sa, sz_z, sz_y) = steel_h_props(
         steel_height,
@@ -206,8 +199,6 @@ pub(crate) fn src_column_check(
         steel_flange_thick,
     );
 
-    // 鉄骨フランジ食い込みによる fc′ 低減: fc′ = fc・(1 - 15・s_pc)
-    // （s_pc = 鉄骨フランジ断面積 / 全断面積）。
     let s_pc = (steel_width * steel_flange_thick) / (b * d_full).max(1e-9);
     let fc_prime = (fc_allow * (1.0 - 15.0 * s_pc)).max(0.0);
 
@@ -246,7 +237,7 @@ pub(crate) fn src_column_check(
     let curve_z = src_column_nm_curve(&axis_z, fc_prime, n_ratio, rnc, rnt);
     let curve_y = src_column_nm_curve(&axis_y, fc_prime, n_ratio, rnc, rnt);
 
-    let n_design = -forces.n; // 圧縮を正とする設計軸力に変換
+    let n_design = -forces.n;
 
     let s_mo_z = sz_z * s_ft;
     let s_mo_y = sz_y * s_ft;
@@ -266,9 +257,6 @@ pub(crate) fn src_column_check(
         0.0
     };
 
-    // 地震時短期の設計用せん断力（構造規定方式）: rMu は軸力を考慮した
-    // `rc_column_mu_simple`（柱頭・柱脚同一断面・同一設計軸力の仮定）で
-    // 算定する。sft は常に短期値を用いる。
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
     let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
     let r_mu_z = rc_column_mu_simple(
@@ -304,10 +292,6 @@ pub(crate) fn src_column_check(
         n_design,
     );
 
-    // β: 鉄骨ウェブの形式と寸法による係数（SRC規準 P.96-97 の併用式）。
-    // 強軸方向（ウェブがせん断を負担）は β = n・tw・sd/(b・rj)、
-    // 弱軸方向（フランジが負担）は β = 1.33・n・bf・tf/(b・rj)。
-    // sd はフランジ重心間距離 = H − tf、n はヤング係数比。
     let n_ratio = young_ratio_n(fc_raw);
     let sd_flange = (steel_height - steel_flange_thick).max(0.0);
     let beta_z = if props_z.b * props_z.j > 1e-9 {
@@ -321,8 +305,6 @@ pub(crate) fn src_column_check(
         0.0
     };
 
-    // せん断スパン比の割増係数は SRC規準の柱規定 1≦rα≦2 による（RC 柱の 1.5 とは
-    // 異なる）。弱軸方向は shear_span_y（|My|max と対応 |Qz|）を用いる。
     let (m_alpha_z, q_alpha_z) = ctx.shear_span.unwrap_or((forces.mz.abs(), forces.qy.abs()));
     let b_prime_z = (b - steel_width).max(0.0);
     let seismic_z = SrcSeismicCtx {
@@ -346,7 +328,6 @@ pub(crate) fn src_column_check(
         fs,
         w_ft,
         s_fs,
-        // 強軸方向の鉄骨部 sQA = dw・tw・sfs（dw = H − 2tf）。
         steel_web_thick * (steel_height - 2.0 * steel_flange_thick),
         2.0,
         &super::SrcShearMode::Column { beta: beta_z },
@@ -378,8 +359,6 @@ pub(crate) fn src_column_check(
         fs,
         w_ft,
         s_fs,
-        // 弱軸方向の鉄骨部 sQA = (4/3)・bf・tf・sfs（SRC規準。従来の 2・tf・bf は
-        // 1.5 倍の非保守側だった）。
         (4.0 / 3.0) * steel_width * steel_flange_thick,
         2.0,
         &super::SrcShearMode::Column { beta: beta_y },
@@ -397,15 +376,11 @@ pub(crate) fn src_column_check(
     } else {
         "弾性分担"
     };
-    // AxialBending 固有: 軸耐力（RC・鉄骨、圧縮/引張）・作用軸力・
-    // 二軸曲げ耐力・作用モーメント・鉄骨フランジ食い込みによる fc' 低減
-    // （s_pc・fc' は rNc の算定に用いるため軸+曲げ側）。
     let axial_bending_detail = format!(
         "rNc={:.1} N, rNt={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, \
          MAz={:.1} N·mm, MAy={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, s_pc={:.5}, fc'={:.3}",
         rnc, rnt, s_nc, s_nt, n_design, ma_z, ma_y, forces.mz, forces.my, s_pc, fc_prime
     );
-    // Shear 固有: 鉄骨・RC の許容せん断力（強軸・弱軸）と設計用せん断力の決定方式。
     let shear_detail = format!(
         "sQAz={:.1} N, rQAz={:.1} N, sQAy={:.1} N, rQAy={:.1} N, \
          設計用せん断力(z)={qd_note_z}, 設計用せん断力(y)={qd_note_y}",
@@ -425,17 +400,12 @@ pub(crate) fn src_column_check(
         },
     ];
 
-    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),
         components,
     }
 }
-
-// ============================================================================
-// テスト
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

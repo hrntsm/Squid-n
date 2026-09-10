@@ -8,7 +8,6 @@
 //! 例: `squid_n_core::rc_capacity::rc_capacity_input_from_rect`）を無修正で維持するための
 //! 再エクスポートのみを行う。
 pub use squid_n_core::rc_capacity::*;
-
 #[cfg(test)]
 mod tests {
     use super::*;

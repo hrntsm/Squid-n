@@ -1,52 +1,6 @@
 //! SRC 造の断面検定（許容応力度検定。SRC 規準 1987 の
 //! SRC 梁・SRC 柱部分に準拠）。
 //!
-//! SRC = 鉄骨鉄筋コンクリート造（Steel Reinforced Concrete）。ディレクトリ名を
-//! `src` ではなく `srrc` としているのは、Rust の慣例的なソースルート
-//! `crates/squid-n-design-jp/src/` と名前が衝突するため（`srrc` = SRC 造の意）。
-//!
-//! 準拠する規準:
-//! - 日本建築学会「鉄骨鉄筋コンクリート構造計算規準・同解説」
-//!   （SRC 規準 1987年版）の累加強度式、および構造規定。
-//!
-//! # 材料の扱い
-//! - `SrcRect`: コンクリート強度 = `Material.fc`、主筋グレード = `Material.name`
-//!   （RC の慣習を踏襲）、内蔵鉄骨の鋼種 = `SectionShape::SrcRect.steel_grade`。
-//! - `Material.fc` が `None`/0 の場合は検定をスキップする（`ok=true`,
-//!   `basis` に "Fc未設定" と記載）。
-//! - 鋼材グレードが [`crate::steel::steel_f_value_prefix`] で解決できない
-//!   場合は SS400 相当（F=235）にフォールバックする（安全側とは限らないため
-//!   実運用では鋼種名を確認すること）。
-//!
-//! # SRC規準1987 からの主な簡略化（doc 内に個別関数でも記載）
-//! 1. SRC 梁・柱の地震時短期の設計用せん断力（構造規定方式）は実装済み
-//!    （[`src_seismic_qd`] 参照。`ctx.seismic_qd` が Some で当該評価位置の
-//!    長期内力が見つかる場合のみ有効。それ以外（長期・積雪時・暴風時、
-//!    または長期内力が未提供）は従来どおり弾性分担のみで比較する）。
-//!    ただし以下はなお簡略化している:
-//!    - SRC 規準 1987 が定める「構造規定方式」と「SRC 規準方式」のうち
-//!      構造規定方式のみを実装し、選択機能は設けない。
-//!    - `sM1+sM2 = 2・sZ・sft` は部材両端が同一鉄骨・sft（短期許容引張
-//!      応力度）に達するとみなす近似（本来は許容"曲げモーメント"
-//!      `sMA` を用いるべきだが、SRC 柱の `sMA(N)` は軸力依存の複雑な
-//!      3 分岐式であり、部材端ごとに軸力が異なりうるため、鉄骨単体の
-//!      全塑性相当値 `sZ・sft` で代替する安全側とは限らない近似とする）。
-//!    - `rMu1+rMu2 = 2・rMu` も同様に部材両端同一断面・同一設計軸力の
-//!      仮定（[`squid_n_core::rc_capacity::rc_mu_simple`]/
-//!      [`squid_n_core::rc_capacity::rc_column_mu_simple`] を使用）。
-//! 2. SRC 柱の内蔵鉄骨の `s_fc` は、被覆コンクリートによる拘束で単材座屈が
-//!    生じにくいことから `s_fc = s_ft` のままとする（SRC 規準の座屈検討は
-//!    別途必要になり得る）。
-//! 3. SRC 柱の RC 部分の中立軸圧縮側鉄骨面積 `s_ac`（fc′ 低減用）は
-//!    軸に依らず `steel_width・steel_flange_thick` の一つの値を用いる
-//!    （本来は曲げ軸ごとに異なりうる）。
-//! 4. SRC 柱のせん断は強軸・弱軸を対称的に扱うため、RC 柱検定（`rc/`）と
-//!    同様に「b/D 入れ替え」の近似を用いる。
-//!
-//! # モジュール構成（断面検定の項目に対応）
-//! - 本ファイル（`srrc/mod.rs`）: 共通の断面諸元抽出・せん断の鉄骨/RC
-//!   弾性分担・地震時短期の設計用せん断力（構造規定方式）・`SrcDesign`
-//!   （`DesignCheck` 実装、梁/柱への振り分け）。
 //! - [`beam`][]: 鉄骨鉄筋コンクリート造梁の断面検定（累加強度式 MA=sMo+rMA）。
 //! - [`column`][]: 鉄骨鉄筋コンクリート造柱の断面検定（累加強度式・fc′低減）。
 //! - [`panel_zone`][]: SRC 造柱梁接合部（パネルゾーン）の断面検定（SRC 規準）。
@@ -62,15 +16,6 @@ pub mod beam_nonlinear;
 mod column;
 pub mod panel_zone;
 
-// ============================================================================
-// 0. 共通ヘルパ
-// ============================================================================
-
-// 断面諸元（主筋断面積・dt・pw・1 軸分の断面諸元）と、せん断スパン比 α・
-// 検定比 M/MA の規約は RC 検定と共通（SRC 規準 1987 も RC 部分は RC 規準の
-// 考え方を踏襲する）。RC 側の実装を単一情報源として共用し、SRC 側での
-// 再実装はしない（片側だけの修正で仕様が乖離するのを防ぐ）。
-// α の退化時規約（Q≈0 は下限 1.0）も RC と共通（`crate::rc::shear_alpha`）。
 pub(crate) use crate::ratio_or_large;
 pub(crate) use crate::rc::{
     bar_set_area, rect_axis_props as src_rect_axis_props, shear_alpha, AxisProps as SrcAxisProps,
@@ -93,11 +38,6 @@ fn steel_h_props(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> 
     (a, sz_strong, sz_weak)
 }
 
-// ============================================================================
-// 1. せん断の鉄骨/RC 弾性分担・地震時短期の設計用せん断力（構造規定方式）
-// （SRC 梁・柱の両方から共通利用する）
-// ============================================================================
-
 struct SrcShearResult {
     ratio: f64,
     s_q: f64,
@@ -107,7 +47,7 @@ struct SrcShearResult {
     alpha: f64,
     pw: f64,
     /// 地震時短期の構造規定方式（[`src_seismic_qd`]）で `s_q`/`r_q` を
-    /// 算定したか（false の場合は従来の弾性分担）。
+    /// 算定したか（false の場合は弾性分担）。
     used_qd: bool,
 }
 
@@ -132,7 +72,7 @@ struct SrcSeismicCtx<'a> {
 
 /// SRC 梁・柱の地震時短期の設計用せん断力（構造規定方式、SRC 規準 1987）。
 /// `seismic.ctx.seismic_qd` が None、または長期内力に
-/// 同一評価位置が見つからない場合は None を返す（呼び出し側は従来の弾性
+/// 同一評価位置が見つからない場合は None を返す（呼び出し側は弾性
 /// 分担にフォールバックする）。
 ///
 /// - `sQD = sQL + (sM1+sM2)/l′`（`sQL = share・|QL|`、`sM1+sM2 = 2・sZ・sft`）
@@ -228,9 +168,6 @@ fn src_shear_check(
     let alpha = shear_alpha(m_for_alpha, q_for_alpha, rd, alpha_max);
     let q = q_signed.abs();
 
-    // SRC 規準1987 準拠: 「pw が 0.6% を超える場合は 0.6% として算定する」
-    // （長期・短期の区別は記載されていないため、長短期とも 0.6% を上限とする。
-    // RC の短期 1.2% とは異なる点に注意）。
     let pw_cap = 0.006;
     let pw = pw_raw.min(pw_cap);
 
@@ -240,9 +177,6 @@ fn src_shear_check(
         0.0
     };
 
-    // 柱・長期: 併用式 QA = (1+β)·b·rj·a′·fs（SRC規準 P.96-97）。
-    // 鉄骨・RC の分担ではなく、β で鉄骨ウェブの寄与を見込んだ全体式を
-    // 全せん断力と比較する。
     if let SrcShearMode::Column { beta } = mode {
         if seismic.ctx.term == LoadTerm::Long {
             let a_prime = if b_ratio >= alpha / 3.0 {
@@ -278,9 +212,6 @@ fn src_shear_check(
 
     let s_qa = steel_shear_area * s_fs;
 
-    // RC 部の許容せん断力。柱の短期 rQAS1 は α を含まない（SRC規準。
-    // α を乗じると許容を最大2倍に過大評価する非保守側の誤りとなる）。
-    // 梁は長短とも rα（α_L/α_S1/α_S2）を含む。
     let r_qa1 = match mode {
         SrcShearMode::Beam => b * rj * (alpha * fs + 0.5 * pw * w_ft),
         SrcShearMode::Column { .. } => b * rj * (fs + 0.5 * pw * w_ft),
@@ -302,10 +233,6 @@ fn src_shear_check(
         used_qd,
     }
 }
-
-// ============================================================================
-// 2. DesignCheck 実装（梁は srrc/beam.rs、柱は srrc/column.rs へ振り分け）
-// ============================================================================
 
 /// SRC 梁・SRC 柱の断面検定（`SectionShape::SrcRect` を対象とする）。
 pub struct SrcDesign;
@@ -348,9 +275,6 @@ impl DesignCheck for SrcDesign {
             unreachable!()
         };
 
-        // 主筋・せん断補強筋・内蔵鉄骨の材料はいずれも断面が持つ。未割当のまま
-        // 既定グレードで検定すると許容応力度・F 値の根拠が消えるため、検定せず
-        // 理由を返す。
         if ctx.rebar_material.is_none() {
             return CheckOutcome::Skipped {
                 reason: "SRC検定: 主筋の材料が未割当（断面タブで主筋の材料を割り当ててください）"
@@ -371,7 +295,6 @@ impl DesignCheck for SrcDesign {
                     .to_string(),
             };
         };
-        // 内蔵鉄骨の鋼種は断面の材料が持つ（形状は材質を持たない）。
         let steel_grade = steel_mat.name.as_str();
         let cr = match ctx.kind {
             MemberKind::Beam | MemberKind::Brace => beam::src_beam_check(
@@ -406,11 +329,6 @@ impl DesignCheck for SrcDesign {
         CheckOutcome::Checked(cr)
     }
 }
-
-// ============================================================================
-// テスト（共通ヘルパ・せん断弾性分担・地震時設計用せん断力・DesignCheck 振り
-// 分けの共通経路）
-// ============================================================================
 
 #[cfg(test)]
 pub(crate) mod tests;

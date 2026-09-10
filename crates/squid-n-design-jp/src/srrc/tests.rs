@@ -628,7 +628,7 @@ fn test_src_beam_seismic_qd1_handcalc() {
     );
 }
 
-/// ctx.seismic_qd が None のときは従来どおり弾性分担のみとなり、
+/// ctx.seismic_qd が None のときは弾性分担のみとなり、
 /// used_qd=false（回帰確認）。
 #[test]
 fn test_src_beam_seismic_qd_none_falls_back_to_elastic_share() {

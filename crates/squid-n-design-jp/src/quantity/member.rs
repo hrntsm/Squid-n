@@ -65,14 +65,10 @@ pub fn girder_formwork_area(
     haunch_i: Option<Haunch>,
     haunch_j: Option<Haunch>,
 ) -> f64 {
-    // 側面（両面）: ハンチ項 (Di−D)/2×Li は側面 1 面あたり → 両面で ×2 相当。
-    // 側面ごとのせいが異なる（片側スラブ付）場合に対応するため面ごとに加算する。
     let mut area = (d_side1 + d_side2) * l;
     for h in [haunch_i, haunch_j].into_iter().flatten() {
-        // 側面ハンチの投影面積（台形の増分 (Di−D)/2×Li）を両面分。
         area += (h.d - d_side1.max(d_side2)).max(0.0) / 2.0 * h.len * 2.0;
     }
-    // 底面: B×L + (Bi−B)/2×Li + (Bj−B)/2×Lj
     area += b * l;
     for h in [haunch_i, haunch_j].into_iter().flatten() {
         area += (h.b - b).max(0.0) / 2.0 * h.len;
@@ -207,7 +203,6 @@ pub fn joist_formwork_area(b: f64, d: f64, l: f64) -> f64 {
 pub fn wall_bar_length(span: f64, s: f64, count: f64) -> f64 {
     (span + 2.0 * s) * count
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

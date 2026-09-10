@@ -236,7 +236,6 @@ fn box_limits_for(grade_name: &str, thickness: f64) -> WtLimits {
 /// （小さい）490 級を安全側として採用する。
 fn is_490_class(grade_name: &str, thickness: f64) -> bool {
     let name = grade_name.trim().to_ascii_uppercase();
-    // 名称中の3桁数値（引張強さ表記）による判定を優先する。
     for (needle, is_490) in [("490", true), ("520", true), ("550", true), ("400", false)] {
         if name.contains(needle) {
             return is_490;
@@ -298,7 +297,6 @@ pub fn s_member_rank_by_kihon(
 
             let flange_is_490 = is_490_class(grade_name, flange_thick);
             let web_is_490 = is_490_class(grade_name, web_thick);
-            // F>325 の高強度鋼は √(235/F) 低減（≒ 490級表 × √(325/F)）を適用する。
             let flange_limits = h_flange_limits(member_use, flange_is_490).scaled(
                 high_strength_scale(f_value_of(grade_name, flange_thick), false),
             );
@@ -310,7 +308,6 @@ pub fn s_member_rank_by_kihon(
             let web_rank = rank_from_limits(web_wt, &web_limits);
             worst_rank(&[flange_rank, web_rank])
         }
-        // 非対称組立 H: 上下フランジ（幅・厚が異なる）とウェブの各幅厚比ランクの最悪値。
         SectionShape::SteelBuiltH {
             height,
             upper_width,
@@ -352,7 +349,6 @@ pub fn s_member_rank_by_kihon(
                 return None;
             }
             let wt = height / thick;
-            // 角形は BCR/BCP/STKR の専用行を優先し、F>325 の高強度側は √(325/F) 低減。
             let limits = box_limits_for(grade_name, thick)
                 .scaled(high_strength_scale(f_value_of(grade_name, thick), false));
             Some(rank_from_limits(wt, &limits))
@@ -364,13 +360,10 @@ pub fn s_member_rank_by_kihon(
             }
             let wt = outer_dia / thick;
             let is_490 = is_490_class(grade_name, thick);
-            // 円形は F>325 側を 235/F（=490級表 × 325/F）で低減する。
             let limits = pipe_limits(is_490)
                 .scaled(high_strength_scale(f_value_of(grade_name, thick), true));
             Some(rank_from_limits(wt, &limits))
         }
-        // 平鋼・中実丸鋼は板要素でない中実断面、リップ溝形は冷間成形材（有効幅で別途検討）
-        // のため、いずれも本表（熱間圧延材の幅厚比ランク）の対象外。
         SectionShape::SteelChannel { .. }
         | SectionShape::SteelTee { .. }
         | SectionShape::SteelAngle { .. }

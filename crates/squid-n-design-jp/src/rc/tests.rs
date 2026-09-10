@@ -108,9 +108,7 @@ pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
     })
 }
 
-// ------------------------------------------------------------------
 // 地震時短期の設計用せん断力 QD = min(QD1, QD2)
-// ------------------------------------------------------------------
 
 #[test]
 fn test_seismic_design_shear_min_of_qd1_qd2() {
@@ -157,9 +155,7 @@ fn test_seismic_design_shear_min_of_qd1_qd2() {
     assert!((q_none - 150_000.0).abs() < 1e-6);
 }
 
-// ------------------------------------------------------------------
 // 許容応力度（RC 造検定でのみ使う独自カバレッジ分。他は material_strength.rs 側で検証）
-// ------------------------------------------------------------------
 
 #[test]
 fn test_concrete_young_modulus_plausible() {
@@ -198,9 +194,7 @@ fn test_rebar_allowable_shear_table() {
     assert!((rebar_allowable_shear("UNKNOWN", false) - 295.0).abs() < 1e-9);
 }
 
-// ------------------------------------------------------------------
 // dt（引張筋重心）
-// ------------------------------------------------------------------
 
 #[test]
 fn test_tension_dt_single_layer() {
@@ -230,9 +224,7 @@ fn test_tension_dt_two_layers() {
     assert!((dt - expected).abs() < 1e-6);
 }
 
-// ------------------------------------------------------------------
 // せん断スパン比 α・せん断耐力（普通強度・高強度せん断補強筋とも）
-// ------------------------------------------------------------------
 
 #[test]
 fn test_shear_alpha_clamp_at_upper_bound() {
@@ -554,9 +546,7 @@ fn test_shear_capacity_for_none_delegates_to_normal_regression() {
     assert!((via_dispatch - via_direct).abs() < 1e-12);
 }
 
-// ------------------------------------------------------------------
 // 軽量コンクリート（許容応力度 0.9 倍・高強度フープとの併用）
-// ------------------------------------------------------------------
 
 #[test]
 fn test_effective_damage_control_lightweight_high_strength() {
@@ -585,9 +575,7 @@ fn test_effective_damage_control_lightweight_high_strength() {
     ));
 }
 
-// ------------------------------------------------------------------
 // フォールバック・RcDesign 統合（振り分け全体の確認）
-// ------------------------------------------------------------------
 
 #[test]
 fn test_fc_missing_fallback() {

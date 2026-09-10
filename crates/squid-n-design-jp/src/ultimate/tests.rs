@@ -412,7 +412,7 @@ fn test_ultimate_check_pushover_demand() {
         "部材別 Rp=0.03 の Qsu={q3} は Rp=0 の Qsu={q0} より小さいはず"
     );
 
-    // (3) shear/rp 未指定（axial のみ）は従来どおり Qmu=2·Mu/内法（Qm 直接反映なし）。
+    // (3) shear/rp 未指定（axial のみ）は Qmu=2·Mu/内法（Qm 直接反映なし）。
     let d_axial = vec![(ElemId(0), MemberDemand::axial(1_000_000.0))];
     let ca = collect_rc_ultimate_checks(&model, &d_axial, &UltimateShearOptions::default());
     let col_a = ca.iter().find(|c| c.elem == ElemId(0)).unwrap();

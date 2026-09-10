@@ -13,8 +13,6 @@ use squid_n_element::transform::LocalFrame;
 use super::core::{center_of_rigidity, d_value, eccentricity, ColumnStiffness, Eccentricity};
 use super::misc_wall::append_misc_wall_stiffnesses;
 
-// ===== モデル抽出層（略算）=====
-
 /// 重心（質量中心）[Xg, Yg]。当該層の節点質量（並進成分）で重み付けする。
 ///
 /// 質量未定義の節点は質量 0（剛心の重み付けには寄与しない）。全質量 0 なら幾何重心。
@@ -34,7 +32,6 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
         let yg = nodes.iter().map(|n| mass(n) * n.coord[1]).sum::<f64>() / total;
         [xg, yg]
     } else {
-        // 質量未定義 → 幾何重心で代用。
         let n = nodes.len() as f64;
         let xg = nodes.iter().map(|n| n.coord[0]).sum::<f64>() / n;
         let yg = nodes.iter().map(|n| n.coord[1]).sum::<f64>() / n;
@@ -42,9 +39,7 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
     }
 }
 
-// ===== モデル自動算定層（column_stiffnesses / StoryCenters / story_centers / story_eccentricity）=====
-
-/// 当該層の各柱について方向別水平剛性（D値）と平面位置を算定して返す（仕様 §5.1）。
+/// 当該層の各柱について方向別水平剛性（D値）と平面位置を算定して返す。
 ///
 /// 中間節点で分割された鉛直材は連なりとして 1 本とみなす（[`crate::secondary::story_columns`]）。
 /// \( h \) は層の上下端床の標高差であり、セグメントの材長ではない。
@@ -53,8 +48,6 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
 /// `story` には**層の上端の階**（[`squid_n_core::model::Layer::top`]）を渡すこと。
 /// 層の柱はその上端の床に取り付くためである。
 pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness> {
-    // 最下層判定: 当該階が最下層の上端（＝基部の 1 つ上の階）なら true。
-    // D 値法の最下層は柱脚の支持条件が他層と異なるため区別する。
     let first_story = story.index() == 1;
 
     let mut result = Vec::new();
@@ -73,7 +66,6 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
         let p0 = model.nodes[elem.nodes[0].index()].coord;
         let p1 = model.nodes[elem.nodes[1].index()].coord;
 
-        // material / section が必須。
         let Some(mat) = model.element_material(elem) else {
             continue;
         };
@@ -88,22 +80,16 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
             continue;
         }
 
-        // 局所座標系から ey, ez を取得。
         let ref_vec = elem.local_axis.ref_vector;
         let frame = LocalFrame::from_nodes(p0, p1, ref_vec);
-        let ey = frame.rot[1]; // 局所 y 軸（全体方向への射影に使う）
-        let ez = frame.rot[2]; // 局所 z 軸
+        let ey = frame.rot[1];
+        let ez = frame.rot[2];
 
-        // 方向別有効断面二次モーメント（局所→全体の射影）。
-        // 全体 X 方向変位に抵抗: 局所 y 方向成分 iz, 局所 z 方向成分 iy。
-        // 断面レイヤの iy=強軸（せい方向 D³ 系）は、要素座標系では z 軸まわり
-        // （たわみ y 方向）に対応するためクロスして用いる（beam/construct.rs と同一規約）。
         let iy = sec.iz;
         let iz = sec.iy;
         let i_global_x = iz * ey[0] * ey[0] + iy * ez[0] * ez[0];
         let i_global_y = iz * ey[1] * ey[1] + iy * ez[1] * ez[1];
 
-        // 梁剛比 ΣKb（武藤 a 補正用）。当該柱の上端・下端節点に取り付く水平梁を探す。
         let (sum_kb_x, sum_kb_y) = {
             let mut skbx = 0.0_f64;
             let mut skby = 0.0_f64;
@@ -114,13 +100,11 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
                 if other.kind != ElementKind::Beam || other.nodes.len() != 2 {
                     continue;
                 }
-                // 当該柱の節点（上端または下端）を含む梁か。
                 let has_top = other.nodes.contains(&n_top.id);
                 let has_bot = other.nodes.contains(&n_bot.id);
                 if !has_top && !has_bot {
                     continue;
                 }
-                // 梁の部材軸単位ベクトル。
                 let bn0 = &model.nodes[other.nodes[0].index()];
                 let bn1 = &model.nodes[other.nodes[1].index()];
                 let bdx = bn1.coord[0] - bn0.coord[0];
@@ -130,18 +114,15 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
                 if bl < 1e-12 {
                     continue;
                 }
-                // 鉛直材は梁剛比に算入しない（全クレート共通の 45° 余弦基準）。
                 if squid_n_core::geom::is_vertical_axis(bn0.coord, bn1.coord) {
                     continue;
                 }
                 let bex = [bdx / bl, bdy / bl, bdz / bl];
-                // 梁の断面二次モーメント（強軸＝断面レイヤの iy）と梁剛比。
                 let beam_i_strong = match other.section {
                     Some(s) => model.sections[s.index()].iy,
                     None => continue,
                 };
                 let kb = beam_i_strong / bl;
-                // 方向別に効く梁の判定（全クレート共通の 45° 余弦基準）。
                 if squid_n_core::geom::axis_dominates(bex, 0) {
                     skbx += kb;
                 }

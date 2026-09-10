@@ -1,15 +1,4 @@
 //! RC 柱の短期設計せん断力用 ΣMy（崩壊メカニズム判定）。
-//!
-//! 参照実装マニュアル 2.5.3:
-//! - 梁降伏形の端 → 寄与 = 梁 My の和 / 2
-//! - 柱降伏形の端 → 寄与 = 柱 My
-//! - 上下端とも梁降伏は考えない（両端が梁降伏なら下端を柱降伏へ落とす）
-//! - 部分スリット壁が取り付く端は常に柱ヒンジ（モデル属性が無い間は呼び出し側が
-//!   `force_column_hinge_*` で渡す。未配線時は false）
-//!
-//! 各端の判定（図 2.5.3-2 の実務再構成）:
-//! - 強制柱ヒンジ、または加力方向の梁が無い、または 柱 My ≤ 梁 My 和 → 柱ヒンジ
-//! - それ以外 → 梁ヒンジ
 
 use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::model::{ElementData, ElementKind, Model};
@@ -24,15 +13,14 @@ use crate::MemberKind;
 /// 柱端のヒンジ種別。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnEndHinge {
-    /// 梁ヒンジ（寄与 = ΣbeamMy / 2）。
+    /// 梁ヒンジ。
     Beam,
-    /// 柱ヒンジ（寄与 = columnMy）。
+    /// 柱ヒンジ。
     Column,
 }
 
 /// 1 端のヒンジを判定する。
-///
-/// `force_column_hinge`: 部分スリット壁等でその端を強制的に柱ヒンジにする場合 true。
+/// `force_column_hinge`: その端を強制的に柱ヒンジにする場合 true。
 pub fn resolve_column_end_hinge(
     column_my: f64,
     sum_beam_my: f64,
@@ -53,7 +41,6 @@ pub fn sum_my_from_end_hinges(
     column_my_j: f64,
     sum_beam_my_i: f64,
     sum_beam_my_j: f64,
-    // true なら端 i を「下端」として両端梁降伏時に柱へ落とす。
     i_is_bottom: bool,
 ) -> f64 {
     let (mut hi, mut hj) = (hinge_i, hinge_j);
@@ -73,7 +60,7 @@ pub fn sum_my_from_end_hinges(
 
 /// 設計軸力 N = NL + n·|NE|（圧縮正）。`n` は引張正の部材軸力。
 pub fn design_axial_for_mechanism(n_long: f64, n_combo: f64, n_factor: f64) -> f64 {
-    let n_l = (-n_long).max(0.0); // 長期圧縮（引張長期は 0）
+    let n_l = (-n_long).max(0.0);
     let n_e = (n_combo - n_long).abs();
     n_l + n_factor.max(0.0) * n_e
 }
@@ -104,7 +91,6 @@ fn aligns_exclusively(
     prefer_on_tie: bool,
 ) -> bool {
     let s = alignment_score(load_h, axis_h);
-    // ちょうど 45° では cos²≈0.5。浮動小数でわずかに下回っても除外しない。
     if s + 1e-12 < 0.5 {
         return false;
     }
@@ -125,8 +111,6 @@ fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
     let props = match &sec.shape {
         Some(SectionShape::RcRect { .. }) => rect_axis_props_strong(sec, rebar),
         Some(SectionShape::RcCircle { d, .. }) => {
-            // 円形梁は稀。等価として強軸 props を円から取る経路は
-            // `circle_axis_props` だが、ここでは矩形梁のみ対象とする。
             let _ = d;
             return None;
         }
@@ -151,13 +135,7 @@ fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
     Some(rc_mu_simple(&inp))
 }
 
-fn column_my_at_n(
-    model: &Model,
-    elem: &ElementData,
-    n_axial: f64,
-    // true = 強軸（mz / qy）、false = 弱軸（my / qz）。
-    strong: bool,
-) -> Option<f64> {
+fn column_my_at_n(model: &Model, elem: &ElementData, n_axial: f64, strong: bool) -> Option<f64> {
     let sec = elem
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
@@ -239,9 +217,6 @@ fn sum_beam_my_at_node(
         if !aligns_exclusively(load_h, peer_h, axis_h, prefer_on_tie) {
             continue;
         }
-        // 加力方向に梁はあるが My が取れない（SRC・円形・入力不足等）→
-        // 梁無し扱いにすると ΣMy が過小になり得るため Err とし、呼び出し側で
-        // 端軸力ベースの柱 Mu 和（2·Mu 相当）へ落とす。
         let Some(my) = beam_my_simple(model, other) else {
             return Err(());
         };
@@ -251,14 +226,7 @@ fn sum_beam_my_at_node(
 }
 
 /// 柱のメカニズム ΣMy。戻り値は `(強軸=qy 用, 弱軸=qz 用)`。
-///
-/// 各方向は通常 `Some(ΣMy)`。柱 My 自体が取れないときだけその方向は `None`
-/// （呼び出し側が検定位置軸力の `2·Mu` で代替）。
-/// 梁 My が欠落した方向は、端の設計軸力による柱 Mu 和（`Mu_i+Mu_j`）を返す。
-/// 外側の `None` は柱でない・幾何が取れない場合。
-///
-/// `n_*` は引張正。`n_axial_factor` はマニュアルの n（ルート 2-3 で 2.0、それ以外 1.0）。
-/// 部分スリット壁の強制柱ヒンジはモデル未対応のため常に false。
+/// `n_*` は引張正。
 #[allow(clippy::too_many_arguments)]
 pub fn compute_column_mechanism_sum_my(
     model: &Model,
@@ -288,8 +256,8 @@ pub fn compute_column_mechanism_sum_my(
     let frame = LocalFrame::from_nodes(p_i, p_j, column.local_axis.ref_vector);
     let ey = frame.rot[1];
     let ez = frame.rot[2];
-    let load_strong = horizontal_unit(ey)?; // qy / mz
-    let load_weak = horizontal_unit(ez)?; // qz / my
+    let load_strong = horizontal_unit(ey)?;
+    let load_weak = horizontal_unit(ez)?;
 
     let n_i = design_axial_for_mechanism(n_long_i, n_combo_i, n_axial_factor);
     let n_j = design_axial_for_mechanism(n_long_j, n_combo_j, n_axial_factor);
@@ -314,7 +282,6 @@ pub fn compute_column_mechanism_sum_my(
                     i_is_bottom,
                 ))
             }
-            // 梁 My 欠落 → 端軸力ベースの柱 Mu 和（2·Mu 相当）で確定。
             _ => Some(col_i + col_j),
         }
     };

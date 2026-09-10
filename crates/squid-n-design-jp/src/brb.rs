@@ -19,15 +19,8 @@ use squid_n_core::model::BrbAttr;
 
 /// BRB の断面検定（軸力・座屈長さの 2 項目）。
 ///
-/// - 軸力検定比 = `|N_design| / Na`。`Na` は短期許容軸力
-///   （[`BrbAttr::allowable_axial_short`]）を用い、`long_term=true`（長期）の
-///   場合は `Na = 短期許容軸力 / 1.5` とする（メーカー資料によっては長期の
-///   許容軸力が別途定められている場合があり、その際は本近似ではなく
-///   メーカー値をそのまま用いるべきである）。
-/// - 座屈長さ検定比 = `Lk / 限界座屈長さ`。`Lk = member_length − 2・L1`
-///   （[`BrbAttr::length_reduction`]）。
-/// - 総合検定比 `ratio` は両者の大きい方（`max`）。
-///
+/// 軸力検定比と座屈長さ検定比の大きい方を総合検定比とする。
+/// 長期は短期許容軸力の 1/1.5 を用いる。
 /// `n_design` は部材軸力 [N]（符号は問わず絶対値で評価する）、
 /// `member_length` は芯材全長 [mm]。
 pub fn brb_check(
@@ -55,13 +48,9 @@ pub fn brb_check(
     let ratio = ratio_axial.max(ratio_length);
     let term_label = if long_term { "長期" } else { "短期" };
 
-    // 単一式（Axial）の検定のため、全文を component の detail に置き、
-    // 共通 detail は空文字列とする。
     CheckResult {
         basis: "座屈補剛ブレース（メーカー許容値による検定）".to_string(),
         detail: String::new(),
-        // 軸力検定・座屈長さ検定ともブレース軸材の負担能力に関する検定のため
-        // Axial にまとめる。
         components: vec![CheckComponent {
             kind: CheckKind::Axial,
             ratio,

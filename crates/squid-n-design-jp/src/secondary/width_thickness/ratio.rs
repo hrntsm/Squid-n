@@ -2,20 +2,10 @@
 
 use squid_n_core::section_shape::SectionShape;
 
-/// 鋼断面の代表最大幅厚比を形状寸法から算定する（UI-13、dev_docs/specs/UI設計.md §9.3）。
+/// 鋼断面の代表最大幅厚比を形状寸法から算定する。
 ///
-/// # 採用式（要・原典照合。簡易法であり AIJ 精算式そのものではない）
-/// - H形: フランジ片持ち部 `b/(2·tf)`（半幅/板厚）とウェブ内法 `(h-2·tf)/tw` の大きい方。
-/// - 箱形: 内法平板幅を板厚で割った値 `(h-2t)/t`, `(b-2t)/t` の大きい方（4辺同厚前提）。
-/// - 溝形: H形に準じるが、フランジは片側のみが自由端の片持ち版のため全幅がそのまま
-///   張出し長さとなる（半幅ではない）→ `b/tf`。ウェブは上下フランジに挟まれる点は
-///   H形と同じなので `(h-2·tf)/tw`。
-/// - T形: フランジは片側（上端）のみの片持ち版 → `b/tf`。ウェブは上端のフランジのみを
-///   差し引いた `(h-tf)/tw`（下端は自由端のため 2 枚分は引かない）。
-/// - 山形: 単板が直交する形状のため `max(leg_a, leg_b)/thick`。
-/// - 円形鋼管: 径厚比 `D/t` は幅厚比と規準体系（座屈モード）が異なるため対象外（`None`）。
-/// - RC 断面: 幅厚比の概念がないため `None`。
-///
+/// 形状ごとに板要素の幅厚比を求め、最大値を返す（簡易法）。
+/// 円形鋼管・RC 断面は対象外（`None`）。
 /// 板厚が 0 以下、または板要素の内法寸法が 0 未満になる不正な寸法の場合は `None` を返す。
 pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
     /// 板厚が正で内法寸法が非負なら比を返す。不正な寸法は None。
@@ -48,7 +38,6 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
             let wi = ratio(width - 2.0 * thick, thick)?;
             Some(hi.max(wi))
         }
-        // 非対称組立 H: 上下フランジ・ウェブの各幅厚比の最大値。
         SectionShape::SteelBuiltH {
             height,
             upper_width,
@@ -88,7 +77,6 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
             thick,
         } => ratio(leg_a.max(leg_b), thick),
         SectionShape::SteelPipe { .. } => None,
-        // CFT 角形: 鋼管部分の幅厚比（充填効果による緩和は未考慮＝安全側）。
         SectionShape::CftBox {
             height,
             width,
@@ -99,8 +87,6 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
             Some(hi.max(wi))
         }
         SectionShape::CftPipe { .. } => None,
-        // 平鋼・中実丸鋼は中実断面、リップ溝形は冷間成形材（有効幅で別途検討）のため
-        // 本検定（熱間圧延材の幅厚比）の対象外。
         SectionShape::SteelFlatBar { .. }
         | SectionShape::SteelRoundBar { .. }
         | SectionShape::SteelLipChannel { .. }
