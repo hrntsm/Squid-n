@@ -8,8 +8,6 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // レイヤ順（下が下流＝依存される側）。実依存グラフ（DAG）に一致させる。
-    // 上位→下位（dep_layer < layer_idx）のみ許可。同層・下位→上位は不許可。
     let layers: &[&[&str]] = &[
         &["squid-n-core", "squid-n-math", "squid-n-material"],
         &["squid-n-section", "squid-n-load"],
@@ -17,14 +15,10 @@ fn main() -> anyhow::Result<()> {
         &["squid-n-element"],
         &["squid-n-solver", "squid-n-io"],
         &["squid-n-design-jp"],
-        // 解析ジョブ（前処理・解析条件・純粋計算）。GUI（app）と MCP サーバの
-        // 双方が同じ前処理・同じ解析条件で解くための共通層。
         &["squid-n-job"],
         &["squid-n-mcp", "squid-n-app"],
     ];
 
-    // BTreeMap で走査順を固定する（HashMap では実行ごとに出力・検査順が変わり、
-    // CI ログの diff 比較や違反の再現確認がしづらい）。
     let layer_map: BTreeMap<&str, usize> = layers
         .iter()
         .enumerate()
@@ -34,13 +28,10 @@ fn main() -> anyhow::Result<()> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let crate_root = workspace_root.join("crates");
 
-    // OK 件数と違反は分けて数える（かつては同じ Vec に "OK:"/"VIOLATION:" を
-    // 混ぜて積み、総数を「upstream checks」件数として表示していた）。
     let mut ok_count = 0usize;
     let mut violations = Vec::new();
 
     for (name, &layer_idx) in &layer_map {
-        // Only check crates/ subdir
         if *name == "xtask" {
             continue;
         }
