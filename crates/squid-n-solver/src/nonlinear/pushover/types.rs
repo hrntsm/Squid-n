@@ -1,4 +1,4 @@
-//! プッシュオーバー解析の結果・イベント型（P5 §7.4）。
+//! プッシュオーバー解析の結果・イベント型。
 //!
 //! - [`CapacityPoint`] — 性能曲線の 1 点
 //! - [`HingeEvent`] / [`HingeLevel`] — ヒンジ発生事象とレベル
@@ -10,7 +10,7 @@
 
 use squid_n_core::ids::ElemId;
 
-/// 増分解析の終了目標（P5 §7）。有効化した判定のうち**いずれか**に達した時点で
+/// 増分解析の終了目標。有効化した判定のうち**いずれか**に達した時点で
 /// 変位増分を打ち切る。両方 `None` の場合は荷重制御（λ=1）までで終了する。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverTarget {
@@ -31,7 +31,7 @@ impl Default for PushoverTarget {
 }
 
 impl PushoverTarget {
-    /// 目標変位のみを指定する（旧 API 互換。0 以下は判定なし＝荷重制御のみで終了）。
+    /// 目標変位のみを指定する（0 以下は判定なし）。
     pub fn from_max_disp(max_disp: f64) -> Self {
         Self {
             max_disp: (max_disp > 0.0).then_some(max_disp),
@@ -56,12 +56,7 @@ impl PushoverTarget {
     }
 }
 
-/// 増分解析がどのように終了したか（P5 §7.4）。
-///
-/// 従来は非収束・特異化を含む全ての打ち切りが無言で、荷重制御が低い荷重係数で
-/// 収束不能になっても Qu が「その時点までの最大ベースシア」として正常な結果の
-/// 顔で返っていた（保有水平耐力の過小評価を利用者が判別できない）。終了理由を
-/// 結果へ明示し、目標到達以外の打ち切りを表示側で警告できるようにする。
+/// 増分解析がどのように終了したか。
 ///
 /// 複数フェーズ（荷重制御→変位制御→弧長法）を経る場合は、目標到達が最優先、
 /// それ以外は**最後に実行されたフェーズの終了理由**を記録する。
@@ -94,7 +89,7 @@ pub enum PushoverTermination {
         /// 打ち切り時点の確定済み荷重係数。
         load_factor: f64,
     },
-    /// 旧プロジェクトファイル（終了理由が未記録）。
+    /// 終了理由が未記録の場合。
     #[default]
     Unknown,
 }
@@ -130,7 +125,7 @@ impl PushoverTermination {
     }
 }
 
-/// 増分解析の制御方式（P5 §7）。
+/// 増分解析の制御方式。
 ///
 /// 既定の段階制御と、比較検証用の荷重増分のみの 2 方式。いずれも外力は
 /// Ai 分布の比例荷重パターン λ·q で共通し、λ の決め方だけが異なる。
@@ -140,14 +135,12 @@ pub enum PushoverControl {
     /// 耐力ピーク（崩壊機構形成）を変位制御で通過し、頭打ち・低下も追跡できる。
     #[default]
     Phased,
-    /// 荷重増分のみ。変位制御・弧長法へは移行せず（`use_arc_length` は無視）、
+    /// 荷重増分のみ。変位制御・弧長法へは移行せず、
     /// 終了目標が有効な場合は λ=1 を超えて同じ刻みで荷重増分を継続する。
-    /// 増分半減でも収束しない（＝これ以上の荷重に釣合う解がない、耐力ピーク近傍）
-    /// 時点で打ち切る。段階制御との結果比較（変位制御の要否確認）用。
     LoadOnly,
 }
 
-/// 性能曲線の1点（P5 §7.4）
+/// 性能曲線の1点
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CapacityPoint {
     pub step: u32,
@@ -157,14 +150,9 @@ pub struct CapacityPoint {
     pub story_drift: Vec<f64>,
 }
 
-/// ヒンジ発生事象（P5 §7.4）。
+/// ヒンジ発生事象。
 ///
-/// **記録粒度に注意**: `track_hinges` は確定ステップごとに「その時点で閾値を
-/// 超えている材端」をすべて記録するため、一度降伏した材端は以降のステップでも
-/// 毎回記録される（発生の初回のみのイベント列ではなく、ステップごとの状態
-/// スナップショットの連なり）。消費者は (elem, 端) で集約して最高レベル・
-/// 最大塑性率・初回ステップを取り出すこと（`squid-n-app` の `aggregate_hinges`
-/// 参照。塑性率の最大値はこの毎ステップ記録に依存している）。
+/// 確定ステップごとに閾値超過を記録する（同一材端が複数ステップで重複する）。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HingeEvent {
     pub step: u32,
@@ -174,7 +162,7 @@ pub struct HingeEvent {
     pub ductility: f64,
 }
 
-/// ヒンジレベル（P5 §7.4）
+/// ヒンジレベル
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum HingeLevel {
     Crack,
@@ -199,7 +187,7 @@ pub enum DuctilityMethod {
     FirstYield,
 }
 
-/// 崩壊機構種別（P5 §7.4）
+/// 崩壊機構種別
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MechanismType {
     Overall,
@@ -210,21 +198,16 @@ pub enum MechanismType {
     Partial,
 }
 
-/// せん断降伏イベント（SRC 柱・SRC 耐震壁の部材ランク判定に用いる）。
+/// せん断降伏イベント。
 ///
-/// 部材端のせん断力（局所 Vy・Vz の材端最大値）がせん断降伏耐力 Qy
-/// （[`compute_shear_yield_qy`] 参照）を超えたステップを記録する。曲げヒンジ
-/// （[`HingeEvent`]）とは独立に判定され、曲げ降伏の有無に関わらず記録される。
+/// 曲げヒンジとは独立に判定する。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShearYieldEvent {
     pub step: u32,
     pub elem: ElemId,
 }
 
-/// 終局（最終確定ステップ）時の部材別応答（終局検定の設計用応力・
-/// 部材別 Rp の直接反映に用いる）。プッシュオーバー最終ステップの部材端内力を
-/// 局所座標へ射影し、強軸（局所 z まわり）・弱軸（局所 y まわり）の設計用曲げ・
-/// せん断と軸力（圧縮正）、および部材変形角 Rp を保持する。
+/// 終局時の部材別応答（設計用応力・部材変形角 Rp）。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverMemberResponse {
     pub elem: ElemId,
@@ -280,7 +263,7 @@ pub struct MemberStepState {
     pub rz_j: f32,
 }
 
-/// プッシュオーバー解析結果（P5 §7.4）
+/// プッシュオーバー解析結果
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverResult {
     pub steps: Vec<PushoverStep>,
@@ -288,32 +271,22 @@ pub struct PushoverResult {
     /// ヒンジ記録（確定ステップごとの閾値超過スナップショットの連なり。
     /// 同一材端が複数ステップで重複して並ぶ。[`HingeEvent`] の記録粒度参照）。
     pub hinges: Vec<HingeEvent>,
-    /// せん断降伏イベント履歴（SRC 柱・SRC 耐震壁の部材ランク判定に使用、
-    /// [`ShearYieldEvent`] 参照）。
+    /// せん断降伏イベント履歴。
     pub shear_yields: Vec<ShearYieldEvent>,
     pub mechanism: MechanismType,
     pub qu: f64,
-    /// 最終確定ステップ時の部材別応答（設計用応力・部材別 Rp の直接反映用、
-    /// [`PushoverMemberResponse`]）。ステップが 1 つも確定しなかった場合は空。
+    /// 最終確定ステップ時の部材別応答。ステップが 1 つも確定しなかった場合は空。
     pub member_response: Vec<PushoverMemberResponse>,
-    /// この結果を生成した制御方式（[`PushoverControl`]）。結果画面・CSV で
-    /// どの方式の結果かを識別するために保持する。旧プロジェクトファイルには
-    /// ないフィールドのため、読込時は既定値（段階制御）で補う。
+    /// この結果を生成した制御方式（[`PushoverControl`]）。
     #[serde(default)]
     pub control: PushoverControl,
     /// ヒンジ詳細図用の部材応答履歴（ヒンジ・せん断降伏が記録された部材のみ）。
-    /// 旧プロジェクトファイルにはないフィールドのため、読込時は空で補う。
     #[serde(default)]
     pub member_history: Vec<MemberHistory>,
-    /// 終局（最終確定ステップ）時のファイバー断面状態（ヒンジ・せん断降伏が記録
-    /// されたファイバー要素のみ。断面塑性化状況の可視化用）。旧プロジェクト
-    /// ファイルにはないフィールドのため、読込時は空で補う。
+    /// 終局時のファイバー断面状態（ヒンジ・せん断降伏が記録されたファイバー要素のみ）。
     #[serde(default)]
     pub fiber_states: Vec<(ElemId, Vec<squid_n_element::behavior::FiberSectionState>)>,
-    /// 解析がどのように終了したか（[`PushoverTermination`]）。目標到達以外の
-    /// 打ち切り（非収束・特異化）は Qu が過小評価の可能性があるため、表示側は
-    /// [`PushoverTermination::is_premature`] で警告すること。旧プロジェクト
-    /// ファイルにはないフィールドのため、読込時は `Unknown` で補う。
+    /// 解析がどのように終了したか（[`PushoverTermination`]）。
     #[serde(default)]
     pub termination: PushoverTermination,
 }

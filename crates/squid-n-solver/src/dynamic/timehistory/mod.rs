@@ -1,9 +1,7 @@
-//! 時刻歴応答解析（P6 §2〜§4）。
+//! 時刻歴応答解析。
 //!
-//! Newmark-β 法（平均加速度・線形加速度）による線形時刻歴応答解析。
+//! Newmark-β 法による線形・非線形時刻歴応答解析。
 //! 基盤一様加振（相対変位形式）: `M·ü + C·u̇ + K·u = −M·r·ẍg(t)`。
-//! 非線形時刻歴（各ステップ Newton 反復）は pushover.rs と同じ
-//! commit/rollback 基盤を使う（§4、将来拡張）。
 //!
 //! 責務ごとにサブモジュールへ分割している:
 //! - [`config`] — 入力設定（NewmarkCfg / GroundMotion）
@@ -29,8 +27,6 @@ pub use linear::{
 pub use nonlinear::{nonlinear_time_history_analysis, NonlinearThCfg};
 pub use result::{ResponseHistory, ResponseResult, StoryResponse, ThRecording, TimeStepState};
 
-// `#[cfg(test)] mod tests` は `use super::*` 経由でこれらのシンボルを取得するため、
-// テスト用に再エクスポートしてスコープに残す。
 #[cfg(test)]
 pub(crate) use crate::common::assemble::{assemble_global_k, assemble_global_m};
 #[cfg(test)]
@@ -43,6 +39,6 @@ pub fn rayleigh_coeffs(omega1: f64, omega2: f64, h1: f64, h2: f64) -> (f64, f64)
     Damping::rayleigh_coeffs(omega1, omega2, h1, h2)
 }
 
-/// 時刻歴ソルバ設定の決定性（R28）: Newmark 設定のビット一致確認。
+/// Newmark 設定のビット一致確認。
 #[cfg(test)]
 mod tests;

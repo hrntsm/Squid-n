@@ -7,9 +7,6 @@
 //! 要素の**現在の状態**（`&[Box<dyn ElementBehavior>]`）から組み立てる経路であり、
 //! Newton 反復を回す解析はすべてここを通る（増分解析・弧長法・非線形時刻歴）。
 //! モデルから毎回要素を組み直す線形経路は [`super::assemble`] にある。
-//!
-//! 支点ばねの内力寄与を [`add_support_spring_f_int`] として分けてあるのは、
-//! 加算する位置が解析ごとに異なるためである（呼び出し側が足す）。
 
 use crate::common::assemble::support_spring_terms;
 use crate::common::csc_cache::CscCache;
@@ -18,10 +15,6 @@ use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 
 /// 全体接線剛性行列を組み立てる。
-///
-/// かつて変位制御ペナルティ用の対角加算引数を持っていたが、変位制御が
-/// 「比例荷重パターンを保持した荷重係数決定方式」（`driver` の変位制御フェーズ）へ
-/// 移行しペナルティ剛性が不要となったため撤去した。
 pub(crate) fn assemble_k(
     model: &Model,
     dofmap: &DofMap,
@@ -33,12 +26,7 @@ pub(crate) fn assemble_k(
     assemble_csc(dofmap.n_active(), triplets)
 }
 
-/// [`assemble_k`] のキャッシュ版。時刻歴応答解析の Newton 反復のように、同一要素・
-/// 同一 `behaviors` の並びで毎反復 `assemble_k` を呼ぶ場面向け
-/// （[`crate::common::csc_cache::CscCache`] 参照）。要素接続（＝グローバル DOF の
-/// 並び）は反復を通じて不変なので、triplet 列の座標・並び順も（接線剛性の成分が
-/// 厳密 0.0 を跨がない限り）不変で、高速パスが有効に働く。結果は常に [`assemble_k`]
-/// とビット一致する。
+/// [`assemble_k`] のキャッシュ版。結果は常に [`assemble_k`] とビット一致する。
 pub(crate) fn assemble_k_cached(
     model: &Model,
     dofmap: &DofMap,
@@ -93,7 +81,6 @@ fn assemble_k_triplets_into(
 ) {
     out.clear();
     let ctx = Ctx { model };
-    // 要素ごとの接線剛性 triplet 化（要素間にデータ依存がない）。
     let elem_triplets = |elem: &squid_n_core::model::ElementData,
                          b: &dyn ElementBehavior|
      -> Vec<squid_n_math::sparse::Triplet> {
@@ -101,12 +88,6 @@ fn assemble_k_triplets_into(
         let mut k = b.tangent_stiffness(&ctx);
         if use_kg {
             let f = b.internal_force(&ctx);
-            // 幾何剛性には**部材軸力 N（引張正）**を渡す。`internal_force` は
-            // グローバル成分を返す契約なので、材端力を要素局所 ex へ射影して得る
-            // （`geom::axial_compression` と同じ符号規約: dot(f_j, ex) = +N）。
-            // 従来は `f.data[0]`（＝節点 i のグローバル Fx）をそのまま渡しており、
-            // 鉛直柱・斜材・任意方向材で軸力とは無関係な成分を用いていた
-            // （P-Δ を有効化すると誤った幾何剛性になる潜在バグ）。
             let n = axial_force_tension_positive(model, elem, &f);
             let kg = b.geometric_stiffness(n);
             for i in 0..12 {
@@ -118,10 +99,6 @@ fn assemble_k_triplets_into(
         }
         k.to_triplets(&gdofs)
     };
-    // 並列/逐次の分岐と要素番号順の保証は共通足場（`common::elem_loop`）が担う。
-    // 要素順に extend するため triplet の並び順は逐次実行と完全に一致する。
-    // `elements.get(i)` は要素数と behaviors 長が食い違う入力への防御
-    // （旧実装の `elements.iter().zip(behaviors)` と同じく短い方で打ち切る）。
     crate::common::elem_loop::fold_behaviors_ordered(
         behaviors,
         |i, b| match model.elements.get(i) {
@@ -130,8 +107,6 @@ fn assemble_k_triplets_into(
         },
         |triplets| out.extend(triplets),
     );
-    // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
-    // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
     for (active, k) in support_spring_terms(model, dofmap) {
         out.push(squid_n_math::sparse::Triplet {
             row: active,
@@ -167,7 +142,6 @@ fn axial_force_tension_positive(
         return 0.0;
     }
     let ex = [d[0] / len, d[1] / len, d[2] / len];
-    // dot(f_j, ex) = +N（引張正）。
     f.data[6] * ex[0] + f.data[7] * ex[1] + f.data[8] * ex[2]
 }
 
@@ -178,9 +152,6 @@ pub(crate) fn compute_f_int(
 ) -> Vec<f64> {
     let ctx = Ctx { model };
     let mut f = vec![0.0; dofmap.n_active()];
-    // 要素ごとの (gdofs, f_local) の算定は共通足場（`common::elem_loop`）で
-    // 並列化し、共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得る
-    // ため、常に要素番号順に逐次行う。
     crate::common::elem_loop::fold_behaviors_ordered(
         behaviors,
         |_, b| {
@@ -201,16 +172,8 @@ pub(crate) fn compute_f_int(
 
 /// 支点ばね（`Node::support_spring`）の内力寄与 `k_i・u_i` を、内力ベクトル `f`
 /// （`compute_f_int` と同じ active DOF 順）へ加算する。
-///
-/// `compute_f_int` は要素（`ElementBehavior`）が自ら保持するトライアル変位から
-/// 内力を求める契約だが、支点ばねは要素を介さない節点属性のため、現在の
-/// 試行全体変位 `u_trial`（active DOF 順、Newton 反復途中の未確定値でよい）を
-/// 呼び出し側（[`super::driver`]）から明示的に渡す必要がある。線形ばね
-/// （K が変位に依存しない）のため接線剛性側は `assemble_k` の対角加算のみで足りるが、
-/// 内力側はこの関数で `k・u` を明示的に計上しないと、支点ばねに変位が生じても
-/// 釣合い残差 `f_ext − f_int` に反映されず、非線形解析で支点ばねが実質無視される
-/// （K だけに効いて残差計算に効かない不整合）。呼び出し側は `compute_f_int` の
-/// 結果に本関数の寄与を加算すること。
+/// 試行全体変位 `u_trial`（active DOF 順）を呼び出し側から明示的に渡す。
+/// 呼び出し側は `compute_f_int` の結果に本関数の寄与を加算すること。
 pub(crate) fn add_support_spring_f_int(
     model: &Model,
     dofmap: &DofMap,

@@ -16,8 +16,6 @@ use squid_n_math::solver::SolveError;
 pub(crate) fn story_k_at_mass_center(s: &StorySpatial) -> [[f64; 3]; 3] {
     let rx = s.rigidity_xy[0] - s.mass_xy[0];
     let ry = s.rigidity_xy[1] - s.mass_xy[1];
-    // 並進は骨格の初期剛性（非線形なら増分トリリニアの K1、線形なら弾性ばね）。
-    // k1_x/k1_y は結果表示用の控えで、ここは復元力と同一の骨格を使う。
     let kx = s.skeleton_x.k1.max(0.0);
     let ky = s.skeleton_y.k1.max(0.0);
     let kr = s.kr.max(0.0);
@@ -29,7 +27,6 @@ pub(crate) fn story_k_at_mass_center(s: &StorySpatial) -> [[f64; 3]; 3] {
 }
 
 fn assemble_spatial_k(spatial: &[StorySpatial], k_scale: impl Fn(usize, usize) -> f64) -> Vec<f64> {
-    // k_scale(story, component) で kx/ky/kr をスケール。component 0=x,1=y,2=θ
     let n = spatial.len();
     let nd = 3 * n;
     let mut k = vec![0.0; nd * nd];
@@ -126,7 +123,6 @@ pub(crate) fn lumped_mass_eigen_spatial(
                 u[(3 * i + 2, j)] / sqrt_m[3 * i + 2],
             ];
         }
-        // 頂部水平変位のノルムで正規化（0 なら頂部 θz）。
         let top = xyz[n - 1];
         let h = (top[0] * top[0] + top[1] * top[1]).sqrt();
         let scale = if h > 1e-30 {
@@ -234,7 +230,6 @@ fn relative_at_rigidity(u: &[f64], i: usize, s: &StorySpatial) -> [f64; 3] {
 fn add_story_force(f: &mut [f64], i: usize, s: &StorySpatial, fx: f64, fy: f64, mz: f64) {
     let rx = s.rigidity_xy[0] - s.mass_xy[0];
     let ry = s.rigidity_xy[1] - s.mass_xy[1];
-    // 剛心力を質量重心へ: Fx, Fy, Mz + Fy*rx - Fx*ry
     let fx_g = fx;
     let fy_g = fy;
     let mz_g = mz + fy * rx - fx * ry;

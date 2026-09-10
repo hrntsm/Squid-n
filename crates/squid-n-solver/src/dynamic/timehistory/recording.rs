@@ -48,10 +48,8 @@ pub(crate) fn member_forces_nonlinear(
         .collect()
 }
 
-/// 非線形経路の線材内力の欠落ガード（[`crate::statics::linear::ensure_line_member_forces`]
-/// の非線形版）。線材（梁・ファイバー・MS・ブレース）の `state_member_forces` が
-/// `None` を返す要素実装の不備を、解析開始時点でエラーとして顕在化させる
-/// （このまま続けると当該部材の応力履歴が全ステップ空のまま無言で欠落する）。
+/// 非線形経路の線材内力の欠落ガード。
+/// 線材の `state_member_forces` が `None` を返す要素実装の不備を解析開始時点でエラー化する。
 pub(crate) fn ensure_line_member_forces_nonlinear(
     model: &Model,
     member_forces: &[Option<MemberForces>],
@@ -91,8 +89,7 @@ pub(crate) fn ensure_line_member_forces_nonlinear(
 }
 
 /// 部材端力の包絡を更新する（各成分・各評価位置の絶対値最大。符号は極値の符号を保持）。
-/// 評価位置数が一致しない場合（要素構成が変わることは実運用上ないが防御的に）は
-/// 短い方の長さまでのみ更新する。
+/// 評価位置数が一致しない場合は短い方の長さまでのみ更新する。
 fn merge_peak_member_forces(peak: &mut [Option<MemberForces>], current: &[Option<MemberForces>]) {
     for (p, c) in peak.iter_mut().zip(current.iter()) {
         match (p.as_mut(), c) {
@@ -114,10 +111,7 @@ fn merge_peak_member_forces(peak: &mut [Option<MemberForces>], current: &[Option
 
 /// 部材内力分布を両端 2 点（最小 ξ・最大 ξ）のみへ間引く。
 ///
-/// `ThRecording::member_forces`（フレームごとの記録）は 3D アニメーション等の
-/// UI 側履歴ループが端部値のみ使うため、両端に絞ってメモリを削減する
-/// （中間の評価断面は保持しない）。包絡 `peak_member_forces` は従来どおり
-/// [`merge_peak_member_forces`] で全評価断面を保持する（本関数は適用しない）。
+/// 包絡 `peak_member_forces` は全評価断面を保持する（本関数は適用しない）。
 /// `at` が 2 点以下の要素はそのまま返す。
 fn trim_member_forces_to_endpoints(forces: &[Option<MemberForces>]) -> Vec<Option<MemberForces>> {
     forces
@@ -141,23 +135,15 @@ fn trim_member_forces_to_endpoints(forces: &[Option<MemberForces>]) -> Vec<Optio
         .collect()
 }
 
-/// 節点順の全自由度変位（拘束・従属自由度を含む）を組み立てる。`u_free` は
-/// 自由 DOF 空間（`dofmap` のアクティブ添字順）の展開済みベクトル
-/// （単一実装は core 側）。
+/// 節点順の全自由度変位（拘束・従属自由度を含む）を組み立てる。
 fn expand_node_disp(model: &Model, dofmap: &DofMap, u_free: &[f64]) -> Vec<[f64; 6]> {
     dofmap.expand_to_nodes(u_free, model.nodes.len())
 }
 
 /// 階に属する節点の自由 DOF の一覧。
 ///
-/// - `avg`: 階応答（加速度・速度・変位）の代表値算定に使う当該方向並進 DOF と
-///   質量重みの組。質量重みは `Node::mass` の当該方向成分
-///   （なければ 0。質量加重平均、全て 0 なら単純平均にフォールバック）。
-/// - `force`: 層せん断力の慣性力集計に使う DOF。**当該方向の並進 DOF のみ**を
-///   含める（節点慣性力ベクトル `f_abs = M·a_free + ẍg・M・r` を並進成分だけ
-///   集計する。`f_abs` は疎行列ベクトル積 `M·a_free` を経ているため、回転 DOF
-///   との連成（一貫質量行列の非対角項）は既にこの並進成分に反映済みで、
-///   回転 DOF 自体を集計へ含める必要はない）。
+/// - `avg`: 階応答の代表値算定に使う当該方向並進 DOF と質量重みの組。
+/// - `force`: 層せん断力の慣性力集計に使う DOF。当該方向の並進 DOF のみを含む。
 #[derive(Default)]
 struct StoryDofGroup {
     avg: Vec<(usize, f64)>,
@@ -180,11 +166,7 @@ pub(crate) struct ThRecorder {
     n_steps: u64,
     story_ids: Vec<squid_n_core::ids::StoryId>,
     weights: Vec<f64>,
-    /// `weight_above[i]` = 当該層以上（i 番目〜最上層）の地震用重量の累積和
-    /// （P11: 層せん断力係数 Ci の分母 ΣWj を `record_step` 呼び出しごとに
-    /// O(n_story) で再計算していたのを、階構成が解析中不変なことを利用して
-    /// `new` で 1 回だけ O(n_story) で事前計算する。これにより `record_step`
-    /// 側は O(1) 参照になり、全体で O(n_story²) → O(n_story) に落ちる）。
+    /// `weight_above[i]` = 当該層以上（i 番目〜最上層）の地震用重量の累積和。
     weight_above: Vec<f64>,
     groups_x: Vec<StoryDofGroup>,
     groups_y: Vec<StoryDofGroup>,
@@ -204,9 +186,6 @@ pub(crate) struct ThRecorder {
     floor_disp_y: Vec<Vec<f64>>,
     peak_shear_coeff_x: Vec<f64>,
     peak_shear_coeff_y: Vec<f64>,
-    // 層応答ピーク（全ステップ更新、間引きなし）。フレーム記録（*_x/*_y の
-    // Vec<Vec<f64>>）は record_every で間引くため、間引きフレームに現れない
-    // 極大値を取り逃さないよう別途保持する。
     peak_story_shear_x: Vec<f64>,
     peak_story_shear_y: Vec<f64>,
     peak_floor_accel_x: Vec<f64>,
@@ -234,8 +213,6 @@ impl ThRecorder {
         let layers = model.layers();
         let n_story = layers.len();
 
-        // 層の代表 Z 座標（所属節点＝上端の階の所属節点の平均 Z）。どの層にも
-        // 属さない節点の慣性力を最も近い層へ計上する際に使う。
         let story_repr_z: Vec<f64> = layers
             .iter()
             .map(|layer| {
@@ -274,11 +251,6 @@ impl ThRecorder {
                     g
                 })
                 .collect();
-            // どの層にも属さない節点（基部の階の節点、最上階より上の節点など）の
-            // 当該方向並進 DOF は、Z 座標が最も近い層の層せん断力に計上する
-            // （1 層目〜最上層の慣性力の総和＝ベースシアという恒等関係を、全並進 DOF を
-            // 漏れなくいずれかの層へ割り当てることで保つ）。層応答の代表値（avg）には
-            // 含めない。
             if !groups.is_empty() {
                 let mut assigned = vec![false; model.nodes.len()];
                 for layer in &layers {
@@ -316,9 +288,6 @@ impl ThRecorder {
         };
 
         let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
-        // P11: weight_above[i] = Σ_{j=i}^{n-1} weights[j] を末尾から1回の走査で
-        // 前計算する（階構成・重量は解析中不変。record_step 側は毎回この結果を
-        // 参照するだけになる）。
         let mut weight_above = vec![0.0; weights.len()];
         {
             let mut acc = 0.0;
@@ -331,7 +300,6 @@ impl ThRecorder {
         Self {
             record_every,
             n_steps: n_steps as u64,
-            // 層の識別は下端の階（＝層の呼び名になる床）で行う。
             story_ids: layers.iter().map(|l| l.bottom).collect(),
             weights,
             weight_above,
@@ -413,8 +381,6 @@ impl ThRecorder {
                 vel[i] = simple_v / cnt;
                 disp[i] = simple_u / cnt;
             }
-            // 層せん断力: 節点慣性力ベクトル f_abs = M·a_free + ẍg・M・r の
-            // 当該方向並進 DOF（g.force）のみを集計する。
             let mut lf = 0.0;
             for &dof in &g.force {
                 let f_abs = ma_free.get(dof).copied().unwrap_or(0.0)
@@ -435,13 +401,7 @@ impl ThRecorder {
     /// 1 ステップ分の記録を追加する。`step` は確定した時刻ステップ番号
     /// （0 が初期状態、`n_steps` が最終ステップ）。`u_free`/`v_free`/`a_free` は
     /// 呼び出し側で展開済みの自由 DOF 空間の変位・速度・加速度（`dofmap` の
-    /// アクティブ添字順）で、`m_r_x`/`m_r_y` は自由 DOF 空間の `M·r`
-    /// （いずれも時刻歴解析の呼び出し側で 1 ステップに 1 回だけ展開・組み立てた
-    /// ものを共有する。P9: 従来は本関数の内部で `Reducer::expand_u` を毎回
-    /// 呼び直しており、呼び出し側の展開と合わせて `u_free` が 1 ステップに
-    /// 2 回展開されていた）。`ma_free` は自由 DOF 空間の `M·a_free`
-    /// （[`super::common::mass_accel_free`] で呼び出し側が 1 ステップに 1 回だけ
-    /// 算定したものを共有する。層せん断力の節点慣性力ベクトル算定に使う）。
+    /// アクティブ添字順）で、`m_r_x`/`m_r_y`・`ma_free` も呼び出し側で算定したものを共有する。
     /// `member_forces_now` は当該ステップの全要素の部材内力分布
     /// （[`member_forces_linear`] / [`member_forces_nonlinear`]）。
     #[allow(clippy::too_many_arguments)]
@@ -461,7 +421,6 @@ impl ThRecorder {
         xg_y: f64,
         member_forces_now: &[Option<MemberForces>],
     ) {
-        // 部材内力包絡は全ステップ更新（間引かない）。
         merge_peak_member_forces(&mut self.peak_member_forces, member_forces_now);
 
         let (shear_x, accel_x, vel_x, disp_x) =
@@ -469,10 +428,6 @@ impl ThRecorder {
         let (shear_y, accel_y, vel_y, disp_y) =
             Self::compute_story_dir(&self.groups_y, m_r_y, u_free, v_free, a_free, ma_free, xg_y);
 
-        // 層せん断力係数のピークは全ステップ更新（間引かない）。P11: 分母
-        // ΣWj（当該層以上の重量累積和）は `new` で事前計算済みの
-        // `weight_above` を参照するだけにし、`record_step` 呼び出しごとの
-        // O(n_story) 再計算（全体で O(n_story²)）を避ける。
         for i in 0..self.weights.len() {
             let above = self.weight_above[i];
             if above > 0.0 {
@@ -487,9 +442,6 @@ impl ThRecorder {
             }
         }
 
-        // 層応答ピーク（層せん断力・階絶対加速度・階速度・階変位の絶対値最大）は
-        // フレーム間引きに関係なく全ステップで更新する（中-3: 間引きフレームの
-        // 合間に生じるピークを取り逃さないため）。
         Self::update_peak_abs(&mut self.peak_story_shear_x, &shear_x);
         Self::update_peak_abs(&mut self.peak_story_shear_y, &shear_y);
         Self::update_peak_abs(&mut self.peak_floor_accel_x, &accel_x);
@@ -499,7 +451,6 @@ impl ThRecorder {
         Self::update_peak_abs(&mut self.peak_floor_disp_x, &disp_x);
         Self::update_peak_abs(&mut self.peak_floor_disp_y, &disp_y);
 
-        // フレーム記録は間引く（record_every ごと。最終ステップは必ず含める）。
         if step.is_multiple_of(self.record_every as u64) || step == self.n_steps {
             self.frame_time.push(time);
             self.node_disp.push(expand_node_disp(model, dofmap, u_free));
@@ -516,8 +467,7 @@ impl ThRecorder {
         }
     }
 
-    /// 絶対値最大の更新（`peak[i] = max(peak[i], |current[i]|)`）。長さが異なる場合は
-    /// 短い方まで（要素構成・階構成は解析中不変のため通常は一致する）。
+    /// 絶対値最大の更新（`peak[i] = max(peak[i], |current[i]|)`）。長さが異なる場合は短い方まで。
     fn update_peak_abs(peak: &mut [f64], current: &[f64]) {
         for (p, &c) in peak.iter_mut().zip(current.iter()) {
             let c_abs = c.abs();
@@ -575,9 +525,7 @@ mod tests {
         Node, Section, Story,
     };
 
-    /// 高-2 検証用: 密度による一貫質量を持つ 2 層（3 節点）の柱列。曲げ回転
-    /// （Ry）を解放し、一貫質量行列の並進-回転連成（M_ux_ry 等）を意図的に
-    /// 有効にする（`Dof6Mask(0b101110)` = Ux・Ry のみ自由。他の並進・回転は拘束）。
+    /// 密度による一貫質量を持つ 2 層（3 節点）の柱列。曲げ回転（Ry）を解放し、一貫質量行列の並進-回転連成を有効にする。
     fn two_story_density_mass_model(density: f64) -> Model {
         let free_ux_ry = Dof6Mask(0b101110);
         Model {
@@ -707,11 +655,7 @@ mod tests {
         }
     }
 
-    /// 高-2: `StoryDofGroup::force`（層せん断力の慣性力集計対象）は当該方向の
-    /// 並進 DOF のみを含み、回転 DOF を含まないこと。節点ごとに並進 DOF は
-    /// 高々 1 つのため、各階の `force.len()` は「当該方向へ割り当てられた
-    /// 節点数（=1）」と一致するはず（修正前は、同じ節点で活性な回転 DOF
-    /// （本モデルでは Ry）も無条件に含んでいたため 2 になっていた）。
+    /// `StoryDofGroup::force` は当該方向の並進 DOF のみを含み、回転 DOF を含まないこと。
     #[test]
     fn test_story_force_dof_group_excludes_rotational_dof() {
         let model = two_story_density_mass_model(7.85e-9);
@@ -732,12 +676,7 @@ mod tests {
         }
     }
 
-    /// 高-2 (a): 2 層・一貫質量（密度）モデルで、1 層目（最下層）の層せん断力
-    /// （＝全層の慣性力の累積）がベースシア（全体慣性力の合計）と一致すること。
-    /// 回転 DOF を解放し並進-回転連成が実際に生じる状態で検証する
-    /// （`story_shear[i]` は「当該層以上の慣性力の累積」であり、1 層目が
-    /// 全体合計＝ベースシアと一致する。全層の `story_shear` を単純合計した値
-    /// ではない点に注意）。
+    /// 2 層・一貫質量モデルで、1 層目の層せん断力がベースシアと一致すること。
     #[test]
     fn test_story_shear_sum_matches_base_shear_with_consistent_mass() {
         let model = two_story_density_mass_model(7.85e-9);

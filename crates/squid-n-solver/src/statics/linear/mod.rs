@@ -13,9 +13,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// 長期軸力無効化（一貫構造計算プログラムの実務慣行）で断面積に乗じる縮小係数。
-/// 完全にゼロにすると（ブレースのみで支持される節点等で）浮き自由度による
-/// 特異行列を招く恐れがあるため、実務上無視できる微小軸剛性を残す
-/// （EA×1e-6 は元の軸力の 1e-6 倍程度に留まり回収内力もほぼ0とみなせる）。
 const AXIAL_DISABLE_FACTOR: f64 = 1.0e-6;
 
 /// 部材が「柱」（鉛直な `ElementKind::Beam`）かどうかを判定する。
@@ -54,15 +51,7 @@ fn is_axial_disabled_target(
 /// 軸力無効化が指定されている部材がある場合のみ、対象部材が参照する断面を
 /// 複製して断面積を `AXIAL_DISABLE_FACTOR` 倍に縮小したモデルを作る
 /// （同じ断面 ID を共有する他部材へは影響しない）。曲げ・せん断・ねじり
-/// 関連の断面性能は変更しない。対象がなければ元のモデルをそのまま返す
-/// （既定 `stress_cfg` では常にこちら＝従来どおりの結果に一致する）。
-///
-/// SRC/CFT 等の合成断面では `beam.rs` の軸剛性用面積 `a_stiff` が `shape` 由来の
-/// 値で再計算されるため、複製断面では `shape` を外して数値直入力断面へ落とす。
-/// これにより曲げ・せん断は `to_section()` が格納済みの等価換算値のまま、
-/// 軸剛性のみ `area × AXIAL_DISABLE_FACTOR` が効く（材料由来の複合換算・
-/// スラブ協力幅係数は複製断面では適用されなくなるが、軸力を負担させない
-/// 部材の曲げ剛性の微差であり実用上支障ない）。
+/// 関連の断面性能は変更しない。対象がなければ元のモデルをそのまま返す。
 fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> {
     let cfg = &model.stress_cfg;
     if !lc_kind.is_long_term() || (!cfg.no_long_axial_brace && !cfg.no_long_axial_column) {
@@ -90,7 +79,6 @@ fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> 
         };
         let mut reduced = orig.clone();
         reduced.area *= AXIAL_DISABLE_FACTOR;
-        // 合成断面（SRC/CFT）でも軸剛性カットが効くよう shape を外す（関数 doc 参照）。
         reduced.shape = None;
         reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
         m.elements[i].section = Some(reduced.id);
@@ -105,10 +93,6 @@ pub struct StaticOnce {
     pub member_forces: Vec<(squid_n_core::ids::ElemId, MemberForces)>,
     /// 仕口パネルのせん断モーメント `{MSX, MSY}` [N·mm]（基準座標系）を接合部の
     /// 節点ごとに保持する。パネルをモデル化していない場合は空。
-    ///
-    /// 節点変位（`disp`）は標準 6 成分のみのため、パネルのせん断変形角は結果に
-    /// 現れない。断面検定の設計用パネルモーメント `pM` へ供給できるよう、
-    /// 解析側でモーメントへ換算して持たせる。
     #[serde(default)]
     pub panel_moments: Vec<(squid_n_core::ids::NodeId, [f64; 2])>,
 }
@@ -145,7 +129,6 @@ pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
             )
         })
         .collect();
-    // 仕口パネルは線形弾性（`Kxp = Kyp = G・Ve`）なのでモーメントも線形和で足せる。
     let mut panel_moments: Vec<(squid_n_core::ids::NodeId, [f64; 2])> = first
         .panel_moments
         .iter()
@@ -188,18 +171,13 @@ pub fn linear_static_once(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, S
     let model_cow = apply_long_axial_cut(model, lc_kind);
     let model: &Model = &model_cow;
 
-    // 引張専用ブレースの反復（active-set 法）: 計算条件で有効化されており、かつ
-    // 引張専用ブレースが存在する場合のみ、圧縮側に入ったブレースを無効化しながら
-    // 収束するまで再解析する。無効時は従来どおり弾性剛性 1/2 の一括解析
-    // （build_behavior の factor=0.5）で1回だけ解く。
     if model.stress_cfg.tension_only_iteration && has_tension_only_brace(model) {
         return solve_tension_only_iterative(model, lc);
     }
     solve_once_inner(model, lc)
 }
 
-/// 引張専用ブレースの active-set 反復の最大回数。通常はブレース本数程度で収束するが、
-/// 無効化・再活性が振動（チャタリング）する病的ケースに備えて上限を設ける。
+/// 引張専用ブレースの active-set 反復の最大回数。
 const TENSION_ONLY_MAX_ITER: usize = 50;
 
 /// モデルに引張専用ブレース（`ElementKind::Brace { tension_only: true }`）が
@@ -229,7 +207,6 @@ fn reduce_brace_axial<'a>(model: &'a Model, disabled: &[usize]) -> Cow<'a, Model
         };
         let mut reduced = orig.clone();
         reduced.area *= AXIAL_DISABLE_FACTOR;
-        // 合成断面（SRC/CFT）でも軸剛性カットが効くよう shape を外す（apply_long_axial_cut 参照）。
         reduced.shape = None;
         reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
         m.elements[i].section = Some(reduced.id);
@@ -259,8 +236,6 @@ struct ToBrace {
 /// 収束後の部材内力は、active な引張ブレースが EA/L·伸び を負担し、無効化された
 /// 圧縮ブレースはほぼ 0（EA×1e-6 相当）となる。
 fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
-    // 追跡対象の引張専用ブレースを収集する。幾何が退化した（節点不足・零長）ブレースは
-    // 軸剛性が実質ゼロで軸力を負担しないため除外する。
     let mut braces: Vec<ToBrace> = Vec::new();
     for (i, e) in model.elements.iter().enumerate() {
         if !matches!(e.kind, ElementKind::Brace { tension_only: true }) || e.nodes.len() < 2 {
@@ -287,14 +262,9 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         });
     }
 
-    // 要素接続・拘束・自由度構成は反復間で不変（変わるのは無効化ブレースの
-    // 断面積のみ）なので、DofMap・拘束縮約は1回だけ構築して使い回す。
     let dofmap = DofMap::build(model);
     let n_active = dofmap.n_active();
     if n_active == 0 {
-        // 有効自由度なし: 変位は常に0であり、どの反復でも
-        // 全ブレース active（初期値）のまま収束する（`solve_once_inner` の
-        // 自由度なし分岐と同じ結果）。
         return Ok(StaticOnce {
             disp: vec![[0.0; 6]; model.nodes.len()],
             member_forces: Vec::new(),
@@ -304,9 +274,6 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
     let reducer = Reducer::build(model, &dofmap);
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
-        // 独立自由度なし（全自由度が拘束に吸収される特殊な拘束構成）:
-        // `solve_once_inner` の対応分岐と同じく、内力回収（`ensure_line_member_forces`
-        // の検証含む）を行わずゼロ結果を返す。
         return Ok(StaticOnce {
             disp: vec![[0.0; 6]; model.nodes.len()],
             member_forces: Vec::new(),
@@ -314,11 +281,8 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         });
     }
 
-    // 要素ごとの global_dofs・局所剛性行列（有効時／無効時）・回収用 behavior を
-    // 1回だけ構築する（反復ごとの build_behavior 再実行・model.clone() を排除）。
     let assembly = BraceIterAssembly::build(model, &dofmap, &braces);
 
-    // 荷重ベクトルはブレースの有効/無効に依存しないため1回だけ組み立てる。
     let f_free = assemble_global_f(model, &dofmap, lc);
     let f_red = reducer.reduce_f(&f_free);
     let member_loads: &[MemberLoad] = model
@@ -333,9 +297,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
     let mut k_red_cache = CscCache::new();
     let mut solver = make_solver(SolverBackend::Auto);
 
-    // active[k] = k 番目の引張専用ブレースが軸力を負担する（引張側）か。初期は全 active。
     let mut active = vec![true; braces.len()];
-    // 収束しなかった場合に返す最後の結果（当該反復で使った active 集合と解）。
     let mut fallback: Option<(Vec<bool>, Vec<f64>)> = None;
 
     for _ in 0..TENSION_ONLY_MAX_ITER {
@@ -348,8 +310,6 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         let u_indep = solver.solve(&f_red)?;
         let u_free = reducer.expand_u(&u_indep);
 
-        // 各ブレースの軸伸び δ = t·(u_j − u_i) から次の active 集合を判定する。
-        // δ≥0（引張）なら active、δ<0（圧縮・スラック）なら無効化。
         let new_active: Vec<bool> = braces
             .iter()
             .map(|b| {
@@ -377,7 +337,6 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         active = new_active;
         fallback = Some((active_used, u_free));
     }
-    // 収束しなかった（active 集合が振動した）場合は最後の結果を返す。
     match fallback {
         Some((active_used, u_free)) => build_tension_only_result(
             model,
@@ -395,13 +354,6 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
 /// （global_dofs・局所剛性行列・内力回収用 behavior）を1回だけ計算して保持し、
 /// 各反復では「引張専用ブレースの active/disabled のどちらの局所剛性を使うか」を
 /// 選択して triplet 化するだけにする。
-///
-/// 引張専用ブレースの無効化断面（[`reduce_brace_axial`] と同じ、軸剛性用面積を
-/// [`AXIAL_DISABLE_FACTOR`] 倍した断面）は、全ブレースぶんまとめて1回だけモデルを
-/// 複製して求める（従来は反復ごとに `model.clone()` していた）。個々の要素に対する
-/// `build_behavior`/`tangent_stiffness` の呼び出しは、有効時・無効時とも従来の
-/// 反復内呼び出しと完全に同じ入力（元モデル or 断面差し替え後のモデル）で行うため、
-/// 結果はビット一致する。
 struct BraceIterAssembly {
     /// 要素ごとの global_dofs（active-set に依らず不変）。
     gdofs: Vec<smallvec::SmallVec<[usize; 24]>>,
@@ -428,8 +380,6 @@ impl BraceIterAssembly {
             .enumerate()
             .map(|(k, b)| (b.elem, k))
             .collect();
-        // 全引張専用ブレースを無効化した断面を持つモデルを1回だけ複製する
-        // （`reduce_brace_axial` と同じ手法。反復ごとの複製を排除）。
         let brace_elems: Vec<usize> = braces.iter().map(|b| b.elem).collect();
         let disabled_model = reduce_brace_axial(model, &brace_elems);
 
@@ -538,7 +488,6 @@ fn build_tension_only_result(
             superpose_member_loads(model, elem, loads, &mut forces);
             member_forces.push((elem.id, forces));
         }
-        // 仕口パネルのせん断モーメント（断面検定の設計用パネルモーメント pM）。
         if let (Some(&node), Some(m)) = (elem.nodes.first(), behavior.panel_moments_from(&u_elem)) {
             panel_moments.push((node, m));
         }
@@ -565,11 +514,6 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         });
     }
 
-    // 要素ごとの behavior・global_dofs・局所剛性を1回だけ構築し、K 組立（本関数内）と
-    // 内力回収（下の回収ループ）の両方で使い回す（従来は `assemble_global_k` 内部と
-    // 回収ループの計2回 `build_behavior` していた）。構築順・演算順は
-    // 従来の `assemble_global_k` と完全に同じ（要素 ID 順→支点ばね対角）で、
-    // 結果はビット一致する。
     let ctx = Ctx { model };
     let mut behaviors: Vec<crate::statics::BehaviorEntry> =
         Vec::with_capacity(model.elements.len());
@@ -599,8 +543,6 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         let disp = dofmap.expand_to_nodes(&u_free, model.nodes.len());
 
         let mut member_forces = Vec::new();
-        // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）。要素 ID で
-        // 事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける。
         let member_loads: &[squid_n_core::model::MemberLoad] = model
             .load_cases
             .iter()
@@ -619,7 +561,6 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
                 superpose_member_loads(model, elem, loads, &mut forces);
                 member_forces.push((elem.id, forces));
             }
-            // 仕口パネルのせん断モーメント（断面検定の設計用パネルモーメント pM）。
             if let (Some(&node), Some(m)) =
                 (elem.nodes.first(), behavior.panel_moments_from(&u_elem))
             {
@@ -644,17 +585,12 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
 }
 
 /// 内力回収の欠落検出（線材）。
-///
 /// 線材（梁・柱＝`Beam`、`Fiber`、`MultiSpring`、ブレース）は必ず
 /// `ElementBehavior::recover_forces` を実装している必要がある。実装されていない
 /// 要素は `recover_forces` が `None` を返し、線形静解析のループで**黙って
 /// 読み飛ばされて** `member_forces` から丸ごと欠落する。欠落した部材は応力図・
 /// 断面検定・柱梁接合部検定・設計用せん断力 QD のいずれにも現れず、
 /// 「結果が空である」ことがユーザーからは正常な計算結果と区別できない。
-///
-/// 実際に、剛床に載る梁が材端集中ばね梁（`recover_forces` 未実装）で組まれて
-/// 全階の梁が無言で欠落する不具合があったため、要素実装の不備を解析エラーとして
-/// 顕在化させる（`dev_docs/handoff/剛床上の梁の応力欠落_申し送り.md`）。
 pub(crate) fn ensure_line_member_forces(
     model: &Model,
     member_forces: &[(squid_n_core::ids::ElemId, MemberForces)],
@@ -697,13 +633,9 @@ pub(crate) fn ensure_line_member_forces(
 }
 
 /// 部材荷重を要素 ID でグルーピングする（内力回収の重ね合わせ用）。
-///
-/// 従来は要素ごとに `member_loads.iter().filter(...)` で全部材荷重を毎回
-/// 総当りスキャンしていた（O(要素数×荷重数)）。呼び出し側で1回だけ本関数を
-/// 呼んでグルーピングし、[`superpose_member_loads`] へ要素分の荷重だけを渡す。
-/// 各要素内の荷重順序は `member_loads` 内の元の出現順のまま保たれる
-/// （固定端内力の重ね合わせは加算順序に依存しないため数値上は問題ないが、
-/// 念のため元の順序を崩さない）。
+/// 呼び出し側で1回だけ本関数を呼んでグルーピングし、
+/// [`superpose_member_loads`] へ要素分の荷重だけを渡す。
+/// 各要素内の荷重順序は `member_loads` 内の元の出現順のまま保たれる。
 pub(crate) fn group_member_loads_by_elem(
     member_loads: &[MemberLoad],
 ) -> HashMap<ElemId, Vec<MemberLoad>> {
@@ -716,12 +648,8 @@ pub(crate) fn group_member_loads_by_elem(
 
 /// 部材荷重の固定端内力を、`K·u` 由来の回復内力へ各断面で重ね合わせる。
 /// 線形重ね合わせ: 実内力 = （等価節点力に対する応答 K·u）＋（両端固定梁のスパン内力）。
-///
 /// `loads` は当該要素に作用する部材荷重のみ（[`group_member_loads_by_elem`] で
 /// 事前にグルーピングした結果から呼び出し側が取り出して渡す）。
-///
-/// `Analysis` ファサード（分解済み K を再利用する経路）でも同じ重ね合わせが
-/// 要るため `pub(crate)` で共有する（[`crate::statics::analysis`] 参照）。
 pub(crate) fn superpose_member_loads(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
@@ -731,9 +659,6 @@ pub(crate) fn superpose_member_loads(
     if loads.is_empty() {
         return;
     }
-    // 対象の線材判定・局所座標系・部材長は等価節点力側（`assemble_global_f`）と
-    // 同じ規則を共有する（[`crate::common::assemble::member_load_frame`]）。荷重ベクトル側で
-    // 載らなかった荷重が内力回復側だけに重なる（またはその逆）不整合を防ぐ。
     let Some((frame, length)) = crate::common::assemble::member_load_frame(model, elem) else {
         return;
     };

@@ -35,17 +35,7 @@ impl ArcLengthSolver {
     /// `q`: 参照荷重ベクトル
     /// `solve`: K⁻¹·r を返す線形ソルバクロージャ（修正 Newton＝接線はステップ開始時で固定）
     /// `eval_fint`: 変位増分 δu を要素状態へ反映し、更新後の内力ベクトルを返すクロージャ。
-    ///   修正子の各反復で内力 f_int(u) を再評価することで真の非線形反復を行う
-    ///   （旧実装は f_int を固定パラメータとして渡しており、非線形反復になっていなかった）。
     /// `prev_du`: 前ステップの変位増分（符号決定・根選択用）
-    ///
-    /// `eval_fint` から返る `f_int` は呼び出し元クロージャが所有する Vec のため
-    /// 確保を避けられないが、`solve` の解（`du_t`／`du_bar`）は出力バッファ契約
-    /// （[`SolverFn`]）で本メソッドが 1 回だけ確保したバッファへ書き込ませ、
-    /// その他の内部演算（`scale`／`add`）も同様に作業バッファへ書き込む形として、
-    /// 修正子反復（最大 `newton.max_iter` 回）ごとの Vec 再確保をなくしている
-    /// （時刻歴応答解析高速化・第2波と同じ「同じ演算を同じ順序で行い、確保回数だけを
-    /// 減らす」方針。各要素の計算式・演算順序は従来と同一で数値結果はビット一致する）。
     pub fn step<'b>(
         &self,
         q: &[f64],
@@ -71,7 +61,6 @@ impl ArcLengthSolver {
 
         let mut dlambda = sign * self.delta_l / ut_norm;
 
-        // 軟化検知：接線変位が前ステップ増分に比べて著しく大きい場合、予測子を減額
         if !prev_du.is_empty() {
             let prev_norm = dot(prev_du, prev_du).sqrt();
             if prev_norm > 1e-30 {
@@ -82,12 +71,9 @@ impl ArcLengthSolver {
             }
         }
 
-        // 修正子反復で繰り返し使う作業バッファ（反復ごとの Vec 再確保を避ける。
-        // 各要素は元の scale/add 呼び出しと同一の式で書き込むため数値結果は不変）。
         let mut du = vec![0.0; n];
         scale_into(&du_t, dlambda, &mut du);
 
-        // 予測子スケール制限：円筒半径に対するオーバーシュートを抑制
         let du_pred_norm = dot(&du, &du).sqrt();
         let bound = self.delta_l * 1.5;
         if du_pred_norm > bound {
@@ -98,7 +84,6 @@ impl ArcLengthSolver {
 
         let qq = dot(q, q);
 
-        // 予測子の変位増分を要素状態へ反映し、その点での内力を取得する。
         let mut f_int = eval_fint(&du)?;
 
         let mut converged = false;
@@ -122,13 +107,8 @@ impl ArcLengthSolver {
                 break;
             }
 
-            // du_bar = K⁻¹·r（出力バッファへ書き込み。反復間で使い回す）
             solve(&r, &mut du_bar)?;
 
-            // 円筒型拘束の2次方程式 a·δλ² + b·δλ + c = 0
-            // a = du_tᵀ·du_t
-            // b = 2·(du + du_bar)ᵀ·du_t
-            // c = (du + du_bar)ᵀ·(du + du_bar) - Δl²
             add_into(&du, &du_bar, &mut du_aug);
             let a = dot(&du_t, &du_t);
             let b = 2.0 * dot(&du_aug, &du_t);
@@ -142,7 +122,6 @@ impl ArcLengthSolver {
             let dlambda1 = (-b + sqrt_disc) / (2.0 * a);
             let dlambda2 = (-b - sqrt_disc) / (2.0 * a);
 
-            // 根の選択：累積増分方向とのなす角が小さい根を選ぶ
             scale_into(&du_t, dlambda1, &mut tmp);
             add_into(&du_bar, &tmp, &mut d1);
             scale_into(&du_t, dlambda2, &mut tmp);
@@ -168,7 +147,6 @@ impl ArcLengthSolver {
                 }
             };
 
-            // 変位・荷重増分の更新
             scale_into(&du_t, dlambda_sel, &mut tmp);
             add_into(&du_bar, &tmp, &mut du_update);
             for i in 0..n {
@@ -176,7 +154,6 @@ impl ArcLengthSolver {
             }
             dlambda += dlambda_sel;
 
-            // 修正子増分 δu を要素状態へ反映し、内力を再評価（真の非線形反復）。
             f_int = eval_fint(&du_update)?;
         }
 
@@ -193,7 +170,6 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// `out[i] = v[i] * s`。[`Self::step`] の修正子反復で使う作業バッファへ書き込む
-/// （旧 `scale` と要素ごとに同一の式、Vec 確保がないだけ）。
 fn scale_into(v: &[f64], s: f64, out: &mut [f64]) {
     for i in 0..out.len() {
         out[i] = v[i] * s;
@@ -201,7 +177,6 @@ fn scale_into(v: &[f64], s: f64, out: &mut [f64]) {
 }
 
 /// `out[i] = a[i] + b[i]`。[`Self::step`] の修正子反復で使う作業バッファへ書き込む
-/// （旧 `add` と要素ごとに同一の式、Vec 確保がないだけ）。
 fn add_into(a: &[f64], b: &[f64], out: &mut [f64]) {
     for i in 0..out.len() {
         out[i] = a[i] + b[i];
@@ -305,8 +280,6 @@ mod tests {
 
     /// 1-DOF の非線形（剛性増加型）弾性系で弧長法をトレースし、各収束点が
     /// 非線形平衡 f(u)=λ·q を満たすことを検証する。
-    /// 内力 f_int を修正子の各反復で再評価していなければ平衡が崩れる
-    /// （旧実装は f_int を固定パラメータとしており非線形反復になっていなかった）。
     #[test]
     fn test_arc_length_reevaluates_fint_nonlinear() {
         // f(u) = k·u + c·u²（単調・剛性増加）。接線 = k + 2c·u。
@@ -327,12 +300,10 @@ mod tests {
             let step = solver
                 .step(
                     &q,
-                    // 接線 Newton: 現在の trial 変位の接線で K⁻¹ を構成。
                     &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
                         *out = vec![r[0] / tangent(trial_u.get())];
                         Ok(())
                     },
-                    // δu を trial 変位へ反映し、更新後の内力を返す（再評価される）。
                     &mut |du: &[f64]| -> Result<Vec<f64>, String> {
                         trial_u.set(trial_u.get() + du[0]);
                         eval_calls.set(eval_calls.get() + 1);

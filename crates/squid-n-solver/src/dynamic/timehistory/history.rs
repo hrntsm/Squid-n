@@ -11,8 +11,7 @@ use super::result::ResponseHistory;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 
-/// 記録方向を自動選択する: `accel_y` が Some かつ Σ|accel_y| > Σ|accel_x| なら Y、
-/// そうでなければ X（従来互換）。
+/// 記録方向を自動選択する: `accel_y` が Some かつ Σ|accel_y| > Σ|accel_x| なら Y、そうでなければ X。
 pub(crate) fn choose_record_dir_y(wave: &GroundMotion) -> bool {
     let sum_x: f64 = wave.accel_x.iter().map(|v| v.abs()).sum();
     let sum_y: f64 = wave
@@ -48,9 +47,7 @@ pub(crate) fn pick_record_node(
 
 /// 層の上端・下端それぞれの代表節点（その階の所属節点の先頭）。
 ///
-/// 下端が基部の階であっても同じ規則で引く。基部を「`story == None` の節点」として
-/// 探すのは誤りである（階生成が不活性化した剛床代表節点も `story == None` で残るため、
-/// 基部でない節点を掴みうる）。
+/// 下端が基部の階であっても同じ規則で引く。
 fn layer_end_nodes(
     model: &Model,
     layer: &squid_n_core::model::Layer,
@@ -149,8 +146,6 @@ pub(crate) fn update_story_drift(
         }
         let (top, bot) = layer_end_nodes(model, &layer);
         if let (Some(tn), Some(bn)) = (top, bot) {
-            // 層間変形角は従来通り X 方向（0）で評価する（ResponseHistory の
-            // 記録方向とは独立）。
             let du = (node_disp(u_free, dofmap, tn, 0) - node_disp(u_free, dofmap, bn, 0)).abs();
             let angle = du / layer.height;
             if angle > *slot {

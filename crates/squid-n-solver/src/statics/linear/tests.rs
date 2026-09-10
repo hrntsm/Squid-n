@@ -11,7 +11,7 @@ use squid_n_core::model::{
 #[test]
 fn simply_supported_udl_midspan_moment() {
     let l = 1000.0_f64;
-    let w = 2.0_f64; // N/mm（下向き -Z）
+    let w = 2.0_f64;
     let model = Model {
         nodes: vec![
             Node {
@@ -106,7 +106,7 @@ fn simply_supported_udl_midspan_moment() {
         .find(|(id, _)| *id == ElemId(0))
         .expect("member forces for elem 0");
 
-    let expected_mid = w * l * l / 8.0; // 250000
+    let expected_mid = w * l * l / 8.0;
     let mut mid_mz = None;
     let mut end_mz_max = 0.0_f64;
     for (xi, vals) in &mf.at {
@@ -273,7 +273,7 @@ fn simply_supported_udl_zplane_moment() {
         .find(|(id, _)| *id == ElemId(0))
         .unwrap();
     let expected = w * l * l / 8.0;
-    let mid = mid_value(mf, 4).abs(); // My
+    let mid = mid_value(mf, 4).abs();
     assert!(
         (mid - expected).abs() / expected < 1e-3,
         "zplane mid My={} expected {}",
@@ -392,23 +392,23 @@ fn test_beam_to_global_transverse_uses_correct_inertia() {
     // 現実的な鋼材大断面（iz=1e9 級）を用いる：to_global 修正の検証に加え、
     // 端ばね静縮約のペナルティが大断面でも非正定値化しないこと（堅牢性）も同時に確認。
     let e = 205000.0_f64;
-    let l = 1000.0_f64; // make_axial_cantilever の節点間距離
+    let l = 1000.0_f64;
     let iy = 2.0e9_f64;
-    let iz = 1.0e9_f64; // iy≠iz：取り違えが顕在化する
+    let iz = 1.0e9_f64;
     let p = 10000.0_f64;
     let mut model = make_axial_cantilever();
     model.materials[0].young = e;
     model.sections[0].iy = iy;
     model.sections[0].iz = iz;
-    model.sections[0].as_y = 1.0e9; // せん断たわみを十分小さく
+    model.sections[0].as_y = 1.0e9;
     model.sections[0].as_z = 1.0e9;
     model.load_cases[0].nodal[0].values = [0.0, p, 0.0, 0.0, 0.0, 0.0];
 
     let result = linear_static_once(&model, LoadCaseId(1)).unwrap();
     let uy = result.disp[1][1];
-    let expected = p * l.powi(3) / (3.0 * e * iz); // 水平たわみ＝弱軸（iz 使用）
-    let buggy = p * l.powi(3) / (3.0 * e * iy); // 誤った値=iy（強軸）使用（1/2倍）
-                                                // iz ベースの値に一致し、iy ベース(1/2)を明確に排除する。
+    let expected = p * l.powi(3) / (3.0 * e * iz);
+    let buggy = p * l.powi(3) / (3.0 * e * iy);
+    // iz ベースの値に一致し、iy ベース(1/2)を明確に排除する。
     assert!(
         (uy - expected).abs() / expected < 1e-3,
         "uy={} expected(iz)={} buggy(iy)={}",
@@ -428,7 +428,7 @@ fn test_rigid_zone_affects_analysis() {
     base.sections[0].iz = 1.0e7;
     base.sections[0].as_y = 1.0e8;
     base.sections[0].as_z = 1.0e8;
-    base.load_cases[0].nodal[0].values = [0.0, 0.0, 1000.0, 0.0, 0.0, 0.0]; // global Z 載荷
+    base.load_cases[0].nodal[0].values = [0.0, 0.0, 1000.0, 0.0, 0.0, 0.0];
 
     // 剛域なし
     let r0 = linear_static_once(&base, LoadCaseId(1)).unwrap();
@@ -548,7 +548,6 @@ fn test_linear_static_vertical_cantilever_bending() {
 
 #[test]
 fn test_linear_static_shell_element() {
-    // Cantilever plate: bottom edge fixed (nodes 0,1), top edge free (nodes 2,3)
     let model = Model {
         nodes: vec![
             Node {
@@ -643,7 +642,6 @@ fn test_linear_static_shell_element() {
     let result = linear_static_once(&model, LoadCaseId(1));
     assert!(result.is_ok(), "solver failed: {:?}", result.err());
     let result = result.unwrap();
-    // Top edge should displace upward (positive z) under positive z point load
     assert!(
         result.disp[2][2] > 0.0,
         "loaded node should displace upward: {}",
@@ -673,14 +671,10 @@ fn test_linear_static_deterministic() {
 
 #[test]
 fn test_shell_membrane_patch_test() {
-    // Distorted 2x2 patch: corners pinned, midsides+interior free.
-    // Sanity check that the patch assembles and solves without singularity.
-
     let e = 1000.0;
     let nu = 0.3;
     let t = 10.0;
 
-    // 9 nodes: 4 corners, 4 midsides, 1 interior (offset from center)
     let nodes = vec![
         Node {
             id: NodeId(0),
@@ -755,23 +749,6 @@ fn test_shell_membrane_patch_test() {
             support_spring: None,
         },
     ];
-
-    // Apply boundary displacements as fixed restraints + prescribed displacements
-    // We model this by making boundary nodes free and applying nodal loads that
-    // produce the target displacements. Simpler: fix all boundary DOFs to zero and
-    // apply the linear field as loads is non-trivial. Instead we directly set
-    // boundary node displacements via MPC-like fixed values: set boundary nodes
-    // to FIXED and then apply the corresponding displacement via load is not possible.
-    //
-    // Workaround: make boundary nodes free but apply large penalty springs to enforce
-    // target displacements. This is complex.
-    //
-    // Alternative patch test: just verify the assembled element gives constant strain
-    // when boundary nodes have linear displacements. We do this element-directly in
-    // sc-element tests already. Here we only check that a free patch solves.
-    //
-    // For a meaningful solver test, pin the corners and leave midsides+interior free.
-    // This is a simple sanity check that the patch does not become singular.
 
     let model = Model {
         nodes,
@@ -882,7 +859,6 @@ fn test_shell_membrane_patch_test() {
 
 #[test]
 fn test_shell_membrane_off_no_diaphragm() {
-    // Sanity: single shell element with membrane manually off, no diaphragm constraints.
     let mut model = Model {
         nodes: vec![
             Node {
@@ -998,8 +974,6 @@ fn test_shell_membrane_off_no_diaphragm() {
 
 #[test]
 fn test_shell_rigid_floor_membrane_off() {
-    // Rigid floor story: master node fully fixed, slaves follow master in-plane via
-    // RigidDiaphragm constraint. Shell membrane is off for this story, but bending remains.
     use squid_n_core::model::{Constraint, Story};
 
     let model = Model {
@@ -1110,13 +1084,11 @@ fn test_shell_rigid_floor_membrane_off() {
     };
 
     let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
-    // Slaves have no in-plane displacement because master is fixed and diaphragm constrains them.
     assert!(
         res.disp[1][0].abs() < 1e-12 && res.disp[1][1].abs() < 1e-12,
         "slave should not move in-plane: {:?}",
         [res.disp[1][0], res.disp[1][1]]
     );
-    // Shell bending allows out-of-plane displacement under vertical load.
     assert!(
         res.disp[2][2].abs() > 1e-12,
         "shell should deflect vertically: {}",
@@ -1135,12 +1107,12 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
         for ix in 0..nn {
             let on_boundary = ix == 0 || ix == n || iy == 0 || iy == n;
             // 常に Ux,Uy,Rz を固定（面内＋ドリリング）。周辺は Uz も固定。
-            let mut mask = 0b100011u8; // bits 0(Ux),1(Uy),5(Rz)
+            let mut mask = 0b100011u8;
             if on_boundary {
-                mask |= 1 << 2; // Uz
+                mask |= 1 << 2;
                 if clamped {
-                    mask |= 1 << 3; // Rx
-                    mask |= 1 << 4; // Ry
+                    mask |= 1 << 3;
+                    mask |= 1 << 4;
                 }
             }
             nodes.push(Node {
@@ -1239,13 +1211,12 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
     }
 }
 
-/// 単純支持正方形板の中央たわみが参照解（α·q·a⁴/D, α=0.00406）へ
-/// 細分化収束する（仕様 §9.3）。粗→密で誤差が単調減少し、16×16 で ±2%。
+/// 単純支持正方形板の中央たわみが参照解（α·q·a⁴/D, α=0.00406）に収束すること。
 #[test]
 fn test_ss_plate_convergence() {
     let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
     let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
-    let ref_w = 0.00406 * q * a.powi(4) / d; // ≈ 2.217 mm
+    let ref_w = 0.00406 * q * a.powi(4) / d;
 
     let center_w = |n: usize| -> f64 {
         let model = make_ss_plate(n, a, t, e, nu, q, false);
@@ -1282,7 +1253,7 @@ fn test_ss_plate_convergence() {
 fn test_clamped_plate_convergence() {
     let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
     let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
-    let ref_w = 0.00126 * q * a.powi(4) / d; // ≈ 0.688 mm
+    let ref_w = 0.00126 * q * a.powi(4) / d;
 
     let center_w = |n: usize| -> f64 {
         let model = make_ss_plate(n, a, t, e, nu, q, true);
@@ -1313,16 +1284,14 @@ fn test_clamped_plate_convergence() {
     );
 }
 
-// ===== 長期応力解析: 長期軸力無効化（一貫構造計算プログラムの実務慣行）=====
-//
 // 1 スパン・2 柱・頂部大梁・対角ブレース 1 本のモデル（ブレース付きラーメン）。
 // 柱・大梁は Fixed-Fixed（曲げ骨組）、ブレースは Pinned-Pinned のトラス要素。
 // 荷重ケースを 2 本（Dead=長期, Seismic=短期）用意し、同一の鉛直荷重を与える。
 fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
     use squid_n_core::model::StressAnalysisCfg;
 
-    let l = 4000.0_f64; // スパン
-    let h = 3000.0_f64; // 階高
+    let l = 4000.0_f64;
+    let h = 3000.0_f64;
     let node = |id: u32, coord: [f64; 3]| Node {
         id: NodeId(id),
         coord,
@@ -1656,8 +1625,7 @@ fn test_no_long_axial_column_zeros_column_force() {
     );
 }
 
-/// 検証3: フラグが既定（false）のとき、`apply_long_axial_cut` はモデルを
-/// 複製せずそのまま返す（＝従来結果と完全一致。回帰なし）。
+/// 検証3: フラグが既定（false）のとき、`apply_long_axial_cut` はモデルを複製せずそのまま返すこと。
 #[test]
 fn test_apply_long_axial_cut_noop_when_flags_false() {
     let model = braced_frame(squid_n_core::model::LoadCaseKind::Dead);
@@ -1668,9 +1636,7 @@ fn test_apply_long_axial_cut_noop_when_flags_false() {
     );
 }
 
-/// 検証3b: フラグが既定（false）のとき、`linear_static_once` の結果が
-/// 有効フラグを立てた場合と異なることも含め、既定値では従来どおり通しで解けること
-/// （回帰確認: 既存の他テスト群が既定 stress_cfg のままであることの追加保証）。
+/// 検証3b: フラグが既定（false）のとき、既定値では通しで解けること。
 #[test]
 fn test_default_stress_cfg_matches_plain_model() {
     let model = braced_frame(squid_n_core::model::LoadCaseKind::Dead);
@@ -1751,7 +1717,7 @@ fn test_axial_cut_applies_to_composite_src_column() {
         steel_flange_thick: 12.0,
     });
     model.materials[0].fc = Some(24.0);
-    model.materials[0].young = 2.27e4; // コンクリートのヤング係数相当
+    model.materials[0].young = 2.27e4;
 
     let base = linear_static_once(&model, LoadCaseId(1)).unwrap();
     let base_col = axial_force(&base, ElemId(0)).abs();
@@ -1775,9 +1741,7 @@ fn test_axial_cut_applies_to_composite_src_column() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 引張専用ブレースの active-set 反復（真の引張専用解析）
-// ---------------------------------------------------------------------------
 
 /// 引張専用ブレース検証用の1スパン門型フレーム。
 ///
@@ -2090,9 +2054,9 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             spring: None,
         });
     };
-    push(0, 0, 2, [1.0, 0.0, 0.0]); // 柱（鉛直材）
-    push(1, 1, 3, [1.0, 0.0, 0.0]); // 柱（鉛直材）
-    push(2, 2, 3, [0.0, 0.0, 1.0]); // 梁（水平材。Mz が鉛直曲げ）
+    push(0, 0, 2, [1.0, 0.0, 0.0]);
+    push(1, 1, 3, [1.0, 0.0, 0.0]);
+    push(2, 2, 3, [0.0, 0.0, 1.0]);
 
     if with_rigid_floor {
         // 梁の材端節点が剛床上にあることだけを表す剛床（スレーブなし）。
@@ -2119,7 +2083,6 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
     model
 }
 
-/// 剛床に載る梁の部材内力が回収されること（回帰）。
 ///
 /// `ForceRegime::Auto` は「剛床に載る水平材」を材端集中ばね（非線形要素）へ
 /// 振り分けるが、これは非線形解析だけの規則である。線形解析の要素生成が

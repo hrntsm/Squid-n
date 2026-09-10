@@ -2,9 +2,7 @@
 //!
 //! 解析の最小単位は荷重ケース単体とし、荷重組合せは解き直さずに
 //! 単体結果の線形和として組み立てる（重ね合わせの原理。
-//! [`crate::statics::linear::superpose_static`]）。線形解析では荷重ベクトルを合成して
-//! 1 回解いた場合と結果が一致し、同じ荷重ケースを参照する組合せが何件あっても
-//! 求解は荷重ケース数ぶんで済む。
+//! [`crate::statics::linear::superpose_static`]）。
 
 use squid_n_core::ids::LoadCaseId;
 use squid_n_core::model::LoadCombination;

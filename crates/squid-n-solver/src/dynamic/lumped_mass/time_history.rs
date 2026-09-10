@@ -11,7 +11,7 @@ use super::model::{LumpedMassModel, StoryTrilinear};
 use crate::common::newton::NewtonCriteria;
 use squid_n_material::{HysteresisMaterial, HysteresisRule, UniaxialMaterial};
 
-/// 層ピークの方向内訳（下層→上層）。長さは層数。旧プロジェクトでは空。
+/// 層ピークの方向内訳（下層→上層）。長さは層数。
 ///
 /// - **X / Y**: 剛心位置の並進成分の時刻歴最大絶対値
 /// - **45°**: 単位ベクトル `(1,1)/√2` と `(1,−1)/√2`（135°）への投影絶対値の大きい方
@@ -36,7 +36,7 @@ impl StickDirPeaks {
         }
     }
 
-    /// 方向内訳がある（現行の解析結果）なら真。旧 `.scz` は空。
+    /// 方向内訳があるなら真。
     pub fn has_values(&self) -> bool {
         !self.x.is_empty()
     }
@@ -54,10 +54,7 @@ impl StickDirPeaks {
 
     /// 層ごとに X・Y の大きい方を採った代表値。
     ///
-    /// 方向の内訳を持たない 1 本の系列（`StickResponse::story_ductility`）を作る。
-    /// **45° 成分は採らない。** 45° は X・Y が同時刻にピークを迎えた場合の合成で、
-    /// `vx = vy` のときは √2 倍となって X・Y のどちらも上回る。軸方向の代表値へ
-    /// 混ぜる意味を持たないため、方向内訳（`ductility_dir` 等）の側だけで持つ。
+    /// 45° 成分は採らない。
     pub(crate) fn story_max(&self) -> Vec<f64> {
         self.x
             .iter()
@@ -137,7 +134,6 @@ impl StickResponse {
     }
 
     /// 頂部（最上階質量重心）の方向別最大変位 [mm]。
-    /// `floor_disp` が空の旧結果では、加振方向時刻歴の絶対最大だけを「最大」に入れる。
     pub fn roof_dir_peaks(&self) -> (f64, f64, f64, f64) {
         let mut p = StickDirPeaks::zeros(1);
         let mut max = 0.0_f64;
@@ -157,9 +153,7 @@ impl StickResponse {
     }
 }
 
-/// 各時刻ステップの Newton 反復の収束規約。基準ノルムは動的釣り合いの各項の最大
-/// （[`crate::common::newton::dynamic_reference_norm`]）。地動がゼロの時刻でも慣性力・
-/// 減衰力が基準を支えるため、分母が退化しない。
+/// 各時刻ステップの Newton 反復の収束規約。
 pub const STICK_NEWTON: NewtonCriteria = NewtonCriteria::new(30, 1e-6);
 
 /// 三重対角系 `A·x=b` を Thomas 法で解く（`a`=下副対角, `b_diag`=主対角, `c`=上副対角）。
@@ -193,7 +187,6 @@ pub(crate) fn fundamental_omega(m: &[f64], k: &[f64]) -> f64 {
     if n == 0 {
         return 0.0;
     }
-    // 初期剛性の三重対角 K（せん断型: K[i][i]=k_i+k_{i+1}, 副対角=−k_{i+1}）。
     let mut diag = vec![0.0; n];
     let mut lower = vec![0.0; n];
     let mut upper = vec![0.0; n];
@@ -206,19 +199,16 @@ pub(crate) fn fundamental_omega(m: &[f64], k: &[f64]) -> f64 {
             lower[i + 1] = -ki1;
         }
     }
-    // 逆反復: K x = M x_prev。
     let mut x = vec![1.0; n];
     let mut omega2 = 0.0;
     for _ in 0..50 {
         let b: Vec<f64> = (0..n).map(|i| m[i] * x[i]).collect();
         let y = solve_tridiagonal(&lower, &diag, &upper, &b);
-        // 正規化（M ノルム）。
         let ynorm: f64 = (0..n).map(|i| m[i] * y[i] * y[i]).sum::<f64>().sqrt();
         if ynorm < 1e-30 {
             break;
         }
         let xn: Vec<f64> = y.iter().map(|v| v / ynorm).collect();
-        // Rayleigh 商 ω² = xᵀKx / xᵀMx。
         let kx_diag: Vec<f64> = (0..n)
             .map(|i| {
                 let mut s = diag[i] * xn[i];
@@ -277,17 +267,13 @@ pub fn lumped_mass_time_history(
         .map(|s| story_spring(&s.skeleton))
         .collect();
 
-    // 初期剛性比例減衰係数 a1=2h/ω1。ω1 は固有値解析（faer、
-    // `super::eigen::lumped_mass_eigen`）の1次モードを優先し、失敗時のみ
-    // 本関数（逆反復法）へフォールバックする（`super::eigen::stick_omega1`）。
     let omega1 = super::eigen::stick_omega1(lm);
     let a1 = if omega1 > 0.0 { 2.0 * h / omega1 } else { 0.0 };
 
-    // Newmark 平均加速度（β=1/4, γ=1/2）。
     let beta = 0.25;
     let gamma = 0.5;
-    let c1 = 1.0 / (beta * dt * dt); // a = c1·Δu − ...
-    let c2 = gamma / (beta * dt); // v = c2·Δu − ...
+    let c1 = 1.0 / (beta * dt * dt);
+    let c2 = gamma / (beta * dt);
 
     let mut u = vec![0.0; n];
     let mut v = vec![0.0; n];
@@ -301,17 +287,13 @@ pub fn lumped_mass_time_history(
     let mut drift_dir = StickDirPeaks::zeros(n);
     let mut shear_dir = StickDirPeaks::zeros(n);
 
-    // 層ドリフト δ_i = u_i − u_{i-1}（u_0=base=0）。
     let drift = |u: &[f64], i: usize| if i == 0 { u[0] } else { u[i] - u[i - 1] };
 
     let mut non_converged_steps = 0usize;
-    // 収束判定の基準ノルムの下限に使う、解析中に観測した力のスケールの最大値。
     let mut peak_force_scale = 0.0_f64;
 
     for (step, &ag) in accel.iter().enumerate() {
-        // 外力（地動慣性力）。
         let p: Vec<f64> = mass.iter().map(|&mi| -mi * ag).collect();
-        // 予測子（変位一定, du=0 から Newton）。
         let u_prev = u.clone();
         let v_prev = v.clone();
         let a_prev = a.clone();
@@ -319,7 +301,6 @@ pub fn lumped_mass_time_history(
         let mut step_converged = false;
 
         for _iter in STICK_NEWTON.iters() {
-            // 層せん断・接線（各 spring を drift で試行）。
             let mut q = vec![0.0; n];
             let mut kt = vec![0.0; n];
             for i in 0..n {
@@ -327,13 +308,11 @@ pub fn lumped_mass_time_history(
                 q[i] = qi;
                 kt[i] = ki.max(1e-6);
             }
-            // 内力 f_int[i]=Q_i−Q_{i+1}。
             let mut f_int = vec![0.0; n];
             for i in 0..n {
                 let q_above = if i + 1 < n { q[i + 1] } else { 0.0 };
                 f_int[i] = q[i] - q_above;
             }
-            // Newmark の a, v（u_tr に対応）。
             let a_tr: Vec<f64> = (0..n)
                 .map(|i| {
                     c1 * (u_tr[i] - u_prev[i])
@@ -344,23 +323,13 @@ pub fn lumped_mass_time_history(
             let v_tr: Vec<f64> = (0..n)
                 .map(|i| v_prev[i] + dt * ((1.0 - gamma) * a_prev[i] + gamma * a_tr[i]))
                 .collect();
-            // 減衰力 C·v、C=a1·K_init（初期剛性比例・一定）。C·v を初期層剛性から
-            // 直接計算する。従来は接線剛性 kt を用いており、降伏で層剛性が低下すると
-            // 減衰も比例して失われる接線剛性比例減衰になっていた（docstring の
-            // 初期剛性比例 C=(2h/ω1)·K_init と不整合。非弾性応答を過大評価する非安全側）。
             let cv = tridiag_stiffness_matvec(&k_init, &v_tr, a1);
-            // 残差 r = p − M·a − C·v − f_int。
             let mut r = vec![0.0; n];
             let mut rnorm = 0.0;
             for i in 0..n {
                 r[i] = p[i] - mass[i] * a_tr[i] - cv[i] - f_int[i];
                 rnorm += r[i] * r[i];
             }
-            // 基準ノルムは動的釣り合いの各項（外力・慣性力・減衰力）の最大とする。
-            // 外力だけを基準にすると、地動加速度がゼロを横切る時刻で基準が消えて
-            // 床の 1.0（N）まで落ち、判定が絶対値判定に化けて到達不能になる
-            // （立体モデルの非線形時刻歴で実際に不収束を起こした。
-            // `dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
             let ma: Vec<f64> = (0..n).map(|i| mass[i] * a_tr[i]).collect();
             let scale = crate::common::newton::dynamic_force_scale(&p, &ma, &cv);
             peak_force_scale = peak_force_scale.max(scale);
@@ -369,8 +338,6 @@ pub fn lumped_mass_time_history(
                 step_converged = true;
                 break;
             }
-            // 有効接線 Keff = c1·M + c2·C + K_t（三重対角）。
-            // 接線 K_t は kt、減衰 C=a1·K_init は初期剛性 k_init から組む。
             let (low, diag, up) = effective_tridiagonal(&mass, &kt, &k_init, a1, c1, c2);
             let du = solve_tridiagonal(&low, &diag, &up, &r);
             for i in 0..n {
@@ -378,16 +345,12 @@ pub fn lumped_mass_time_history(
             }
         }
 
-        // 確定。非収束のまま反復上限へ達した場合も従来どおりトライアル状態を
-        // 確定する（数値挙動は不変）が、無音にはせずステップ数を数えて結果へ
-        // 明示する（プッシュオーバーの打ち切り明示と同じ方針）。
         if !step_converged {
             non_converged_steps += 1;
         }
         for s in springs.iter_mut() {
             s.commit();
         }
-        // a, v を確定値へ更新。
         let a_new: Vec<f64> = (0..n)
             .map(|i| {
                 c1 * (u_tr[i] - u_prev[i])
@@ -402,7 +365,6 @@ pub fn lumped_mass_time_history(
         v = v_new;
         a = a_new;
 
-        // 応答の記録。2 次元は加振方向成分だけが非ゼロ。
         for i in 0..n {
             let d_signed = drift(&u, i);
             let (qi, _) = {
@@ -455,8 +417,7 @@ pub fn lumped_mass_time_history(
     }
 }
 
-/// せん断型三重対角剛性 `K(kt)` と `a1·K` の和は使わず、`(scale·K)·x` を直接計算する。
-/// `scale` は減衰係数 a1。せん断型: `K[i][i]=kt_i+kt_{i+1}`, 副対角 `−kt_{i+1}`。
+/// せん断型三重対角 `(scale·K)·x` を直接計算する。`scale` は減衰係数 a1。
 fn tridiag_stiffness_matvec(kt: &[f64], x: &[f64], scale: f64) -> Vec<f64> {
     let n = kt.len();
     let mut y = vec![0.0; n];
@@ -476,9 +437,7 @@ fn tridiag_stiffness_matvec(kt: &[f64], x: &[f64], scale: f64) -> Vec<f64> {
 }
 
 /// 有効接線 `Keff = c1·M + c2·C + K_t` の三重対角成分（下・主・上）。
-/// 接線剛性 `kt` は復元力 K_t（係数 1）に、初期剛性 `k_damp`(=k_init) は
-/// 初期剛性比例減衰 `C=a1·K_init`（係数 c2）に用いる。両者は降伏後に異なる
-/// （従来は両方に kt を用いており接線剛性比例減衰になっていた）。
+/// 接線剛性 `kt` は復元力 K_t に、初期剛性 `k_damp` は減衰 `C=a1·K_init` に用いる。
 fn effective_tridiagonal(
     mass: &[f64],
     kt: &[f64],
@@ -491,7 +450,6 @@ fn effective_tridiagonal(
     let mut low = vec![0.0; n];
     let mut diag = vec![0.0; n];
     let mut up = vec![0.0; n];
-    // 剛性倍率: 接線 K_t は係数 1、減衰 C=a1·K_init は係数 c2·a1。
     let cd = c2 * a1;
     for i in 0..n {
         let kti = kt[i];
@@ -521,7 +479,7 @@ mod damping_tests {
         let kt = [1.0];
         let k_init = [100.0];
         let (a1, c1, c2) = (0.1, 4.0, 2.0);
-        let cd = c2 * a1; // 0.2
+        let cd = c2 * a1;
 
         let (_low, diag, _up) = effective_tridiagonal(&mass, &kt, &k_init, a1, c1, c2);
         // Keff = c1·M + K_t + (c2·a1)·K_init = 8 + 1 + 0.2·100 = 29。
@@ -532,7 +490,6 @@ mod damping_tests {
             diag[0],
             expected
         );
-        // 接線剛性でしか組まない旧実装は 8 + (1+c2·a1)·1 = 9.2 で明確に異なる。
         let buggy = c1 * mass[0] + (1.0 + cd) * kt[0];
         assert!((diag[0] - buggy).abs() > 10.0);
     }

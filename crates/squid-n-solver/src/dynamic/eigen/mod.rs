@@ -17,13 +17,9 @@ pub struct ModalResult {
     pub omega2: Vec<f64>,
     pub period: Vec<f64>,
     /// モード形状（縮約後の独立自由度座標、長さ = `Reducer::n_indep`）。
-    /// 時刻歴のモード減衰（`crate::dynamic::damping::Damping::modal`）など、縮約空間で
-    /// 計算する消費者向け。節点単位の形状が必要な場合は [`Self::node_shapes`] を使う。
     pub shapes: Vec<Vec<f64>>,
-    /// モード形状を節点×6成分（UX,UY,UZ,RX,RY,RZ）へ展開したもの
-    /// （`shapes` を `Reducer::expand_u` → `DofMap` 散布した結果）。
-    /// 可視化・レポートなど節点単位の消費者向け。剛床のスレーブ自由度にも
-    /// マスターと整合した値が入る。
+    /// モード形状を節点×6成分（UX,UY,UZ,RX,RY,RZ）へ展開したもの。
+    /// 剛床のスレーブ自由度にはマスターと整合した値が入る。
     pub node_shapes: Vec<Vec<[f64; 6]>>,
     pub participation: Vec<[f64; 3]>,
     pub effective_mass: Vec<[f64; 3]>,
@@ -40,7 +36,6 @@ pub fn solve_eigen(
     reducer: &Reducer,
     n_modes: usize,
 ) -> Result<ModalResult, SolveError> {
-    // 自由度数（縮約後）が 0 なら分解すら不要（0×0 行列を factorize しない）。
     if reducer.n_indep == 0 || n_modes == 0 {
         return Ok(ModalResult {
             omega2: vec![],
@@ -55,12 +50,8 @@ pub fn solve_eigen(
     let k_free = assemble_global_k(model, dofmap);
     let k_red = reducer.reduce_k(&k_free);
 
-    // 部分空間反復では 1 回の分解を（部分空間サイズ×反復回数）回の求解で
-    // 再利用するため、直接法を明示する（反復法では再利用が効かない）。
     let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
     solver.factorize(&k_red).map_err(|e| match e {
-        // 剛性側の特異（拘束不足・機構）はソルバの英語メッセージのまま返さず、
-        // 質量ゼロ検出と対になる日本語診断へ包み直す。
         SolveError::NotPositiveDefinite => SolveError::InvalidInput(
             "固有値解析: 剛性行列が特異(非正定値)です。拘束が不足しているか、\
              構造が機構(不安定)になっている可能性があります。支持条件を確認してください。"
@@ -72,15 +63,8 @@ pub fn solve_eigen(
     solve_eigen_with_solver(model, dofmap, reducer, n_modes, solver.as_ref())
 }
 
-/// [`solve_eigen`] の本体ロジック。呼び出し側（[`crate::statics::analysis::Analysis`]）が
-/// 既に縮約後剛性行列 `k_red` を分解済みソルバとして保持している場合に、
-/// その分解を再利用して再分解のコストを省くための版。
-///
-/// `solver` は縮約後剛性行列 K_red（本関数が内部で `assemble_global_k` +
-/// `reducer.reduce_k` により組み立てるものと同一の行列）に対して、
-/// 呼び出し側で既に `factorize` 済みであることを前提とする（本関数は
-/// factorize を行わない）。要求自由度が 0（`reducer.n_indep == 0`）の場合は
-/// ソルバに一切触れずに早期リターンするため、未分解のソルバを渡しても安全。
+/// `solver` は縮約後剛性行列 K_red に対して呼び出し側で既に `factorize` 済みであることを前提とする。
+/// 要求自由度が 0 の場合はソルバに触れずに早期リターンする。
 pub fn solve_eigen_with_solver(
     model: &Model,
     dofmap: &DofMap,
@@ -91,7 +75,6 @@ pub fn solve_eigen_with_solver(
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
     let m_red = reducer.reduce_k(&m_free);
     let n = m_red.nrows();
-    // 自由度数（縮約後）を超えるモードは存在しないので上限で抑える。
     let n_modes = n_modes.min(n);
     if n == 0 || n_modes == 0 {
         return Ok(ModalResult {
@@ -104,8 +87,6 @@ pub fn solve_eigen_with_solver(
         });
     }
 
-    // 質量ゼロ（密度・節点質量とも未設定）の検出。
-    // M ≈ 0 のまま進めると GEVD が対角フォールバックし周期 0 の無意味な結果になる。
     let mass_trace: f64 = (0..n)
         .map(|i| m_red.get(i, i).copied().unwrap_or(0.0))
         .sum();
@@ -114,9 +95,6 @@ pub fn solve_eigen_with_solver(
             "質量がゼロです。材料の密度(ρ)を設定するか、節点質量を与えてください。".into(),
         ));
     }
-    // 負の質量（節点質量の符号誤りなどの入力不備）の検出。M が半正定値でなくなると
-    // 一般化 Jacobi（`gevd_jacobi`）の前提が崩れ、判別式の負値丸めにより誤った
-    // 固有値が「正常終了」として返るため、ここで明示エラーにする。
     if (0..n).any(|i| m_red.get(i, i).copied().unwrap_or(0.0) < 0.0) {
         return Err(SolveError::InvalidInput(
             "質量行列の対角に負値があります。節点質量(node.mass)や材料の密度(ρ)に\
@@ -128,18 +106,8 @@ pub fn solve_eigen_with_solver(
     let k_free = assemble_global_k(model, dofmap);
     let k_red = reducer.reduce_k(&k_free);
 
-    // 部分空間サイズ q: Bathe の定石 q = min(2p, p+8) にならい、要求モード数 p に対して
-    // オーバーサンプリングする（p が大きいときに q が際限なく増えて計算コストが
-    // 爆発しないよう +8 側で頭打ちにする）。ただし少なくとも p+4 は確保し、
-    // 行列次元 n は超えない。q=p+1（旧下限）では p=1〜2 の少モード要求時に基底が
-    // 縮退してドリフトし、真値より高い固有値へ停滞することがあった。
     let q = ((2 * n_modes).min(n_modes + 8)).max(n_modes + 4).min(n);
 
-    // 開始ベクトルは Bathe の部分空間反復の定石に従い、質量情報を使って選ぶ
-    // （単純に自由度番号の若い順に単位ベクトルを選ぶと、回転自由度など質量ゼロの
-    // 自由度ばかりを拾ってしまい、水平質点系モデルのように質量を持つ自由度が
-    // 少数・偏在するモデルで q が実際の質量ランクより小さいと、質量を持つ自由度が
-    // 開始部分空間に一本も入らず反復が正しい低次モードへ収束できないことがある）。
     let k_diag: Vec<f64> = (0..n)
         .map(|i| k_red.get(i, i).copied().unwrap_or(0.0))
         .collect();
@@ -150,20 +118,12 @@ pub fn solve_eigen_with_solver(
 
     let mut theta_prev = vec![f64::MAX; n_modes];
     let mut is_converged = false;
-    // 質量ランク不足の判定に使う: 最後に計算した部分空間内の固有値（昇順、
-    // 質量ゼロ方向は +∞ になる）。
     let mut last_eigenvalues = vec![f64::MAX; q];
 
-    // 反復ループ内で毎回 Vec を新規確保しないよう、作業バッファをループ外で
-    // 確保して使い回す。y・x_new は各反復で n*q 個の要素すべてを漏れなく
-    // 書き込む（y は col×r の二重ループが全 (r,col) を、x_new は i×j の
-    // 二重ループが全 (i,j) を埋める）ため、ゼロクリアは不要。
     let mut y = vec![0.0; n * q];
     let mut x_new = vec![0.0; n * q];
     let mut x_col = vec![0.0; n];
     let mut rhs = vec![0.0; n];
-    // solver.solve_into の書き込み先。長さが解の次元と異なる場合のみ内部で
-    // resize されるため、反復・列をまたいで使い回すことで確保回数を削減する。
     let mut yi: Vec<f64> = Vec::new();
     let mut k_bar = vec![0.0; q * q];
     let mut m_bar = vec![0.0; q * q];
@@ -212,16 +172,11 @@ pub fn solve_eigen_with_solver(
                 x_new[i * q + j] = s;
             }
         }
-        // x_new は上のループで全要素を書き込み済みなので swap で使い回す
-        // （swap 後に x_new へ残る旧 x の値は、次反復の書き込みで上書きされるか、
-        // 収束してループを抜ければそのまま破棄される）。
         std::mem::swap(&mut x, &mut x_new);
 
         let mut converged = 0;
         for m in 0..n_modes {
             let th = eigenvalues[m];
-            // 質量ゼロ方向（θ=+∞）が2回連続で現れた場合も「安定した」とみなし、
-            // 無限大同士の減算で NaN になって収束判定が永久に false になるのを防ぐ。
             let same = if th.is_finite() && theta_prev[m].is_finite() {
                 (th - theta_prev[m]).abs() < EIGEN_TOL * th.max(1.0)
             } else {
@@ -246,11 +201,6 @@ pub fn solve_eigen_with_solver(
         )));
     }
 
-    // 質量ランク不足チェック: 要求モード数 n_modes に対し、質量が有効な
-    // （θ が有限な）方向が n_modes 個に満たない場合、f64::MAX 等を結果に混ぜず
-    // 明示エラーとする。gevd_jacobi は質量ゼロ方向の θ を昇順の末尾に +∞ として
-    // 返すため、theta_prev の先頭 n_modes 個のうち有限な個数がそのまま
-    // （この部分空間内で判定できた）質量ランクになる。
     let mass_rank = last_eigenvalues.iter().filter(|v| v.is_finite()).count();
     if theta_prev.iter().any(|v| !v.is_finite()) {
         return Err(SolveError::InvalidInput(format!(
@@ -300,24 +250,16 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
 
 /// 展開済み（`Reducer::expand_u` 済み）のモード形状を節点×6成分へ散布する。
 ///
-/// `phi_free` は呼び出し側（[`compute_participation`]）で 1 回だけ計算した値を渡す
-/// （かつては `compute_participation` 内の質量射影用と本関数内とで同じ `expand_u` を
-/// モードごとに二重計算していたため、その重複を排除している）。
-/// 静的解析の変位展開（`crate::statics::analysis::Analysis` の `expand_disp`）と同じ経路で、
+/// `phi_free` は呼び出し側で 1 回だけ計算した値を渡す。
 /// 剛床のスレーブ自由度にはマスターに従属した値が入る。fixed・非構造自由度は 0。
 fn scatter_node_shape(phi_free: &[f64], dofmap: &DofMap, n_nodes: usize) -> Vec<[f64; 6]> {
     dofmap.expand_to_nodes(phi_free, n_nodes)
 }
 
-/// 部分空間反復の開始ベクトルを Bathe の定石に従って選ぶ。
+/// 部分空間反復の開始ベクトルを選ぶ。
 ///
-/// 1本目は質量分布に比例した変位パターン（各自由度の集中質量そのもの）。
-/// 残り q-1 本は、剛性/質量比 k_ii/m_ii が小さい（＝質量が相対的に効いていて
-/// 低次モードに寄与しやすい）自由度から順に単位ベクトルを割り当てる。
-/// 質量ゼロの自由度は比を +∞ とみなし、質量を持つ自由度が尽きない限り選ばれない。
-/// こうすることで、q が要求モード数程度に小さくても、質量を持つ自由度が
-/// 少数・偏在するモデル（例: 水平質点系モデル化）で開始部分空間から
-/// 質量を持つ方向が漏れることを防ぐ。
+/// 1本目は質量分布に比例した変位パターン、残りは剛性/質量比の小さい順に単位ベクトルを割り当てる。
+/// 質量ゼロの自由度は比を +∞ とみなす。
 fn init_subspace(n: usize, q: usize, k_diag: &[f64], m_diag: &[f64]) -> Vec<f64> {
     let mut x = vec![0.0; n * q];
     if q == 0 {
@@ -336,8 +278,6 @@ fn init_subspace(n: usize, q: usize, k_diag: &[f64], m_diag: &[f64]) -> Vec<f64>
             (i, r)
         })
         .collect();
-    // 剛性・質量対角に NaN が混入した病的入力でも panic せず全順序で並べる
-    // （NaN 同士は同順位扱い。上流の負質量検出等で通常は先にエラーになる）。
     ratios.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     for col in 1..q {
         let dof = ratios[col - 1].0;
@@ -346,33 +286,14 @@ fn init_subspace(n: usize, q: usize, k_diag: &[f64], m_diag: &[f64]) -> Vec<f64>
     x
 }
 
-/// 疎行列とベクトルの積 y = A·x（格納済みの非ゼロ要素のみを走査する）。
-///
-/// `squid_n_math::sparse::sparse_matvec` への薄いラッパ。K/M は要素剛性・
-/// 質量行列の組立時点で局所行列の全成分（上下三角とも）を triplet 化して
-/// 足し込んでいるため（`squid_n_element::behavior::LocalMat::to_triplets`）、
-/// 全体行列は上三角のみ・対称圧縮などではなく非ゼロ要素を対称に両方格納した
-/// 「フル対称」形式になっている。したがって `sparse_matvec` の単純な
-/// 列走査（`y[row] += val * x[col]`）だけで、かつての `get()` 全ペア走査と
-/// 完全に同じ結果が得られる（`assemble_global_k`/`assemble_global_m` と
-/// `Reducer::reduce_k` の実装で確認済み。§検証参照）。
+/// 疎行列とベクトルの積 y = A·x。
 fn spmv(mat: &faer::sparse::SparseColMat<usize, f64>, x: &[f64]) -> Vec<f64> {
     squid_n_math::sparse::sparse_matvec(mat, x)
 }
 
-/// Y^T·A·Y（q×q 対称行列）を、A の非ゼロ要素だけを使って計算する（スクラッチ再利用版）。
+/// Y^T·A·Y（q×q 対称行列）を、A の非ゼロ要素だけを使って計算する。
 ///
-/// 従来は (a,b) 全ペアについて `mat.get()`（二分探索）で密に走査していたため
-/// O(q²·n²) だった。ここでは A の列ごとの積 Z = A·Y（各列は spmv で O(nnz)、
-/// q 列で O(nnz·q)）を先に求め、続いて Yᵀ·Z（O(n·q²)）を計算することで、
-/// 密行列走査を完全に排除する。結果の対称性は i≤j のみ計算して対角外を
-/// 転写することで維持する（数値順序が変わるため最終桁のみ従来と異なり得るが、
-/// 固有値解析は収束判定つき反復であり許容される）。
-///
-/// `col_buf`（長さ n）・`z_buf`（長さ n*q、列 j のデータを
-/// `z_buf[j*n..(j+1)*n]` に格納）は呼び出し側が確保して使い回す作業バッファ。
-/// 結果は `result`（長さ q*q）へ書き込む。部分空間反復のループ内で毎回 Vec を
-/// 新規確保しないためのもので、計算内容自体は従来の戻り値版と同一。
+/// `col_buf`（長さ n）・`z_buf`（長さ n*q）・`result`（長さ q*q）は呼び出し側が確保して使い回す作業バッファ。
 fn proj_yty(
     y: &[f64],
     mat_red: &faer::sparse::SparseColMat<usize, f64>,
@@ -382,7 +303,6 @@ fn proj_yty(
     z_buf: &mut [f64],
     result: &mut [f64],
 ) {
-    // z_buf[j] = A · y_col_j
     for j in 0..q {
         for r in 0..n {
             col_buf[r] = y[r * q + j];
@@ -402,50 +322,18 @@ fn proj_yty(
     }
 }
 
-/// φᵀ·M·φ を M の非ゼロ要素だけを使って計算する（[`spmv`] 1 回 + 内積）。
-/// 従来の O(n²) 密走査を O(nnz) に落とす。
+/// φᵀ·M·φ を M の非ゼロ要素だけを使って計算する。
 fn m_norm(phi: &[f64], m_red: &faer::sparse::SparseColMat<usize, f64>) -> f64 {
     let m_phi = spmv(m_red, phi);
     phi.iter().zip(m_phi.iter()).map(|(p, mp)| p * mp).sum()
 }
 
-/// Generalized eigenvalue problem K*z = θ*M*z（Bathe の一般化 Jacobi 法）。
+/// 一般化固有値問題 K*z = θ*M*z を一般化 Jacobi 法で解く。
 ///
-/// M は理論上は半正定値だが、部分空間反復の作業次元 q が実際の質量ランク r を
-/// 超える場合（回転自由度など質量を持たない自由度が混在するモデルでは一般的）、
-/// 射影質量行列 M̄ は必ずランク落ち（半正定値だが正定値でない）になる。
-/// このため Cholesky ベースの標準固有値問題化は使えない。また「M̄ を固有分解して
-/// 質量部分空間と質量ゼロ部分空間に分離してから解く」方式は、反復ごとの
-/// ランク判定が数値ノイズで揺らぐと「ランク落ち判定→ヌルベクトル注入→
-/// K⁻¹ の冪乗反復による最低次モード方向への倒れ込み（平行化）→再ランク落ち」
-/// という周期2のリミットサイクルに陥り永久に収束しない（剛床マスターの
-/// 並進質量 t と回転慣性 t·mm² のようにスケール差が大きい質量分布で顕在化）。
-///
-/// そこで Bathe の一般化 Jacobi 法（Bathe, Finite Element Procedures, §11.3.3）で
-/// K と M を**反復中のランク判定なしに**同時対角化する。各 2×2 ペアについて
-/// 両行列の非対角成分を同時に零化する正則な合同変換 P（対角 1、非対角 α・γ）を
-/// 掛ける掃引を収束まで繰り返す。M が半正定値でも常に正則な変換で進むため、
-/// 基底の特異化が構造的に起きない。対角化後に θᵢ = k̂ᵢᵢ/m̂ᵢᵢ を読み出し、
-/// 質量を持たない方向（m̂ᵢᵢ が相対許容誤差 [`MASS_RANK_REL_TOL`] 未満）には
-/// θ=+∞（有限な f64::MAX ではなく明示的な無限大）を割り当て、呼び出し側で
-/// 「要求モード数に対して質量ランクが不足している」ことを検出できるようにする。
-///
-/// 数値スケーリング: 並進質量（t）と回転慣性（t·mm²、並進の 10^6〜10^8 倍）が
-/// 混在するモデルでは、m̂ᵢᵢ の大小が「質量の有無」ではなく単位系・基底ベクトルの
-/// スケールを反映してしまい、相対許容誤差での質量判定が破綻する（剛床モデルで
-/// 質量ランクが過少検出され、解けるはずの要求モード数で InvalidInput になる）。
-/// そこで K̄ の対角で両行列を対称スケーリングする: S = diag(1/√k̄ᵢᵢ) とし
-/// K̃ = S·K̄·S（単位対角）、M̃ = S·M̄·S。合同変換なので一般化固有値 θ は不変で、
-/// 固有ベクトルは z = S·z̃ で戻る。対角化後の m̂ᵢᵢ は各方向の「柔性あたりの質量」
-/// （≈1/θ）というスケール不変量になり、質量判定が単位系・基底スケールに
-/// 依存しなくなる。
-///
-/// Returns (eigenvalues ascending, +∞ が質量ゼロ方向; eigenvectors as columns)。
-/// 質量を持つ方向の固有ベクトルは M̄ 正規直交（zᵀM̄z = 1）、質量ゼロ方向は
-/// 単位ノルムに正規化して返す。
+/// 質量を持たない方向には θ=+∞ を割り当てる。
+/// 質量を持つ方向の固有ベクトルは M̄ 正規直交（zᵀM̄z = 1）、質量ゼロ方向は単位ノルムに正規化して返す。
+/// Returns (eigenvalues ascending; eigenvectors as columns)。
 fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
-    // K̄ の対角によるスケーリング係数。K̄ は正定値（縮約後剛性の射影）のため
-    // 対角は正のはずだが、数値的な退化に備え非正・非有限なら 1 とする。
     let s: Vec<f64> = (0..n)
         .map(|i| {
             let d = k_in[i * n + i];
@@ -469,14 +357,9 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         vecs[i * n + i] = 1.0;
     }
 
-    // 一般化 Jacobi 掃引: 全ペア (i,j) について K̃・M̃ の (i,j) 成分を同時に
-    // 零化する合同変換を、回転が発生しなくなるまで繰り返す。
-    // 結合度のしきい値は Bathe の収束判定に倣い「非対角/対角比の2乗」で測る。
     const MAX_SWEEPS: usize = 100;
-    const COUPLE_TOL: f64 = 1e-24; // 結合度（比の2乗）のしきい値 = (1e-12)²
+    const COUPLE_TOL: f64 = 1e-24;
     for _sweep in 0..MAX_SWEEPS {
-        // M̃ の対角は質量ゼロ方向で 0 になり得るため、比の分母には
-        // 対角最大値×質量判定許容誤差を床として使う。
         let m_diag_max = (0..n)
             .map(|i| m[i * n + i].max(0.0))
             .fold(0.0_f64, f64::max);
@@ -497,11 +380,9 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
                     continue;
                 }
 
-                // Bathe の係数: (i,j) 成分を K̃・M̃ 双方で零化する α・γ。
                 let a1 = kii * mij - mii * kij;
                 let a2 = kjj * mij - mjj * kij;
                 let a3 = kii * mjj - kjj * mii;
-                // K 正定値・M 半正定値なら理論上 判別式 ≥ 0。数値誤差の負は 0 に丸める。
                 let root = ((a3 * 0.5) * (a3 * 0.5) + a1 * a2).max(0.0).sqrt();
                 let x = if a3 >= 0.0 {
                     a3 * 0.5 + root
@@ -511,8 +392,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
                 let (alpha, gamma) = if x.abs() > f64::MIN_POSITIVE && (a1 != 0.0 || a2 != 0.0) {
                     (a2 / x, -a1 / x)
                 } else if kjj.abs() > f64::MIN_POSITIVE {
-                    // 退化ペア（例: 両方向とも質量ゼロで M̃ 成分がすべて 0）は
-                    // K̃ 側だけをガウス消去式に零化する。
                     (-kij / kjj, 0.0)
                 } else {
                     (0.0, 0.0)
@@ -522,9 +401,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
                 }
                 rotated = true;
 
-                // 合同変換 A ← PᵀAP、P = I + α·eᵢeⱼᵀ + γ·eⱼeᵢᵀ。
-                // 列更新（A·P）: colᵢ += γ·colⱼ、colⱼ += α·colᵢ(旧)。
-                // 続く行更新（Pᵀ·A）も同様。旧値を使うため両成分を同時に読む。
                 for mat in [&mut k, &mut m] {
                     for row in 0..n {
                         let ai = mat[row * n + i];
@@ -552,8 +428,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
     }
 
-    // 対角から固有値を読み出す。質量判定はスケール不変な m̂ᵢᵢ（≈1/θ）の
-    // 相対値で行い、質量を持たない方向は θ=+∞ とする。
     let m_diag_max = (0..n)
         .map(|i| m[i * n + i].max(0.0))
         .fold(0.0_f64, f64::max);
@@ -566,11 +440,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
         }
     }
 
-    // 正規化とスケーリングの逆変換（z = S·z̃）。質量を持つ列は M̃ 正規直交
-    // （z̃ᵀM̃z̃ = 1、合同変換なので逆変換後も zᵀM̄z = 1）にそろえる。
-    // 質量ゼロ方向は M̄ ノルムが定義できないため、逆変換後に単位ノルムへ
-    // そろえて基底の有界性を保つ（固有ベクトルの定数倍は部分空間反復の
-    // 張る空間・収束判定 θ のいずれにも影響しない）。
     for col in 0..n {
         if vals[col].is_finite() {
             let inv = 1.0 / m[col * n + col].sqrt();
@@ -598,8 +467,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     }
 
     let mut idx: Vec<usize> = (0..n).collect();
-    // vals は +∞（質量ゼロ方向）を含み得るが NaN は通常混入しない。数値破綻時にも
-    // panic ではなく全順序で継続する（NaN 同士は同順位扱い）。
     idx.sort_by(|&a, &b| {
         vals[a]
             .partial_cmp(&vals[b])
@@ -622,19 +489,7 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 /// （刺激係数・有効質量比・節点単位のモード形状のタプル）。
 type ParticipationResult = (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<Vec<[f64; 6]>>);
 
-/// モード刺激係数・有効質量比を計算し、あわせて節点単位のモード形状も返す
-/// （[`ModalResult::participation`]・[`ModalResult::effective_mass`]・
-/// [`ModalResult::node_shapes`]）。
-///
-/// `phi_free = reducer.expand_u(phi_red)` と、それを使った `m_phi = M·phi_free`・
-/// `phi_m_phi = φᵀMφ` は方向（X/Y/Z）に依存しない値なのに、以前はモード×3方向
-/// ループの内側（3方向で同一計算を3回繰り返す構造）で毎回再計算していた。
-/// ここではモードごとに1回だけ計算し、内側の方向ループではそれを使い回す。
-/// 各スカラー値（`phi_m_phi`・`phi_m_r`）自体の演算列（加算順序）は元の実装と
-/// 完全に同一のまま、同じ値の重複計算だけを取り除いているため、結果はビット単位で
-/// 一致する。`node_shapes` の展開（`expand_u` → 節点散布）も同じ `phi_free` を
-/// 使い回すことで、`compute_participation` と `expand_node_shape`（旧）が個別に
-/// 行っていた `expand_u` の二重計算を解消している。
+/// モード刺激係数・有効質量比を計算し、あわせて節点単位のモード形状も返す。
 fn compute_participation(
     shapes: &[Vec<f64>],
     m_free: &faer::sparse::SparseColMat<usize, f64>,
@@ -650,8 +505,6 @@ fn compute_participation(
     let n_free = dofmap.n_active();
     let n_nodes = model.nodes.len();
 
-    // 方向ごとの単位応答ベクトル r_free はモードに依存しないため、モードループの
-    // 外で（元の実装と同じ計算・同じ順序で）3方向分をあらかじめ用意しておく。
     let r_free: [Vec<f64>; 3] = std::array::from_fn(|dir_idx| {
         let mut r = vec![0.0; n_free];
         for ni in 0..n_nodes {
@@ -666,10 +519,6 @@ fn compute_participation(
     for (m_idx, phi_red) in shapes.iter().enumerate() {
         let phi_free = reducer.expand_u(phi_red);
 
-        // 従来は (a,b) 全ペアを `mat.get()` で密走査していた（モード×3方向で
-        // O(n_free²)）。M の非ゼロ要素のみを使う spmv に置き換え O(nnz) にする。
-        // また m_phi・phi_m_phi は方向に依存しないため、3方向ループの内側ではなく
-        // ここでモードごとに1回だけ計算する。
         let m_phi = spmv(m_free, &phi_free);
 
         let mut phi_m_phi = 0.0;

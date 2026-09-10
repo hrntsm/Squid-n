@@ -1,4 +1,4 @@
-//! プッシュオーバー解析の司令塔（P5 §7）。
+//! プッシュオーバー解析の司令塔。
 //!
 //! - [`pushover_analysis`] — 既存 API（節点変位を記録しない薄いラッパー）
 //! - [`pushover_analysis_recording`] — 長期載荷・荷重制御・変位制御・弧長法の各
@@ -33,30 +33,10 @@ use squid_n_element::behavior::ElementBehavior;
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, LinearSolver, SolverBackend};
 
-/// プッシュオーバー解析の全フェーズ（長期荷重初期載荷・荷重制御・変位制御・弧長法・
-/// [`elastic_roof_slope`] の弾性勾配推定）で持ち回るソルバインスタンス・CSC 組立て
-/// キャッシュ・作業バッファ（時刻歴応答解析高速化・第2波と同じ方針、
-/// `dynamic/timehistory/nonlinear.rs` 参照）。
+/// 全フェーズで持ち回るソルバインスタンス・CSC 組立てキャッシュ・作業バッファ。
+/// `solver` は `DirectSparseCholesky` を明示する。
 ///
-/// - `solver`（既定で `CholeskySolver`）: `factorize` を同一インスタンスへ繰り返し
-///   呼ぶと、直前と同じスパースパターンなら symbolic 分解（AMD順序付け）を再利用し
-///   数値分解のみ行う。縮約後の DOF 数（本用途では数百〜数千）では
-///   `SolverBackend::Auto` も常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky`
-///   を明示しても数値結果は不変。`Auto`（`AutoSolver`）は `factorize` のたびに内部
-///   ソルバを新規生成するため symbolic キャッシュが効かず、ここでは使わない。
-/// - `k_free_cache`／`k_red_cache`（`CscCache`）: 全体接線剛性 K・縮約後接線剛性の
-///   CSC 組立て。要素接続・拘束構成は不変なので、triplet の座標・並び順も
-///   （弾塑性要素の接線剛性が厳密 0.0 を跨がない限り）不変。パターン変化は
-///   `CscCache` 自身が検知し安全側（作り直し）へ自動フォールバックする。
-/// - `r_red`／`f_ext_red`／`du_red`（縮約空間、`n_indep` 長）・`du_free`（全自由 DOF
-///   空間、`n_active` 長）: [`newton_converge`] の共通反復で使う `reduce_f_into`／
-///   `solve_into`／`expand_u_into` の出力バッファ。
-/// - `q_red`／`du_r_red`／`du_q_red`（縮約空間）・`du_r`／`du_q`（全自由 DOF 空間）:
-///   変位制御フェーズの Newton 反復専用（残差解 δu_r と荷重パターン解 δu_q を
-///   同時に必要とするため独立バッファ）。
-///
-/// 各バッファ・キャッシュはフェーズをまたいで使い回すため、値そのものに意味はなく
-/// （呼び出しのたびに上書きされる）、確保回数を減らすためだけの器である。
+/// 各バッファ・キャッシュはフェーズをまたいで使い回し、呼び出しのたびに上書きされる。
 struct SolverState {
     solver: Box<dyn LinearSolver>,
     k_free_cache: CscCache,
@@ -91,10 +71,8 @@ impl SolverState {
     }
 }
 
-/// 増分解析（プッシュオーバー解析、P5 §7）。
-/// `max_disp` は目標変位 [mm] のみの終了判定（[`PushoverTarget::from_max_disp`]）に
-/// 変換して本体へ渡す旧 API 互換のラッパー。層間変形角による終了判定を使う場合は
-/// [`pushover_analysis_recording`] に [`PushoverTarget`] を渡す。
+/// 増分解析（プッシュオーバー解析）。
+/// `max_disp` は目標変位 [mm] のみの終了判定に変換して本体へ渡すラッパー。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis(
     model: &Model,
@@ -115,7 +93,6 @@ pub fn pushover_analysis(
         max_steps,
         PushoverTarget::from_max_disp(max_disp),
         PushoverControl::default(),
-        // 長期荷重の初期載荷は既定で有効（長期系荷重ケースがないモデルでは何もしない）。
         true,
         use_kg,
         use_arc_length,
@@ -124,14 +101,8 @@ pub fn pushover_analysis(
     )
 }
 
-/// 増分解析（プッシュオーバー解析、P5 §7）。終了目標は [`PushoverTarget`] で
-/// 指定する（目標変位・目標最大層間変形角のいずれか早い方に達した時点で打ち切り。
-/// 両方無効なら荷重制御 λ=1 までで終了）。制御方式は [`PushoverControl`] で指定し、
-/// 既定の段階制御（荷重→変位→弧長）のほか、比較検証用に荷重増分のみ
-/// （`LoadOnly`。変位制御・弧長法へ移行せず、終了目標が有効なら λ=1 を超えて
-/// 荷重増分を継続する）を選択できる。`apply_long_term` が真の場合、長期系荷重
-/// ケース（`LoadCaseKind::is_long_term`）の外力を水平力増分の前に載荷して初期
-/// 応力状態とし、全フェーズで保持する（長期荷重ケースがないモデルでは何もしない）。
+/// 増分解析（プッシュオーバー解析）。終了目標は [`PushoverTarget`] で
+/// 指定する。`apply_long_term` が真の場合、長期系荷重を水平力増分の前に載荷する。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis_recording(
     model: &Model,
@@ -152,23 +123,10 @@ pub fn pushover_analysis_recording(
         return Err("no active DOF".into());
     }
 
-    // ソルバインスタンス・CSC 組立てキャッシュ・作業バッファ（[`SolverState`] 参照）。
-    // 長期荷重初期載荷・荷重制御・変位制御・弧長法・[`elastic_roof_slope`] の
-    // 全フェーズで共有し、フェーズをまたいで同一インスタンスを持ち回る
-    // （時刻歴応答解析高速化・第2波と同じ方針）。
     let mut st = SolverState::new(n_active, reducer.n_indep);
 
-    // 部材の終局耐力を算定できない設定不備（耐震壁の Qu、線材の材料強度未入力）は、
-    // 代替値で埋めず解析を止める。耐力が定まらない部材は際限なく応力を負担し、
-    // 崩壊機構が形成されないまま保有水平耐力を過大評価する（危険側）ため、
-    // 無音のフォールバックを許さない。
     squid_n_element::factory::ensure_nonlinear_input(model)?;
 
-    // 保有水平耐力計算の材料強度: 部材組み立て時に鋼材 fy・RC 主筋 σy へ
-    // 材料強度係数（鋼材1.1倍/590N級1.05倍/RC主筋1.1倍、直接入力係数優先）を
-    // 都度乗じる（`StrengthBasis::MaterialStrength`）。モデル自体は複製しない。
-    // 増分解析の履歴則は AnalysisKind::Incremental で解決する（部材個別指定の
-    // 増分用スロット → 既定表。コンクリート除荷則の既定は逆行型）。
     let mut behaviors: Vec<Box<dyn ElementBehavior>> = Vec::new();
     for elem in &model.elements {
         let b = build_nonlinear_behavior(
@@ -184,9 +142,6 @@ pub fn pushover_analysis_recording(
     if layers.is_empty() {
         return Err("no stories defined".into());
     }
-    // h は建築物の高さ（GL〜PH 階を除く最上階。令88条・告示1793号）。
-    // steel_height_ratio / building_height_mm は analysis.rs の
-    // seismic_static_with と共有する実装。
     let height_m = building_height_mm(model) / 1000.0;
     let steel_ratio = steel_height_ratio(model);
     let t = squid_n_load::ai::approx_t(height_m, steel_ratio);
@@ -205,7 +160,6 @@ pub fn pushover_analysis_recording(
         SeismicDir::Y => [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
     };
     let mut q = vec![0.0; n_active];
-    // 層の水平力 Pi は、その層の質量が集中する**上端の階（床）**の剛床へ作用させる。
     for layer in &layers {
         let pi = ai.pi.get(layer.index).copied().unwrap_or(0.0);
         if pi == 0.0 {
@@ -214,8 +168,6 @@ pub fn pushover_analysis_recording(
         let Some(story) = model.stories.get(layer.top.index()) else {
             continue;
         };
-        // 多剛床の階では重量比で按分する（レビュー §1.6、analysis.rs と同じ規則。
-        // 従来は各剛床へ pi をそのまま重複して載せていた）。
         for (master, share) in distribute_pi_over_diaphragms(model, story, pi) {
             let ni = master.index();
             for d in 0..6 {
@@ -227,11 +179,6 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    // 初期接線剛性の分解可否をここで確かめる。以降のフェーズ（長期載荷・荷重制御・
-    // 変位制御）は分解の失敗を「非収束」として増分を刻み直す扱いにしたため、
-    // **初めから特異なモデル**（剛性のない自由度がある・拘束不足）は増分をいくら
-    // 刻んでも解けず、原因も伝わらないまま「収束しません」で終わってしまう。
-    // ここで一度だけ判定し、自由度を名指しした診断メッセージで停止する。
     if reducer.n_indep > 0 {
         let k_free = assemble_k_cached(model, dofmap, &behaviors, use_kg, &mut st.k_free_cache);
         let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
@@ -246,32 +193,15 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    // 目標最大層間変形角の判定に使う階高（elevation の隣接差分、最下層は最下端節点まで）。
     let heights = story_heights(model);
-    // 確定ステップの記録先。性能曲線・ヒンジ・せん断降伏・部材応答履歴・塑性率の
-    // 追跡をまとめて持ち、どのフェーズからも同じ入口（`record`）で積む。
     let mut recorder = StepRecorder::new(model, dir, &heights, ductility_method);
     let mut total_disp = vec![0.0; n_active];
-    // ステップ数はソルバ側の安全範囲 [1,100] へ丸める（範囲外の指定は黙って
-    // クランプされる。100 超の分解能が必要な場合は呼び出し側の対応が必要）。
     let n_steps = max_steps.clamp(1, 100);
     let dlambda = 1.0 / n_steps as f64;
-    // 終了目標（頂部変位・最大層間変形角のいずれか）に達したかのフラグ。
-    // 荷重制御の途中で達した場合は以降の載荷・変位制御を打ち切る。
     let mut target_reached = false;
-    // 確定済みの荷重係数 λ（参照外力 q に対する倍率）。荷重制御で確定するたびに
-    // 更新し、変位制御・弧長法の各フェーズが「同じ比例荷重パターン λ·q」を
-    // 引き継ぐための状態変数。
     let mut lambda = 0.0;
-    // 最後に実行されたフェーズの終了理由（目標到達は target_reached が優先）。
-    // 非収束・特異化の打ち切りを結果へ明示するために追跡する（従来は全て無言で、
-    // 低い λ での収束不能でも Qu が正常な結果の顔で返っていた）。
     let mut phase_outcome = PushoverTermination::Unknown;
 
-    // 変位増分の押込み上限（頂部変位換算）。目標変位はその値を、目標最大層間変形角は
-    // 「全層が一様に目標角へ達した場合の頂部変位」＝角×Σ階高を用いる。最大層間
-    // 変形角は平均層間変形角（＝頂部変位/Σ階高）以上のため、上限到達までに必ず
-    // 判定が成立する。両方有効な場合は先に成立し得る小さい方まで刻めば足りる。
     let sum_h: f64 = heights.iter().sum();
     let mut roof_bound = f64::INFINITY;
     if let Some(d) = target.max_disp {
@@ -283,47 +213,22 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    // 均等変位刻み制御（段階制御＋押込み上限が有限の場合の既定動作）。性能曲線の
-    // 点間隔（頂部変位軸）が全域で概ね目標刻み du_uniform（＝押込み上限/ステップ数）
-    // となるよう、荷重制御の λ 増分を直近の荷重−変位勾配から適応的に決め、変位制御の
-    // 押込み刻みにも同じ du_uniform を用いる。剛性が変化しない弾性域は粗い λ 刻みで
-    // 足り、降伏が進み勾配が増すほど刻みは自動的に細かくなる（固定 λ 刻みでは弾性域
-    // λ≦1 に点が密集し、塑性化が進む変位制御域が荒くなる偏りが生じる）。
     let du_uniform = (matches!(control, PushoverControl::Phased) && roof_bound.is_finite())
         .then(|| roof_bound / n_steps as f64)
         .filter(|du| *du > 0.0);
-    // 均等刻みの初期 λ 増分に用いる弾性勾配（頂部変位/λ）。初期接線剛性で
-    // K·δu = q を 1 回解いて推定し、推定できない場合（頂部 DOF 不明・特異など）は
-    // 従来の固定 λ 刻みへフォールバックする。
     let mut roof_slope = du_uniform.and_then(|_| {
         elastic_roof_slope(model, dofmap, reducer, &behaviors, use_kg, dir, &q, &mut st)
     });
     let adaptive = du_uniform.is_some() && roof_slope.is_some();
 
-    // 荷重制御の λ 上限。段階制御では λ=1（設計地震力レベル）で変位制御へ
-    // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は λ=1 を超えて
-    // 継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算 5·Ds·Fes ≦ 5 を
-    // 十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
     let lambda_cap = match control {
         PushoverControl::LoadOnly if target.is_enabled() => 10.0,
         _ => 1.0,
     };
-    // 荷重制御の反復回数上限。λ の進みは確定済み λ 基点の増分制御（下記ループ）で
-    // 決まり、収束失敗時の増分半減があっても λ_cap へ到達できるよう名目ステップ数の
-    // 10 倍の余裕を持たせる（通常は λ_cap 到達・目標到達・収束不能で先に止まる）。
     let max_load_steps = n_steps * 10;
 
-    // 均等刻みの勾配更新に用いる直前確定点の頂部変位。
     let mut last_roof = 0.0_f64;
 
-    // ── 長期荷重の初期載荷（apply_long_term） ─────────────────────────────
-    // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を水平力
-    // 増分に先立って載荷し、その応力状態（柱軸力・梁端モーメント）を初期条件とする。
-    // 保有水平耐力計算は長期応力を初期状態として水平力を漸増するのが標準的な扱いで、
-    // これがないと N-M 相関上の応答経路が N=0 から始まり、軸力に依存する部材耐力
-    // （柱の曲げ降伏 My・せん断降伏 Qy の軸力項）を誤る。
-    // 載荷後は f0 を全フェーズの外力 f_ext = f0 + λ·q に保持し、載荷完了状態を
-    // 1 ステップ（load_factor=0.0）として記録する（N-M 応答経路の始点になる）。
     let f0: Vec<f64> = if apply_long_term {
         let mut f = vec![0.0; n_active];
         for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
@@ -337,8 +242,6 @@ pub fn pushover_analysis_recording(
         vec![0.0; n_active]
     };
     if f0.iter().any(|v| v.abs() > 0.0) {
-        // 通常は弾性域で収まるが、非線形（コンクリートの引張ひび割れ等）に備えて
-        // 5 分割で漸増し、収束失敗時は増分半減で再試行する。
         let n_grav = 5usize;
         let mut applied = 0.0_f64;
         for gstep in 0..n_grav {
@@ -376,9 +279,6 @@ pub fn pushover_analysis_recording(
                 }
             }
             if !step_ok {
-                // 収束しない原因（剛性ゼロの自由度・耐力劣化による非正定値化／
-                // 剛性は健全で反復が収束しないだけ）を現在の接線剛性から切り分け、
-                // 定型文だけで終わらせない。
                 let detail = current_failure_detail(
                     model,
                     dofmap,
@@ -393,46 +293,33 @@ pub fn pushover_analysis_recording(
                 ));
             }
         }
-        // 長期載荷完了状態を 1 ステップとして記録する（λ=0、性能曲線の始点）。
-        // 水平力に対する応答ではないため、終了目標の判定は行わない。
         let rec = recorder.record(0.0, model, dofmap, &behaviors, &total_disp);
         last_roof = rec.roof;
     }
 
     for _step in 0..max_load_steps {
-        // λ_cap（段階制御=1、LoadOnly+目標有効=10）に達したら荷重制御を終える。
         if lambda >= lambda_cap - 1e-12 {
             phase_outcome = PushoverTermination::LambdaCap { lambda };
             break;
         }
         let prev_lambda = lambda;
         let mut current_lambda = if adaptive {
-            // 均等刻み: 確定済み λ から「頂部変位が du_uniform 進む見込みの λ 増分」
-            // だけ進める。
             let du = du_uniform.unwrap_or(0.0);
             let slope = roof_slope.unwrap_or(f64::INFINITY);
             let dl = (du / slope).max(dlambda * 1e-3);
             (lambda + dl).min(lambda_cap)
         } else {
-            // 固定 λ 刻み: **確定済み λ を基点に** dλ だけ進める。従来はループ添字の
-            // スケジュール値 (step·dλ, (step+1)·dλ) を基点にしており、収束失敗した
-            // ステップを読み飛ばすと確定状態とスケジュールが乖離して、次ステップの
-            // 実効増分が 2dλ・3dλ…と無言で拡大していた（増分が大きいほど収束は
-            // さらに難しくなり、ヒンジ追跡・性能曲線の粗大な欠落を招く）。
             (lambda + dlambda).min(lambda_cap)
         };
         let mut step_ok = false;
 
         for _attempt in 0..5 {
             let snap = StateSnapshot::capture(&behaviors);
-            // 外力は長期荷重（f0、無効時はゼロベクトル）＋比例水平荷重 λ·q。
             let f_ext: Vec<f64> = f0
                 .iter()
                 .zip(q.iter())
                 .map(|(&f0i, &qi)| f0i + qi * current_lambda)
                 .collect();
-            // Newton 反復（共通経路 [`newton_converge`]。ステップ変位増分＝全修正量の
-            // 累積を返す。「最後の修正量」だけでは塑性ステップで変位軸が過小評価される）。
             let converged = newton_converge(
                 model,
                 dofmap,
@@ -452,13 +339,9 @@ pub fn pushover_analysis_recording(
                 for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                     *td += du;
                 }
-                // 荷重制御フェーズ: 参照外力ベクトル q に対する倍率 current_lambda を
-                // そのまま荷重係数として記録する。
                 let rec = recorder.record(current_lambda, model, dofmap, &behaviors, &total_disp);
                 let roof = rec.roof;
                 let drift_angle_now = rec.drift_angle;
-                // 均等刻みの勾配更新（確定増分ベース）。降伏で勾配が増すほど次の
-                // λ 刻みが自動的に縮み、変位軸の点間隔が保たれる。
                 if adaptive {
                     let d_roof = (roof - last_roof).abs();
                     let d_lambda = current_lambda - prev_lambda;
@@ -469,30 +352,16 @@ pub fn pushover_analysis_recording(
                 last_roof = roof;
                 lambda = current_lambda;
                 step_ok = true;
-                // 目標（頂部変位・最大層間変形角）到達で以降の載荷を打ち切る。
-                // 従来の `roof >= max_disp` 判定は attempt ループしか抜けず、外側の
-                // ステップループを止めていなかった（早期終了として機能していない）。
                 if target.reached(roof, drift_angle_now) {
                     target_reached = true;
                 }
                 break;
             } else {
                 snap.restore(&mut behaviors);
-                // 収束失敗時は「前確定点 prev_lambda からの増分」を半減する。絶対 λ を
-                // 半減すると prev_lambda を下回り、前確定状態から除荷方向に解いて荷重−変位
-                // 経路が非物理的にジグザグする（ヒンジ／せん断降伏追跡も汚染される）。
-                // 増分のみを縮めることで単調載荷を保つ。
                 current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
         if !step_ok {
-            // 増分半減（5 回）でも収束しない場合は制御方式によらず荷重制御を打ち切る。
-            // 確定 λ からの増分を既に 1/16 まで縮めており、これより大きい増分が
-            // 収束する見込みはない（段階制御では以降を変位制御フェーズが引き継ぐ。
-            // 極限点近傍は変位制御の方が安定に追える。LoadOnly の延長領域では
-            // これ以上の荷重に釣合う解がない＝耐力ピーク近傍）。従来の固定刻みは
-            // 失敗ステップを読み飛ばして次のスケジュール値を試しており、確定状態
-            // との乖離で実効増分が拡大する欠陥だった（ループ冒頭のコメント参照）。
             phase_outcome = PushoverTermination::NonConvergence {
                 phase: "荷重制御".into(),
                 load_factor: lambda,
@@ -502,14 +371,9 @@ pub fn pushover_analysis_recording(
         if target_reached {
             break;
         }
-        // ループ回数上限に達した場合はスケジュール完了扱い（通常は λ_cap・目標・
-        // 非収束のいずれかで先に止まる）。
         phase_outcome = PushoverTermination::ScheduleCompleted;
     }
 
-    // 変位制御フェーズ（P5 §7.1）。段階制御で、荷重制御が目標に達しなかった場合のみ
-    // 実行し、目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
-    // 荷重増分のみ（LoadOnly）では実行しない。
     let disp_control_roof =
         if matches!(control, PushoverControl::Phased) && target.is_enabled() && !target_reached {
             get_roof_dof(model, dofmap, dir)
@@ -518,11 +382,7 @@ pub fn pushover_analysis_recording(
         };
     if let Some(roof_active) = disp_control_roof {
         let initial_disp = total_disp[roof_active];
-        // 押込み上限 roof_bound は荷重制御と共通の値（関数冒頭で算定済み）。
         if roof_bound.is_finite() && roof_bound > initial_disp {
-            // 押込み刻み: 均等刻み制御では荷重制御と同じ目標刻み du_uniform を用い、
-            // 性能曲線全域で点間隔（変位軸）を揃える。均等刻みが使えない場合
-            // （弾性勾配の推定失敗時のフォールバック）は従来の 10 分割。
             let n_disp_steps = match du_uniform {
                 Some(du) if adaptive => (((roof_bound - initial_disp) / du).ceil() as usize)
                     .clamp(1, n_steps.saturating_mul(2)),
@@ -530,37 +390,19 @@ pub fn pushover_analysis_recording(
             };
             let du_target = (roof_bound - initial_disp) / n_disp_steps as f64;
 
-            // 変位制御は比例荷重パターン λ·q を**保持したまま**、荷重係数 λ を未知数
-            // として「頂部変位 = 目標値」の拘束条件から決定する（Batoz–Dhatt の
-            // 変位制御法）。各反復で釣合い残差解 δu_r = K⁻¹(λ·q − f_int) と
-            // 荷重パターン解 δu_q = K⁻¹·q を解き、
-            //   δλ = (目標変位 − 現在の頂部変位 − δu_r[roof]) / δu_q[roof]
-            //   δu = δu_r + δλ·δu_q
-            // とすることで、頂部変位拘束と釣合いを同時に満たす λ が定まる。
-            // 旧実装は Ai 分布の外力を残差から外し、頂部 1 自由度をペナルティばねで
-            // 押し込んでいた。これはフェーズ切替時に載荷パターンが「Ai 分布」から
-            // 「頂部 1 点載荷」へ不連続に変わることを意味し、ヒンジが 1 つもない
-            // 弾性状態でもベースシアが落ち込んでから伸び直す非物理的な V 字曲線を
-            // 生んでいた（荷重制御 λ=1＝設計地震力レベルが見かけのピークとなり、
-            // Qu を C0=0.2 級で誤認する致命的欠陥）。
             for step in 0..n_disp_steps {
                 let roof_target = initial_disp + du_target * (step + 1) as f64;
                 let mut step_ok = false;
 
                 for attempt in 0..5 {
-                    // 収束失敗時は「確定済み頂部変位からの押込み増分」を半減して
-                    // 再試行する（荷重制御フェーズの λ 増分半減と同じ考え方。
-                    // 同一目標のまま再試行しても同じ経路を辿るだけで意味がない）。
                     let committed_roof = total_disp[roof_active];
                     let sub_target =
                         committed_roof + (roof_target - committed_roof) * 0.5_f64.powi(attempt);
                     let snap = StateSnapshot::capture(&behaviors);
                     let lambda_snap = lambda;
                     let mut converged = false;
-                    // 荷重制御フェーズと同じく、ステップ内の全 Newton 修正量を累積する。
                     let mut step_du_free = vec![0.0; n_active];
 
-                    // 収束規約は荷重制御フェーズと同じ（[`STATIC_NEWTON`]、準ニュートン形式）。
                     for _iter in STATIC_NEWTON.iters() {
                         let k_free = assemble_k_cached(
                             model,
@@ -571,10 +413,6 @@ pub fn pushover_analysis_recording(
                         );
                         let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
                         let mut f_int = compute_f_int(model, dofmap, &behaviors);
-                        // 支点ばね（`Node::support_spring`）の内力寄与。トライアル変位は
-                        // ステップ開始時の確定変位 `total_disp` ＋このステップの
-                        // Newton 累積 `step_du_free`（要素と異なり自身でトライアル状態を
-                        // 保持しないため、ここで都度合成して渡す）。
                         let u_trial: Vec<f64> = total_disp
                             .iter()
                             .zip(step_du_free.iter())
@@ -582,8 +420,6 @@ pub fn pushover_analysis_recording(
                             .collect();
                         add_support_spring_f_int(model, dofmap, &u_trial, &mut f_int);
 
-                        // 残差 r = λ·q − f_int（荷重制御フェーズと同じ釣合い形式）。
-                        // 外力は長期荷重 f0 ＋比例水平荷重 λ·q（荷重制御フェーズと同形式）。
                         let f_ext: Vec<f64> = f0
                             .iter()
                             .zip(q.iter())
@@ -593,8 +429,6 @@ pub fn pushover_analysis_recording(
                             f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
                         reducer.reduce_f_into(&r_free, &mut st.r_red);
 
-                        // 収束判定: 力の相対ノルム（外力ノルム基準、荷重制御と同形式）
-                        // に加え、頂部変位が目標に一致していること。
                         let u_roof = total_disp[roof_active] + step_du_free[roof_active];
                         let gap = sub_target - u_roof;
                         let r_norm = l2_norm(&st.r_red);
@@ -607,9 +441,6 @@ pub fn pushover_analysis_recording(
                             break;
                         }
 
-                        // 崩壊機構の形成で接線剛性が正定値性を失った場合は factorize が
-                        // 失敗する。エラーで解析全体を落とさず、attempt 側の増分半減へ
-                        // 回す（半減しても解けなければこのフェーズを打ち切る）。
                         if st.solver.factorize(&k_red).is_err() {
                             break;
                         }
@@ -622,9 +453,6 @@ pub fn pushover_analysis_recording(
                         }
                         reducer.expand_u_into(&st.du_r_red, &mut st.du_r);
                         reducer.expand_u_into(&st.du_q_red, &mut st.du_q);
-                        // 荷重パターンが頂部を動かせない（δu_q[roof]≈0）場合は λ を
-                        // 決定できない（拘束と載荷が直交）。増分半減しても解決しないが、
-                        // モデル設定異常の防御として反復を打ち切る。
                         let denom = st.du_q[roof_active];
                         if denom.abs() < 1e-30 {
                             break;
@@ -647,21 +475,16 @@ pub fn pushover_analysis_recording(
                         for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                             *td += du;
                         }
-                        // 変位制御フェーズ: 頂部変位拘束から決定した比例荷重係数 λ を
-                        // そのまま記録する（外力は常に λ·q。設計地震力レベル λ=1 を
-                        // 超えて崩壊機構形成まで増加し、機構形成後は減少に転じる）。
                         let rec = recorder.record(lambda, model, dofmap, &behaviors, &total_disp);
                         let roof = rec.roof;
                         let drift_angle_now = rec.drift_angle;
                         step_ok = true;
-                        // 目標（頂部変位・最大層間変形角）到達で以降の押込みを打ち切る。
                         if target.reached(roof, drift_angle_now) {
                             target_reached = true;
                         }
                         break;
                     } else {
                         snap.restore(&mut behaviors);
-                        // λ は反復中に更新しているため、要素状態と同時に巻き戻す。
                         lambda = lambda_snap;
                     }
                 }
@@ -672,8 +495,6 @@ pub fn pushover_analysis_recording(
                     };
                     break;
                 }
-                // 押込みスケジュールを最後まで完了した場合の終了理由（非収束・
-                // 目標到達で break しなかった場合に残る）。
                 phase_outcome = PushoverTermination::ScheduleCompleted;
                 if target_reached {
                     break;
@@ -682,15 +503,9 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    // 弧長法は段階制御のみ（荷重増分のみの比較モードでは荷重制御以外を使わない）。
-    // 直前のフェーズで終了目標に達していれば入らない。目標は「どこまで追跡するか」を
-    // 決めるものであり、フェーズが変わったからといって越えてよいものではない
-    // （変位制御フェーズの入口 `!target_reached` と同じ守り）。
     if use_arc_length && matches!(control, PushoverControl::Phased) && !target_reached {
         let arc_solver = ArcLengthSolver::new(arc_length_dl);
         let mut prev_du: Vec<f64> = Vec::new();
-        // 弧長法は直前フェーズ（荷重制御・変位制御）で確定した荷重係数 λ から継続する
-        // （従来は変位制御後も 1.0 固定で、λ·q の載荷レベルが不連続だった）。
         let mut arc_lambda = if lambda > 0.0 { lambda } else { 1.0 };
 
         for _step in 0..20 {
@@ -698,14 +513,8 @@ pub fn pushover_analysis_recording(
             let k_free = assemble_k_cached(model, dofmap, &behaviors, use_kg, &mut st.k_free_cache);
             let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
 
-            // ここは分解の失敗（正定値でない＝不安定化）を耐力喪失の終了判定に
-            // 使うため、factorize が失敗し得る直接法を明示する（Auto の PCG 経路は
-            // factorize では失敗しないので判定が効かなくなる。SolverState は既定で
-            // DirectSparseCholesky を保持するため、ここでも同じインスタンスを使う）。
             if st.solver.factorize(&k_red).is_err() {
                 snap.restore(&mut behaviors);
-                // 分解失敗＝機構形成・耐力喪失による特異化。弧長法フェーズでは
-                // 期待される終了だが、理由として結果へ明示する。
                 phase_outcome = PushoverTermination::TangentSingular {
                     phase: "弧長法".into(),
                     load_factor: arc_lambda,
@@ -713,19 +522,11 @@ pub fn pushover_analysis_recording(
                 break;
             }
 
-            // 弧長修正子の各反復で内力を再評価するため、変位増分 δu を要素状態へ
-            // 反映して更新後 f_int を返すクロージャを渡す（接線 K はステップ開始時で固定＝修正 Newton）。
-            // 支点ばね（`Node::support_spring`）は要素のように自身のトライアル状態を
-            // 持たないため、クロージャ内で「このステップ開始時からの累積変位増分」を
-            // `cum_du` に自前で積算し、`total_disp（確定済み）+ cum_du` をトライアル
-            // 変位として内力へ加算する。
             let mut cum_du = vec![0.0; n_active];
             let result = {
                 let model_ref: &Model = model;
                 let behaviors_ref = &mut behaviors;
                 let total_disp_ref: &Vec<f64> = &total_disp;
-                // st を弧長修正子の solve クロージャへ再借用する（このブロックの
-                // スコープ内でのみ借用し、以後のステップで st を再度使えるようにする）。
                 let st_ref = &mut st;
                 arc_solver.step(
                     &q,
@@ -735,9 +536,6 @@ pub fn pushover_analysis_recording(
                             .solver
                             .solve_into(&st_ref.r_red, &mut st_ref.du_red)
                             .map_err(|e| format!("{:?}", e))?;
-                        // 弧長法側の出力バッファへ直接展開する（従来はローカルバッファ
-                        // へ展開して clone で返しており、修正子反復ごとに O(n) の複製が
-                        // 発生していた）。
                         reducer.expand_u_into(&st_ref.du_red, out);
                         Ok(())
                     },
@@ -746,9 +544,6 @@ pub fn pushover_analysis_recording(
                         for (acc, &d) in cum_du.iter_mut().zip(delta_u.iter()) {
                             *acc += d;
                         }
-                        // 弧長法の釣合いは λ·q = f_int の形で解かれるため、長期荷重
-                        // f0 を保持する場合は f_int から f0 を差し引いた値を返す
-                        // （f0 + λ·q = f_int と等価）。
                         let mut f_int = compute_f_int(model_ref, dofmap, behaviors_ref);
                         let u_trial: Vec<f64> = total_disp_ref
                             .iter()
@@ -769,7 +564,6 @@ pub fn pushover_analysis_recording(
 
             match result {
                 Ok(step_result) if step_result.converged => {
-                    // 要素状態は eval_fint で既に δu 反映済み。ここでは確定のみ。
                     for b in behaviors.iter_mut() {
                         b.commit_state();
                     }
@@ -779,12 +573,7 @@ pub fn pushover_analysis_recording(
                     arc_lambda += step_result.dlambda;
                     prev_du = step_result.du;
 
-                    // 弧長法: 各増分後に更新される荷重倍率 arc_lambda をそのまま記録する。
-                    // ヒンジ・せん断降伏の追跡も荷重制御・変位制御と同じ扱いで継続する
-                    // （記録は `StepRecorder` が一手に引き受けるため、フェーズごとに
-                    // 追跡が抜けることがない）。
                     let rec = recorder.record(arc_lambda, model, dofmap, &behaviors, &total_disp);
-                    // 終了目標（頂部変位・最大層間変形角）の判定も他フェーズと揃える。
                     if target.reached(rec.roof, rec.drift_angle) {
                         target_reached = true;
                         break;
@@ -799,14 +588,10 @@ pub fn pushover_analysis_recording(
                     break;
                 }
             }
-            // 最大ステップ数（20）まで完了した場合の終了理由。
             phase_outcome = PushoverTermination::ScheduleCompleted;
         }
     }
 
-    // 1 ステップも確定しなかった場合は結果を返さない。荷重制御の最初の増分すら
-    // 収束しなかったということで、空の性能曲線（Qu=0）を「解析できた」として
-    // 返すと保有水平耐力を 0 と誤認させる（危険側）。原因を診断して停止する。
     if recorder.is_empty() {
         let detail = current_failure_detail(
             model,
@@ -824,10 +609,7 @@ pub fn pushover_analysis_recording(
 
     let mechanism = determine_mechanism(recorder.hinges(), model, dir);
     let qu = recorder.qu();
-    // 最終確定ステップの部材別応答（終局検定の設計用応力・部材別 Rp の直接反映用）。
     let member_response = compute_member_response(model, dofmap, &behaviors, &total_disp, dir);
-    // ヒンジ詳細図用の記録は、ヒンジ・せん断降伏が記録された部材に絞って格納する
-    // （全部材×全ステップの履歴は結果サイズが過大になるため）。
     let detail_elems: std::collections::HashSet<squid_n_core::ids::ElemId> = recorder
         .hinges()
         .iter()
@@ -859,7 +641,6 @@ pub fn pushover_analysis_recording(
         .filter(|(e, _)| detail_elems.contains(&e.id))
         .filter_map(|(e, b)| b.fiber_section_states().map(|s| (e.id, s)))
         .collect();
-    // 終了理由: 目標到達が最優先、それ以外は最後に実行されたフェーズの終了理由。
     let termination = if target_reached {
         PushoverTermination::TargetReached
     } else {
@@ -881,10 +662,9 @@ pub fn pushover_analysis_recording(
 }
 
 /// 現時点の要素状態における接線剛性を組み立て直し、非収束の原因を切り分けた
-/// 診断メッセージを返す（[`nonconvergence_detail`] のラッパー）。
+/// 診断メッセージを返す。
 ///
-/// 分解可否の判定でソルバの状態（分解結果）を上書きするため、以降の求解に使わない
-/// 場面——すなわちエラーを返す直前——でのみ呼ぶこと。
+/// エラーを返す直前でのみ呼ぶこと。
 fn current_failure_detail(
     model: &Model,
     dofmap: &DofMap,
@@ -900,36 +680,11 @@ fn current_failure_detail(
     nonconvergence_detail(model, dofmap, reducer, &k_red, factorizable, phase)
 }
 
-/// 固定外力 `f_ext` に対する Newton 反復（長期載荷・荷重制御フェーズの共通経路）。
+/// 固定外力 `f_ext` に対する Newton 反復。
 ///
 /// 収束判定は力の相対ノルム r < tol·max(|f_ext|, 1)（規約は [`STATIC_NEWTON`]）。
-/// 全要素がトライアル追従（`internal_force` が反復中の未確定変位を反映する）のため
-/// 弾性支配ではほぼ 1〜2 回で収束し、反復上限は塑性進行時の余裕。収束したらステップ内の
-/// 全 Newton 修正量の累積（＝ステップ変位増分。「最後の修正量」だけを返すと
-/// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
-/// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
-/// 収束しなければ `None`。
-///
-/// **接線剛性の分解・求解の失敗（`NotPositiveDefinite` 等）も `None`（非収束）として
-/// 返す**。降伏が進むと接線剛性は正定値性を失い得る（崩壊機構の形成・耐力劣化）ため、
-/// これは増分が大きすぎるときの非収束と同じ扱い——呼び出し側が増分を半減して解き直し、
-/// それでも進めなければフェーズを打ち切る——が適切である。従来はここで `Err` を返して
-/// **解析全体を中止**しており、機構形成の直前まで得られていた性能曲線ごと捨てて
-/// 「増分解析エラー: factor: NotPositiveDefinite」だけを表示していた（変位制御・
-/// 弧長法フェーズは元々この失敗を増分半減へ回しており、扱いが揃っていなかった）。
-/// 初めから特異なモデルは呼び出し側の初期接線剛性チェックが診断付きで停止させる。
-///
-/// `total_disp_base` はステップ開始時点（直前確定状態）の全自由 DOF 変位。
-/// 支点ばね（`Node::support_spring`）の内力 `k・u` はトライアル変位
-/// `total_disp_base + step_du_free`（この関数のローカル累積）に対して都度
-/// 評価する必要があり（要素のように自身でトライアル状態を保持しないため）、
-/// 呼び出し側から基準変位を明示的に受け取る。
-///
-/// `st` は呼び出し元（長期載荷・荷重制御の各フェーズ）が保持するソルバインスタンス・
-/// CSC 組立てキャッシュ・作業バッファ（[`SolverState`] 参照、時刻歴応答解析高速化・
-/// 第2波と同じ方針）。K は対称正定値を前提とする（旧 `SolverBackend::Auto` も本解析の
-/// 自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を明示しても
-/// 既存挙動と同一）。
+/// 収束したらステップ内の全 Newton 修正量の累積を `Some` で返し、
+/// 収束しなければ `None`。接線剛性の分解・求解の失敗も `None` として返す。
 #[allow(clippy::too_many_arguments)]
 fn newton_converge(
     model: &Model,
@@ -961,7 +716,6 @@ fn newton_converge(
         if STATIC_NEWTON.converged(r_norm, f_norm.max(1.0)) {
             return Some(step_du_free);
         }
-        // 分解・求解の失敗は非収束として返す（関数ドキュメント参照）。
         if st.solver.factorize(&k_red).is_err() {
             return None;
         }
@@ -978,13 +732,7 @@ fn newton_converge(
 }
 
 /// 初期接線剛性で K·δu = q を 1 回解き、荷重係数 λ あたりの頂部変位の弾性勾配
-/// [mm/λ] を推定する（均等変位刻み制御の初期 λ 増分の算定用）。頂部 DOF が特定
-/// できない・分解や求解に失敗する・勾配が退化している場合は `None` を返し、
-/// 呼び出し側は従来の固定 λ 刻みへフォールバックする。
-///
-/// `st` は呼び出し元が全フェーズを通じて保持するソルバインスタンス・CSC 組立て
-/// キャッシュ・作業バッファ（[`SolverState`] 参照）。本関数は解析冒頭で 1 回だけ
-/// 呼ばれるため、以後の長期載荷・荷重制御フェーズと同じキャッシュに相乗りする。
+/// [mm/λ] を推定する。推定できない場合は `None` を返す。
 #[allow(clippy::too_many_arguments)]
 fn elastic_roof_slope(
     model: &Model,

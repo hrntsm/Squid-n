@@ -75,7 +75,7 @@ fn make_1dof_spring_model() -> Model {
             id: MaterialId(0),
             name: "mat".into(),
             category: MaterialCategory::Steel,
-            young: k * 1000.0 / 1.0, // EA/L = young*1/1000 = k
+            young: k * 1000.0 / 1.0,
             poisson: 0.0,
             density: 0.0,
             shear: None,
@@ -92,7 +92,7 @@ fn make_1dof_spring_model() -> Model {
 fn make_shear_2dof_model() -> Model {
     let k = 1000.0_f64;
     let m = 1.0_f64;
-    let young = k * 1000.0; // EA/L = young*1/1000 = k
+    let young = k * 1000.0;
     let node = |id: u32, x: f64, restraint: Dof6Mask, mass: Option<[f64; 6]>| Node {
         id: NodeId(id),
         coord: [x, 0.0, 0.0],
@@ -159,12 +159,9 @@ fn make_shear_2dof_model() -> Model {
     }
 }
 
-/// 門型ラーメン相当モデル（柱2本＋梁1本、柱脚固定、柱頭2節点は6自由度すべて自由）。
-/// crates/squid-n-app の sample::portal_frame() を模したジオメトリだが、
-/// 材料密度は 0 とし、質量は柱頭2節点の水平(Ux)自由度のみに集中質量として与える
-/// （実務でよく使う「水平質点系」モデル化）。
-/// 縮約後自由度は 12(=2節点×6) あるが、質量を持つ自由度はそのうち 2 つだけなので、
-/// 縮約後質量行列 M_red のランクは厳密に 2 になる（10自由度は完全に質量ゼロ）。
+/// 門型ラーメン相当モデル（柱2本＋梁1本、柱脚固定）。
+/// 質量は柱頭2節点の水平(Ux)自由度のみに集中質量として与える（水平質点系）。
+/// 縮約後質量行列 M_red のランクは 2 になる。
 fn make_portal_frame_like_model(top_mass: f64) -> Model {
     let coords = [
         [0.0, 0.0, 0.0],
@@ -266,7 +263,7 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
             category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
-            density: 0.0, // 質量は集中質量のみで与える（水平質点系モデル化）
+            density: 0.0,
             shear: None,
             fc: None,
             fy: Some(235.0),
@@ -275,14 +272,7 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
     }
 }
 
-/// 再現テスト: 質量ランク(=2) が要求モード数(2)ちょうどでも、
-/// 部分空間反復の作業次元 q(>2) の中で射影質量行列がランク落ちするため、
-/// 修正前の実装は Cholesky 分解失敗 → 対角フォールバック(diag_fallback)に落ち、
-/// 質量ゼロ方向の θ=k/m を素朴に計算して f64::MAX を混入させていた
-/// （diag_fallback は projected な q×q 行列を「対角」とみなす近似で、
-/// 非対角の結合を無視するため、q>質量ランクでは必ず不正確になる）。
-/// 修正後は質量固有分解によりランク落ちを正しく分離し、2 つの有限な固有値が
-/// 得られることを確認する。
+/// 質量ランク(=2)が要求モード数(2)ちょうどでも2つの有限な固有値が得られること。
 #[test]
 fn test_eigen_portal_frame_like_mass_rank_equals_n_modes() {
     let model = make_portal_frame_like_model(1.0e-3);
@@ -406,7 +396,7 @@ fn test_1dof_period() {
         result.omega2[0],
         expected_omega2
     );
-    // 設計書 §7.2 の例: T = 0.198692 s
+    // T = 0.198692 s の例と一致。
     assert!(
         (result.period[0] - expected_t).abs() / expected_t < 1e-8,
         "T={} expected={}",
@@ -420,8 +410,7 @@ fn test_1dof_period() {
     );
 }
 
-/// 2層せん断モデル: T1=0.32150, T2=0.12280 へ収束し、
-/// 2 モードで有効質量比合計 ≈100%（設計書 §7.2）。
+/// 2層せん断モデル: T1=0.32150、T2=0.12280 へ収束し、2モードで有効質量比合計が約100%になること。
 #[test]
 fn test_2dof_shear_period_and_mass() {
     let model = make_shear_2dof_model();
@@ -432,8 +421,8 @@ fn test_2dof_shear_period_and_mass() {
     assert_eq!(result.omega2.len(), 2);
     let k = 1000.0_f64;
     let m = 1.0_f64;
-    let lam1 = (k / m) * (3.0 - 5.0_f64.sqrt()) / 2.0; // ≈382.0
-    let lam2 = (k / m) * (3.0 + 5.0_f64.sqrt()) / 2.0; // ≈2618.0
+    let lam1 = (k / m) * (3.0 - 5.0_f64.sqrt()) / 2.0;
+    let lam2 = (k / m) * (3.0 + 5.0_f64.sqrt()) / 2.0;
 
     assert!(
         (result.omega2[0] - lam1).abs() / lam1 < 1e-6,
@@ -464,7 +453,7 @@ fn test_2dof_shear_period_and_mass() {
     );
     // モード1 が支配的。理論値は閉形式から求める（このKでは ≈94.7%）。
     // 1次モード形 φ=[1, k/(k−λ1)] より Meff1 = (Σφ)²/(Σφ²)。
-    let s = k / (k - lam1); // φ2/φ1
+    let s = k / (k - lam1);
     let meff1_theory = (1.0 + s).powi(2) / (1.0 + s * s);
     let ratio1 = result.effective_mass[0][0] / total_mass;
     assert!(
@@ -475,13 +464,8 @@ fn test_2dof_shear_period_and_mass() {
     );
 }
 
-/// crates/squid-n-app の sample::portal_frame() と等価なモデル
-/// （柱2本＋梁1本、柱脚固定、H形断面、材料密度あり・節点集中質量なし）。
-/// 断面性能は H-300x300x10x15（柱）・H-400x200x8x13（梁）の実断面計算値。
-/// 質量は一貫質量行列(consistent mass)のみから生じ、並進DOFに比べ
-/// 回転DOFの質量ははるかに小さい（質量行列が病的に悪条件）。
-/// この状態で eigen(1)〜eigen(3) が f64::MAX を返さず、妥当な周期を
-/// 返すことを確認する（実際に発生した不具合の再現・回帰テスト）。
+/// 密度由来の一貫質量のみを持つ門型ラーメンモデル（柱2本＋梁1本、柱脚固定）。
+/// eigen(1)〜eigen(3) が有限な妥当な周期を返すこと。
 fn make_portal_frame_density_mass_model() -> Model {
     let coords = [
         [0.0, 0.0, 0.0],
@@ -619,10 +603,7 @@ fn test_eigen_portal_frame_density_mass_two_modes() {
     );
 }
 
-/// 質量方式 LumpedOnly では部材密度による要素質量を質量行列に算入しないことを、
-/// 固有周期で確認する回帰テスト。密度を持つ 1 自由度ばねモデルで、
-/// 既定（CorrectedLumped: 要素質量＋節点質量）では周期が節点質量のみの
-/// 理論値からずれ、LumpedOnly では理論値 T=2π√(m/k) に一致する。
+/// 質量方式 LumpedOnly では部材密度による要素質量を質量行列に算入しないこと。
 #[test]
 fn test_eigen_mass_method_lumped_only_skips_element_mass() {
     let mut model = make_1dof_spring_model();
@@ -678,19 +659,8 @@ fn test_eigen_deterministic() {
     }
 }
 
-/// 柱2本(柱脚とも同一節点で固定)＋剛床モデル。柱頭2節点(スレーブ)を
-/// 浮遊マスター節点(Uz/Rx/Ry固定)へ RigidDiaphragm で従属させ、マスターには
-/// 並進(Ux,Uy)と回転(Rz)の集中質量を与える（質量ランクはちょうど3＝Ux,Uy,Rz）。
-/// `node_shapes` が縮約座標からの展開後も剛床の面内剛体変位の運動学
-/// （ix = mx − θz·dy, iy = my + θz・dx）を満たすことを検証するためのモデル
-/// （`constraint.rs` の `test_rigid_diaphragm_master_recovers_translation_and_torsion`
-/// と同じ式）。
-///
-/// 本テストは `node_shapes` の展開処理そのものの正しさを検証することが目的の
-/// ため、最小構成（縮約後独立自由度9・柱2本）を用いる。並進質量と回転慣性の
-/// スケール差による質量ランク過少検出（かつて柱4本構成で顕在化していた）の
-/// 回帰は `test_eigen_mass_rank_translation_rotation_scale_mix`（柱4本・
-/// `make_four_column_diaphragm_model`）が担う。
+/// 柱2本＋剛床モデル。柱頭2節点を浮遊マスター節点へ RigidDiaphragm で従属させる。
+/// マスターには並進(Ux,Uy)と回転(Rz)の集中質量を与える（質量ランクは3）。
 fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
     let col_section = Section {
         id: SectionId(0),
@@ -794,7 +764,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
             category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
-            density: 0.0, // 質量はマスター節点の集中質量のみ
+            density: 0.0,
             shear: None,
             fc: None,
             fy: Some(235.0),
@@ -808,10 +778,8 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
     }
 }
 
-/// 回帰テスト: `ModalResult::node_shapes`（`shapes` を節点×6成分へ展開したもの）
-/// が、剛床(RigidDiaphragm)のスレーブ節点でも剛体変位の運動学
-/// ix = mx − θz·(y_s−y_m), iy = my + θz·(x_s−x_m) を満たすこと、
-/// 固定節点の成分が0であること、モード数・節点数が `shapes` と整合することを確認する。
+/// `ModalResult::node_shapes` が剛床の剛体変位の運動学を満たすこと。
+/// 固定節点の成分が0であること、モード数・節点数が整合すること。
 #[test]
 fn test_eigen_node_shapes_rigid_diaphragm_kinematics() {
     let top_mass = 1.0e-3;
@@ -903,10 +871,7 @@ fn test_eigen_node_shapes_rigid_diaphragm_kinematics() {
     );
 }
 
-/// 柱4本（正方形配置・柱脚固定）＋剛床の1層モデル。柱頭4節点をスレーブとし、
-/// 床重心の浮遊マスター節点（Uz/Rx/Ry固定）に並進(Ux,Uy)と回転(Rz)の集中質量を
-/// 与える（質量ランクはちょうど3＝Ux,Uy,Rz）。剛床付き建物の最も標準的な
-/// モデル化（各階を水平2並進＋回転1の質点で代表させる）に対応する。
+/// 柱4本＋剛床の1層モデル。柱頭4節点をスレーブとし、床重心の浮遊マスター節点に集中質量を与える（質量ランクは3）。
 fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
     let col_section = Section {
         id: SectionId(0),
@@ -994,7 +959,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
-            density: 0.0, // 質量はマスター節点の集中質量のみ
+            density: 0.0,
             shear: None,
             fc: None,
             fy: Some(235.0),
@@ -1004,15 +969,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
     }
 }
 
-/// 回帰テスト: 並進質量(t オーダー)と回転慣性(t·mm² オーダー、単位系due to
-/// 並進の 10^6〜10^8 倍のスケール)が混在する剛床モデルで、質量ランク判定が
-/// スケール差により過少検出されないこと。
-///
-/// 従来の実装は射影質量行列 M̄ の固有値を「最大固有値との相対値」で
-/// 切り捨てていたため、回転慣性の固有値が支配的になると並進方向の質量が
-/// 「質量なし」と誤判定され、真の質量ランク(3)未満しか見つからず
-/// InvalidInput エラーになっていた（剛床で縮約後の独立自由度が多い＝
-/// 部分空間に質量ゼロ方向が多く混ざるほど顕在化する）。
+/// 並進質量と回転慣性のスケール差があっても質量ランク判定が過少検出されないこと。
 #[test]
 fn test_eigen_mass_rank_translation_rotation_scale_mix() {
     let top_mass = 1.0e-3;
@@ -1048,10 +1005,7 @@ fn test_eigen_mass_rank_translation_rotation_scale_mix() {
     }
 }
 
-/// 部分空間反復の質量重み付け（`K·y=M·x`）が正しく効いていることを、
-/// 質量が非対称（m1≠m2）な2層軸ばねモデルの解析解と比較して確認する。
-/// M∝I（等質量）の [`test_2dof_shear_period_and_mass`] では質量重み付けの
-/// 有無が結果に影響しないため区別できない（この2つは相補的な回帰テスト）。
+/// 質量が非対称な2層軸ばねモデルの解析解と比較して質量重み付けが正しく効いていること。
 #[test]
 fn test_2dof_shear_unequal_mass_matches_analytic() {
     let k = 1000.0_f64;
@@ -1258,13 +1212,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
     );
 }
 
-/// 整合質量行列の座標系の回帰テスト: 同一断面・同一長さの片持ち梁を
-/// X 方向（水平）と Z 方向（鉛直柱）に置いたとき、固有周期が一致すること。
-///
-/// 整合質量は軸方向（m/3 系）と曲げ方向（156m/420 系）で係数が異なり回転
-/// 不変ではないため、剛性と同様に全体系へ変換して組み立てる必要がある。
-/// 従来は要素局所系のまま全体自由度へ散布しており、鉛直柱・斜材で質量が
-/// 誤った全体軸へ配分されていた（水平材と鉛直材で固有周期が食い違う）。
+/// 同一断面・同一長さの片持ち梁をX方向とZ方向に置いたとき、固有周期が一致すること。
 #[test]
 fn test_eigen_consistent_mass_orientation_invariant() {
     // iy=iz・as_y=as_z の対称断面とし、部材の向きだけが異なるモデルを作る。

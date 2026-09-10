@@ -1,7 +1,6 @@
-//! プッシュオーバー解析（P5 §7）。責務ごとにサブモジュールへ分割する。
+//! プッシュオーバー解析。責務ごとにサブモジュールへ分割する。
 //!
 //! - [`types`] — 解析結果・イベントの型定義
-//! - [`assembly`] — 剛性行列の組立・内力ベクトルの算定（`dynamic`/`timehistory` 共有）
 //! - [`diagnosis`] — 接線剛性が特異・非正定値になったときの診断メッセージ
 //! - [`response`] — ベースシア・層せん断・層間変位・屋根変位の算定
 //! - [`driver`] — 荷重制御・変位制御・弧長法を統括する司令塔
@@ -33,8 +32,6 @@ pub use types::{
     PushoverTarget, PushoverTermination, ShearYieldEvent,
 };
 
-// tests（`use super::*`）が参照する非公開項目・外部名を供給する
-// （非テストビルドでは持ち込まない）。
 #[cfg(test)]
 use crate::statics::analysis::SeismicDir;
 #[cfg(test)]

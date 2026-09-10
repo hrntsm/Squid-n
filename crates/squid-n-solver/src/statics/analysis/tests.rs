@@ -132,7 +132,6 @@ fn test_two_cases_one_factorization() {
     let ux_expected = 1000.0 * 1000.0 / (20000.0 * 100.0);
     let l = 1000.0_f64;
     let uy_expected = 500.0 * l.powi(3) / (3.0 * 20000.0 * 833.33);
-    // Timoshenko beam includes shear deflection ≈ 0.1% — use relaxed tolerance
     assert!((ux - ux_expected).abs() < 1.0, "ux={}", ux);
     assert!(
         (uy - uy_expected).abs() < 20.0,
@@ -154,7 +153,6 @@ fn test_load_combination() {
     let l = 1000.0_f64;
     let uy_expected = 1.5 * (500.0 * l.powi(3) / (3.0 * 20000.0 * 833.33));
     assert!((ux - ux_expected).abs() < 1.0, "ux={}", ux);
-    // Timoshenko shear adds slight deflection — relaxed tolerance
     assert!(
         (uy - uy_expected).abs() < 20.0,
         "uy={} approx={}",
@@ -691,8 +689,7 @@ fn test_prepare_isolated_node_gives_diagnostic() {
 }
 
 /// 存在しない節点を参照する拘束（節点削除後の不整合など）は、panic ではなく
-/// ダングリング参照の診断エラーになること（従来は precheck 内の直接添字で
-/// panic していた）。
+/// ダングリング参照の診断エラーになること。
 #[test]
 fn test_prepare_dangling_constraint_reference_gives_diagnostic() {
     let mut model = make_cantilever_model();
@@ -752,8 +749,6 @@ fn test_seismic_without_stories_is_error() {
 
 #[test]
 fn test_bernoulli_strict_1e9() {
-    // Bernoulli beam: very large shear area → negligible shear deformation.
-    // Axial: u = PL/EA, Bending: w = PL³/3EI — strict 1e-9 match.
     let mut model = make_cantilever_model();
     model.sections[0].as_y = 1e12;
     model.sections[0].as_z = 1e12;
@@ -770,8 +765,6 @@ fn test_bernoulli_strict_1e9() {
     assert!(ux_rel < 1e-9, "ux rel err={}", ux_rel);
     assert!(uy_rel < 1e-4, "uy rel err={}", uy_rel);
 }
-
-// ---- §1.5 略算周期の鉄骨造比 α ----
 
 /// 3層等階高（各1000mm、基部Z=0）で、指定した各**層**の `structure` から
 /// `steel_height_ratio` を計算するテスト用モデル。
@@ -852,8 +845,6 @@ fn test_steel_height_ratio_no_stories_is_zero() {
     let model = Model::default();
     assert_eq!(steel_height_ratio(&model), 0.0);
 }
-
-// ---- §1.6 多剛床のPi重複載荷 ----
 
 /// 剛床の分配規則の検証用モデル。地震用重量 400 の階を 1 つ持ち、指定した
 /// `(マスター, 剛床重量, ci_override)` の剛床拘束を備える。剛床は階ではなく
@@ -979,8 +970,6 @@ fn test_distribute_pi_without_diaphragm_and_mass_splits_equally() {
         assert!((*v - 20.0).abs() < 1e-9, "share={v}");
     }
 }
-
-// ---- §4 追補: 副剛床のCi直接入力・パラペット・階別見付け幅 ----
 
 #[test]
 fn test_main_system_weight_excludes_ci_override_diaphragm() {

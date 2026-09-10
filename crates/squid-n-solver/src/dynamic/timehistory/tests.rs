@@ -49,8 +49,6 @@ fn test_timehistory_config_deterministic() {
     }
 }
 
-// ===== §8.1 SDOF / §8.2 減衰 検証テスト =====
-
 use crate::common::constraint::Reducer;
 use crate::dynamic::damping::{Damping, DampingAccumulation, StiffnessKind};
 use squid_n_core::dof::{Dof6Mask, DofMap};
@@ -66,7 +64,7 @@ const FREE_UX: Dof6Mask = Dof6Mask(0b111110);
 /// Uy のみ自由（Y 方向専用モデル用）。
 const FREE_UY: Dof6Mask = Dof6Mask(0b111101);
 
-/// SDOF: m=1.0 N·s²/mm, k=1000 N/mm（§8.1）。
+/// SDOF: m=1.0 N·s²/mm, k=1000 N/mm。
 /// ω = √(k/m) = 31.6228 rad/s, T = 0.198692 s。
 ///
 /// 弾性ばねを模擬する検証モデルのため、降伏強度は塑性化しない十分大きな値
@@ -238,7 +236,7 @@ fn sdof_analytical(t: f64, omega: f64, zeta: f64) -> f64 {
     decay * ((omega_d * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin())
 }
 
-/// §8.1: SDOF 自由振動（u0=1, v0=0, ζ=0.02）が解析解に一致。
+/// SDOF 自由振動（u0=1, v0=0, ζ=0.02）が解析解に一致。
 /// Δt を細かくして誤差が減ることも確認。
 #[test]
 fn test_sdof_free_vibration_matches_analytical() {
@@ -246,7 +244,7 @@ fn test_sdof_free_vibration_matches_analytical() {
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
-    let omega = (1000.0_f64 / 1.0).sqrt(); // 31.6228
+    let omega = (1000.0_f64 / 1.0).sqrt();
     let zeta = 0.02;
     let damping = Damping::StiffnessProportional {
         h: zeta,
@@ -301,9 +299,7 @@ fn test_sdof_free_vibration_matches_analytical() {
     assert_eq!(errors.len(), 3);
 }
 
-/// §8.1: SDOF 自由振動の減衰包絡線が解析解と一致。
-/// ピーク時刻（極値）で e^{−ζωt} と比較することで、減衰が正しく
-/// 組み込まれていることを検証する。
+/// SDOF 自由振動の減衰包絡線が解析解と一致。
 #[test]
 fn test_sdof_damping_envelope_matches_analytical() {
     let model = sdof_model();
@@ -311,15 +307,15 @@ fn test_sdof_damping_envelope_matches_analytical() {
     let reducer = Reducer::build(&model, &dofmap);
 
     let omega = (1000.0_f64 / 1.0).sqrt();
-    let zeta = 0.05; // より大きな減衰で包絡線の差を明確に
+    let zeta = 0.05;
     let damping = Damping::StiffnessProportional {
         h: zeta,
         omega,
         basis: StiffnessKind::Initial,
     };
 
-    let dt = 0.0002; // 高精度
-    let n_steps = (2.0 / dt) as usize; // 2.0s
+    let dt = 0.0002;
+    let n_steps = (2.0 / dt) as usize;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -351,8 +347,7 @@ fn test_sdof_damping_envelope_matches_analytical() {
     assert!((u_analytical_0 - 1.0).abs() < 1e-12);
 }
 
-/// §8.2: 減衰比の検証。剛性比例減衰で目標 h の減衰比が得られることを、
-/// 自由振動の対数減衰率から確認。
+/// 減衰比の検証。剛性比例減衰で目標 h の減衰比が得られることを、自由振動の対数減衰率から確認する。
 /// 対数減衰率 δ = ln(u_n / u_{n+1})、ζ = δ / √(4π² + δ²)。
 #[test]
 fn test_stiffness_proportional_damping_ratio() {
@@ -366,7 +361,7 @@ fn test_stiffness_proportional_damping_ratio() {
     assert!((zeta_actual - h_target).abs() < 1e-12);
 }
 
-/// §8.2: Rayleigh 減衰の2点指定が正しいこと。
+/// Rayleigh 減衰の2点指定が正しいこと。
 #[test]
 fn test_rayleigh_damping_two_point() {
     let omega1 = 10.0;
@@ -382,8 +377,7 @@ fn test_rayleigh_damping_two_point() {
     assert!((z2 - h2).abs() < 1e-9);
 }
 
-/// §8.1: 2DOF せん断モデルの時刻歴がモード重ね合わせと定性的に整合。
-/// K=[[2k,-k],[-k,k]], M=mI の自由振動で、1次モードが支配的な応答を示す。
+/// 2DOF せん断モデルの時刻歴がモード重ね合わせと定性的に整合すること。
 #[test]
 fn test_2dof_free_vibration_runs() {
     let k = 1000.0_f64;
@@ -464,7 +458,7 @@ fn test_2dof_free_vibration_runs() {
     };
 
     let dt = 0.0005;
-    let n_steps = 2000; // 1.0s
+    let n_steps = 2000;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -479,7 +473,7 @@ fn test_2dof_free_vibration_runs() {
         &wave,
         &newmark,
         &damping,
-        &[1.0, 1.618], // 1次モード形 [1, 1.618] で純1次モード励振
+        &[1.0, 1.618],
         &[0.0, 0.0],
         false,
         None,
@@ -499,10 +493,7 @@ fn test_2dof_free_vibration_runs() {
     );
 }
 
-/// §8.1 DoD #2: 2DOFせん断モデルの1次モード純励振がモード重ね合わせと一致。
-/// 1次モード形 [1, φ] で初期化した自由振動は、1次モードのみ励起されるため
-/// 全時刻で u2/u1 = φ（モード形状比）が維持される。
-/// これにより直接積分とモード重ね合わせが定量的に一致することを検証。
+/// 2DOFせん断モデルの1次モード純励振がモード重ね合わせと一致すること。
 #[test]
 fn test_2dof_mode_superposition_consistency() {
     let k = 1000.0_f64;
@@ -588,7 +579,7 @@ fn test_2dof_mode_superposition_consistency() {
     };
 
     let dt = 0.0002;
-    let n_steps = 500; // 0.1s
+    let n_steps = 500;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -629,7 +620,7 @@ fn test_2dof_mode_superposition_consistency() {
     );
 }
 
-/// §2 DoD: 平均加速度法が無条件安定（大 Δt で発散しない）。
+/// 平均加速度法が無条件安定（大 Δt で発散しない）。
 #[test]
 fn test_average_accel_unconditional_stability() {
     let model = sdof_model();
@@ -676,9 +667,7 @@ fn test_average_accel_unconditional_stability() {
     );
 }
 
-/// §2: 線形加速度法は条件付安定（T/√π ≈ 0.112s より小さい Δt で安定）。
-/// 安定条件 Δt <= T/π√(1/(γ/2-β)) = T/π·√(1/(0.5/2 - 1/6)) = T/π·√6 ≈ 0.155·T。
-/// 安定領域で正常に動作することを確認。
+/// 線形加速度法は安定領域で正常に動作すること。
 #[test]
 fn test_linear_accel_stable_range() {
     let model = sdof_model();
@@ -692,7 +681,7 @@ fn test_linear_accel_stable_range() {
         basis: StiffnessKind::Initial,
     };
 
-    let dt = 0.01; // T=0.199s の約 1/20 → 安定領域
+    let dt = 0.01;
     let n_steps = 100;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
@@ -723,9 +712,8 @@ fn test_linear_accel_stable_range() {
     );
 }
 
-/// §8.3: チェックポイント再開のビット一致。
-/// 連続実行(0→N)の最終状態と、途中(0→M)で保存→再開(M→N)の最終状態が
-/// f64 ビット完全一致することを検証。
+/// チェックポイント再開のビット一致。
+/// 連続実行の最終状態と、途中保存→再開の最終状態がビット完全一致すること。
 #[test]
 fn test_checkpoint_restart_bit_exact() {
     let model = sdof_model();
@@ -740,8 +728,8 @@ fn test_checkpoint_restart_bit_exact() {
     };
 
     let dt = 0.001;
-    let n_total = 500; // 0.5s
-    let m = 200; // チェックポイント時点
+    let n_total = 500;
+    let m = 200;
 
     // 全波形
     let wave_full = zero_wave(dt, n_total);
@@ -851,7 +839,7 @@ fn test_y_direction_wave_selects_y_record_dir() {
     };
 
     let dt = 0.001;
-    let n_steps = 500; // 0.5s
+    let n_steps = 500;
     let accel_y: Vec<f64> = (0..n_steps)
         .map(|i| {
             let t = i as f64 * dt;
@@ -984,8 +972,6 @@ fn test_phase_diff_torsion_excites_eccentric_node() {
     assert_eq!(res_0.peak_disp[1][0], 0.0);
 }
 
-// ===== 非線形時刻歴応答解析テスト =====
-
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::Story;
 
@@ -1109,7 +1095,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
     };
 
     let dt = 0.001;
-    let n_steps = 100; // 0.1s
+    let n_steps = 100;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -1186,7 +1172,7 @@ fn test_nonlinear_time_history_sdof_plastic() {
     };
 
     let dt = 0.001;
-    let n_steps = 200; // 0.2s
+    let n_steps = 200;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -1353,15 +1339,7 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
 
 /// 反復上限が十分なら収束し、足りなければ**打ち切らず参考値として続行**する。
 ///
-/// 以前は最初の不収束で `Err` を返して解析全体を捨てていた。質点系
-/// （`crate::dynamic::lumped_mass`）は同じ状況でその時点の試行状態で確定して続行し、
-/// 非収束ステップ数を警告表示する設計だったため、扱いが 2 経路で食い違っていた。
-/// 途中まで解けた応答を捨てるより参考値として見せるほうが利用者の判断材料に
-/// なるため、立体モデル側を質点系へ揃えた
-/// （`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
-///
-/// 打ち切るのは発散（変位が有限値でない）した場合だけで、そのときは
-/// ステップ開始状態へ戻してから `Err` を返す。
+/// 打ち切るのは発散した場合だけである。
 #[test]
 fn test_nonlinear_time_history_convergence() {
     let model = fiber_column_model(100.0);
@@ -1447,7 +1425,7 @@ fn test_maxwell_damper_reduces_free_vibration() {
     use squid_n_core::model::{DamperAttr, DamperKind, DamperProps};
 
     let run = |with_damper: bool| -> f64 {
-        let mut model = sdof_model(); // node0 固定, node1 自由(UX, m=1), 軸剛性 k=1000
+        let mut model = sdof_model();
         if with_damper {
             let did = ElemId(model.elements.len() as u32);
             model.elements.push(ElementData {
@@ -1521,8 +1499,6 @@ fn test_maxwell_damper_reduces_free_vibration() {
         "Maxwell damper should reduce late response: no_damp={no_damp}, with_damp={with_damp}"
     );
 }
-
-// ===== ThRecording（詳細記録）テスト =====
 
 /// (a) 線形時刻歴で詳細記録（`ThRecording`）が生成され、フレーム数・節点数・階数が
 /// 期待どおりであること。`n_steps=50` では自動決定される `record_every` が
@@ -1707,13 +1683,6 @@ fn test_nonlinear_apply_long_term_matches_static_solution() {
 }
 
 /// 支点ばね（`Node::support_spring`）のみで水平剛性を与えられる SDOF。
-/// 高-1: 非線形時刻歴の残差計算に支点ばね内力が入らない不具合の回帰テスト用。
-///
-/// 剛性そのものは節点1 の `support_spring` のみが担う（要素自身の剛性は 0）。
-/// ただし `DofMap` は要素に参加しない節点の自由度を活性化しないため
-/// （`common::assemble::tests::test_isolated_node_with_support_spring_stays_inactive`
-/// 参照）、剛性ゼロの `NodalSpring` 要素で節点0（固定）・節点1（支点ばね）を
-/// つなぎ、節点1 の Ux を活性化する。
 fn support_spring_sdof_model(k: f64, m: f64) -> Model {
     Model {
         nodes: vec![
@@ -1752,10 +1721,7 @@ fn support_spring_sdof_model(k: f64, m: f64) -> Model {
     }
 }
 
-/// 高-1: 支点ばねのみで支持される SDOF で、非線形時刻歴の長期荷重初期化
-/// （`apply_long_term_static`）が収束し、静的解析解 `u=F/k` と一致すること。
-/// 修正前は `compute_f_int` が常に 0（要素がないため）で、支点ばねの内力寄与が
-/// 残差へ入らず、載荷率 0% 超で Newton 反復が収束せずエラーになっていた。
+/// 支点ばねのみで支持される SDOF で、非線形時刻歴の長期荷重初期化が収束し、静的解析解 `u=F/k` と一致すること。
 #[test]
 fn test_support_spring_long_term_static_matches_analytical() {
     let k = 500.0_f64;
@@ -1814,9 +1780,7 @@ fn test_support_spring_long_term_static_matches_analytical() {
     );
 }
 
-/// 高-1: 支点ばねのみで支持される SDOF の自由振動応答が、同一モデルの線形時刻歴
-/// （既に支点ばねを正しく扱っている参照経路）と一致すること。要素がないため
-/// 弾性範囲を超える降伏は起こらず、非線形・線形の両経路は理論上完全に一致する。
+/// 支点ばねのみで支持される SDOF の自由振動応答が、同一モデルの線形時刻歴と一致すること。
 #[test]
 fn test_support_spring_free_vibration_matches_linear() {
     let k = 800.0_f64;
@@ -1934,11 +1898,7 @@ fn test_nonlinear_record_every_thinning() {
     assert!(recording.peak_member_forces.iter().any(|f| f.is_some()));
 }
 
-/// UI からの `record_every` 指定が線形（Newmark-β）経路にも効くこと
-/// （`n_steps=50, record_every=5` なら 0,5,..,50 の 11 フレーム）。
-/// 線形（Newmark-β）には、非線形 `NonlinearThCfg::record_every` に相当する
-/// 明示指定手段がなかった（申し送り「時刻歴応答_詳細記録と長期荷重初期化」参照）ため、
-/// `linear_time_history_analysis` の末尾引数追加で解消したことを確認する。
+/// UI からの `record_every` 指定が線形（Newmark-β）経路にも効くこと。
 #[test]
 fn test_linear_record_every_thinning() {
     let model = sdof_model();
@@ -1977,7 +1937,7 @@ fn test_linear_record_every_thinning() {
     let recording = result.recording.expect("recording");
     assert_eq!(recording.record_every, 5);
     assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
-    // record_every を渡さない（自動決定）場合は従来どおり動くことも確認する。
+    // record_every を渡さない（自動決定）場合の動作も確認する。
     let result_auto = linear_time_history_analysis(
         &model,
         &dofmap,
@@ -1998,11 +1958,7 @@ fn test_linear_record_every_thinning() {
     );
 }
 
-/// 中-3: `StoryResponse` の `peak_*`（層せん断力・階絶対加速度・階速度・階変位の
-/// 絶対値最大）は、フレーム記録の間引き（`record_every`）に関係なく毎ステップ
-/// 更新される。`record_every=7`（間引きあり）と `record_every=1`（全ステップ
-/// 記録）で同一条件を解析し、間引きありのピークが、間引きなし側の全フレームから
-/// 独立に求めた絶対値最大と一致することを確認する。
+/// `StoryResponse` の `peak_*` は、フレーム記録の間引きに関係なく毎ステップ更新されること。
 #[test]
 fn test_story_response_peaks_match_full_resolution_regardless_of_thinning() {
     let model = fiber_column_model(1e10);
@@ -2121,9 +2077,7 @@ fn test_story_response_peaks_match_full_resolution_regardless_of_thinning() {
     );
 }
 
-/// 中-4: フレームごとの `member_forces` は各要素の評価断面を両端 2 点
-/// （最小ξ・最大ξ）のみに間引く。包絡 `peak_member_forces` は全評価断面
-/// （既定 `eval_sections=[0.0, 0.5, 1.0]` の 3 点）を保持する。
+/// フレームごとの `member_forces` は両端 2 点のみに間引く。包絡 `peak_member_forces` は全評価断面を保持する。
 #[test]
 fn test_frame_member_forces_trimmed_to_endpoints_envelope_keeps_all_sections() {
     let model = fiber_column_model(1e10);
@@ -2289,10 +2243,10 @@ fn test_nonlinear_result_flags_reflect_cfg() {
     );
 }
 
-/// 旧プロジェクトファイル（.scz）相当の JSON（`recording`/`nonlinear`/
-/// `applied_long_term` フィールドがない）を読み込んだ場合、いずれも既定値
-/// （`recording=None`・`nonlinear=false`・`applied_long_term=false`）に
-/// フォールバックすること（`#[serde(default)]` の後方互換確認）。
+/// 新設フィールド（`recording`/`nonlinear`/`applied_long_term`）がない JSON を
+/// 読み込んだ場合、いずれも既定値（`recording=None`・`nonlinear=false`・
+/// `applied_long_term=false`）にフォールバックすること
+/// （`#[serde(default)]` の後方互換確認）。
 #[test]
 fn test_response_result_serde_backward_compat_missing_flags() {
     let json = r#"{
@@ -2314,17 +2268,6 @@ fn test_response_result_serde_backward_compat_missing_flags() {
     assert!(!result.nonlinear);
     assert!(!result.applied_long_term);
 }
-
-// ===== 決定性ガード（時刻歴応答解析高速化・第1波: ソルバ層） =====
-//
-// P1（Newton 反復の収束判定前倒し）・P3（StateSnapshot 廃止→revert_all）・
-// P8/P9（バッファ再利用・record_step シグネチャ変更）・P11（層重量累積和の
-// 事前計算）は、いずれも計算の並べ替え・メモリ確保方法の変更のみで、数値結果
-// （`ResponseResult` の全フィールド）は完全不変のはずである。このガードテストを
-// 最適化に着手する前に一度通してから作業し、以後の各段階で常に通し続けることで
-// 非退行を保証する。bincode によるバイト列比較を用いる（固定長エンコーディング
-// のため、内容が同じなら f64 の全ビットを含めてバイト列も完全一致する。
-// 既存の `test_checkpoint_restart_bit_exact` と同じ手法）。
 
 /// 線形時刻歴（Newmark-β）を同一入力で2回実行し、`ResponseResult`
 /// （time・peak_disp・history(node_disp・base_shear 等)・recording(story_shear 等)
@@ -2372,10 +2315,7 @@ fn test_linear_time_history_deterministic_guard() {
     );
 }
 
-/// 非線形時刻歴（Newton 反復・commit/rollback）を同一入力で2回実行し、
-/// `ResponseResult` がビット完全一致すること。塑性化して複数回の Newton 反復・
-/// 複数ステップの commit を経る小モデル・少ステップで検証する（P1 の反復内
-/// 並べ替え・P3 の snapshot→revert_all 置換の回帰防止に直結する）。
+/// 非線形時刻歴を同一入力で2回実行し、`ResponseResult` がビット完全一致すること。
 #[test]
 fn test_nonlinear_time_history_deterministic_guard() {
     let base = fiber_column_model(100.0);
@@ -2425,9 +2365,7 @@ fn test_nonlinear_time_history_deterministic_guard() {
     );
 }
 
-/// 非線形時刻歴・接線比例減衰＋累積型減衰力（毎反復 C を再構成し、Kg=false でも
-/// 接線剛性の組立が残差評価に絡む経路。P1 の並べ替えで最も影響を受けやすい）でも
-/// 同様にビット完全一致すること。
+/// 非線形時刻歴・接線比例減衰＋累積型減衰力でもビット完全一致すること。
 #[test]
 fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
     let base = fiber_column_model(100.0);
@@ -2480,14 +2418,7 @@ fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
 /// 地動加速度がゼロの自由振動区間でも解析が完走する。
 ///
 /// **このテストだけでは基準ノルムの不具合は再現しない。**実際の不収束は、悪条件な
-/// 有効剛性の線形解が持つ残差（概ね `条件数 × ε × 力のスケール`）が絶対判定の
-/// 閾値を超えることで起きるため、再現には多自由度の実規模モデルが要る。本体の
-/// 回帰ガードは基準ノルムの単体テスト（[`crate::common::newton`] の
-/// `dynamic_reference_norm`）と、実建物での統合テスト
-/// （`squid-n-app` の `time_history_nonlinear_runs`）である。
-///
-/// ここでは API レベルの素直な確認として、加振後に入力を 0 にした区間を含む
-/// 解析が最後まで走ることを見る（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
+/// 閾値を超えることで起きるため、再現には多自由度の実規模モデルが要る。
 #[test]
 fn test_nonlinear_time_history_converges_when_ground_accel_is_zero() {
     let model = fiber_column_model(1e10);

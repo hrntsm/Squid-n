@@ -4,16 +4,9 @@
 //! 非線形時刻歴応答解析の Newton 反復のように、「同じ箇所から毎回ほぼ同じ triplet 列
 //! （または同じ入力行列の組）を渡して CSC 行列を組み立てる」処理を繰り返す場面で使う。
 //!
-//! 弾塑性要素の接線剛性は、完全塑性域への遷移で成分が厳密に 0.0 を跨ぐことがあり
-//! （例: 完全弾塑性ばねの降伏後剛性が正確に 0）、triplet の非ゼロ数や座標集合が
-//! Newton 反復間で変わり得る。このパターン変化の検知と安全側フォールバック
-//! （パターンの作り直し）は [`CscAssembler::assemble_into`]／
-//! [`WeightedSumCache::combine_into`] 自身が座標の完全比較（O(nnz)）により
-//! リリースビルドを含む全ビルドで行う（各構造体のドキュメント参照）。フォールバックが
-//! 起きても結果は [`squid_n_math::sparse::assemble_csc`]／
-//! [`squid_n_math::sparse::weighted_sum_csc`] とビット一致し、高速パスが使えない
-//! 回だけコストが元に戻る。本ラッパーは行列次元 `n` の変化への追従と
-//! 初回構築のみを担う。
+//! triplet の非ゼロパターンが変わっても作り直し、結果は
+//! [`squid_n_math::sparse::assemble_csc`]／[`squid_n_math::sparse::weighted_sum_csc`]
+//! とビット一致する。
 
 use faer::sparse::SparseColMat;
 use squid_n_math::sparse::{CscAssembler, Triplet, WeightedSumCache};
@@ -35,12 +28,6 @@ impl CscCache {
 
     /// `triplets` から CSC 行列を組み立てる。結果は常に
     /// `squid_n_math::sparse::assemble_csc(n, triplets.to_vec())` とビット一致する。
-    ///
-    /// 直前呼び出しと次元 `n`・triplet 列の座標・並び順が一致すれば
-    /// [`CscAssembler::assemble_into`] の高速パス（ソート不要、O(nnz)）が働く。
-    /// 座標・並び順の一致判定と不一致時の作り直しは `CscAssembler` 自身が
-    /// 全ビルドで行う（この回のみ通常の `assemble_csc` 相当のコストに戻るが、
-    /// 結果は変わらない）。
     pub fn assemble(&mut self, n: usize, triplets: &[Triplet]) -> SparseColMat<usize, f64> {
         self.assemble_ref(n, triplets).clone()
     }
@@ -74,8 +61,7 @@ impl Default for CscCache {
 }
 
 /// [`WeightedSumCache`] のキャッシュラッパー。複数行列の重み付き和（`K_eff = K_t +
-/// c2·C + c1·M` 等）を組み立てる。設計方針は [`CscCache`] と同じ（パターン一致判定と
-/// 不一致時の作り直しは `WeightedSumCache` 自身が全ビルドで行う）。
+/// c2·C + c1·M` 等）を組み立てる。
 pub struct WeightedSumGuard {
     cache: Option<WeightedSumCache>,
     n: usize,
@@ -88,14 +74,6 @@ impl WeightedSumGuard {
 
     /// `mats: &[(coef, &SparseColMat)]` の重み付き和を組み立てる。結果は常に
     /// `squid_n_math::sparse::weighted_sum_csc(n, mats)` とビット一致する。
-    ///
-    /// 直前呼び出しと次元・各入力行列の非ゼロパターンが一致すれば
-    /// [`WeightedSumCache::combine_into`] の高速パス（triplet 化・ソート不要）が働く。
-    /// パターンの一致判定と不一致時の作り直しは `WeightedSumCache` 自身が全ビルドで
-    /// 行う（[`CscCache::assemble`] と同じフォールバック方針）。
-    // 現状 squid-n-solver 内の呼び出し元は `combine_ref`（参照返し）のみだが、
-    // `CscCache::assemble`（所有値返し・他クレート/箇所からの利用あり）との
-    // API 対称性を保つため、所有値を返す本メソッドも撤去せず維持する。
     #[allow(dead_code)]
     pub fn combine(
         &mut self,
@@ -205,8 +183,7 @@ mod tests {
         dense_eq(&got4, &assemble_csc(n, t1), n);
     }
 
-    /// 回帰テスト（増分解析の NotPositiveDefinite 不具合）: triplet の個数が同じまま
-    /// 座標だけが変わっても、ラッパー経由で正しい行列が組み上がること。
+    /// triplet の個数が同じまま座標だけが変わっても、正しい行列が組み上がること。
     #[test]
     fn test_csc_cache_same_len_different_coords() {
         let n = 3;

@@ -4,9 +4,7 @@
 //! 特異行列エラーの前に検出し、「何をすれば直るか」を含む日本語メッセージで返す。
 //!
 //! 判定の本体は [`model_issues`] にあり、解析前チェック [`precheck_model`] と
-//! UI のモデル整合性チェック（診断タブ）はどちらもこれを呼ぶ。両者が別々に検査を
-//! 持つと、片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態が生まれる。
-//! **解析を妨げる不備の検査を増やすときは、必ず [`model_issues`] へ足すこと。**
+//! UI のモデル整合性チェック（診断タブ）はどちらもこれを呼ぶ。
 
 use squid_n_core::ids::{ElemId, MaterialId, NodeId};
 use squid_n_core::model::Model;
@@ -96,9 +94,7 @@ impl ModelIssue {
 }
 
 /// 「{what}: {label}{id 列}。{remedy}」形式の説明文を組み立てる。
-///
-/// ID は先頭 5 件までを挙げ、残りは件数へまとめる。大規模モデルで同じ不備が
-/// 数百件あってもメッセージが際限なく伸びないようにするため。
+/// ID は先頭 5 件までを挙げ、残りは件数へまとめる。
 fn id_list_message<T: std::fmt::Display>(
     what: &str,
     label: &str,
@@ -121,17 +117,12 @@ fn id_list_message<T: std::fmt::Display>(
 /// [`precheck_model`] はこの先頭 1 件をエラーにする。
 ///
 /// 先頭のモデル検証（[`Model::validate`]）が失敗したときは、その 1 件だけを返して
-/// 打ち切る。検証が見るのは「配列添字 == id」の不変条件と参照整合であり、これが
-/// 崩れたモデルでは後続の検査が別実体を指した結果を報告してしまうため、まず
-/// データの破損を直してもらう。
+/// 打ち切る。
 pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     use squid_n_core::model::ElementKind;
 
     let mut issues = Vec::new();
 
-    // `CoreError` は日本語 UI へ出す前提の Display（"index mismatch: ..." 等）を持つ。
-    // `{:?}` にすると "IndexMismatch(\"...\")" と Rust の列挙子表記が露出するため
-    // Display で出し、他の不備と同じく是正方法を添える。
     if let Err(e) = model.validate() {
         issues.push(ModelIssue::model(format!(
             "モデル検証エラー: {e}。モデルの ID 参照が壊れています。\
@@ -157,14 +148,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // 断面・材料が必要な要素（線材・面材）の未割当。対象は
-    // `ElementKind::requires_section_and_material`（仕口パネル・節点バネ・免震・
-    // ダンパーは断面を持たないのが正常なため除かれる）。
-    // 未割当のまま要素構築の既定値（ゼロ剛性）へ落ちて特異行列エラーになるか、
-    // かつては「もっともらしい既定断面」で無音に解析が通っていた（危険側）。
-    //
-    // 断面と材料は別々の不備として挙げる。まとめると診断タブの行が
-    // 「断面または材料が未割当です」となり、どちらを直せばよいか伝わらないため。
     let needs_input =
         |e: &&squid_n_core::model::ElementData| e.kind.requires_section_and_material();
     let no_section: Vec<ElemId> = model
@@ -183,7 +166,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             "部材タブで断面を割り当ててください。",
         ));
     }
-    // 材料は断面が持つ。断面はあるがその断面に材料がない部材を拾う。
     let no_material: Vec<ElemId> = model
         .elements
         .iter()
@@ -201,10 +183,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // 配筋を持つ断面は主筋・せん断補強筋の、SRC 断面は内蔵鉄骨の材料が要る。
-    // 未割当のまま進むと許容応力度・終局耐力の σy や F 値が決まらないため、
-    // その断面を使う部材を名指しして止める（診断タブから 3D 選択できるよう、
-    // ほかの不備と同じく部材単位で挙げる）。
     let uses_shape_with =
         |e: &squid_n_core::model::ElementData,
          want: fn(&SectionShape) -> bool,
@@ -264,9 +242,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // シェル要素の断面に板厚がない（線材用断面を割り当てた等）。
-    // 要素構築は板厚 0（ゼロ剛性）となり特異行列で止まるが、原因が伝わらないため
-    // ここで名指しする。
     let no_thickness: Vec<ElemId> = model
         .elements
         .iter()
@@ -288,13 +263,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // 線材の有効せん断断面積 As が 0（未入力）
-    //
-    // As=0 はティモシェンコ梁の φ=0（＝せん断変形なし）となるうえ、せん断降伏の
-    // 判定閾値も Qy=+∞（＝せん断では決して降伏しない）となり、入力不足が黙って
-    // 「せん断について無限に強い部材」として通ってしまう（危険側）。
-    // せん断変形を無視するモデル化は部材（梁）のモデル化として指定すべきことであり、
-    // 断面の As を 0 とする形で表現してはならないため、入力エラーとする。
     let zero_shear: Vec<ElemId> = model
         .elements
         .iter()
@@ -322,13 +290,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // 耐震壁と周辺架構の構造種別の食い違い
-    //
-    // 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、RC 壁に
-    // S 骨組（あるいはその逆）を組み合わせた混合構造は耐力式・剛性評価の前提が
-    // 成り立たない。一次設計の剛性・断面検定にも効くため、非線形解析だけでなく
-    // 全解析の入口で捕捉する。メッセージが壁と相手部材を名指しするため、
-    // まとめずに壁 1 枚ごとの不備として挙げる。
     for e in &model.elements {
         if let Some(msg) = squid_n_element::wall::misc_wall::wall_frame_category_issue(e, model) {
             issues.push(ModelIssue {
@@ -340,12 +301,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 節点を共有せずに交差する水平大梁。
-    //
-    // 床領域は「大梁が囲む閉領域」として面走査で求める（`region_gen`）。この走査は
-    // 辺どうしが節点でのみ接する平面グラフを前提とするため、交差する梁があると床領域が
-    // 実際とずれる。解析そのものは通る（交差点で力は伝わらないというモデル化として
-    // 成立する）ため警告に留め、意図した入力かを利用者へ確かめる。
     {
         let crossings = squid_n_core::region_gen::crossing_beams(model);
         if !crossings.is_empty() {
@@ -370,14 +325,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 床領域・壁領域に属さない二次部材、および大梁の床領域に載らない浮き床板。
-    //
-    // 作り直し前の現状の床領域で判定する（診断はモデルを書き換えない）。
-    //
-    // **どの領域にも属さない二次部材の存在は許さない（エラー）。** 所属が決まらない
-    // 二次部材は、どの床面・どの構面に載っているかが確定していない。荷重の分配も
-    // 断面検定も「所属する領域」を土台にしているため、そのままでは荷重の行き先も
-    // 検定の可否も決められない。モデル化を直してもらう必要がある。
     {
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
         if n != 0 {
@@ -416,9 +363,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
-        // 二次部材の反力の逐次伝達（`squid_n_load::cascade`）が荷重を流せない形。
-        // 判定はここ 1 か所（逐次伝達本体）に置き、診断と解析前チェックで共有する
-        // （申し送り §3.4 F4・F5）。
         {
             use squid_n_core::model::LoadPurpose;
             let w_of =
@@ -461,16 +405,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 自重が算定できない壁版（断面未割当）。
-    //
-    // **解析要素にならないこと自体は警告しない。** 壁エレメントになるのは壁領域
-    // 全体を覆う 4 節点の壁版だけで（`Model::wall_plate_covers_region`）、それ以外
-    // （間柱で分割された壁版・腰壁・垂れ壁・取り付く壁版）は荷重だけを持つ壁版と
-    // して正常に扱われる。自重は辺へ分配し、剛性はフレーム内雑壁として周辺の柱梁の
-    // 断面性能へ算入する。腰壁・垂れ壁を入力した利用者はそれが壁エレメントでない
-    // ことを承知しているので、知らせる意味がない。
-    //
-    // 断面未割当だけは別で、自重すら求まらないため警告する。
     {
         let skipped_no_section = model
             .wall_plates
@@ -487,9 +421,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
-        // スリットが効かない壁版に指定が入っていれば警告する。スリットは辺の役割
-        // （柱際か梁際か、下辺か上辺か）を決められる 4 節点の囲まれた壁版でのみ
-        // 意味を持つ。黙って無視すると、利用者は縁を切ったつもりのまま解析へ進む。
         let ignored_slit = model
             .wall_plates
             .iter()
@@ -506,12 +437,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             );
         }
 
-        // 上下の梁際がともに切れた壁版はエラーで止める。柱際の鉛直辺は壁の重量を
-        // 受けないため、上下とも縁が切れていると自重の伝達先が無い。実際に作らない
-        // 納まりなので、入力の誤りとして扱う（`WallSlit::both_beam_faces`）。
-        //
-        // スリットが効かない壁版（4 節点でない）は対象外。指定は無視されるので
-        // 自重の伝達先は失われず、上の警告で知らせる。
         let both_beam_slit: Vec<_> = model
             .wall_plates
             .iter()
@@ -531,9 +456,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             )));
         }
 
-        // 自重の行き先が決まらない壁版はエラーで止める。行き先の無い節点荷重は
-        // `DofMap` が無視するため、黙って落とすと荷重タブには見えるのに解析から
-        // 消える（申し送り §3.4 F10・§5.28 の自立壁と同じ扱い）。
         let stranded = squid_n_load::wall_plate_load::wall_plates_without_load_path(model);
         if !stranded.is_empty() {
             let n = stranded.len();
@@ -543,14 +465,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                  壁版の境界、または取付き先の指定を確認してください。"
             )));
         }
-        // 自立壁（床領域アンカー）は、荷重を流せる床領域（床板を持ち、その XY 投影
-        // 面積が正である床領域）の上に載っていなければならない。載らない部分の自重は
-        // 行き先が無く、黙って落とすと梁がその重量を負担しないまま設計される（危険側）。
-        //
-        // 判定はここ 1 か所に置く。床領域は準備計算のたびに主架構から作り直されるため
-        // （`sync_auto_load_cases_action` → `rebuild_floor_regions` → `model_issues`）、
-        // 作成時に条件を満たしていても後から崩れうる。作成時にも同じ幾何判定を置くと
-        // 判定が 2 か所に分かれる。
         let uncovered: Vec<u32> = model
             .wall_plates
             .iter()
@@ -574,8 +488,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                  （線アンカー）へ変えてください。"
             )));
         }
-        // 高さを「階高いっぱい」とした壁版は、直上に階レベルが無いと高さが決まらない。
-        // 面積が 0 になり自重が黙って消えるため、ここで止める。
         let unresolved: Vec<u32> = model
             .wall_plates
             .iter()
@@ -596,11 +508,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 断面が未割当のスラブ・断面の主材料が未割当のスラブ
-    //
-    // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
-    // 断面や主材料が無いと自重が算定できず、床の固定荷重が過小なまま長期応力が
-    // 出る（危険側）。既定厚・既定材料で補わず、ここで止める。
     let slab_ids = |f: fn(&Model, &squid_n_core::model::Slab) -> bool| -> Vec<u32> {
         model
             .slabs
@@ -631,12 +538,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         )));
     }
 
-    // 載荷区間が材長を超える部材荷重
-    //
-    // 載荷位置は i 端からの mm の絶対位置である。材長を超える区間を与えると、
-    // 等価節点力の積分（`gauss_dist`）が Hermite 形状関数を材外へ外挿するため、
-    // 節点力と固定端内力が黙って誤る。荷重を入れたあとに節点を動かしても作れる
-    // 状態なので、入力時ではなく解析前に検査する。
     {
         use squid_n_core::model::MemberLoadKind;
         let mut over: Vec<u32> = Vec::new();
@@ -671,13 +572,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 階名の重複
-    //
-    // 階名は結果の一覧・CSV の列見出し・断面の識別子（符号＋階）に使われる。
-    // 同じ名前の階が 2 つあると、どの行がどの階かを判別できず結果を読み違え、
-    // 断面の符号＋階も別々の階を同じ断面として指す。解析自体は `StoryId` で
-    // 回るが、結果を正しく読めないモデルでの解析は止める。
-    // 見た目で区別できない差（前後の空白）は同名として扱う。
     {
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for s in &model.stories {
@@ -700,12 +594,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 剛床（ダイアフラム）のない階
-    //
-    // 剛床がない階の水平力は、階に属する節点へ質量比で直接分配される
-    // （`distribute_pi_over_diaphragms`）。解析は成立するため止めないが、
-    // 剛床を意図していたのに床が拾えていない・準備計算の再実行で消えた場合に
-    // 気づけるよう警告として挙げる。
     let no_diaphragm: Vec<String> = model
         .stories
         .iter()
@@ -725,8 +613,6 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         );
     }
 
-    // 基部以外で水平拘束された剛床マスターへ地震力が載ると、拘束自由度へ入って
-    // 無言で消える（危険側）。地震用重量が正の階だけをエラーにする。
     {
         use squid_n_core::dof::Dof;
 
@@ -785,12 +671,6 @@ fn diaphragm_seismic_weight(
 
 /// 節点参照の不整合（ダングリング参照・孤立節点）を集める。
 fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
-    // 孤立節点（要素・拘束・剛床から参照されず、完全固定でもない）
-    // → 剛性ゼロの自由 DOF となり特異行列の典型原因
-    //
-    // 参照のマークは範囲チェック付きで行い、存在しない節点への参照
-    // （ダングリング NodeId。編集・インポート層の不整合で混入し得る）は
-    // `dangling` に収集して明示エラーにする（直接添字では panic するため）。
     let mut issues = Vec::new();
     let mut referenced = vec![false; model.nodes.len()];
     let mut dangling: Vec<NodeId> = Vec::new();
@@ -822,10 +702,6 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 }
             }
         }
-        // 床（床板の境界）・二次部材（小梁・間柱）が参照する節点は、
-        // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
-        // これらは `DofMap::build` が解析自由度から自動的に除外するため、
-        // 零剛性の自由度にはならない。
         for region in &model.floor_regions {
             for n in &region.boundary {
                 mark(*n);
@@ -845,7 +721,6 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                         }
                     }
                     squid_n_core::model::RegionAnchor::Point(n) => mark(*n),
-                    // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
                     squid_n_core::model::RegionAnchor::FloorRegion { .. } => {}
                 },
             }
@@ -855,7 +730,6 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 mark(*n);
             }
         }
-        // 壁版の境界・取付き先も、要素が無くても意図した幾何節点なので孤立扱いしない。
         for plate in &model.wall_plates {
             match &plate.shape {
                 squid_n_core::model::WallPlateShape::Enclosed { boundary } => {
@@ -891,14 +765,9 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
              (節点削除後の不整合の可能性があります)。",
         ));
     }
-    // 部材が 1 つもないモデルでは全節点が孤立になる。「部材がありません」で
-    // 同じことを言っているため、節点を 1 つずつ挙げても情報が増えない。
     if model.elements.is_empty() {
         return issues;
     }
-    // `referenced` は添字で引くため、`Model::validate` の不変条件（id == 添字）が
-    // 崩れているモデルでは引けない。診断は検証エラーのあるモデルでも動くため、
-    // 引けない節点は孤立と決めつけず対象外にする。
     let isolated: Vec<NodeId> = model
         .nodes
         .iter()
@@ -923,7 +792,6 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
 /// 解析前のモデル静的検証。よくあるモデリングミスを特異行列エラーの前に検出し、
 /// 「何をすれば直るか」を含むメッセージで返す。
 pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
-    // 止めるのは解析が成立しない不備だけとする（警告は診断タブへ出す）。
     match model_issues(model)
         .into_iter()
         .find(|i| i.severity == IssueSeverity::Error)
