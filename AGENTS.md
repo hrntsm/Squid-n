@@ -80,7 +80,7 @@ Rustで作成する日本の建築構造計算一貫プログラム。
 
 - **開発経緯・過去との差分、V&V（検証記録）、申し送り事項などは、`docs/` には書かず `dev_docs/` に反映する**こと。
   配置するカテゴリ（specs / v_and_v / handoff）は [dev_docs/README.md](dev_docs/README.md) を参照。
-- 申し送り・V&V を追加・更新したら、[CONTRIBUTING.md の dev_docs 節](CONTRIBUTING.md#dev_docs申し送りv) に従い、次も更新する:
+- 申し送り・V&V を追加・更新したら、[CONTRIBUTING.md の dev_docs 節](CONTRIBUTING.md#dev_docs申し送りvv) に従い、次も更新する:
   - `dev_docs/handoff/README.md`（目録）
   - `dev_docs/handoff/残課題一覧.md`（残課題がある場合）
   - `dev_docs/v_and_v/README.md`（レポート目録・索引 #N）

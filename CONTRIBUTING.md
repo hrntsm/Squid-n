@@ -166,6 +166,9 @@ mdbook build
 
 - ソース: `docs/`（利用者向けコンテンツのみを置く）
 - 目次: `docs/SUMMARY.md`（ページを追加・削除したらここも更新する）
+- 章・節の番号は mdBook が `docs/SUMMARY.md` の並びから自動採番します。`SUMMARY.md` のタイトルと
+  各ページの見出しに手書きの番号（例: `1.2`）を付けないでください。本文から他の節を参照する場合は、
+  番号ではなく見出しタイトルへのリンク（`[...](...#アンカー)`）にしてください
 - 設定: `book.toml`（数式は `mathjax-support` により `\\(...\\)`／`\\[...\\]` で記述）
 - 各章は**章ディレクトリ＋小項目ページ**の構成です（`docs/calc_basis/` のほか、
   `docs/model_io/`・`docs/mcp_server/`・`docs/preparation/`・`docs/result_view/`）。
