@@ -70,6 +70,8 @@
 - SRC/CFT 等価断面: [SRC / CFT の等価断面性能](../calc_basis/03_断面性能/06_SRC_CFT_の等価断面性能.md)
 - 幅厚比・部材ランク: [部材ランク（FA〜FD）](../calc_basis/07_二次設計/03_部材ランク.md)
 
+**実装**：準備計算タブの実行は `squid_n_app::app::App::run_preparation`（`crates/squid-n-app/src/app/preparation.rs`）が担い、床領域・壁領域の作り直しと剛域・荷重の同期は `squid_n_app::app::App::sync_auto_load_cases_action`（`crates/squid-n-app/src/app/actions/loads.rs`）が行います。GUI の解析実行時は `squid_n_app::app::App::ensure_preparation`（`crates/squid-n-app/src/app/preparation.rs`）が階の生成を除く前処理を通し、MCP の解析では `squid_n_job::prepare::prepare_model_for_analysis`（`crates/squid-n-job/src/prepare.rs`）が一括で通します。
+
 ## モデル整合性チェック
 
 準備計算はモデルの不備を検査し、結果を下ドックの「診断」タブへ重要度付きで一覧します。
@@ -143,6 +145,8 @@
 仕口パネル・節点バネ・免震支承材・制振ダンパーは、断面ではなく専用の特性値から
 剛性を作るため、断面と材料の未割当は検査しません
 （[仕口パネル](./06_仕口パネル.md)）。
+
+**実装**：検査の本体は `squid_n_solver::statics::analysis::precheck::model_issues`（`crates/squid-n-solver/src/statics/analysis/precheck.rs`）にあり、解析前チェックと GUI の診断（`squid_n_app::app::App::run_diagnostics`、`crates/squid-n-app/src/app/actions/mod.rs`）が同じ判定を共有します。GUI は壁展開モデル（`squid_n_load::wall_expand::expand_wall_elements`）へ `model_issues` を適用し、対象のクリック選択は `ModelIssue` が持つ `IssueTargets` で 3D ビューと結び付けます。
 
 ## この章の内容
 

@@ -13,7 +13,9 @@
 
 判定結果は設計タブの「対象荷重」の右に「許容応力度: 長期／短期」として表示されます。
 
-実装は `squid_n_design_jp` にあり、材料強度は `material_strength/`（`concrete`・`rebar`・`steel`・`high_strength_hoop`）が担います。
+**実装**：荷重継続性区分は `squid_n_load::combo::is_short_term_combo`（実体は `squid_n_core::load_combo::is_short_term_combo`、`crates/squid-n-core/src/load_combo.rs`）が荷重組合せ名から判定し、`squid_n_app::app::actions::linear_static`（`crates/squid-n-app/src/app/actions/linear_static.rs`）が結果表示の対象として選んだ荷重組合せの区分を `design_term` に設定して断面検定を再実行します。
+
+本章の断面検定は `squid_n_design_jp` にあり、材料強度は `squid_n_design_jp::material_strength`（`concrete`・`rebar`・`steel`・`high_strength_hoop`）が担います。
 突合の全体は[断面検定_参照実装照合](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/断面検定_参照実装照合.md)を参照してください。
 
 ## この章の内容

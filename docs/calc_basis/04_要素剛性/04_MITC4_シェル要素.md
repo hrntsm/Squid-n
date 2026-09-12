@@ -15,5 +15,5 @@
   直交座標へ射影
 - 剛性は 2×2 Gauss 積分 \\( B^T \cdot D \cdot B \\)、ドリリング安定化 \\( \text{scale} = \gamma \cdot G \cdot t \cdot A \\)（既定 \\( \gamma = 10^{-3} \\)）
 
-**実装**：`shell::{local_stiffness, shear_b_mitc4, add_drilling}`（`shell/mod.rs`）が算定します。
+**実装**：`squid_n_element::shell::ShellElement::{local_stiffness, add_drilling}`（`crates/squid-n-element/src/shell/stiffness.rs`）と `squid_n_element::shell::ShellElement::shear_b_mitc4`（`crates/squid-n-element/src/shell/bmatrix.rs`）が算定します。
 剛床時は面内成分（Ux/Uy/Rz）を無効化します。

@@ -9,4 +9,4 @@ CFT 柱の終局耐力は、日本建築学会『コンクリート充填鋼管�
 - N-M 相互作用（角形・円形の (Nu, Mu) 曲面）を用いる。中柱と長柱は座屈低減 R を乗じる。角形の鋼管曲げ耐力 `sMu` の第 2 項は、中立軸におけるウェブ 2 枚の全塑性モーメント `2t·xn·(cD−xn)·Fy` とする。
 - 鋼管の座屈耐力 `sNcr` の分岐条件は鋼管細長比 `sλ1` で評価する。軸引張終局耐力の引張低減係数は `β2 = 1.0`（鋼管全断面降伏）とする。
 
-**実装**：`ultimate::{cft, cft_nm}`、統括は `ultimate::mod::collect_cft_ultimate_checks`。
+**実装**：`squid_n_design_jp::ultimate::{cft, cft_nm}`、統括は `squid_n_design_jp::ultimate::collect_cft_ultimate_checks`。
