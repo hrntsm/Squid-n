@@ -1,4 +1,4 @@
-# 6.4 SRC / CFT 断面検定
+# SRC / CFT 断面検定
 
 SRC・CFT の断面検定を、SRC規準1987（累加強度式・併用せん断式）および構造規定（技術基準解説書）に基づいて行います。
 
@@ -33,7 +33,7 @@ SRC 柱 せん断の長期は、併用式を全せん断力と比較します。
 
 ここで \\( a' = {}\_r \alpha \\)（\\( b'/b \ge {}\_r \alpha/3 \\)）または \\( 3b'/b \\)、\\( 1 \le {}\_r \alpha \le 2 \\)、β は鉄骨ウェブの形式と寸法による係数とします。
 
-せん断スパン比による割増係数 \\( {}\_r \alpha = 4/(M/(Q \cdot d)+1) \\) の算定（\\( Q \approx 0 \\) の退化時は下限 1.0 を採用する規約を含む）は RC 断面検定（[6.2.1](02_RC_断面検定.md)）と共通です。
+せん断スパン比による割増係数 \\( {}\_r \alpha = 4/(M/(Q \cdot d)+1) \\) の算定（\\( Q \approx 0 \\) の退化時は下限 1.0 を採用する規約を含む）は RC 断面検定（[梁（RC規準13条）](02_RC_断面検定.md#梁rc規準13条)）と共通です。
 
 短期は鉄骨部 `sQA`（強軸 \\( d_w \cdot t_w \cdot {}\_s f_s \\)／弱軸 \\( (4/3) \cdot b_f \cdot t_f \cdot {}\_s f_s \\)）と RC 部を分担 sQD/rQD と比較します。
 
@@ -54,7 +54,7 @@ CFT 柱の地震時設計用せん断:
 
 \\[ Q_{D2} = Q_L + n \cdot Q_E \\]
 
-**実装**：`srrc::{beam, column, panel_zone}`、`cft::mod` が検定します。
+**実装**：`squid_n_design_jp::srrc::{beam, column, panel_zone}`、`squid_n_design_jp::cft` が検定します。
 SRC パネルゾーンは \\( {}\_c V \cdot j\delta \cdot f_s \cdot (1+\beta) \ge (h'/h)({}\_B M_1 + {}\_B M_2) \\)。
 
 **SRC規準1987からの主な簡略化**

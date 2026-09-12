@@ -13,6 +13,8 @@ ST-Bridge の主要要素ごとの変換状況です。
 書き出しは ST-Bridge 2.0.2 標準スキーマ準拠の 1 形式だけで、断面の表現を選ぶモードはありません。
 標準要素で表せない断面だけが、物性を直接持つ拡張要素 `StbSecRaw` へ落ちます。
 
+**実装**：書き出しは `squid_n_io::stbridge::export_stbridge`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。取り込みは節ごとに入口を示します。
+
 ## 節点・階・材料
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
@@ -24,17 +26,19 @@ ST-Bridge の主要要素ごとの変換状況です。
 | `StbMaterial`（E・ν・密度・fc・fy） | ✅ | ❌ | ST-Bridge 2.0 の `StbModel` は材料表を持たないため、書き出しでは出力しない。材料表を持つファイルを読んだときに物性を捨てないよう、取り込みだけ受け付ける |
 | 部材の `id_material`（材料参照） | ⚠️ | ❌ | 材料は断面が持つため、取り込みでは参照先の断面へ移す（同じ断面を指す部材が別々の材料を指す場合は最初の 1 件を採り、件数を警告へ出す）。書き出しは断面のグレード名で表す |
 
+**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_nodes_and_stories, build_materials}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
 ## 部材
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
 |---|:--:|:--:|---|
 | `StbColumn`（柱） | ✅ | ✅ | 鉛直材として往復。`rotate`・`condition_bottom`/`_top` を読む。端部の偏心 `offset_*` は対象外 |
 | `StbGirder`（大梁） | ✅ | ✅ | 水平材として往復。`rotate`・`condition_start`/`_end` を読む。端部の偏心 `offset_*` は対象外 |
-| `StbBeam`（小梁） | ✅ | ✅ | 二次部材として往復する。全体解析の対象外で、床荷重と自重は大梁への集中荷重（CMQ）として伝える。床スラブの小梁一覧には載せない。断面検定は [6.5.1 小梁の検定](../calc_basis/06_一次設計/05_小梁・床の断面検定.md#651-小梁の検定)（二次部材経路。床領域分配の線荷重を単純梁として重ね合わせる） |
+| `StbBeam`（小梁） | ✅ | ✅ | 二次部材として往復する。全体解析の対象外で、床荷重と自重は大梁への集中荷重（CMQ）として伝える。床スラブの小梁一覧には載せない。断面検定は [小梁の検定](../calc_basis/06_一次設計/05_小梁・床の断面検定.md#小梁の検定)（二次部材経路。床領域分配の線荷重を単純梁として重ね合わせる） |
 | `StbPost`（間柱） | ✅ | ✅ | 二次部材の間柱として往復。節点は `id_node_bottom`/`_top`（`id_node_start`/`_end` も可） |
 | `StbBrace`（ブレース） | ✅ | ✅ | `feature_brace` を読み、`TENSIONANDCOMPRESSION` 以外は引張専用とする。両端ピンで取り込む |
 | `StbSlab`（スラブ） | ✅ | ⚠️ | 境界節点ループ（`StbNodeIdOrder` のテキスト・CDATA・子要素 `StbNodeId` のいずれも可）＋断面参照。取り込み後、大梁の閉路（床領域）へ床板（Slab）を付け直す（重心が複数床領域に入るときは面積が最小）。どの床領域にも入らず 1 辺が大梁に全長載り自由端が 1〜2 点なら取り付く床板。それ以外の未所属は囲まれのまま残し、版ありなら警告。`kind_slab` は読まない。書き出しは囲まれかつ版がある床板だけ（`kind_slab` は `NORMAL` 固定）。仕上げ荷重・用途（積載）・分配法・取り付き・版なしは対象外 |
-| `StbWall`（壁） | ✅ | ✅ | 境界節点ループ＋断面参照（厚さ）。`id_material` は断面へ移す。開口（`StbOpen`）は対象外。取り込み先は壁版（囲まれた `WallPlate`）で、解析要素は都度生成する。解析要素になるかは [4.5 壁エレメントモデル](../calc_basis/04_要素剛性/05_壁エレメントモデル.md) の条件で決まり、ならない壁版は荷重だけを持つ壁版として扱う。どの壁領域にも載らない壁版の一部は取り付く壁版へ自動変換する（条件は [1.9 壁の断面と自重](../calc_basis/01_荷重/09_壁の断面と自重.md)）。書き出しは壁版から出すため、4 節点でない囲まれた壁版も往復するが、取り付く壁版は往復しない。解析要素にならない壁版も、自重は自動で分配し地震用重量・「DL」・数量拾いへ算入する（[1.5 地震用重量・層データの生成](../calc_basis/01_荷重/05_地震用重量_層データの生成.md)）。仕上げ・増打ちの面荷重は対応する要素がないため往復せず、取り込んだ壁版では常に空になる |
+| `StbWall`（壁） | ✅ | ✅ | 境界節点ループ＋断面参照（厚さ）。`id_material` は断面へ移す。開口（`StbOpen`）は対象外。取り込み先は壁版（囲まれた `WallPlate`）で、解析要素は都度生成する。解析要素になるかは [壁エレメントモデル](../calc_basis/04_要素剛性/05_壁エレメントモデル.md) の条件で決まり、ならない壁版は荷重だけを持つ壁版として扱う。どの壁領域にも載らない壁版の一部は取り付く壁版へ自動変換する（条件は [壁の断面と自重](../calc_basis/01_荷重/09_壁の断面と自重.md)）。書き出しは壁版から出すため、4 節点でない囲まれた壁版も往復するが、取り付く壁版は往復しない。解析要素にならない壁版も、自重は自動で分配し地震用重量・「DL」・数量拾いへ算入する（[地震用重量・層データの生成](../calc_basis/01_荷重/05_地震用重量_層データの生成.md)）。仕上げ・増打ちの面荷重は対応する要素がないため往復せず、取り込んだ壁版では常に空になる |
 | 部材の符号（`name`） | ⚠️ | ⚠️ | 取り込みで符号を保つのは二次部材（小梁・間柱）のみ。書き出しは `C1`・`G1`・`BR1` のような自動命名になるため、符号は往復しない |
 | `StbFooting` / `StbPile` / `StbFoundationColumn` / `StbStripFooting`（基礎系） | ❌ | ❌ | 取り込み時に警告 |
 | `StbParapet` / `StbOpen`（パラペット・開口） | ❌ | ❌ | 取り込み時に警告 |
@@ -43,6 +47,8 @@ ST-Bridge の主要要素ごとの変換状況です。
 床領域の付け直しで、どの床領域にも載らない版・所属の付かない小梁・面積照合できなかった旧床領域があるときも、件数を警告へ出します。
 壁領域の付け直しで、どの壁領域にも載らず、かつ取り付く壁版へも変換できない壁版・所属の付かない間柱があるときも、件数を警告へ出します（自動変換に成功した場合は警告しません）。
 断面未割当の壁版は、取り込み時に警告します（板厚と材料が決まらず自重を算定できません）。
+
+**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_members, build_secondaries}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
 
 ## 断面 — 鋼（形鋼ライブラリ `StbSecSteel`）
 
@@ -74,6 +80,8 @@ ST-Bridge の主要要素ごとの変換状況です。
 | テーパ・継手（`*_Taper` / `*_Joint` ほか始端を持つ図形） | ⚠️ | ❌ | 始端の形鋼を採り、材長方向に一様な断面として近似する。中間・終端の形鋼は取り込まない |
 | 上記 4 つの属性をいずれも持たない図形（柱の `*_NotSame` など） | ❌ | ❌ | 形鋼名を取れず、断面性能ゼロの断面として警告する |
 
+**実装**：取り込みは `squid_n_io::stbridge::import::steel::steel_shape_from`（`crates/squid-n-io/src/stbridge/import/steel.rs`）が形鋼を復元し、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+
 ## 断面 — RC・SRC・CFT
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
@@ -98,6 +106,8 @@ ST-Bridge の主要要素ごとの変換状況です。
 ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y 方向で径を変えた配筋は往復しません。
 書き出しでは 1 段の配筋へ丸めるため、多段配筋も段数を保てません。
 
+**実装**：取り込みは `squid_n_io::stbridge::import::rebar::parse_rebar`（`crates/squid-n-io/src/stbridge/import/rebar.rs`）が配筋を読み、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+
 ## 断面 — スラブ・壁
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
@@ -115,6 +125,8 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 壁の材料は取り込みでは `StbWall` の `id_material` から解決するため、書き出した
 `strength_concrete` を読み戻す経路はなく、材料は往復しません。
 
+**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_slabs, push_slab_section, build_walls}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
 ## 荷重・その他
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
@@ -127,6 +139,8 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 | 質量 | ❌ | ❌ | ST-Bridge の幾何スコープ外 |
 | `StbCommon` | ❌ | ✅ | 書き出しのみ。プロジェクト名・アプリ名は `Squid-n` 固定 |
 | `StbJoints` | ❌ | ✅ | 接合部は扱わないため、書き出しでは空要素だけを出す |
+
+**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_load_cases, build_axes}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
 
 ## 取り込み時の既定値
 
@@ -141,3 +155,5 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 - 形鋼参照を解決できない鋼・CFT・SRC 断面は、断面性能を 0 とした断面として残す
 - 支点を 1 つも持たないモデルは、最下レベルで柱脚が付く節点をピン支点にする
   （[支点の自動設定](./02_ST-Bridge_形式.md#支点の自動設定取り込み時)）
+
+**実装**：既定値の適用は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、支点の自動設定は `squid_n_io::stbridge::import::assemble::auto_assign_supports` が行います。

@@ -139,7 +139,7 @@ fn test_resolve_force_regime_auto() {
     ));
 }
 
-/// 線形弾性解析の要素生成は `ForceRegime` に依らず弾性 `BeamElement`（計算根拠 4.9.4）。
+/// 線形弾性解析の要素生成は `ForceRegime` に依らず弾性 `BeamElement`。
 ///
 /// 剛床に載る梁は `resolve_force_regime` では `ConcentratedSpring` に判定されるが、
 /// これは非線形解析だけの振り分けである。線形側がこれに従うと

@@ -1,4 +1,4 @@
-# 10. 数量積算
+# 数量積算
 
 本章では、建物モデルから部位別（柱・大梁・小梁・基礎梁・床・壁・ブレース）に
 コンクリート体積・型枠面積・鉄筋重量・鉄骨重量・鉄筋継手個所数を概算集計する
@@ -9,10 +9,10 @@
 継手長さ、開口補強筋、接合部プレート等の詳細）は対象外とします。
 
 実装は `squid_n_design_jp::quantity` に置いており、
-GUI は設計タブ「数量積算」（`squid-n-app::quantity_view`）、
-CSV 出力は `squid-n-app::summary::build_quantity_csv`、
-MCP ツールは `quantity_takeoff`（`squid-n-mcp`）から利用できます。
+GUI は設計タブ「数量積算」（`squid_n_app::quantity_view`）、
+CSV 出力は `squid_n_app::summary::build_quantity_csv`、
+MCP ツールは `quantity_takeoff`（`squid_n_mcp`）から利用できます。
 
 ## この章の内容
 
-- [10.1 数量積算の算定式](./01_数量積算の算定式.md)
+- [数量積算の算定式](./01_数量積算の算定式.md)

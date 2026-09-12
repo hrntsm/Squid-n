@@ -1,4 +1,4 @@
-# 4.4 MITC4 シェル要素
+# MITC4 シェル要素
 
 せん断ロッキングを回避する混合補間法 MITC4（Mixed Interpolation of Tensorial Components）を用い、膜・曲げ・せん断・ドリリング安定化を含む板要素の剛性を算定します。
 
@@ -15,5 +15,5 @@
   直交座標へ射影
 - 剛性は 2×2 Gauss 積分 \\( B^T \cdot D \cdot B \\)、ドリリング安定化 \\( \text{scale} = \gamma \cdot G \cdot t \cdot A \\)（既定 \\( \gamma = 10^{-3} \\)）
 
-**実装**：`shell::{local_stiffness, shear_b_mitc4, add_drilling}`（`shell/mod.rs`）が算定します。
+**実装**：`squid_n_element::shell::ShellElement::{local_stiffness, add_drilling}`（`crates/squid-n-element/src/shell/stiffness.rs`）と `squid_n_element::shell::ShellElement::shear_b_mitc4`（`crates/squid-n-element/src/shell/bmatrix.rs`）が算定します。
 剛床時は面内成分（Ux/Uy/Rz）を無効化します。
