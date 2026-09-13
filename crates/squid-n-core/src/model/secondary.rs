@@ -292,17 +292,34 @@ fn secondary_key(sm: &SecondaryMember) -> (SecondaryMemberKind, NodeId, NodeId) 
     (sm.kind, lo, hi)
 }
 
-/// 2 本の二次部材の材軸が連続しているか（同じ向きか逆向きでほぼ平行）。
+/// 2 本の二次部材の材軸が連続しているか。共有節点から遠い方の端点が、相手の
+/// 材軸直線から [`crate::geom::MEMBER_AXIS_TOL_MM`] 以内にあることで判定する。
 fn axes_are_collinear(model: &Model, a: &SecondaryMember, b: &SecondaryMember) -> bool {
-    let direction = |sm: &SecondaryMember| -> Option<[f64; 3]> {
-        let p0 = model.nodes.get(sm.nodes[0].index())?.coord;
-        let p1 = model.nodes.get(sm.nodes[1].index())?.coord;
-        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        (len > 1e-9).then(|| [d[0] / len, d[1] / len, d[2] / len])
+    let coords = |sm: &SecondaryMember| {
+        Some((
+            model.nodes.get(sm.nodes[0].index())?.coord,
+            model.nodes.get(sm.nodes[1].index())?.coord,
+        ))
     };
-    let (Some(da), Some(db)) = (direction(a), direction(b)) else {
+    let (Some((a0, a1)), Some((b0, b1))) = (coords(a), coords(b)) else {
         return false;
     };
-    (da[0] * db[0] + da[1] * db[1] + da[2] * db[2]).abs() > 0.9
+    let same = |p: [f64; 3], q: [f64; 3]| {
+        (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2) <= 1.0
+    };
+    let b_far = if same(b0, a0) || same(b0, a1) { b1 } else { b0 };
+    let d = [a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]];
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if len2 <= 1.0 {
+        return false;
+    }
+    let ap = [b_far[0] - a0[0], b_far[1] - a0[1], b_far[2] - a0[2]];
+    let cross = [
+        ap[1] * d[2] - ap[2] * d[1],
+        ap[2] * d[0] - ap[0] * d[2],
+        ap[0] * d[1] - ap[1] * d[0],
+    ];
+    let dist =
+        (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() / len2.sqrt();
+    dist <= crate::geom::MEMBER_AXIS_TOL_MM
 }

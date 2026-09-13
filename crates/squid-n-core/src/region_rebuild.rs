@@ -310,14 +310,14 @@ fn point_segment_dist3(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
     crate::geom::vec3::dist(p, proj)
 }
 
-/// 取り付く床板（取付き線へ分布）を、下の片持ち小梁の材軸でベイに分割する。
+/// 取り付く床板（取付き線へ分布）を、下の片持ち小梁または実梁の材軸でベイに分割する。
 ///
 /// 境界にするのは、取付き線に直交し（頂点が張り出し方向の直線から
-/// [`MEMBER_AXIS_TOL_MM`] 以内）、取付き線から先端まで届く小梁だけとする。
+/// [`MEMBER_AXIS_TOL_MM`] 以内）、取付き線から先端まで届く部材だけとする。
 /// 取付き線の区間は部分区間 `span` で表し、張り出し量は分割位置で線形に内挿する。
-/// すでにベイに分かれている床板は、境界の小梁が内側に来ないため分割されない。
+/// すでにベイに分かれている床板は、境界の部材が内側に来ないため分割されない。
 fn split_attached_slabs_into_bays(model: &mut Model) {
-    let axes = model.secondary_joist_axes();
+    let axes = attachment_split_axes(model);
     if axes.is_empty() {
         return;
     }
@@ -346,6 +346,28 @@ fn split_attached_slabs_into_bays(model: &mut Model) {
     }
 }
 
+/// 取り付く床板の分割候補となる材軸。実部材化していない小梁と、2 節点の実 `Beam`。
+fn attachment_split_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
+    let mut axes: Vec<([f64; 3], [f64; 3])> = model
+        .secondary_joist_axes()
+        .into_iter()
+        .map(|a| (a.a, a.b))
+        .collect();
+    for e in &model.elements {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let (Some(a), Some(b)) = (
+            model.nodes.get(e.nodes[0].index()),
+            model.nodes.get(e.nodes[1].index()),
+        ) else {
+            continue;
+        };
+        axes.push((a.coord, b.coord));
+    }
+    axes
+}
+
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
@@ -354,7 +376,7 @@ fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
 fn split_attached_shape(
     model: &Model,
     slab: &crate::model::Slab,
-    axes: &[crate::model::SecondaryJoistAxis],
+    axes: &[([f64; 3], [f64; 3])],
 ) -> Option<Vec<SlabShape>> {
     let SlabShape::Attached {
         anchor:
@@ -385,8 +407,8 @@ fn split_attached_shape(
     let tip_b = coords[2];
 
     let mut fractions: Vec<f64> = Vec::new();
-    for axis in axes {
-        let (qa, qb) = (axis.a, axis.b);
+    for (qa, qb) in axes {
+        let (qa, qb) = (*qa, *qb);
         if (qa[2] - z).abs() > LEVEL_TOL_MM || (qb[2] - z).abs() > LEVEL_TOL_MM {
             continue;
         }
@@ -1126,6 +1148,34 @@ mod tests {
         model.unassigned_joists.push(joist(0, 4, 5));
         rebuild_floor_regions(&mut model);
         assert_eq!(model.slabs.len(), 2);
+        for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
+            match &model.slabs[i].shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    extent,
+                } => {
+                    assert!((span[0] - expected[0]).abs() < 1e-9, "{span:?}");
+                    assert!((span[1] - expected[1]).abs() < 1e-9, "{span:?}");
+                    assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+                    assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                }
+                other => panic!("Attached ではない: {other:?}"),
+            }
+        }
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "冪等");
+    }
+
+    /// 床板の内部を通る実梁（取付き線から先端まで届く）でもベイに分割される。
+    #[test]
+    fn test_cantilever_splits_into_bays_at_real_beam() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 1500.0, 0.0));
+        model.elements.push(beam(1, 4, 5));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "実梁の位置で 2 ベイへ分割");
         for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
             match &model.slabs[i].shape {
                 SlabShape::Attached {

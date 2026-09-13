@@ -1759,6 +1759,61 @@ fn infer_does_not_free_collinear_spliced_joists() {
     }
 }
 
+/// 材軸許容内の座標誤差がある継ぎ目は連続とみなし、自由端にしない。
+#[test]
+fn infer_treats_small_offset_splice_as_continuous() {
+    let mut model = two_node_model(&[
+        [-1000.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [6000.0, 3.0, 0.0],
+        [7000.0, 3.0, 0.0],
+        [3000.0, 0.0, 0.0],
+    ]);
+    push_beam(&mut model, 0, 0, 1);
+    push_beam(&mut model, 1, 2, 3);
+    push_joist(&mut model, [1, 4], "A");
+    push_joist(&mut model, [4, 2], "B");
+
+    let inferred = model.infer_secondary_end_supports();
+    assert!(
+        inferred.is_empty(),
+        "許容内の折れは自由端にしない: {inferred:?}"
+    );
+}
+
+/// 斜交する先端リブは材軸が連続とみなさず、片持ち小梁の先端を自由端に推定する。
+#[test]
+fn infer_frees_cantilever_tip_with_oblique_rib() {
+    let mut model = two_node_model(&[
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [3000.0, 0.0, 0.0],
+        [3000.0, 3000.0, 0.0],
+        [3776.5, 5897.8, 0.0],
+    ]);
+    push_beam(&mut model, 0, 0, 1);
+    push_joist(&mut model, [2, 3], "CA");
+    push_joist(&mut model, [3, 4], "RIB");
+
+    let inferred = model.infer_secondary_end_supports();
+    let by_name = |name: &str| {
+        model
+            .unassigned_joists
+            .iter()
+            .find(|sm| sm.name == name)
+            .expect("小梁")
+    };
+    assert_eq!(inferred.len(), 2, "両者の先端が Free: {inferred:?}");
+    assert_eq!(
+        by_name("CA").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+    assert_eq!(
+        by_name("RIB").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+}
+
 /// どの部材にも載らない小梁（浮き）は自由端にしない（両端自由を作らない）。
 #[test]
 fn infer_does_not_free_floating_joist() {
