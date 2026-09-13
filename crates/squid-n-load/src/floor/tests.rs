@@ -780,8 +780,9 @@ fn test_cantilever_with_real_beam_edge_uses_beam() {
     );
 }
 
-/// 1 枚の取り付く床板の内部を通る実片持ち梁も、ベイ分割後に支持辺として荷重を受ける。
-/// 実梁が途中節点で 2 要素に分かれていても連結して全長を覆い、両要素へ分配される。
+/// 1 枚の取り付く床板の内部を通る実片持ち梁も、支持部材の間の床板ごとに分割された後は
+/// 支持辺として荷重を受ける。実梁が途中節点で 2 要素に分かれていても連結して全長を覆い、
+/// 両要素へ分配される。
 #[test]
 fn test_cantilever_real_beam_inside_slab_after_rebuild() {
     use squid_n_core::ids::{ElemId, NodeId, SlabId};
