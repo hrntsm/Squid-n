@@ -58,6 +58,7 @@ use squid_n_core::ids::{ElemId, NodeId, WallPlateId};
 use squid_n_core::model::{MemberLoadKind, Model, WallPlate, WallPlateShape};
 
 use crate::cascade::SecondaryKey;
+use crate::secondary::project_on_segment;
 
 use crate::floor::{fem_uniform, BeamLoad, LoadShape, LoadTarget};
 
@@ -154,29 +155,11 @@ impl<'a> SupportIndex<'a> {
         self.posts
             .iter()
             .find(|(_, a, b)| {
-                project_on_segment(p0, *a, *b).is_some() && project_on_segment(p1, *a, *b).is_some()
+                project_on_segment(p0, *a, *b, MEMBER_AXIS_TOL_MM).is_some()
+                    && project_on_segment(p1, *a, *b, MEMBER_AXIS_TOL_MM).is_some()
             })
             .map(|(key, _, _)| EdgeSupport::Post(*key))
     }
-}
-
-/// 点 `p` の線分 `a`→`b` 上の位置 [mm]。材軸から離れている・区間外なら `None`。
-fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> Option<f64> {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let len = (ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]).sqrt();
-    if len <= 1e-9 {
-        return None;
-    }
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-    let t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / (len * len);
-    let s = t * len;
-    if s < -MEMBER_AXIS_TOL_MM || s > len + MEMBER_AXIS_TOL_MM {
-        return None;
-    }
-    let proj = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
-    let d = [proj[0] - p[0], proj[1] - p[1], proj[2] - p[2]];
-    ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= MEMBER_AXIS_TOL_MM)
-        .then(|| s.clamp(0.0, len))
 }
 
 /// 境界の辺ごとに、耐震スリットで縁が切れているかを返す（`boundary` と同じ並び）。
@@ -352,8 +335,8 @@ fn push_post_share(
         return;
     };
     let (Some(s0), Some(s1)) = (
-        project_on_segment(e0, pa, pb),
-        project_on_segment(e1, pa, pb),
+        project_on_segment(e0, pa, pb, MEMBER_AXIS_TOL_MM),
+        project_on_segment(e1, pa, pb, MEMBER_AXIS_TOL_MM),
     ) else {
         return;
     };

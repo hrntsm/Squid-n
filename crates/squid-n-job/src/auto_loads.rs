@@ -78,11 +78,12 @@ fn push_resolved_loads(
     }
 }
 
-/// 各床領域について面荷重強度 `w_of(slab)` を境界へ分配し、`BeamLoad` 列を返す。
+/// 各床板について面荷重強度 `w_of(slab)` を境界へ分配し、`BeamLoad` 列を返す。
 /// `w_of` は床板ごとの面荷重強度 [N/mm²]。
 ///
-/// 床領域に帰属する床板は床領域ごとにまとめて分配し、
-/// どの床領域からも参照されない床板は個別に分配する。
+/// 分配は全床板（床領域に属する床板と取り付く床板の両方）を二次部材の逐次伝達
+/// （[`squid_n_load::cascade`]）へ通す。床板の境界辺荷重のうち二次部材が受け持った
+/// ぶんは反力として主架構へ渡り、残り（主架構の辺荷重）だけをここで解決する。
 pub fn slab_beam_loads_with(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
@@ -112,22 +113,6 @@ pub fn slab_beam_loads_with(
         });
     }
 
-    let referenced: std::collections::HashSet<_> = model
-        .floor_regions
-        .iter()
-        .flat_map(|r| r.slab_ids.iter().copied())
-        .collect();
-    for slab in &model.slabs {
-        if referenced.contains(&slab.id) {
-            continue;
-        }
-        let w = w_of(slab);
-        push_resolved_loads(
-            floor::distribute_slab_resolved(model, slab, w),
-            beam_map,
-            &mut beam_loads,
-        );
-    }
     beam_loads
 }
 
@@ -263,15 +248,7 @@ pub fn slab_load_case_content(
         if cover.is_empty() {
             return false;
         }
-        let mut union = 0.0_f64;
-        let mut reach = 0.0_f64;
-        let mut sum = 0.0_f64;
-        for c in &cover {
-            sum += c.seg[1] - c.seg[0];
-            union += (c.seg[1] - c.seg[0].max(reach)).max(0.0);
-            reach = reach.max(c.seg[1]);
-        }
-        if (len - union).abs() > SPAN_TOL_MM || (sum - union).abs() > SPAN_TOL_MM {
+        if !squid_n_load::secondary::coverage_covers_full(&cover, len, SPAN_TOL_MM) {
             return false;
         }
 
@@ -1637,12 +1614,14 @@ mod cascade_tests {
         region.slab_ids = vec![SlabId(0), SlabId(1)];
         region.secondary_joists = vec![
             SecondaryMember {
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(4), NodeId(5)],
                 section: Some(SectionId(0)),
                 name: "A".into(),
             },
             SecondaryMember {
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(6), NodeId(7)],
                 section: Some(SectionId(0)),

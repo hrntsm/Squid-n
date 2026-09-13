@@ -903,6 +903,7 @@ fn test_delete_section_referenced_by_joist() {
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
     region.secondary_joists = vec![SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(1)),
@@ -3451,6 +3452,7 @@ fn test_composite_delete_nodes_descending_roundtrip() {
 
 fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        end_support: Default::default(),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [NodeId(n0), NodeId(n1)],
         section: None,
@@ -4963,6 +4965,7 @@ fn make_sm(
     kind: squid_n_core::model::SecondaryMemberKind,
 ) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        end_support: Default::default(),
         kind,
         nodes: [NodeId(id), NodeId(id + 1)],
         section: None,
@@ -5086,6 +5089,69 @@ fn set_wall_region_posts_roundtrip() {
     assert!(model.wall_regions[0].posts.is_empty());
 }
 
+/// 端部支持条件の変更は、端点の順序が逆でも呼び出し側の指定どおりに適用し、取り消せる。
+#[test]
+fn set_secondary_member_end_support_applies_in_caller_order_and_undoes() {
+    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+    let mut model = sm_base_model();
+    model.unassigned_joists.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: "J".into(),
+        end_support: Default::default(),
+    });
+    let mut stack = UndoStack::new();
+    // 呼び出し側の並び [1, 0] で「節点 0 を Free」を指定する。
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetSecondaryMemberEndSupport {
+            nodes: [NodeId(1), NodeId(0)],
+            end_support: [EndSupport::Supported, EndSupport::Free],
+        }),
+    );
+    assert!(applied);
+    assert_eq!(
+        model.unassigned_joists[0].end_support,
+        [EndSupport::Free, EndSupport::Supported],
+        "格納順 [0, 1] へ読み替えて適用する"
+    );
+
+    stack.undo(&mut model);
+    assert_eq!(
+        model.unassigned_joists[0].end_support,
+        [EndSupport::Supported; 2]
+    );
+}
+
+/// 同じ端点の Joist と Post が併存するときは対象を決められず Noop。
+#[test]
+fn set_secondary_member_end_support_is_noop_when_ambiguous() {
+    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+    let mut model = sm_base_model();
+    for (kind, name) in [
+        (SecondaryMemberKind::Joist, "J"),
+        (SecondaryMemberKind::Post, "P"),
+    ] {
+        model.unassigned_joists.push(SecondaryMember {
+            kind,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: name.into(),
+            end_support: Default::default(),
+        });
+    }
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetSecondaryMemberEndSupport {
+            nodes: [NodeId(0), NodeId(1)],
+            end_support: [EndSupport::Supported, EndSupport::Free],
+        }),
+    );
+    assert!(!applied, "対象が一意でないときは適用しない");
+}
+
 /// Post を床領域小梁リストへ入れると Noop。
 #[test]
 fn set_floor_region_secondary_joists_rejects_post() {
@@ -5171,6 +5237,7 @@ fn test_copy_story_secondary_creates_unassigned_joist() {
     model
         .unassigned_joists
         .push(squid_n_core::model::SecondaryMember {
+            end_support: Default::default(),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             nodes: [n2f[0], n2f[1]],
             section: None,
@@ -5217,6 +5284,7 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
         .map(|n| n.id)
         .collect();
     let joist = squid_n_core::model::SecondaryMember {
+        end_support: Default::default(),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [n2f[0], n2f[1]],
         section: None,

@@ -574,6 +574,7 @@ mod tests {
     /// 補間テスト用の二次部材（小梁）を作る。
     fn test_secondary(i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,

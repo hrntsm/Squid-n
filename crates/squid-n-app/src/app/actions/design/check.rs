@@ -113,7 +113,8 @@ impl App {
     /// 床の中での小梁・スラブ設計を算定する（`run_design_check` から呼ぶ）。
     ///
     /// - 二次部材小梁: 二次部材の反力の逐次伝達（[`squid_n_load::cascade`]）が求めた荷重
-    ///   （床領域分配の辺荷重・自重・架け側から渡された集中荷重）を単純梁として検定する。
+    ///   （床板分配の辺荷重・自重・架け側から渡された集中荷重）を単純梁または片持ち梁と
+    ///   して検定する。
     /// - 実部材化された小梁（支持間に実 Beam がある）は全体 FEM で検定するため対象外。
     /// - 断面未割当・鋼以外の材料・分配荷重が無い・期待床板の欠落・カバー不足の二次部材は表に「未」として残す。
     /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
@@ -183,10 +184,10 @@ impl App {
         (joist_checks, slab_checks)
     }
 
-    /// 領域内小梁および未割当小梁を、二次部材の反力の逐次伝達
+    /// 領域内小梁および未割当の片持ち小梁を、二次部材の反力の逐次伝達
     /// （[`squid_n_load::cascade`]）が求めた荷重で検定する。
     ///
-    /// 荷重は床領域分配の辺荷重・自重・**架け側の二次部材から渡された集中荷重**の
+    /// 荷重は床板分配の辺荷重・自重・**架け側の二次部材から渡された集中荷重**の
     /// 重ね合わせである。**荷重同期（`squid-n-job::auto_loads`）と同じ経路を使う**
     /// （判定が 2 か所に分かれると解析と検定で荷重が食い違うため）。
     ///
@@ -195,6 +196,8 @@ impl App {
     /// 固定＋床用積載）、荷重同期は固定荷重ケースと積載荷重ケースへ分けて解く。
     ///
     /// 断面未割当・鋼以外の材料・分配が足りないものは表に「未」として残す。
+    /// 所属先がない小梁のうち、片持ち小梁以外は検定の対象にしない（表に「未」として
+    /// 残す。片持ち小梁は取付き線の支持辺として荷重を受けるため検定する）。
     ///
     /// # 検定できない二次部材（表には「未」の行として残す）
     ///
@@ -213,7 +216,9 @@ impl App {
     ) {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
-        use squid_n_load::floor::{simple_beam_extremes, span_node_key};
+        use squid_n_load::floor::{
+            cantilever_extremes, flip_member_loads, simple_beam_extremes, span_node_key,
+        };
 
         let w_of =
             |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Floor);
@@ -276,7 +281,11 @@ impl App {
             let region_slab = region.and_then(|r| r.slab_ids.first().copied());
             let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
 
-            if !region.is_some_and(|r| self.core.model.floor_region_on_single_diaphragm(r)) {
+            let on_single_diaphragm = match region {
+                Some(r) => self.core.model.floor_region_on_single_diaphragm(r),
+                None => sm.is_cantilever(),
+            };
+            if !on_single_diaphragm {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             }
@@ -304,7 +313,14 @@ impl App {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
-            let ex = simple_beam_extremes(&entry.member_loads, span, e, sec.iy);
+            let ex = match sm.free_end() {
+                Some(1) => cantilever_extremes(&entry.member_loads, span, e, sec.iy),
+                Some(_) => {
+                    let loads = flip_member_loads(&entry.member_loads, span);
+                    cantilever_extremes(&loads, span, e, sec.iy)
+                }
+                None => simple_beam_extremes(&entry.member_loads, span, e, sec.iy),
+            };
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;

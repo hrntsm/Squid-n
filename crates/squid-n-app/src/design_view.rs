@@ -806,7 +806,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// 床の中での小梁・スラブ設計の表示（`ResultsBundle.joist_checks`/`slab_checks`）。
-/// 小梁は単純支持梁として曲げ・たわみを検定し、スラブは一方向版として設計曲げ
+/// 小梁は単純梁または片持ち梁として曲げ・たわみを検定し、スラブは一方向版として設計曲げ
 /// モーメント・必要鉄筋量を表示する（いずれも全体 FEM から独立）。
 fn floor_design_section(ui: &mut egui::Ui, app: &App) {
     use crate::table_util::Col;
@@ -818,16 +818,16 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
     }
 
     ui.add_space(12.0);
-    ui.strong("小梁・床の設計（床の中で・単純支持／一方向）");
+    ui.strong("小梁・床の設計（床の中で・単純梁／片持ち梁・一方向）");
     ui.colored_label(
         crate::theme::GRAY_600,
-        "小梁は大梁を分割せず、床の中で単純支持梁として曲げ・たわみを検定します（反力は\
-         大梁へ CMQ として伝達）。スラブは一方向版として設計曲げと必要鉄筋量を算定します。\
+        "小梁は大梁を分割せず、床の中で単純梁または片持ち梁として曲げ・たわみを検定します\
+         （反力は大梁へ CMQ として伝達）。スラブは一方向版として設計曲げと必要鉄筋量を算定します。\
          鋼小梁の E・長期 ft は断面材料（未設定時 E=205000・F=235）。鉄筋は SD295（長期 ft=195）です。",
     );
 
     if !r.joist_checks.is_empty() {
-        ui.label("小梁（単純支持梁）:");
+        ui.label("小梁（単純梁・片持ち梁）:");
         crate::table_util::standard_table(
             ui,
             "joist_design_table",

@@ -1510,6 +1510,7 @@ mod node_reference_tests {
         // 1: 床領域の境界。2: 床領域が持つ二次部材小梁（`secondary_joists`）。
         let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
         region.secondary_joists.push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(2), NodeId(2)],
             section: None,
@@ -1576,6 +1577,7 @@ mod node_reference_tests {
 
         // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
         model.unassigned_joists.push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(8)],
             section: None,

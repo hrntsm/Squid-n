@@ -633,6 +633,353 @@ fn test_cantilever_conservation() {
     }
 }
 
+/// 側辺に小梁がある取り付く床板は、取付き辺と小梁の辺へ最近接負担面積で分配する。
+#[test]
+fn test_cantilever_with_side_joist_uses_support_edges() {
+    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::model::{AreaLoad, SecondaryMember, SecondaryMemberKind};
+    let (l, depth) = (4000.0_f64, 1500.0_f64);
+    let w = 0.003_f64;
+    let mut model = Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, l, 0.0),
+            mk_node(2, 0.0, depth),
+        ],
+        ..Default::default()
+    };
+    model.unassigned_joists.push(SecondaryMember {
+        end_support: Default::default(),
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(2)],
+        section: None,
+        name: "J".into(),
+    });
+    let slab = Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [depth, depth],
+        },
+        plate: SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        },
+    };
+    let loads = distribute_slab(&model, &slab);
+    assert_eq!(loads.len(), 2, "{loads:?}");
+
+    let total = total_load(&loads);
+    let expected = w * l * depth;
+    assert!((total - expected).abs() / expected < 1e-9, "総和 {total}");
+
+    // 小梁の辺（左辺）は (0,0) から対角 y=x より左の三角形 = d²/2。
+    let joist_area = depth * depth / 2.0;
+    let joist = loads
+        .iter()
+        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .expect("小梁への分配");
+    match joist.target {
+        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(0), NodeId(2)]),
+        other => panic!("Span ではない: {other:?}"),
+    }
+    let joist_total = joist.cmq.q_i + joist.cmq.q_j;
+    assert!(
+        (joist_total - w * joist_area).abs() / (w * joist_area) < 0.02,
+        "小梁 {joist_total}"
+    );
+
+    let edge0 = loads
+        .iter()
+        .find(|bl| matches!(bl.target, LoadTarget::Edge(0)))
+        .expect("取付き辺");
+    let edge0_total = edge0.cmq.q_i + edge0.cmq.q_j;
+    let rest = w * (l * depth - joist_area);
+    assert!(
+        (edge0_total - rest).abs() / rest < 0.02,
+        "取付き辺 {edge0_total}"
+    );
+}
+
+/// 先端辺が実部材（梁要素）で全長覆われていれば、実部材へ分配する。
+#[test]
+fn test_cantilever_with_real_beam_edge_uses_beam() {
+    use squid_n_core::ids::{ElemId, NodeId, SlabId};
+    use squid_n_core::model::{
+        AreaLoad, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
+    };
+    let (l, depth) = (4000.0_f64, 1500.0_f64);
+    let w = 0.003_f64;
+    let mut model = Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, l, 0.0),
+            mk_node(2, 0.0, depth),
+            mk_node(3, l, depth),
+        ],
+        ..Default::default()
+    };
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(2), NodeId(3)].into_iter().collect(),
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let slab = Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [depth, depth],
+        },
+        plate: SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        },
+    };
+    let loads = distribute_slab(&model, &slab);
+    assert_eq!(loads.len(), 2, "{loads:?}");
+    let total = total_load(&loads);
+    let expected = w * l * depth;
+    assert!((total - expected).abs() / expected < 1e-9, "総和 {total}");
+
+    let beam_load = loads
+        .iter()
+        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .expect("実部材への分配");
+    match beam_load.target {
+        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(2), NodeId(3)]),
+        other => panic!("Span ではない: {other:?}"),
+    }
+    // 先端辺（y=depth）と取付き辺（y=0）を中央で二分する。
+    let beam_total = beam_load.cmq.q_i + beam_load.cmq.q_j;
+    assert!(
+        (beam_total - w * l * depth / 2.0).abs() / (w * l * depth / 2.0) < 0.02,
+        "先端梁 {beam_total}"
+    );
+}
+
+/// 1 枚の取り付く床板の内部を通る実片持ち梁も、支持部材の間の床板ごとに分割された後は
+/// 支持辺として荷重を受ける。実梁が途中節点で 2 要素に分かれていても連結して全長を覆い、
+/// 両要素へ分配される。
+#[test]
+fn test_cantilever_real_beam_inside_slab_after_rebuild() {
+    use squid_n_core::ids::{ElemId, NodeId, SlabId};
+    use squid_n_core::model::{
+        AreaLoad, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
+    };
+    use squid_n_core::region_rebuild::rebuild_floor_regions;
+    let (l, depth) = (4000.0_f64, 1500.0_f64);
+    let w = 0.003_f64;
+    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    for spliced in [false, true] {
+        let mut model = Model {
+            nodes: vec![
+                mk_node(0, 0.0, 0.0),
+                mk_node(1, l, 0.0),
+                mk_node(2, l, depth),
+                mk_node(3, 0.0, depth),
+                mk_node(4, 2000.0, 0.0),
+            ],
+            ..Default::default()
+        };
+        model.elements.push(mk_beam(0, 0, 1));
+        if spliced {
+            model.nodes.push(mk_node(5, 2000.0, depth / 2.0));
+            model.nodes.push(mk_node(6, 2000.0, depth));
+            model.elements.push(mk_beam(1, 4, 5));
+            model.elements.push(mk_beam(2, 5, 6));
+        } else {
+            model.nodes.push(mk_node(5, 2000.0, depth));
+            model.elements.push(mk_beam(1, 4, 5));
+        }
+        model.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [depth, depth],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: w,
+                }],
+                ..Default::default()
+            },
+        });
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "内部の実梁で分割される");
+
+        let loads: Vec<_> = model
+            .slabs
+            .iter()
+            .flat_map(|s| distribute_slab(&model, s))
+            .collect();
+        let expected = w * l * depth;
+        let total = total_load(&loads);
+        assert!((total - expected).abs() / expected < 1e-9, "総和 {total}");
+
+        let beam_total: f64 = loads
+            .iter()
+            .filter(|bl| matches!(&bl.target, LoadTarget::Span { .. }))
+            .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+            .sum();
+        let expected_beam = w * depth * depth;
+        assert!(
+            (beam_total - expected_beam).abs() / expected_beam < 0.02,
+            "内部実梁への分配 {beam_total} expected {expected_beam} (spliced={spliced})"
+        );
+        if spliced {
+            for id in [1u32, 2] {
+                let elem_total: f64 = loads
+                    .iter()
+                    .filter(|bl| bl.elem == ElemId(id))
+                    .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+                    .sum();
+                assert!(elem_total > 0.0, "分割要素 {id} にも載る");
+            }
+        }
+    }
+}
+
+/// 同じ辺に実部材と小梁がある場合は実部材を優先し、全長を覆わない実部材は支持辺にしない。
+#[test]
+fn test_cantilever_support_edge_prefers_full_real_beam() {
+    use squid_n_core::ids::{ElemId, NodeId, SlabId};
+    use squid_n_core::model::{
+        AreaLoad, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, SecondaryMember,
+        SecondaryMemberKind,
+    };
+    let (l, depth) = (4000.0_f64, 1500.0_f64);
+    let w = 0.003_f64;
+    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mk_slab = || Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [depth, depth],
+        },
+        plate: SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        },
+    };
+    let mk_joist = || SecondaryMember {
+        end_support: Default::default(),
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(2), NodeId(3)],
+        section: None,
+        name: "J".into(),
+    };
+
+    // 全長を覆う実部材（辺から 1mm ずれ）＋小梁 → 実部材へ分配。
+    let mut full = Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, l, 0.0),
+            mk_node(2, 0.0, depth),
+            mk_node(3, l, depth),
+            mk_node(4, 0.0, depth + 1.0),
+            mk_node(5, l, depth + 1.0),
+        ],
+        ..Default::default()
+    };
+    full.elements.push(mk_beam(0, 4, 5));
+    full.unassigned_joists.push(mk_joist());
+    let loads = distribute_slab(&full, &mk_slab());
+    let span = loads
+        .iter()
+        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .expect("実部材への分配");
+    match span.target {
+        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(4), NodeId(5)]),
+        other => panic!("Span ではない: {other:?}"),
+    }
+
+    // 辺の半分だけ覆う実部材＋全長の小梁 → 小梁へ分配。
+    let mut partial = Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, l, 0.0),
+            mk_node(2, 0.0, depth),
+            mk_node(3, l, depth),
+            mk_node(4, 0.0, depth + 1.0),
+            mk_node(5, 2000.0, depth + 1.0),
+        ],
+        ..Default::default()
+    };
+    partial.elements.push(mk_beam(0, 4, 5));
+    partial.unassigned_joists.push(mk_joist());
+    let loads = distribute_slab(&partial, &mk_slab());
+    let span = loads
+        .iter()
+        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .expect("小梁への分配");
+    match span.target {
+        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(2), NodeId(3)]),
+        other => panic!("Span ではない: {other:?}"),
+    }
+}
+
 /// 床領域が複数の床板を持つとき、`distribute_region` は各床板を独立に分配し、
 /// 総和（面荷重 × 全床板面積）を保存する。
 #[test]

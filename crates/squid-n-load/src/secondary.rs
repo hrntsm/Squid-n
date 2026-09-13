@@ -100,6 +100,26 @@ pub fn beam_span_position(model: &Model, coord: [f64; 3], tol: f64) -> Option<(E
     best_span_position(&candidates, coord, tol)
 }
 
+/// 点 `p` が線分 `a`–`b` の材軸上（距離 `tol` [mm] 以内）なら `a` からの距離 [mm] を返す。
+/// 線分の外側でも端から `tol` 以内なら端点へ丸めた距離を返す。
+pub(crate) fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option<f64> {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if len2 <= 1.0 {
+        return None;
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2;
+    let len = len2.sqrt();
+    let s = t * len;
+    if s < -tol || s > len + tol {
+        return None;
+    }
+    let proj = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+    let d = [p[0] - proj[0], p[1] - proj[1], p[2] - proj[2]];
+    ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= tol).then(|| s.clamp(0.0, len))
+}
+
 /// 線分が載る大梁の 1 区間（[`beams_along_segment`] の結果）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SegmentCoverage {
@@ -109,6 +129,26 @@ pub struct SegmentCoverage {
     pub seg: [f64; 2],
     /// 梁の i 端からの距離で表した被覆区間 [mm]（`seg` と同じ向きに並ぶ）。
     pub elem_pos: [f64; 2],
+}
+
+/// 被覆区間の合計長さと和集合の長さ [mm]（[`beams_along_segment`] の結果用。
+/// 区間は始点側から並んでいる前提）。
+fn coverage_sum_union(cover: &[SegmentCoverage]) -> (f64, f64) {
+    let mut sum = 0.0_f64;
+    let mut union = 0.0_f64;
+    let mut reach = 0.0_f64;
+    for c in cover {
+        sum += c.seg[1] - c.seg[0];
+        union += (c.seg[1] - c.seg[0].max(reach)).max(0.0);
+        reach = reach.max(c.seg[1]);
+    }
+    (sum, union)
+}
+
+/// 被覆が線分の全長を覆い、重なりがない（合計＝和集合）か。
+pub fn coverage_covers_full(cover: &[SegmentCoverage], len: f64, tol: f64) -> bool {
+    let (sum, union) = coverage_sum_union(cover);
+    (len - union).abs() <= tol && (sum - union).abs() <= tol
 }
 
 /// 線分 `p0`→`p1` を覆う大梁の区間を、線分に沿った順で返す。
@@ -427,6 +467,7 @@ mod tests {
             ],
             elements: vec![beam(0, 0, 1)],
             unassigned_joists: vec![SecondaryMember {
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(2), NodeId(2)],
                 section: Some(SectionId(0)),
