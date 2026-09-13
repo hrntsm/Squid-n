@@ -140,7 +140,7 @@
 | 13 | 許容応力度設計 | squid-n-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
 | 14 | 保有耐力 | squid-n-design-jp | holding_capacity.rs | `test_*` | P7 | 🔶 |
 | 15 | プッシュオーバー | squid-n-solver | pushover.rs | — | P5 | 🔶 |
-| 16 | 壁（TVLEM） | squid-n-element | — | — | P5.5 | ❌ |
+| 16 | 壁（TVLEM） | squid-n-element | — | — | P5.5 | 対象外 |
 | 17 | 時刻歴 | squid-n-solver | timehistory.rs | — | P6 | ❌ |
 | 18 | 一軸履歴則（Concrete/Bilinear/MP） | squid-n-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
 | 19 | 部材履歴則（武田・原点指向・スリップ） | squid-n-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
@@ -156,7 +156,8 @@
 | 29 | 耐震スリット（辺ごとの縁切り。袖壁・腰壁垂壁・剛域・耐震壁判定・自重） | squid-n-element / squid-n-load | wall/misc_wall.rs, frame/beam/{construct,rigid_zone}.rs, story_gen/self_weight_calc.rs | `test_column_face_slit_drops_wing_wall_but_keeps_girder_strip` / `test_strip_height_follows_beam_face_slit` / `test_any_slit_breaks_seismic_wall` / `柱際スリットのある側は剛域の袖壁張り出しを持たない` / `test_column_face_slit_wall_is_collected_as_misc_wall` / `test_column_face_slit_is_per_side` / `test_column_face_slit_does_not_change_self_weight_destination` / `test_bottom_beam_face_slit_sends_self_weight_to_top` / `test_top_beam_face_slit_sends_self_weight_to_bottom` | 横断 | 🔶 |
 | 30 | 壁版の要素生成判定と可視化 | squid-n-core / squid-n-load / squid-n-app | model/wall_plate.rs, wall_expand.rs, viewer/scene.rs | `test_becomes_element_agrees_with_generated_elements` / `test_becomes_element_requires_section` / `test_boundary_coords_with_uses_supplied_coords` / `囲まれた壁版は境界節点が全て構面上にあるときだけ描く` / `取り付く壁版は取付き先の節点で構面を判定する` | 横断 | ☑ |
 
-凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
+凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装・対象外（採用しない）。
+#16 壁（TVLEM）は採用しない（[ADR 0013](../adr/0013-adopt-wall-element-model.md)）。耐震壁は壁エレメント置換モデルとして検証する（下表 #29・#30 と[未検証一覧 §3](未検証一覧.md)）。
 
 各 # の修正履歴・監査結果の詳細は [§レポート目録](#レポート目録) の該当レポートを参照。
 未完了の要約は [未検証一覧.md](未検証一覧.md) を参照。
@@ -167,8 +168,7 @@
 
 **実測／商用ソフト照合は補助**（入手できれば追加）であり、なくてもビルド・単体テスト・一次 V&V は通る。
 
-**唯一の例外＝壁（壁谷澤）の妥当性確認** は、モデルの性質上、実験照合が本質的に必須（Category B）。
-技術リードが実験データを用意する（R4/R23）。
+壁谷澤 TVLEM は採用しないため（[ADR 0013](../adr/0013-adopt-wall-element-model.md)）、例外なく手計算／理論解で判定する。耐震壁は壁エレメント置換モデルとして検証する（残項目は[未検証一覧 §3](未検証一覧.md)）。
 
 ## パネルゾーン参照解
 
