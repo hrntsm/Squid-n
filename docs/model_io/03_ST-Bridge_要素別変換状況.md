@@ -34,7 +34,7 @@ ST-Bridge の主要要素ごとの変換状況です。
 |---|:--:|:--:|---|
 | `StbColumn`（柱） | ✅ | ✅ | 鉛直材として往復。`rotate`・`condition_bottom`/`_top` を読む。端部の偏心 `offset_*` は対象外 |
 | `StbGirder`（大梁） | ✅ | ✅ | 水平材として往復。`rotate`・`condition_start`/`_end` を読む。端部の偏心 `offset_*` は対象外 |
-| `StbBeam`（小梁） | ✅ | ✅ | 二次部材として往復する。全体解析の対象外で、床荷重と自重は大梁への集中荷重（CMQ）として伝える。床スラブの小梁一覧には載せない。断面検定は [小梁の検定](../calc_basis/06_一次設計/05_小梁・床の断面検定.md#小梁の検定)（二次部材経路。床領域分配の線荷重を単純梁として重ね合わせる） |
+| `StbBeam`（小梁） | ✅ | ✅ | 二次部材として往復する。全体解析の対象外で、床荷重と自重は大梁への集中荷重（CMQ）として伝える。取り込み後は「床」タブの小梁（二次部材）一覧に表示され、端部支持条件を設定できる（実部材化済みは除く）。幾何的に支持のない端（節点が実部材に接続せず、大梁の材軸上にも他の二次部材の内法にもない端。許容差 10 mm）は自由端（片持ち小梁）として取り込み、件数と対象を取り込み報告に出す。他の二次部材の端点と一致する端は、自分の反対側の端が主架構に載り、かつ相手の材軸が連続していないときだけ自由端にする。断面検定は [小梁の検定](../calc_basis/06_一次設計/05_小梁・床の断面検定.md#小梁の検定)（二次部材経路。床板分配の線荷重を単純梁または片持ち梁として重ね合わせる） |
 | `StbPost`（間柱） | ✅ | ✅ | 二次部材の間柱として往復。節点は `id_node_bottom`/`_top`（`id_node_start`/`_end` も可） |
 | `StbBrace`（ブレース） | ✅ | ✅ | `feature_brace` を読み、`TENSIONANDCOMPRESSION` 以外は引張専用とする。両端ピンで取り込む |
 | `StbSlab`（スラブ） | ✅ | ⚠️ | 境界節点ループ（`StbNodeIdOrder` のテキスト・CDATA・子要素 `StbNodeId` のいずれも可）＋断面参照。取り込み後、大梁の閉路（床領域）へ床板（Slab）を付け直す（重心が複数床領域に入るときは面積が最小）。どの床領域にも入らず 1 辺が大梁に全長載り自由端が 1〜2 点なら取り付く床板。それ以外の未所属は囲まれのまま残し、版ありなら警告。`kind_slab` は読まない。書き出しは囲まれかつ版がある床板だけ（`kind_slab` は `NORMAL` 固定）。仕上げ荷重・用途（積載）・分配法・取り付き・版なしは対象外 |
@@ -48,7 +48,7 @@ ST-Bridge の主要要素ごとの変換状況です。
 壁領域の付け直しで、どの壁領域にも載らず、かつ取り付く壁版へも変換できない壁版・所属の付かない間柱があるときも、件数を警告へ出します（自動変換に成功した場合は警告しません）。
 断面未割当の壁版は、取り込み時に警告します（板厚と材料が決まらず自重を算定できません）。
 
-**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_members, build_secondaries}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_members, build_secondaries}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。二次部材の自由端の推定は `squid_n_core::model::Model::infer_secondary_end_supports`（`crates/squid-n-core/src/model/secondary.rs`）が行います。
 
 ## 断面 — 鋼（形鋼ライブラリ `StbSecSteel`）
 

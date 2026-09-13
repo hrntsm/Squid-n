@@ -1511,6 +1511,7 @@ mod node_reference_tests {
         let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
         region.secondary_joists.push(SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(2), NodeId(2)],
             section: None,
@@ -1580,6 +1581,7 @@ mod node_reference_tests {
         // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
         model.unassigned_joists.push(SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(8)],
             section: None,

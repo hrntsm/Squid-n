@@ -4,7 +4,9 @@
 //! 大梁の 1 スパン区画）を再生成し、既存の床領域と重心・レベルで対応付けて
 //! 名前を引き継ぐ。**床板（[`Slab`]）は畳まない**。
 //! 各床板の帰属（どの床領域に属すか）を、床板の重心が入る床領域へ付け替えるだけである。
-//! 取り付く床板（片持ち・バルコニー等）はどの床領域からも参照されない独立した床板のまま、素通しする。
+//! 取り付く床板（片持ち・バルコニー等）はどの床領域からも参照されない独立した床板とし、
+//! 直交して先端まで届く小梁または実梁の位置で支持部材の間の床板ごとに分割し、
+//! 部材がない隣り合う床板は統合する。
 
 use crate::dof::Dof6Mask;
 use crate::geom::polygon::{self, BOUNDARY_TOL_MM};
@@ -44,7 +46,8 @@ pub struct FloorRegionRebuildReport {
 ///
 /// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は、
 /// 1 辺が大梁に全長覆われていれば取り付く床板へ変換し、それもできなければ
-/// 帰属なしのまま残す（警告。落とさない）。
+/// 帰属なしのまま残す（警告。落とさない）。取り付く床板は、直交して先端まで届く
+/// 小梁または実梁の位置で支持部材の間の床板ごとに分割し、部材がない隣り合う床板は統合する。
 pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let scan = scan_region_boundaries(model);
     for r in &mut model.floor_regions {
@@ -138,12 +141,415 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
 
     report.deleted_nodes = delete_unref_nodes(model, &discarded_by_conversion);
 
+    merge_attached_slabs(model);
+    split_attached_slabs_between_members(model);
+
     report
 }
 
-/// 現状の床領域で、中点がちょうど 1 領域に厳密内包されない小梁の本数。
+/// 隣り合う取り付く床板（同じ取付き線・版仕様で、境界の張り出し量が一致し、
+/// 張り出し量が同じ直線上にあり、統合後の両端の張り出し量が同じ側を向き、
+/// 境界に小梁・実部材がないもの）を 1 枚へ統合する。
+fn merge_attached_slabs(model: &mut Model) {
+    struct Group {
+        nodes: [NodeId; 2],
+        plate: crate::model::SlabPlate,
+        members: Vec<(usize, [f64; 2], [f64; 2])>,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    for (i, slab) in model.slabs.iter().enumerate() {
+        let SlabShape::Attached {
+            anchor:
+                RegionAnchor::Line {
+                    nodes,
+                    span,
+                    transfer: LoadTransfer::Anchor,
+                },
+            extent,
+        } = &slab.shape
+        else {
+            continue;
+        };
+        match groups
+            .iter_mut()
+            .find(|g| g.nodes == *nodes && g.plate == slab.plate)
+        {
+            Some(g) => g.members.push((i, *span, *extent)),
+            None => groups.push(Group {
+                nodes: *nodes,
+                plate: slab.plate.clone(),
+                members: vec![(i, *span, *extent)],
+            }),
+        }
+    }
+
+    let axes = attachment_split_axes(model);
+    let tol = MEMBER_AXIS_TOL_MM;
+    const SPAN_EPS: f64 = 1e-9;
+    let mut removed = std::collections::HashSet::new();
+    let mut merged = 0usize;
+    for group in &groups {
+        if group.members.len() < 2 {
+            continue;
+        }
+        let mut members = group.members.clone();
+        members.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+        let (mut keep, mut span, mut extent) = members[0];
+        for &(index, cur_span, cur_extent) in &members[1..] {
+            let contiguous = (cur_span[0] - span[1]).abs() <= SPAN_EPS;
+            let extent_match = (cur_extent[0] - extent[1]).abs() <= tol;
+            let span_len = span[1] - span[0];
+            let collinear = span_len > SPAN_EPS
+                && ((cur_extent[1] - extent[1])
+                    - (extent[1] - extent[0]) / span_len * (cur_span[1] - span[1]))
+                    .abs()
+                    <= tol;
+            let same_side = extent[0].abs() <= tol
+                || cur_extent[1].abs() <= tol
+                || extent[0].signum() == cur_extent[1].signum();
+            if contiguous
+                && extent_match
+                && collinear
+                && same_side
+                && !attachment_boundary_on_member(model, group.nodes, span[1], extent[1], &axes)
+            {
+                span[1] = cur_span[1];
+                extent[1] = cur_extent[1];
+                removed.insert(model.slabs[index].id);
+                merged += 1;
+            } else {
+                set_attached_span(model, keep, group.nodes, span, extent);
+                keep = index;
+                span = cur_span;
+                extent = cur_extent;
+            }
+        }
+        set_attached_span(model, keep, group.nodes, span, extent);
+    }
+    if merged == 0 {
+        return;
+    }
+    model.retain_slabs(|slab| !removed.contains(&slab.id));
+}
+
+fn set_attached_span(
+    model: &mut Model,
+    index: usize,
+    nodes: [NodeId; 2],
+    span: [f64; 2],
+    extent: [f64; 2],
+) {
+    model.slabs[index].shape = SlabShape::Attached {
+        anchor: RegionAnchor::Line {
+            nodes,
+            span,
+            transfer: LoadTransfer::Anchor,
+        },
+        extent,
+    };
+}
+
+/// 取付き線上の位置 `span_pos`・張り出し量 `extent_pos` の境界辺が、小梁または
+/// 実部材（連結した 2 節点 `Beam`）の材軸上にあるか。
+fn attachment_boundary_on_member(
+    model: &Model,
+    nodes: [NodeId; 2],
+    span_pos: f64,
+    extent_pos: f64,
+    axes: &[([f64; 3], [f64; 3])],
+) -> bool {
+    let (Some(a), Some(b)) = (
+        model.nodes.get(nodes[0].index()),
+        model.nodes.get(nodes[1].index()),
+    ) else {
+        return false;
+    };
+    let lerp = |t: f64| {
+        [
+            a.coord[0] + (b.coord[0] - a.coord[0]) * t,
+            a.coord[1] + (b.coord[1] - a.coord[1]) * t,
+            a.coord[2] + (b.coord[2] - a.coord[2]) * t,
+        ]
+    };
+    let p0 = lerp(span_pos);
+    let d = [b.coord[0] - a.coord[0], b.coord[1] - a.coord[1]];
+    let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    if len <= 1e-9 {
+        return false;
+    }
+    let n = [-d[1] / len, d[0] / len];
+    let p1 = [p0[0] + n[0] * extent_pos, p0[1] + n[1] * extent_pos, p0[2]];
+    let on_segment = |a: [f64; 3], b: [f64; 3]| {
+        point_segment_dist3(p0, a, b) <= MEMBER_AXIS_TOL_MM
+            && point_segment_dist3(p1, a, b) <= MEMBER_AXIS_TOL_MM
+    };
+    axes.iter().any(|(a, b)| on_segment(*a, *b))
+}
+
+fn point_segment_dist3(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if len2 <= 1.0 {
+        return crate::geom::vec3::dist(p, a);
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let t = ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2).clamp(0.0, 1.0);
+    let proj = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    crate::geom::vec3::dist(p, proj)
+}
+
+/// 取り付く床板（取付き線へ分布）を、下の片持ち小梁または実梁の材軸で
+/// 支持部材の間の床板ごとに分割する。
+///
+/// 境界にするのは、取付き線に直交し（頂点が張り出し方向の直線から
+/// [`MEMBER_AXIS_TOL_MM`] 以内）、取付き線から先端まで届く部材だけとする。
+/// 取付き線の区間は部分区間 `span` で表し、張り出し量は分割位置で線形に内挿する。
+/// すでに支持部材の間ごとに分かれている床板は、境界の部材が内側に来ないため分割されない。
+fn split_attached_slabs_between_members(model: &mut Model) {
+    let axes = attachment_split_axes(model);
+    if axes.is_empty() {
+        return;
+    }
+    let mut si = 0usize;
+    while si < model.slabs.len() {
+        let split = {
+            let slab = &model.slabs[si];
+            split_attached_shape(model, slab, &axes)
+        };
+        let Some(split) = split else {
+            si += 1;
+            continue;
+        };
+        let plate = model.slabs[si].plate.clone();
+        let (first, rest) = split.split_first().expect("2 枚以上");
+        model.slabs[si].shape = first.clone();
+        for shape in rest {
+            let id = crate::ids::SlabId(model.slabs.len() as u32);
+            model.slabs.push(crate::model::Slab {
+                id,
+                shape: shape.clone(),
+                plate: plate.clone(),
+            });
+        }
+        si += 1;
+    }
+}
+
+/// 取り付く床板の分割・統合に使う材軸。実部材化していない小梁と、端点一致と
+/// 同一直線で連結した 2 節点 `Beam`（途中節点の分割を 1 本へ束ねる）。
+fn attachment_split_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
+    let mut axes: Vec<([f64; 3], [f64; 3])> = model
+        .secondary_joist_axes()
+        .into_iter()
+        .map(|a| (a.a, a.b))
+        .collect();
+    axes.extend(beam_axes(model));
+    axes
+}
+
+/// 2 節点 `Beam` の材軸を、端点一致と同一直線で連結して束ねる。
+fn beam_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
+    let mut segs: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    for e in &model.elements {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let (Some(a), Some(b)) = (
+            model.nodes.get(e.nodes[0].index()),
+            model.nodes.get(e.nodes[1].index()),
+        ) else {
+            continue;
+        };
+        segs.push((a.coord, b.coord));
+    }
+    let mut used = vec![false; segs.len()];
+    let mut axes = Vec::new();
+    for i in 0..segs.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let (mut p0, mut p1) = segs[i];
+        while let Some((j, (np0, np1))) = (0..segs.len())
+            .filter(|j| !used[*j])
+            .find_map(|j| extend_axis(p0, p1, segs[j].0, segs[j].1).map(|s| (j, s)))
+        {
+            (p0, p1) = (np0, np1);
+            used[j] = true;
+        }
+        axes.push((p0, p1));
+    }
+    axes
+}
+
+/// 軸 `p0`–`p1` の端と一致する端点を持つ線分 `q0`–`q1` が同一直線上にあるとき、
+/// 軸へ継ぎ足した両端を返す。
+fn extend_axis(
+    p0: [f64; 3],
+    p1: [f64; 3],
+    q0: [f64; 3],
+    q1: [f64; 3],
+) -> Option<([f64; 3], [f64; 3])> {
+    let at = |a: [f64; 3], b: [f64; 3]| crate::geom::vec3::dist(a, b) <= MEMBER_AXIS_TOL_MM;
+    let candidates = [
+        (at(p1, q0), p0, q1),
+        (at(p1, q1), p0, q0),
+        (at(p0, q0), q1, p1),
+        (at(p0, q1), q0, p1),
+    ];
+    candidates
+        .into_iter()
+        .find(|(connected, end_a, end_b)| {
+            *connected
+                && point_line_dist3(*end_b, p0, p1) <= MEMBER_AXIS_TOL_MM
+                && crate::geom::vec3::dist(*end_a, *end_b) > 1e-9
+        })
+        .map(|(_, end_a, end_b)| (end_a, end_b))
+}
+
+fn point_line_dist3(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if len2 <= 1.0 {
+        return crate::geom::vec3::dist(p, a);
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let cross = [
+        ap[1] * d[2] - ap[2] * d[1],
+        ap[2] * d[0] - ap[0] * d[2],
+        ap[0] * d[1] - ap[1] * d[0],
+    ];
+    (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() / len2.sqrt()
+}
+
+fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[1] - a[1] * b[0]
+}
+
+/// 取り付く床板 1 枚を小梁の材軸で支持部材の間の床板ごとに分割した形。分割が要らなければ `None`。
+fn split_attached_shape(
+    model: &Model,
+    slab: &crate::model::Slab,
+    axes: &[([f64; 3], [f64; 3])],
+) -> Option<Vec<SlabShape>> {
+    let SlabShape::Attached {
+        anchor:
+            RegionAnchor::Line {
+                nodes,
+                span,
+                transfer: LoadTransfer::Anchor,
+            },
+        extent,
+    } = &slab.shape
+    else {
+        return None;
+    };
+    let coords = slab.boundary_coords(model)?;
+    if coords.len() != 4 {
+        return None;
+    }
+    let (p0, p1) = (coords[0], coords[1]);
+    let d = [p1[0] - p0[0], p1[1] - p0[1]];
+    let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    if len <= 1e-9 {
+        return None;
+    }
+    let u = [d[0] / len, d[1] / len];
+    let tol = MEMBER_AXIS_TOL_MM;
+    let z = (p0[2] + p1[2]) / 2.0;
+    let tip_a = coords[3];
+    let tip_b = coords[2];
+
+    let mut fractions: Vec<f64> = Vec::new();
+    for (qa, qb) in axes {
+        let (qa, qb) = (*qa, *qb);
+        if (qa[2] - z).abs() > LEVEL_TOL_MM || (qb[2] - z).abs() > LEVEL_TOL_MM {
+            continue;
+        }
+        let j = [qb[0] - qa[0], qb[1] - qa[1]];
+        let jl = (j[0] * j[0] + j[1] * j[1]).sqrt();
+        if jl <= tol {
+            continue;
+        }
+        let denom = cross2(d, j);
+        if denom.abs() <= 1e-9 {
+            continue;
+        }
+        let r = [qa[0] - p0[0], qa[1] - p0[1]];
+        let s = cross2(r, j) / denom;
+        let t = cross2(r, d) / denom;
+        if s * len <= tol || s * len >= len - tol {
+            continue;
+        }
+        if t * jl < -tol || t * jl > jl + tol {
+            continue;
+        }
+        let p_att = [p0[0] + s * d[0], p0[1] + s * d[1]];
+        let perp = |q: [f64; 3]| ((q[0] - p_att[0]) * u[0] + (q[1] - p_att[1]) * u[1]).abs();
+        if perp(qa) > tol || perp(qb) > tol {
+            continue;
+        }
+        let tip_d = [tip_b[0] - tip_a[0], tip_b[1] - tip_a[1]];
+        let tip_len = (tip_d[0] * tip_d[0] + tip_d[1] * tip_d[1]).sqrt();
+        if tip_len <= tol {
+            continue;
+        }
+        let denom2 = cross2(tip_d, j);
+        if denom2.abs() <= 1e-9 {
+            continue;
+        }
+        let r2 = [qa[0] - tip_a[0], qa[1] - tip_a[1]];
+        let s2 = cross2(r2, j) / denom2;
+        let t2 = cross2(r2, tip_d) / denom2;
+        if s2 < -tol / tip_len || s2 > 1.0 + tol / tip_len {
+            continue;
+        }
+        if t2 * jl < -tol || t2 * jl > jl + tol {
+            continue;
+        }
+        fractions.push(s);
+    }
+
+    if fractions.is_empty() {
+        return None;
+    }
+    fractions.sort_by(f64::total_cmp);
+    let mut cuts: Vec<f64> = Vec::new();
+    for f in fractions {
+        if cuts.last().is_some_and(|prev| (f - prev) * len <= tol) {
+            continue;
+        }
+        cuts.push(f);
+    }
+
+    let mut bounds = Vec::with_capacity(cuts.len() + 2);
+    bounds.push(0.0);
+    bounds.extend(cuts);
+    bounds.push(1.0);
+    let interp = |v: [f64; 2], f: f64| v[0] + (v[1] - v[0]) * f;
+    let mut shapes = Vec::with_capacity(bounds.len() - 1);
+    for w in bounds.windows(2) {
+        let (f0, f1) = (w[0], w[1]);
+        shapes.push(SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: *nodes,
+                span: [interp(*span, f0), interp(*span, f1)],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [interp(*extent, f0), interp(*extent, f1)],
+        });
+    }
+    (shapes.len() >= 2).then_some(shapes)
+}
+
+/// 現状の床領域で、中点がちょうど 1 領域に厳密内包されない小梁の本数
+/// （片持ち小梁と実部材化済みの小梁は支持辺・実要素として扱うため除く）。
 pub fn unassigned_joist_count(model: &Model) -> usize {
-    model.unassigned_joists.len()
+    model
+        .unassigned_joists
+        .iter()
+        .filter(|sm| !sm.is_cantilever() && !model.secondary_member_materialized(sm))
+        .count()
 }
 
 /// 大梁または小梁で囲まれた床板（`Enclosed`）で、重心がどの床領域にも入らないものの件数。
@@ -398,18 +804,23 @@ fn assign_joists(model: &mut Model) -> usize {
     }
     let mut unassigned = 0;
     for sm in joists {
+        let counted = !sm.is_cantilever() && !model.secondary_member_materialized(&sm);
         let nodes = sm.nodes;
         let Some((xy, z)) = joist_midpoint(model, nodes) else {
+            if counted {
+                unassigned += 1;
+            }
             model.unassigned_joists.push(sm);
-            unassigned += 1;
             continue;
         };
         let hits = regions_containing(model, &model.floor_regions, xy, z);
         if hits.len() == 1 {
             model.floor_regions[hits[0]].secondary_joists.push(sm);
         } else {
+            if counted {
+                unassigned += 1;
+            }
             model.unassigned_joists.push(sm);
-            unassigned += 1;
         }
     }
     unassigned
@@ -573,6 +984,7 @@ mod tests {
     fn joist(id: u32, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
             gravity_end_shares: None,
+            end_support: [crate::model::EndSupport::Supported; 2],
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,
@@ -780,6 +1192,269 @@ mod tests {
         assert!(!has_xy(&model, 0.0, 1500.0), "先端節点は削除");
         assert!(report.slabs_converted_to_attached >= 1);
         assert!(report.deleted_nodes >= 2);
+    }
+
+    /// 取り付く床板は、直交して先端まで届く小梁の位置で支持部材の間の床板ごとに分割される。
+    #[test]
+    fn test_cantilever_splits_at_perpendicular_joists() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 1500.0, 0.0));
+        model.unassigned_joists.push(joist(0, 4, 5));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2);
+        for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
+            match &model.slabs[i].shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    extent,
+                } => {
+                    assert!((span[0] - expected[0]).abs() < 1e-9, "{span:?}");
+                    assert!((span[1] - expected[1]).abs() < 1e-9, "{span:?}");
+                    assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+                    assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                }
+                other => panic!("Attached ではない: {other:?}"),
+            }
+        }
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "冪等");
+    }
+
+    /// 床板の内部を通る実梁（取付き線から先端まで届く）でも支持部材の間の床板ごとに分割される。
+    #[test]
+    fn test_cantilever_splits_at_real_beam() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 1500.0, 0.0));
+        model.elements.push(beam(1, 4, 5));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(
+            model.slabs.len(),
+            2,
+            "実梁の位置で支持部材の間の床板 2 枚へ分割"
+        );
+        for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
+            match &model.slabs[i].shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    extent,
+                } => {
+                    assert!((span[0] - expected[0]).abs() < 1e-9, "{span:?}");
+                    assert!((span[1] - expected[1]).abs() < 1e-9, "{span:?}");
+                    assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+                    assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                }
+                other => panic!("Attached ではない: {other:?}"),
+            }
+        }
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "冪等");
+    }
+
+    /// 実梁が途中節点で 2 要素に分かれていても、連結した全長で支持部材の間の床板ごとに分割される。
+    #[test]
+    fn test_cantilever_splits_at_spliced_real_beam() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 800.0, 0.0));
+        model.nodes.push(node(6, 2000.0, 1500.0, 0.0));
+        model.elements.push(beam(1, 4, 5));
+        model.elements.push(beam(2, 5, 6));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "2 要素の実梁でも分割");
+        for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
+            match &model.slabs[i].shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    extent,
+                } => {
+                    assert!((span[0] - expected[0]).abs() < 1e-9, "{span:?}");
+                    assert!((span[1] - expected[1]).abs() < 1e-9, "{span:?}");
+                    assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+                    assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                }
+                other => panic!("Attached ではない: {other:?}"),
+            }
+        }
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "冪等");
+    }
+
+    /// 小梁を消すと、同じ版仕様の隣り合う床板は 1 枚に統合される。
+    #[test]
+    fn test_cantilever_slabs_merge_when_joist_is_removed() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 1500.0, 0.0));
+        model.unassigned_joists.push(joist(0, 4, 5));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2);
+
+        model.unassigned_joists.clear();
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 1, "小梁を消すと統合");
+        match &model.slabs[0].shape {
+            SlabShape::Attached {
+                anchor: RegionAnchor::Line { span, .. },
+                extent,
+            } => {
+                assert!((span[0] - 0.0).abs() < 1e-9);
+                assert!((span[1] - 1.0).abs() < 1e-9);
+                assert!((extent[0] - 1500.0).abs() < 1e-6);
+                assert!((extent[1] - 1500.0).abs() < 1e-6);
+            }
+            other => panic!("Attached ではない: {other:?}"),
+        }
+        assert!(model.validate().is_ok(), "{:?}", model.validate().err());
+    }
+
+    /// 小梁が 2 本あれば支持部材の間の床板 3 枚に分割される。
+    #[test]
+    fn test_cantilever_splits_into_three_slabs() {
+        let mut model = cantilever_rect();
+        for (i, x) in [1000.0_f64, 3000.0].into_iter().enumerate() {
+            let (base, tip) = (4 + 2 * i as u32, 5 + 2 * i as u32);
+            model.nodes.push(node(base, x, 0.0, 0.0));
+            model.nodes.push(node(tip, x, 1500.0, 0.0));
+            model.unassigned_joists.push(joist(i as u32, base, tip));
+        }
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 3);
+        let spans: Vec<[f64; 2]> = model
+            .slabs
+            .iter()
+            .map(|s| match &s.shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    ..
+                } => *span,
+                other => panic!("Attached ではない: {other:?}"),
+            })
+            .collect();
+        assert!((spans[0][0] - 0.0).abs() < 1e-9);
+        assert!((spans[0][1] - 0.25).abs() < 1e-9, "{spans:?}");
+        assert!((spans[1][0] - 0.25).abs() < 1e-9, "{spans:?}");
+        assert!((spans[1][1] - 0.75).abs() < 1e-9, "{spans:?}");
+        assert!((spans[2][0] - 0.75).abs() < 1e-9, "{spans:?}");
+        assert!((spans[2][1] - 1.0).abs() < 1e-9, "{spans:?}");
+    }
+
+    /// 両端の柱へ集中（`Columns`）の取り付く床板は、小梁があっても分割しない。
+    #[test]
+    fn test_attached_columns_slab_is_not_split() {
+        let mut model = Model::default();
+        model.nodes.push(node(0, 0.0, 0.0, 0.0));
+        model.nodes.push(node(1, 4000.0, 0.0, 0.0));
+        model.nodes.push(node(2, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(3, 2000.0, 1500.0, 0.0));
+        model.elements.push(beam(0, 0, 1));
+        model.unassigned_joists.push(joist(0, 2, 3));
+        let sid = push_slab_section(&mut model, 150.0);
+        model.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Columns,
+                },
+                extent: [1500.0, 1500.0],
+            },
+            plate: plate(Some(sid), Vec::new()),
+        });
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 1, "Columns は分割しない");
+    }
+
+    /// 張り出し量が境界で折れる・段差がある・span が連続しない場合は統合しない。
+    #[test]
+    fn test_attached_slabs_merge_only_when_collinear() {
+        fn pair(span1: [f64; 2], ext1: [f64; 2], span2: [f64; 2], ext2: [f64; 2]) -> Model {
+            let mut model = Model::default();
+            model.nodes.push(node(0, 0.0, 0.0, 0.0));
+            model.nodes.push(node(1, 4000.0, 0.0, 0.0));
+            let sid = push_slab_section(&mut model, 150.0);
+            for (id, span, extent) in [(0u32, span1, ext1), (1, span2, ext2)] {
+                model.slabs.push(Slab {
+                    id: SlabId(id),
+                    shape: SlabShape::Attached {
+                        anchor: RegionAnchor::Line {
+                            nodes: [NodeId(0), NodeId(1)],
+                            span,
+                            transfer: LoadTransfer::Anchor,
+                        },
+                        extent,
+                    },
+                    plate: plate(Some(sid), Vec::new()),
+                });
+            }
+            model
+        }
+
+        let mut straight = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 3000.0]);
+        rebuild_floor_regions(&mut straight);
+        assert_eq!(straight.slabs.len(), 1, "直線的なら統合");
+
+        let mut kinked = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 1000.0]);
+        rebuild_floor_regions(&mut kinked);
+        assert_eq!(kinked.slabs.len(), 2, "折れるなら統合しない");
+
+        let mut stepped = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2100.0, 2200.0]);
+        rebuild_floor_regions(&mut stepped);
+        assert_eq!(stepped.slabs.len(), 2, "段差なら統合しない");
+
+        let mut gapped = pair([0.0, 0.4], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 3000.0]);
+        rebuild_floor_regions(&mut gapped);
+        assert_eq!(gapped.slabs.len(), 2, "span が連続しないなら統合しない");
+
+        // 境界の張り出し量が 0 で前後が逆側へ向かう（自己交差）なら統合しない。
+        let mut flipped = pair([0.0, 0.5], [500.0, 0.0], [0.5, 1.0], [0.0, -500.0]);
+        rebuild_floor_regions(&mut flipped);
+        assert_eq!(flipped.slabs.len(), 2, "自己交差になるなら統合しない");
+
+        // 境界に実部材（2 節点 Beam）があるなら統合しない。
+        let mut with_beam = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 3000.0]);
+        with_beam.nodes.push(node(2, 2000.0, 0.0, 0.0));
+        with_beam.nodes.push(node(3, 2000.0, 2000.0, 0.0));
+        with_beam.elements.push(beam(0, 2, 3));
+        rebuild_floor_regions(&mut with_beam);
+        assert_eq!(with_beam.slabs.len(), 2, "境界に実部材があれば統合しない");
+
+        // 境界の実部材が途中節点で 2 要素に分かれていても統合しない。
+        let mut spliced = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 3000.0]);
+        spliced.nodes.push(node(2, 2000.0, 0.0, 0.0));
+        spliced.nodes.push(node(3, 2000.0, 1000.0, 0.0));
+        spliced.nodes.push(node(4, 2000.0, 2000.0, 0.0));
+        spliced.elements.push(beam(0, 2, 3));
+        spliced.elements.push(beam(1, 3, 4));
+        rebuild_floor_regions(&mut spliced);
+        assert_eq!(
+            spliced.slabs.len(),
+            2,
+            "境界の実部材が 2 要素でも統合しない"
+        );
+    }
+
+    /// 取付き線に直交しない小梁、先端まで届かない小梁は分割境界にしない。
+    #[test]
+    fn test_cantilever_does_not_split_at_skewed_or_partial_joists() {
+        let mut skewed = cantilever_rect();
+        skewed.nodes.push(node(4, 1000.0, 0.0, 0.0));
+        skewed.nodes.push(node(5, 2000.0, 1500.0, 0.0));
+        skewed.unassigned_joists.push(joist(0, 4, 5));
+        rebuild_floor_regions(&mut skewed);
+        assert_eq!(skewed.slabs.len(), 1, "斜めは分割しない");
+
+        let mut partial = cantilever_rect();
+        partial.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        partial.nodes.push(node(5, 2000.0, 800.0, 0.0));
+        partial.unassigned_joists.push(joist(0, 4, 5));
+        rebuild_floor_regions(&mut partial);
+        assert_eq!(partial.slabs.len(), 1, "先端まで届かない");
     }
 
     #[test]

@@ -404,6 +404,7 @@ mod tests {
         model.wall_regions[0].name = "西面耐震壁".into();
         model.unassigned_posts.push(crate::model::SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(0), NodeId(3)],
             section: None,
@@ -468,6 +469,7 @@ mod tests {
         model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
         model.unassigned_posts.push(crate::model::SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(4), NodeId(5)],
             section: None,

@@ -113,6 +113,7 @@ fn split_by_post() -> Model {
         wall_plate_ids: vec![WallPlateId(0), WallPlateId(1)],
         posts: vec![SecondaryMember {
             gravity_end_shares: Some([0.5, 0.5]),
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Post,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(1)),
@@ -364,6 +365,7 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
     // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
     m.wall_regions[0].posts.push(SecondaryMember {
         gravity_end_shares: Some([0.5, 0.5]),
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(3)],
         section: Some(SectionId(1)),

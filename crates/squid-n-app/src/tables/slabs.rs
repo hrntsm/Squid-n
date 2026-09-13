@@ -1,12 +1,12 @@
 use crate::app::App;
 use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
-use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, SlabUsage};
+use squid_n_core::model::{AreaLoad, DistributionMethod, EndSupport, OneWayDir, SlabUsage};
 use squid_n_core::model::{RegionAnchor, SlabShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{
-    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName, SetSlabOneWay,
-    SetSlabUsage,
+    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName,
+    SetSecondaryMemberEndSupport, SetSlabOneWay, SetSlabUsage,
 };
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
@@ -133,6 +133,15 @@ fn one_way_label(o: Option<OneWayDir>) -> &'static str {
         None => "なし",
         Some(OneWayDir::X) => "X",
         Some(OneWayDir::Y) => "Y",
+    }
+}
+
+fn end_support_label(end_support: &[EndSupport; 2]) -> &'static str {
+    match end_support {
+        [EndSupport::Supported, EndSupport::Supported] => "支持-支持",
+        [EndSupport::Supported, EndSupport::Free] => "支持-自由（片持ち）",
+        [EndSupport::Free, EndSupport::Supported] => "自由-支持（片持ち）",
+        [EndSupport::Free, EndSupport::Free] => "自由-自由",
     }
 }
 
@@ -416,6 +425,96 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             .run(&mut app.core.model, Box::new(DeleteSlab { id }));
     }
     if had_pending {
+        app.core.scoped.staleness.mark_edited();
+    }
+
+    ui.add_space(8.0);
+    ui.strong("小梁（二次部材）");
+    ui.label(
+        "小梁は解析要素ではなく、床板から受けた荷重を大梁へ伝えます。端部支持条件「自由」は\
+         片持ち小梁（基端支持・先端自由）を表し、荷重は基端の鉛直反力として伝達します。",
+    );
+    let joists: Vec<squid_n_core::model::SecondaryMember> = app
+        .core
+        .model
+        .joists()
+        .filter(|sm| !app.core.model.secondary_member_materialized(sm))
+        .cloned()
+        .collect();
+    let mut pending_end_support: Vec<([NodeId; 2], [EndSupport; 2])> = Vec::new();
+    table_util::standard_table(
+        ui,
+        "secondary_joists_tbl",
+        &[
+            Col::text("所属"),
+            Col::text("両端節点"),
+            Col::text("断面"),
+            Col::name("支持条件"),
+        ],
+        joists.len(),
+        |row| {
+            let i = row.index();
+            let sm = &joists[i];
+            row.col(|ui| {
+                let owner = app
+                    .core
+                    .model
+                    .floor_regions
+                    .iter()
+                    .find(|r| r.secondary_joists.iter().any(|j| j.nodes == sm.nodes));
+                match owner {
+                    Some(r) if !r.name.is_empty() => table_util::text_cell(ui, &r.name),
+                    Some(r) => table_util::text_cell(ui, &format!("#{}", r.id.0)),
+                    None => table_util::muted_cell(ui, "未割当", "どの床領域にも所属していません"),
+                }
+            });
+            row.col(|ui| {
+                table_util::text_cell(ui, &format!("{}-{}", sm.nodes[0].0, sm.nodes[1].0));
+            });
+            row.col(|ui| {
+                let label = sm
+                    .section
+                    .and_then(|sid| app.core.model.sections.get(sid.index()))
+                    .map(|sec| sec.display_name())
+                    .unwrap_or_else(|| "―".to_string());
+                table_util::text_cell(ui, &label);
+            });
+            row.col(|ui| {
+                table_util::cell_combo(
+                    ui,
+                    ("joist_end_support", sm.nodes[0].0, sm.nodes[1].0),
+                    end_support_label(&sm.end_support),
+                    |ui| {
+                        for candidate in [
+                            [EndSupport::Supported, EndSupport::Supported],
+                            [EndSupport::Supported, EndSupport::Free],
+                            [EndSupport::Free, EndSupport::Supported],
+                        ] {
+                            if ui
+                                .selectable_label(
+                                    sm.end_support == candidate,
+                                    end_support_label(&candidate),
+                                )
+                                .clicked()
+                                && sm.end_support != candidate
+                            {
+                                pending_end_support.push((sm.nodes, candidate));
+                            }
+                        }
+                    },
+                );
+            });
+        },
+    );
+    let mut edited_end_support = false;
+    for (nodes, end_support) in pending_end_support {
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(SetSecondaryMemberEndSupport { nodes, end_support }),
+        );
+        edited_end_support = true;
+    }
+    if edited_end_support {
         app.core.scoped.staleness.mark_edited();
     }
 

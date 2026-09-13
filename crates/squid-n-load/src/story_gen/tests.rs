@@ -238,6 +238,7 @@ fn test_base_master_ignores_non_structural_slaves() {
     });
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(0)),
@@ -658,6 +659,7 @@ fn secondary_joist_model() -> Model {
     });
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),

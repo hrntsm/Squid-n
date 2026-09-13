@@ -2771,6 +2771,19 @@ fn test_import_stbbeam_as_secondary_member() {
     let sm = m.joists().next().expect("小梁 1 本");
     assert_eq!(sm.kind, SecondaryMemberKind::Joist);
     assert_eq!(sm.nodes, [NodeId(2), NodeId(3)]);
+    assert_eq!(
+        sm.end_support,
+        [
+            squid_n_core::model::EndSupport::Supported,
+            squid_n_core::model::EndSupport::Free
+        ],
+        "大梁に載る端は支持、自由端は Free として取り込む"
+    );
+    assert!(
+        report.notes.iter().any(|n| n.contains("自由端")),
+        "自由端の取り込みを通知: {:?}",
+        report.notes
+    );
     assert!(sm.section.is_some(), "断面参照が解決されるはず");
     assert!(
         m.sections[sm.section.unwrap().index()].material.is_some(),
@@ -2802,6 +2815,7 @@ fn test_secondary_members_roundtrip() {
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
     m.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
@@ -2809,6 +2823,7 @@ fn test_secondary_members_roundtrip() {
     });
     m.unassigned_posts.push(SecondaryMember {
         gravity_end_shares: None,
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),

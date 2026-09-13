@@ -1111,6 +1111,7 @@ fn copy_secondary(
             nodes: [a, b],
             section,
             name: sm.name.clone(),
+            end_support: sm.end_support,
         };
         match sm.kind {
             SecondaryMemberKind::Joist => model.unassigned_joists.push(new_sm),

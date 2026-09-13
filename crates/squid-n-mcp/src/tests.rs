@@ -837,6 +837,26 @@ fn test_parse_requires_wall_region_posts() {
     assert!(err.contains("posts"), "{err}");
 }
 
+#[test]
+fn test_parse_set_secondary_member_end_support() {
+    let cmd = parse_edit_command(&serde_json::json!({
+        "command": "SetSecondaryMemberEndSupport",
+        "nodes": [0, 1],
+        "end_support": ["Supported", "Free"]
+    }))
+    .expect("解析できる");
+    assert_eq!(cmd.label(), "二次部材の端部支持条件変更");
+}
+
+#[test]
+fn test_parse_requires_end_support() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetSecondaryMemberEndSupport",
+        "nodes": [0, 1]
+    }));
+    assert!(err.contains("end_support"), "{err}");
+}
+
 /// 廃止した手入力小梁ラインのコマンドは、黙って無視せず明示エラーにする（§3.4 F1）。
 #[test]
 fn test_parse_rejects_obsolete_set_floor_region_joists() {
@@ -862,6 +882,7 @@ fn mcpで間柱の端部負担率を指定し解除できる() {
     model
         .unassigned_posts
         .push(squid_n_core::model::SecondaryMember {
+            end_support: Default::default(),
             kind: squid_n_core::model::SecondaryMemberKind::Post,
             nodes: [NodeId(0), NodeId(1)],
             section: None,

@@ -15,7 +15,7 @@ use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{
-    ElementKind, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
+    EndSupport, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
 };
 
 use squid_n_core::ids::SlabId;
@@ -24,6 +24,7 @@ use crate::floor::{
     joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
     secondary_joist_distribution_split, simple_reactions, span_node_key, BeamLoad,
 };
+use crate::secondary::project_on_segment;
 
 /// 二次部材 1 本の識別キー（両端節点の順不同対）。
 ///
@@ -39,6 +40,8 @@ pub enum SupportAt {
     /// 別の二次部材の内部。逐次伝達を 1 段進める。`a` は受け側の材軸上の位置 [mm]
     /// （受け側の `nodes[0]` からの距離）。
     Secondary { key: SecondaryKey, a: f64 },
+    /// 自由端（`EndSupport::Free`）。荷重はこの端から出ていかない。
+    Free,
     /// どこにも載っていない。荷重の行き先がない（診断のエラー対象）。
     Unresolved,
 }
@@ -76,7 +79,7 @@ pub struct SecondaryTransfer {
     pub unresolved: Vec<SecondaryKey>,
     /// 支持関係が循環している二次部材（互いに載せ合う）。荷重を流せない。
     pub cyclic: Vec<SecondaryKey>,
-    /// どの二次部材にも載らなかった床領域分配の辺荷重。呼び出し側はこれだけを主架構へ
+    /// どの二次部材にも載らなかった床板分配の辺荷重。呼び出し側はこれだけを主架構へ
     /// 解決する（二次部材が受け持ったぶんは反力として渡るため、そのまま載せると
     /// 二重計上になる）。
     pub leftover_region_loads: Vec<BeamLoad>,
@@ -109,39 +112,11 @@ struct Axis {
     a: [f64; 3],
     b: [f64; 3],
     len: f64,
+    end_support: [EndSupport; 2],
 }
 
 fn coord(model: &Model, id: NodeId) -> Option<[f64; 3]> {
     model.nodes.get(id.index()).map(|n| n.coord)
-}
-
-/// 2 節点 `Beam` 要素の端点対（順不同）の集合。二次部材が実部材化済みかを
-/// 部材ごとの全要素走査なしで判定するために 1 回だけ構築する。
-fn beam_endpoint_keys(model: &Model) -> HashSet<SecondaryKey> {
-    model
-        .elements
-        .iter()
-        .filter(|e| e.kind == ElementKind::Beam && e.nodes.len() == 2)
-        .map(|e| span_node_key(e.nodes[0], e.nodes[1]))
-        .collect()
-}
-
-/// 点 `p` の線分 `a`→`b` 上の位置 [mm]（始点からの距離）。材軸から `tol` を超えて
-/// 離れている、または線分の外にある場合は `None`。
-fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option<f64> {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let len = dist3(a, b);
-    if len <= 1e-9 {
-        return None;
-    }
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-    let t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / (len * len);
-    let s = t * len;
-    if s < -tol || s > len + tol {
-        return None;
-    }
-    let proj = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
-    (dist3(proj, p) <= tol).then(|| s.clamp(0.0, len))
 }
 
 /// 逐次伝達の対象となる二次部材の材軸を集める。
@@ -149,11 +124,21 @@ fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option
 /// 実部材化済み（両端を持つ実 `Beam` がある）・退化（両端が同一・長さ 0）・
 /// 節点が引けないものは対象外（解析要素として直接扱われる、または荷重を持てない）。
 fn axes(model: &Model) -> Vec<Axis> {
-    let materialized = beam_endpoint_keys(model);
-    let mut out = Vec::new();
-    for sm in model.joists().chain(model.posts()) {
+    let mut out: Vec<Axis> = model
+        .secondary_joist_axes()
+        .into_iter()
+        .map(|ax| Axis {
+            key: span_node_key(ax.nodes[0], ax.nodes[1]),
+            nodes: ax.nodes,
+            a: ax.a,
+            b: ax.b,
+            len: ax.len,
+            end_support: ax.end_support,
+        })
+        .collect();
+    for sm in model.posts() {
         let (n0, n1) = (sm.nodes[0], sm.nodes[1]);
-        if n0 == n1 || materialized.contains(&span_node_key(n0, n1)) {
+        if n0 == n1 || model.secondary_member_materialized(sm) {
             continue;
         }
         let (Some(a), Some(b)) = (coord(model, n0), coord(model, n1)) else {
@@ -169,6 +154,7 @@ fn axes(model: &Model) -> Vec<Axis> {
             a,
             b,
             len,
+            end_support: sm.end_support,
         });
     }
     out
@@ -183,15 +169,23 @@ fn axes(model: &Model) -> Vec<Axis> {
 /// 主架構へ届かないときだけ、別の二次部材の**内部**に載っているかを見る。載っていれば
 /// その二次部材が受け側である（§3.4 F4）。端点どうしが一致するだけの取り付き
 /// （L 字・端部で集まる形）は、どちらも相手を支持しないため受け側にしない。
+/// ただし相手の端が自由端（`EndSupport::Free`）の場合は、その自由端が受け側になる
+/// （片持ち小梁の先端に載る先端リブなど）。
+///
+/// `self_end_is_free` が真なら、この端は自由端であり支持を探さない。
 /// どちらでもなければ行き先無しとする。
 fn support_of(
     self_key: SecondaryKey,
     node: NodeId,
     p: [f64; 3],
+    self_end_is_free: bool,
     axes: &[Axis],
     connected: &[bool],
     beams: &[crate::secondary::BeamSpanCandidate],
 ) -> SupportAt {
+    if self_end_is_free {
+        return SupportAt::Free;
+    }
     if connected.get(node.index()).copied().unwrap_or(false)
         || crate::secondary::best_span_position(beams, p, MEMBER_AXIS_TOL_MM).is_some()
     {
@@ -203,6 +197,11 @@ fn support_of(
             continue;
         }
         if other.nodes.contains(&node) {
+            let end = if other.nodes[0] == node { 0 } else { 1 };
+            if other.end_support[end] == EndSupport::Free {
+                let a = if end == 0 { 0.0 } else { other.len };
+                return SupportAt::Secondary { key: other.key, a };
+            }
             continue;
         }
         let Some(a) = project_on_segment(p, other.a, other.b, MEMBER_AXIS_TOL_MM) else {
@@ -341,8 +340,24 @@ pub fn solve(
     }
     let mut supports: HashMap<SecondaryKey, [SupportAt; 2]> = HashMap::new();
     for ax in &axes {
-        let s0 = support_of(ax.key, ax.nodes[0], ax.a, &axes, &connected, &beams);
-        let s1 = support_of(ax.key, ax.nodes[1], ax.b, &axes, &connected, &beams);
+        let s0 = support_of(
+            ax.key,
+            ax.nodes[0],
+            ax.a,
+            ax.end_support[0] == EndSupport::Free,
+            &axes,
+            &connected,
+            &beams,
+        );
+        let s1 = support_of(
+            ax.key,
+            ax.nodes[1],
+            ax.b,
+            ax.end_support[1] == EndSupport::Free,
+            &axes,
+            &connected,
+            &beams,
+        );
         let mut ends = [s0, s1];
         if let Some(r) = end_shares_by_key.get(&ax.key) {
             for k in 0..2 {
@@ -422,6 +437,17 @@ pub fn solve(
             let (ri, rj) = reactions_of(l, ax.len, end_shares_by_key.get(key).copied());
             r[0] += ri;
             r[1] += rj;
+        }
+        match ax.end_support {
+            [EndSupport::Free, EndSupport::Supported] => {
+                r[1] += r[0];
+                r[0] = 0.0;
+            }
+            [EndSupport::Supported, EndSupport::Free] => {
+                r[0] += r[1];
+                r[1] = 0.0;
+            }
+            _ => {}
         }
 
         let sup = supports

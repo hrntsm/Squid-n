@@ -2,6 +2,7 @@
 
 use super::*;
 use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, SlabId, WallPlateId, WallRegionId};
+use squid_n_core::model::EndSupport;
 use squid_n_core::model::SecondaryMember;
 use squid_n_core::model::{
     DistributionMethod, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
@@ -11,8 +12,8 @@ use squid_n_edit::{
     AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, AddUnassignedJoist,
     AddUnassignedPost, DeleteSlab, DeleteUnassignedJoist, DeleteUnassignedPost, DeleteWallPlate,
     SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent,
-    SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSlabOneWay, SetSlabSection, SetSlabUsage,
-    SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
+    SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSecondaryMemberEndSupport, SetSlabOneWay,
+    SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -272,6 +273,20 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 .ok_or("index が必要です")? as usize;
             Ok(Box::new(DeleteUnassignedJoist { index }))
         }
+        "SetSecondaryMemberEndSupport" => {
+            let ids = parse_node_ids(value.get("nodes").ok_or("nodes が必要です")?)?;
+            let nodes: [NodeId; 2] = ids
+                .try_into()
+                .map_err(|_| "nodes は 2 つの節点が必要です".to_string())?;
+            let end_support: [EndSupport; 2] = serde_json::from_value(
+                value
+                    .get("end_support")
+                    .cloned()
+                    .ok_or("end_support が必要です（[Supported/Free; 2]）")?,
+            )
+            .map_err(|e| format!("end_support の解析に失敗: {e}"))?;
+            Ok(Box::new(SetSecondaryMemberEndSupport { nodes, end_support }))
+        }
         "AddUnassignedPost" => {
             let sm: SecondaryMember = serde_json::from_value(
                 value
@@ -296,6 +311,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
              床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
              床領域: SetFloorRegionName, SetFloorRegionSecondaryJoists / \
+             二次部材: SetSecondaryMemberEndSupport / \
              壁領域: SetWallRegionPosts / \
              未割当: AddUnassignedJoist, DeleteUnassignedJoist, AddUnassignedPost, DeleteUnassignedPost）"
         )),

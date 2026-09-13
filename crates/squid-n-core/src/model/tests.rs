@@ -131,6 +131,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
             boundary: vec![],
             secondary_joists: vec![SecondaryMember {
                 gravity_end_shares: None,
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Post,
                 nodes: [NodeId(0), NodeId(1)],
                 section: None,
@@ -165,6 +166,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
 fn test_validate_rejects_duplicate_joist_endpoints() {
     let sm = SecondaryMember {
         gravity_end_shares: None,
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: None,
@@ -220,6 +222,7 @@ fn test_validate_rejects_joist_in_wall_region_posts() {
             wall_plate_ids: vec![],
             posts: vec![SecondaryMember {
                 gravity_end_shares: None,
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(0), NodeId(1)],
                 section: None,
@@ -1568,5 +1571,292 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
     assert!(
         model.validate().is_err(),
         "壁版が複数の壁領域から参照されている状態は検出されるはず"
+    );
+}
+
+/// 取り込み用の二次部材の自由端推定: 大梁に載る片持ち小梁の自由端だけが Free になる。
+#[test]
+fn infer_free_end_for_cantilever_joist() {
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [3000.0, 0.0, 0.0],
+        [3000.0, 3000.0, 0.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(2), NodeId(3)],
+        section: None,
+        name: "CA".into(),
+        end_support: Default::default(),
+    });
+
+    let inferred = model.infer_secondary_end_supports();
+    assert_eq!(inferred.len(), 1);
+    assert_eq!(
+        model.unassigned_joists[0].end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+}
+
+/// 先端リブは片持ち小梁の自由端に載る。リブの端は Supported のまま、
+/// 片持ちの先端が Free になる。
+#[test]
+fn infer_free_end_for_tip_rib_on_cantilevers() {
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [1000.0, 0.0, 0.0],
+        [1000.0, 3000.0, 0.0],
+        [5000.0, 0.0, 0.0],
+        [5000.0, 3000.0, 0.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    for (nodes, name) in [
+        ([NodeId(2), NodeId(3)], "CA"),
+        ([NodeId(4), NodeId(5)], "CB"),
+        ([NodeId(3), NodeId(5)], "RIB"),
+    ] {
+        model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
+            kind: SecondaryMemberKind::Joist,
+            nodes,
+            section: None,
+            name: name.into(),
+            end_support: Default::default(),
+        });
+    }
+
+    let inferred = model.infer_secondary_end_supports();
+    let by_name = |name: &str| {
+        model
+            .unassigned_joists
+            .iter()
+            .find(|sm| sm.name == name)
+            .expect("小梁")
+    };
+    assert_eq!(inferred.len(), 2, "片持ち 2 本の先端だけが Free");
+    assert_eq!(
+        by_name("CA").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+    assert_eq!(
+        by_name("CB").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+    assert_eq!(
+        by_name("RIB").end_support,
+        [EndSupport::Supported, EndSupport::Supported]
+    );
+}
+
+fn two_node_model(coords: &[[f64; 3]]) -> Model {
+    let mut model = Model::default();
+    for (i, c) in coords.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model
+}
+
+fn push_beam(model: &mut Model, id: u32, i: u32, j: u32) {
+    model.elements.push(ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+}
+
+fn push_joist(model: &mut Model, nodes: [u32; 2], name: &str) {
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(nodes[0]), NodeId(nodes[1])],
+        section: None,
+        name: name.into(),
+        end_support: Default::default(),
+    });
+}
+
+/// 材軸が連続する小梁（分割された小梁）の継ぎ目は自由端にしない。
+#[test]
+fn infer_does_not_free_collinear_spliced_joists() {
+    // 継ぎ目はどの大梁の材軸上にもない（幾何支持なし）。両端の大梁だけで支持される。
+    let mut model = two_node_model(&[
+        [-1000.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [7000.0, 0.0, 0.0],
+        [3000.0, 0.0, 0.0],
+    ]);
+    push_beam(&mut model, 0, 0, 1);
+    push_beam(&mut model, 1, 2, 3);
+    push_joist(&mut model, [1, 4], "A");
+    push_joist(&mut model, [4, 2], "B");
+
+    let inferred = model.infer_secondary_end_supports();
+    assert!(inferred.is_empty(), "継ぎ目は自由端にしない: {inferred:?}");
+    for sm in &model.unassigned_joists {
+        assert_eq!(sm.end_support, [EndSupport::Supported; 2]);
+    }
+}
+
+/// 材軸許容内の座標誤差がある継ぎ目は連続とみなし、自由端にしない。
+#[test]
+fn infer_treats_small_offset_splice_as_continuous() {
+    let mut model = two_node_model(&[
+        [-1000.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [6000.0, 3.0, 0.0],
+        [7000.0, 3.0, 0.0],
+        [3000.0, 0.0, 0.0],
+    ]);
+    push_beam(&mut model, 0, 0, 1);
+    push_beam(&mut model, 1, 2, 3);
+    push_joist(&mut model, [1, 4], "A");
+    push_joist(&mut model, [4, 2], "B");
+
+    let inferred = model.infer_secondary_end_supports();
+    assert!(
+        inferred.is_empty(),
+        "許容内の折れは自由端にしない: {inferred:?}"
+    );
+}
+
+/// 斜交する先端リブは材軸が連続とみなさず、片持ち小梁の先端を自由端に推定する。
+#[test]
+fn infer_frees_cantilever_tip_with_oblique_rib() {
+    let mut model = two_node_model(&[
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [3000.0, 0.0, 0.0],
+        [3000.0, 3000.0, 0.0],
+        [3776.5, 5897.8, 0.0],
+    ]);
+    push_beam(&mut model, 0, 0, 1);
+    push_joist(&mut model, [2, 3], "CA");
+    push_joist(&mut model, [3, 4], "RIB");
+
+    let inferred = model.infer_secondary_end_supports();
+    let by_name = |name: &str| {
+        model
+            .unassigned_joists
+            .iter()
+            .find(|sm| sm.name == name)
+            .expect("小梁")
+    };
+    assert_eq!(inferred.len(), 2, "両者の先端が Free: {inferred:?}");
+    assert_eq!(
+        by_name("CA").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+    assert_eq!(
+        by_name("RIB").end_support,
+        [EndSupport::Supported, EndSupport::Free]
+    );
+}
+
+/// どの部材にも載らない小梁（浮き）は自由端にしない（両端自由を作らない）。
+#[test]
+fn infer_does_not_free_floating_joist() {
+    let mut model = two_node_model(&[[0.0, 0.0, 0.0], [3000.0, 0.0, 0.0]]);
+    push_joist(&mut model, [0, 1], "FL");
+
+    let inferred = model.infer_secondary_end_supports();
+    assert!(inferred.is_empty(), "{inferred:?}");
+    assert_eq!(
+        model.unassigned_joists[0].end_support,
+        [EndSupport::Supported; 2]
+    );
+}
+
+/// 片持ちの間柱（基端が大梁、上端が自由）も自由端として推定する。
+#[test]
+fn infer_free_end_for_cantilever_post() {
+    let mut model = two_node_model(&[[0.0, 0.0, 0.0], [6000.0, 0.0, 0.0], [0.0, 0.0, 3000.0]]);
+    push_beam(&mut model, 0, 0, 1);
+    model.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: None,
+        kind: SecondaryMemberKind::Post,
+        nodes: [NodeId(0), NodeId(2)],
+        section: None,
+        name: "P".into(),
+        end_support: Default::default(),
+    });
+
+    let inferred = model.infer_secondary_end_supports();
+    assert_eq!(inferred.len(), 1);
+    assert_eq!(
+        model.unassigned_posts[0].end_support,
+        [EndSupport::Supported, EndSupport::Free]
     );
 }

@@ -575,6 +575,7 @@ mod tests {
     fn test_secondary(i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,

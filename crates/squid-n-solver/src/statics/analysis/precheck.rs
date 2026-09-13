@@ -387,7 +387,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             let n = gaps.short_cover + gaps.no_distribution;
             issues.push(
                 ModelIssue::model(format!(
-                    "床領域分配から荷重が得られない、または載荷区間がスパンの半分未満の\
+                    "床板分配から荷重が得られない、または載荷区間がスパンの半分未満の\
                      二次部材小梁が {n} 本あります。段差床・傾斜小梁・床板境界外では\
                      断面検定しません。"
                 ))
@@ -401,7 +401,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             let transfer = squid_n_load::cascade::solve(model, w_of, true);
             if !transfer.invalid_end_shares.is_empty() {
                 issues.push(ModelIssue::model(format!(
-                    "鉛直な二次部材の端部負担率が未指定または不正です（{} 本）。間柱の両端への負担率を非負・合計100%で指定してください。",
+                    "鉛直な二次部材の端部負担率が未指定または不正です（{} 本）。間柱の両端への負担率を非負・合計100%で指定し、自由端の負担率は0%にしてください。",
                     transfer.invalid_end_shares.len()
                 )));
             }
@@ -409,9 +409,137 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 issues.push(ModelIssue::model(format!(
                     "端部がどの主架構にも二次部材にも載っていない二次部材が {} 本あります。\
                          受け持った荷重の行き先がなく、解析へ渡りません。端部を大梁の材軸上、\
-                         または受け側となる二次部材の内法へ載せてください。",
+                         または受け側となる二次部材の内法・自由端へ載せてください\
+                         （自由端に載せる場合は端部の節点を共有してください）。",
                     transfer.unresolved.len()
                 )));
+            }
+            fn same_secondary(
+                a: &squid_n_core::model::SecondaryMember,
+                b: &squid_n_core::model::SecondaryMember,
+            ) -> bool {
+                if a.kind != b.kind {
+                    return false;
+                }
+                let (a0, a1) = (a.nodes[0], a.nodes[1]);
+                let (b0, b1) = (b.nodes[0], b.nodes[1]);
+                (a0 == b0 && a1 == b1) || (a0 == b1 && a1 == b0)
+            }
+
+            let both_free = model
+                .joists()
+                .chain(model.posts())
+                .filter(|sm| {
+                    !model.secondary_member_materialized(sm)
+                        && sm.end_support
+                            == [
+                                squid_n_core::model::EndSupport::Free,
+                                squid_n_core::model::EndSupport::Free,
+                            ]
+                })
+                .count();
+            if both_free != 0 {
+                issues.push(ModelIssue::model(format!(
+                    "両端が自由端の二次部材が {both_free} 本あります。支持がなく不安定なため、\
+                     少なくとも一端を支持として扱ってください。"
+                )));
+            }
+            let free_on_support = model
+                .joists()
+                .chain(model.posts())
+                .filter(|sm| {
+                    !model.secondary_member_materialized(sm)
+                        && sm.end_support.iter().enumerate().any(|(end, s)| {
+                            *s == squid_n_core::model::EndSupport::Free
+                                && model.node_has_geometric_support(sm.nodes[end], sm)
+                        })
+                })
+                .count();
+            if free_on_support != 0 {
+                issues.push(
+                    ModelIssue::model(format!(
+                        "幾何的には支持がある端を自由端として扱う二次部材が {free_on_support} 本あります。\
+                         支持として扱う場合は端部支持条件を確認してください。"
+                    ))
+                    .warn(),
+                );
+            }
+            let free_end_tie = model
+                .joists()
+                .chain(model.posts())
+                .filter(|sm| {
+                    !model.secondary_member_materialized(sm)
+                        && sm.end_support.iter().enumerate().any(|(end, s)| {
+                            *s == squid_n_core::model::EndSupport::Free
+                                && model.joists().chain(model.posts()).any(|other| {
+                                    !same_secondary(other, sm)
+                                        && other
+                                            .free_end()
+                                            .is_some_and(|fe| other.nodes[fe] == sm.nodes[end])
+                                })
+                        })
+                })
+                .count();
+            if free_end_tie != 0 {
+                issues.push(
+                    ModelIssue::model(format!(
+                        "自由端どうしが同じ節点に接する二次部材が {free_end_tie} 本あります。\
+                         どちらかを受け側（支持）として扱ってください。"
+                    ))
+                    .warn(),
+                );
+            }
+            let mut partial_edges = 0usize;
+            for slab in &model.slabs {
+                let squid_n_core::model::SlabShape::Attached {
+                    anchor:
+                        squid_n_core::model::RegionAnchor::Line {
+                            transfer: squid_n_core::model::LoadTransfer::Anchor,
+                            ..
+                        },
+                    ..
+                } = &slab.shape
+                else {
+                    continue;
+                };
+                let Some(coords) = slab.boundary_coords(model) else {
+                    continue;
+                };
+                for k in 1..coords.len() {
+                    let p0 = coords[k];
+                    let p1 = coords[(k + 1) % coords.len()];
+                    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if len <= 1e-9 {
+                        continue;
+                    }
+                    let cover = squid_n_load::secondary::beams_along_segment(
+                        model,
+                        p0,
+                        p1,
+                        squid_n_core::geom::MEMBER_AXIS_TOL_MM,
+                    );
+                    if cover.is_empty() {
+                        continue;
+                    }
+                    if !squid_n_load::secondary::coverage_covers_full(
+                        &cover,
+                        len,
+                        squid_n_core::geom::MEMBER_AXIS_TOL_MM,
+                    ) {
+                        partial_edges += 1;
+                    }
+                }
+            }
+            if partial_edges != 0 {
+                issues.push(
+                    ModelIssue::model(format!(
+                        "取り付く床板の辺を全長で覆わない実部材が {partial_edges} 辺あります。\
+                         覆われていない部分の荷重は他の支持辺へ回るため、その実部材には載りません。\
+                         辺の全長を覆うように実部材を配置してください。"
+                    ))
+                    .warn(),
+                );
             }
             if !transfer.cyclic.is_empty() {
                 issues.push(ModelIssue::model(format!(

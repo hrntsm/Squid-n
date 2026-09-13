@@ -318,6 +318,7 @@ mod tests {
         model
             .unassigned_posts
             .push(squid_n_core::model::SecondaryMember {
+                end_support: Default::default(),
                 kind: squid_n_core::model::SecondaryMemberKind::Post,
                 nodes: [NodeId(0), NodeId(1)],
                 section: None,

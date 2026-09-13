@@ -9,13 +9,15 @@ use std::collections::{HashMap, HashSet};
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::{NodeId, SlabId};
-use squid_n_core::model::{ElementKind, MemberLoadKind, Model, SecondaryMemberKind, Slab};
+use squid_n_core::model::{ElementKind, MemberLoadKind, Model, Slab};
 use squid_n_core::units::GRAVITY_MM_S2;
 
 use super::distribute_slab_resolved;
 use super::fem::{simple_beam_moment_at, simple_reactions};
 use super::geometry::dist3;
 use super::types::{BeamLoad, LoadShape, LoadTarget};
+use crate::secondary::project_on_segment;
+use squid_n_core::model::SecondaryJoistAxis;
 
 /// 節点対を順不同キー `(min, max)` に正規化する。
 pub fn span_node_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
@@ -109,6 +111,14 @@ fn flip_member_load(load: &MemberLoadKind, len: f64) -> MemberLoadKind {
     }
 }
 
+/// `loads` の材軸位置を材端で鏡映する。片持ち梁の基端を座標原点へ移す用途に使う。
+pub fn flip_member_loads(loads: &[MemberLoadKind], len: f64) -> Vec<MemberLoadKind> {
+    loads
+        .iter()
+        .map(|load| flip_member_load(load, len))
+        .collect()
+}
+
 fn member_load_total(load: &MemberLoadKind) -> f64 {
     match *load {
         MemberLoadKind::Point { p, .. } => p,
@@ -192,9 +202,9 @@ fn simple_beam_max_deflection(
     max_d
 }
 
-/// 単純梁の設計部材力（重ね合わせ）。
+/// 梁の設計部材力（重ね合わせ）。支持条件（両端支持／片持ち）は算定側が選ぶ。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SimpleBeamExtremes {
+pub struct BeamExtremes {
     /// 最大曲げモーメント [N·mm]（絶対値）。
     pub m_max: f64,
     /// 最大せん断力 [N]（絶対値）。
@@ -211,9 +221,9 @@ pub fn simple_beam_extremes(
     span: f64,
     young: f64,
     inertia: f64,
-) -> SimpleBeamExtremes {
+) -> BeamExtremes {
     if span <= 1e-9 || loads.is_empty() {
-        return SimpleBeamExtremes {
+        return BeamExtremes {
             m_max: 0.0,
             q_max: 0.0,
             deflection: 0.0,
@@ -230,10 +240,129 @@ pub fn simple_beam_extremes(
         q_max = q_max.max(simple_beam_shear_at(loads, x, r_i).abs());
     }
     let total: f64 = loads.iter().map(member_load_total).sum();
-    SimpleBeamExtremes {
+    BeamExtremes {
         m_max,
         q_max,
         deflection: simple_beam_max_deflection(loads, span, young, inertia),
+        w_equiv: total / span,
+    }
+}
+
+/// `MemberLoadKind` 1件のみが作用する片持ち梁（基端 i、先端 j 自由）の、
+/// 基端から `x` [mm] の曲げモーメント。
+fn single_load_cantilever_moment_at(load: &MemberLoadKind, l: f64, x: f64) -> f64 {
+    match *load {
+        MemberLoadKind::Point { a, p } => {
+            let a = a.clamp(0.0, l);
+            if x < a {
+                -p * (a - x)
+            } else {
+                0.0
+            }
+        }
+        MemberLoadKind::Distributed { a, b, w1, w2 } => {
+            if b <= a {
+                return 0.0;
+            }
+            let s1 = x.clamp(a, b);
+            if b <= s1 {
+                return 0.0;
+            }
+            let m = (w2 - w1) / (b - a);
+            let c = w1 - m * a;
+            let f = |s: f64| m * s.powi(3) / 3.0 + (c - m * x) * s * s / 2.0 - c * x * s;
+            -(f(b) - f(s1))
+        }
+    }
+}
+
+/// `loads` 列の片持ち梁（基端 i、先端 j 自由）の曲げモーメントを、基端から `x` [mm] で評価する。
+fn cantilever_moment_at(loads: &[MemberLoadKind], l: f64, x: f64) -> f64 {
+    loads
+        .iter()
+        .map(|load| single_load_cantilever_moment_at(load, l, x))
+        .sum()
+}
+
+/// `loads` 列のうち基端から `x` [mm] より先にある荷重の合計 [N]（片持ち梁のせん断力）。
+fn cantilever_shear_at(loads: &[MemberLoadKind], x: f64) -> f64 {
+    loads
+        .iter()
+        .map(|load| match *load {
+            MemberLoadKind::Point { a, p } => {
+                if a > x {
+                    p
+                } else {
+                    0.0
+                }
+            }
+            MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                if b <= a {
+                    return 0.0;
+                }
+                let s1 = x.clamp(a, b);
+                if b <= s1 {
+                    return 0.0;
+                }
+                let w_s1 = w1 + (w2 - w1) * (s1 - a) / (b - a);
+                (w_s1 + w2) / 2.0 * (b - s1)
+            }
+        })
+        .sum()
+}
+
+/// 片持ち梁（基端固定・先端自由）の最大たわみ [mm]。
+fn cantilever_max_deflection(loads: &[MemberLoadKind], span: f64, young: f64, inertia: f64) -> f64 {
+    let ei = young * inertia;
+    if span <= 1e-9 || ei <= 1e-9 || loads.is_empty() {
+        return 0.0;
+    }
+    const N: usize = JOIST_DEFLECTION_SAMPLE_DIVISIONS;
+    let h = span / N as f64;
+    let kappa: Vec<f64> = (0..=N)
+        .map(|i| cantilever_moment_at(loads, span, i as f64 * h) / ei)
+        .collect();
+    let mut slope = vec![0.0_f64; N + 1];
+    for j in 0..N {
+        slope[j + 1] = slope[j] + (kappa[j] + kappa[j + 1]) / 2.0 * h;
+    }
+    let mut max_d = 0.0_f64;
+    let mut v = 0.0_f64;
+    for j in 0..N {
+        v += (slope[j] + slope[j + 1]) / 2.0 * h;
+        max_d = max_d.max(v.abs());
+    }
+    max_d
+}
+
+/// `loads` を片持ち梁（基端固定・先端自由）として重ね合わせ、設計に用いる最大値を返す。
+pub fn cantilever_extremes(
+    loads: &[MemberLoadKind],
+    span: f64,
+    young: f64,
+    inertia: f64,
+) -> BeamExtremes {
+    if span <= 1e-9 || loads.is_empty() {
+        return BeamExtremes {
+            m_max: 0.0,
+            q_max: 0.0,
+            deflection: 0.0,
+            w_equiv: 0.0,
+        };
+    }
+    const N: usize = JOIST_FORCE_SAMPLE_DIVISIONS;
+    let mut m_max = 0.0_f64;
+    let mut q_max = 0.0_f64;
+    for i in 0..=N {
+        let x = span * i as f64 / N as f64;
+        m_max = m_max.max(cantilever_moment_at(loads, span, x).abs());
+        q_max = q_max.max(cantilever_shear_at(loads, x).abs());
+    }
+    let total: f64 = loads.iter().map(member_load_total).sum();
+    BeamExtremes {
+        m_max,
+        q_max,
+        deflection: cantilever_max_deflection(loads, span, young, inertia),
         w_equiv: total / span,
     }
 }
@@ -271,24 +400,6 @@ fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
     ]
-}
-
-/// 点 `p` が線分 `a`–`b` の材軸から `tol` 以内なら、`a` からの材軸距離 [mm]。
-fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option<f64> {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let len = dist3(a, b);
-    if len <= 1e-9 {
-        return None;
-    }
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-    let s = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / (len * len) * len;
-    if s < -tol || s > len + tol {
-        return None;
-    }
-    let t = (s / len).clamp(0.0, 1.0);
-    let proj = lerp3(a, b, t);
-    let d = dist3(p, proj);
-    (d <= tol).then_some(s.clamp(0.0, len))
 }
 
 #[cfg(test)]
@@ -415,41 +526,12 @@ fn nearest_beam_dist(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> f64 {
     best
 }
 
-struct JoistAxis {
-    key: (NodeId, NodeId),
-    nodes: (NodeId, NodeId),
-    a: [f64; 3],
-    b: [f64; 3],
-}
-
-fn joist_axes(model: &Model) -> Vec<JoistAxis> {
-    let mut out = Vec::new();
-    for sm in model.joists() {
-        if sm.kind != SecondaryMemberKind::Joist {
-            continue;
-        }
-        let (n0, n1) = (sm.nodes[0], sm.nodes[1]);
-        if n0 == n1 || beam_between(model, n0, n1) {
-            continue;
-        }
-        let (Some(a), Some(b)) = (coord(model, n0), coord(model, n1)) else {
-            continue;
-        };
-        let len = dist3(a, b);
-        if len <= 1e-9 {
-            continue;
-        }
-        out.push(JoistAxis {
-            key: span_node_key(n0, n1),
-            nodes: (n0, n1),
-            a,
-            b,
-        });
-    }
-    out
-}
-
-fn segment_on_beam_only(model: &Model, p0: [f64; 3], p1: [f64; 3], axes: &[JoistAxis]) -> bool {
+fn segment_on_beam_only(
+    model: &Model,
+    p0: [f64; 3],
+    p1: [f64; 3],
+    axes: &[SecondaryJoistAxis],
+) -> bool {
     // 小梁材軸上にあれば大梁並走でも落とさない（10 mm 以内の並走で欠落するのを防ぐ）。
     let on_joist = axes.iter().any(|axis| {
         project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_some()
@@ -535,7 +617,7 @@ pub fn secondary_joist_distribution_split(
     HashMap<(NodeId, NodeId), SecondaryJoistLoads>,
     Vec<BeamLoad>,
 ) {
-    let axes = joist_axes(model);
+    let axes = model.secondary_joist_axes();
     let tagged = tagged_span_loads(model, &w_of);
     let mut expected: HashMap<(NodeId, NodeId), HashSet<SlabId>> = HashMap::new();
     for (slab_id, bl) in &tagged {
@@ -549,28 +631,33 @@ pub fn secondary_joist_distribution_split(
             if !span_belongs_to_axis(model, p0, p1, axis) {
                 continue;
             }
-            if !slab_in_joist_scope(model, axis.key, *slab_id) {
+            let key = span_node_key(axis.nodes[0], axis.nodes[1]);
+            if !slab_in_joist_scope(model, key, *slab_id) {
                 continue;
             }
-            expected.entry(axis.key).or_default().insert(*slab_id);
+            expected.entry(key).or_default().insert(*slab_id);
         }
     }
 
-    let candidates: Vec<&JoistAxis> = axes
+    let candidates: Vec<&SecondaryJoistAxis> = axes
         .iter()
-        .filter(|axis| expected.get(&axis.key).is_some_and(|s| !s.is_empty()))
+        .filter(|axis| {
+            let key = span_node_key(axis.nodes[0], axis.nodes[1]);
+            expected.get(&key).is_some_and(|s| !s.is_empty())
+        })
         .collect();
 
     let mut map: HashMap<(NodeId, NodeId), SecondaryJoistLoads> = HashMap::new();
     for axis in &candidates {
-        let expected_slab_ids = expected.get(&axis.key).cloned().unwrap_or_default();
+        let key = span_node_key(axis.nodes[0], axis.nodes[1]);
+        let expected_slab_ids = expected.get(&key).cloned().unwrap_or_default();
         let rep_slab_id = expected_slab_ids.iter().copied().min_by_key(|id| id.0);
         map.insert(
-            axis.key,
+            key,
             SecondaryJoistLoads {
                 member_loads: Vec::new(),
                 rep_slab_id,
-                span_nodes: axis.nodes,
+                span_nodes: (axis.nodes[0], axis.nodes[1]),
                 expected_slab_ids,
                 contributed_slab_ids: HashSet::new(),
             },
@@ -629,12 +716,13 @@ pub fn secondary_joist_distribution_split(
             continue;
         }
         let axis = candidates[ai];
+        let key = span_node_key(axis.nodes[0], axis.nodes[1]);
         let mapped = map_loads_onto_axis(&piece, loaded_len, s0, s1);
-        let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
+        let entry = map.entry(key).or_insert_with(|| SecondaryJoistLoads {
             member_loads: Vec::new(),
             rep_slab_id: Some(*slab_id),
-            span_nodes: axis.nodes,
-            expected_slab_ids: expected.get(&axis.key).cloned().unwrap_or_default(),
+            span_nodes: (axis.nodes[0], axis.nodes[1]),
+            expected_slab_ids: expected.get(&key).cloned().unwrap_or_default(),
             contributed_slab_ids: HashSet::new(),
         });
         entry.member_loads.extend(mapped);
@@ -657,7 +745,12 @@ fn span_points(model: &Model, bl: &BeamLoad) -> Option<([f64; 3], [f64; 3], f64)
     Some((p0, p1, loaded_len))
 }
 
-fn span_belongs_to_axis(model: &Model, p0: [f64; 3], p1: [f64; 3], axis: &JoistAxis) -> bool {
+fn span_belongs_to_axis(
+    model: &Model,
+    p0: [f64; 3],
+    p1: [f64; 3],
+    axis: &SecondaryJoistAxis,
+) -> bool {
     if project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_none()
         || project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_none()
     {
@@ -671,14 +764,9 @@ fn span_belongs_to_axis(model: &Model, p0: [f64; 3], p1: [f64; 3], axis: &JoistA
 
 fn tagged_span_loads(model: &Model, w_of: &impl Fn(&Slab) -> f64) -> Vec<(SlabId, BeamLoad)> {
     let mut out = Vec::new();
-    for region in &model.floor_regions {
-        for &sid in &region.slab_ids {
-            let Some(slab) = model.slab(sid) else {
-                continue;
-            };
-            for bl in distribute_slab_resolved(model, slab, w_of(slab)) {
-                out.push((slab.id, bl));
-            }
+    for slab in &model.slabs {
+        for bl in distribute_slab_resolved(model, slab, w_of(slab)) {
+            out.push((slab.id, bl));
         }
     }
     out
@@ -691,7 +779,8 @@ fn slab_in_joist_scope(model: &Model, joist_key: (NodeId, NodeId), slab_id: Slab
             .iter()
             .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == joist_key)
         {
-            return region.slab_ids.contains(&slab_id);
+            return region.slab_ids.contains(&slab_id)
+                || model.slab(slab_id).is_some_and(|s| s.is_attached());
         }
     }
     true
@@ -715,7 +804,7 @@ pub fn orient_member_loads(
     }
 }
 
-/// 床領域分配から荷重が得られず、断面検定対象から外れる二次部材小梁の本数。
+/// 床板分配から荷重が得られず、断面検定対象から外れる二次部材小梁の本数。
 ///
 /// 実部材化済み・断面未割当・退化は数えない。
 pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
@@ -864,6 +953,7 @@ mod tests {
         region.slab_ids = vec![SlabId(0), SlabId(1)];
         region.secondary_joists = vec![SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: None,
@@ -917,6 +1007,88 @@ mod tests {
             ex.deflection
         );
         assert!((ex.w_equiv - w).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cantilever_extremes_uniform_matches_closed_form() {
+        // 等分布 w・L の片持ち: M=wL²/2、Q=wL、δ=wL⁴/(8EI)。
+        let w = 10.0_f64;
+        let l = 4000.0_f64;
+        let loads = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: w,
+            w2: w,
+        }];
+        let e = 205_000.0;
+        let i = 1.0e8;
+        let ex = cantilever_extremes(&loads, l, e, i);
+        let m = w * l * l / 2.0;
+        let q = w * l;
+        let d = w * l.powi(4) / (8.0 * e * i);
+        assert!((ex.m_max - m).abs() / m < 1e-6, "m_max={}", ex.m_max);
+        assert!((ex.q_max - q).abs() / q < 1e-6, "q_max={}", ex.q_max);
+        assert!(
+            (ex.deflection - d).abs() / d < 2e-3,
+            "defl={}",
+            ex.deflection
+        );
+        assert!((ex.w_equiv - w).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cantilever_extremes_point_at_tip_matches_closed_form() {
+        // 先端集中 P の片持ち: M=PL、Q=P、δ=PL³/(3EI)。
+        let l = 4000.0_f64;
+        let p = 10_000.0_f64;
+        let loads = vec![MemberLoadKind::Point { a: l, p }];
+        let e = 205_000.0;
+        let i = 1.0e8;
+        let ex = cantilever_extremes(&loads, l, e, i);
+        let m = p * l;
+        let d = p * l.powi(3) / (3.0 * e * i);
+        assert!((ex.m_max - m).abs() / m < 1e-6, "m_max={}", ex.m_max);
+        assert!((ex.q_max - p).abs() / p < 1e-6, "q_max={}", ex.q_max);
+        assert!(
+            (ex.deflection - d).abs() / d < 2e-3,
+            "defl={}",
+            ex.deflection
+        );
+    }
+
+    #[test]
+    fn cantilever_extremes_flipped_base_matches() {
+        // 基端が nodes[1] のときは荷重を鏡映して評価する。自由端から 1000 の荷重は
+        // 基端から 3000 であり、鏡映後は基端から 3000 の荷重と一致する。
+        let l = 4000.0_f64;
+        let p = 10_000.0_f64;
+        let e = 205_000.0;
+        let i = 1.0e8;
+        let base_at_node1 = vec![MemberLoadKind::Point { a: 1000.0, p }];
+        let flipped = flip_member_loads(&base_at_node1, l);
+        let expected = vec![MemberLoadKind::Point { a: 3000.0, p }];
+        let a = cantilever_extremes(&flipped, l, e, i);
+        let b = cantilever_extremes(&expected, l, e, i);
+        assert!((a.m_max - b.m_max).abs() / b.m_max < 1e-9);
+        assert!((a.deflection - b.deflection).abs() / b.deflection < 1e-9);
+    }
+
+    #[test]
+    fn flip_member_loads_mirrors_distributed() {
+        let loads = vec![MemberLoadKind::Distributed {
+            a: 500.0,
+            b: 1500.0,
+            w1: 3.0,
+            w2: 5.0,
+        }];
+        let flipped = flip_member_loads(&loads, 4000.0);
+        match &flipped[0] {
+            MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                assert_eq!((*a, *b), (2500.0, 3500.0));
+                assert_eq!((*w1, *w2), (5.0, 3.0));
+            }
+            other => panic!("Distributed ではない: {other:?}"),
+        }
     }
 
     #[test]
@@ -1118,6 +1290,7 @@ mod tests {
             .secondary_joists
             .push(SecondaryMember {
                 gravity_end_shares: None,
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(6), NodeId(7)],
                 section: None,
@@ -1238,6 +1411,7 @@ mod tests {
             .secondary_joists
             .push(SecondaryMember {
                 gravity_end_shares: None,
+                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(8), NodeId(9)],
                 section: None,
@@ -1331,6 +1505,7 @@ mod tests {
         });
         model.unassigned_joists.push(SecondaryMember {
             gravity_end_shares: None,
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(10), NodeId(11)],
             section: None,
