@@ -399,7 +399,7 @@ pub struct ResultsBundle {
     pub member_checks: Vec<MemberChecks>,
     /// 節点単位の検定結果（柱梁接合部・パネルゾーン・冷間成形耐力比など）。
     pub joint_checks: Vec<JointCheck>,
-    /// 床の中での小梁設計（単純支持梁）。実部材化された小梁は全体 FEM で検定する
+    /// 床の中での小梁設計（単純梁・片持ち梁）。実部材化された小梁は全体 FEM で検定する
     /// ためここには含めない。
     pub joist_checks: Vec<JoistCheck>,
     /// スラブ（床）の設計（一方向曲げ）。

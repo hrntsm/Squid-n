@@ -155,6 +155,40 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             wall_rebuild.unmatched_old_regions
         ));
     }
+    let inferred_free_ends = model.infer_secondary_end_supports();
+    if !inferred_free_ends.is_empty() {
+        let mut names: Vec<String> = inferred_free_ends
+            .iter()
+            .map(|(nodes, _)| {
+                model
+                    .joists()
+                    .chain(model.posts())
+                    .find(|sm| sm.nodes == *nodes)
+                    .map(|sm| {
+                        if sm.name.is_empty() {
+                            format!("{}–{}", nodes[0].0, nodes[1].0)
+                        } else {
+                            sm.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("{}–{}", nodes[0].0, nodes[1].0))
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        const MAX_LIST: usize = 10;
+        let suffix = if names.len() > MAX_LIST {
+            format!("、他 {} 本", names.len() - MAX_LIST)
+        } else {
+            String::new()
+        };
+        names.truncate(MAX_LIST);
+        notes.push(format!(
+            "幾何的に支持のない二次部材の端を自由端（片持ち）として {} 端取り込みました（{}{suffix}）",
+            inferred_free_ends.len(),
+            names.join("・")
+        ));
+    }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
     warn_unsupported(&unsupported, &mut warnings);
 
@@ -523,6 +557,7 @@ fn build_secondaries(
             nodes: [NodeId(ni), NodeId(nj)],
             section,
             name: s.name,
+            end_support: Default::default(),
         };
         match s.kind {
             squid_n_core::model::SecondaryMemberKind::Joist => {

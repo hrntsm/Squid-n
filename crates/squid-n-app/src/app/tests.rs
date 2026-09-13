@@ -3738,6 +3738,7 @@ fn test_floor_design_skips_materialized_joist() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(0)),
@@ -3835,6 +3836,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(0)),
@@ -3864,6 +3866,106 @@ fn test_floor_design_checks_secondary_member_joist() {
         jr.w
     );
     assert!(jr.m_max > 0.0);
+}
+
+/// 片持ちの未割当小梁（端部支持条件 Free）も片持ち梁として検定する。
+#[test]
+fn test_floor_design_checks_cantilever_joist() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{
+        EndSupport, SecondaryMember, SecondaryMemberKind, Section, SlabUsage,
+    };
+
+    let mut model = make_square_slab_test_model();
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    model.nodes.push(mk_mid(4, 2000.0, 0.0));
+    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    let plate = model.slabs[0].plate.clone();
+    model.slabs = vec![
+        Slab {
+            id: squid_n_core::ids::SlabId(0),
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            },
+            plate: plate.clone(),
+        },
+        Slab {
+            id: squid_n_core::ids::SlabId(1),
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            },
+            plate,
+        },
+    ];
+    model.floor_regions[0].slab_ids =
+        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+    model.unassigned_joists.push(SecondaryMember {
+        end_support: [EndSupport::Supported, EndSupport::Free],
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        name: "J1".into(),
+    });
+    model.validate().expect("validate");
+    let app = App {
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "片持ち小梁が1件設計される");
+    let (_sid, _target, jr) = &joists[0];
+    let simple = 11.85 * 4000.0_f64.powi(2) / 8.0;
+    assert!(
+        jr.m_max > simple * 3.0,
+        "片持ちの曲げが単純梁の 3 倍超: m={} simple={simple}",
+        jr.m_max
+    );
+
+    // 非片持ちの未割当小梁は検定対象外（表に「未」として残る）。
+    let mut model2 = app.core.model.clone();
+    model2.unassigned_joists[0].end_support = Default::default();
+    let app2 = App {
+        core: AppCore {
+            model: model2,
+            ..Default::default()
+        },
+        ..App::default()
+    };
+    let (joists2, _) = app2.floor_design_checks();
+    assert_eq!(joists2.len(), 1);
+    assert!(joists2[0].2.unchecked, "未割当の非片持ち小梁は検定しない");
 }
 
 /// 断面未割当の二次部材小梁は表から消さず判定「未」になる。
@@ -3911,6 +4013,7 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: None,
@@ -4006,6 +4109,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         );
         r.slab_ids = vec![SlabId(1), SlabId(2)];
         r.secondary_joists.push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
             section: Some(SectionId(0)),
@@ -4110,6 +4214,7 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
         );
         r.slab_ids = vec![SlabId(0), SlabId(1)];
         r.secondary_joists.push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(0)),
@@ -4205,6 +4310,7 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(0)),
@@ -6051,6 +6157,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         }],
         // 小梁: 大梁 y=0 の中間 (4000,0) と大梁 y=6000 の中間 (4000,6000) を結ぶ。
         unassigned_joists: vec![SecondaryMember {
+            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
             section: Some(SectionId(0)),

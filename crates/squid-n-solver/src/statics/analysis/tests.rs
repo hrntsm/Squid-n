@@ -1403,6 +1403,7 @@ fn test_model_issues_warns_unassigned_joist() {
         support_spring: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(n), NodeId(n + 1)],
         section: Some(SectionId(0)),
@@ -1427,6 +1428,253 @@ fn test_model_issues_warns_unassigned_joist() {
     // 存在自体を許さない（エラーで止める）。
     assert_eq!(issue.severity, IssueSeverity::Error);
     assert!(precheck_model(&model).is_err(), "解析を止める");
+
+    // 片持ち小梁は所属がなくても取付き線の支持辺から荷重を受けるためエラーにしない。
+    model.unassigned_joists[0].end_support = [
+        squid_n_core::model::EndSupport::Supported,
+        squid_n_core::model::EndSupport::Free,
+    ];
+    let issues = model_issues(&model);
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.message.contains("どの床領域にも所属しない小梁")),
+        "片持ち小梁は所属なしのエラーにしない"
+    );
+
+    // 実部材化済み（両端節点を結ぶ実 Beam がある）小梁も所属なしのエラーにしない。
+    let (a, b) = (
+        model.unassigned_joists[0].nodes[0],
+        model.unassigned_joists[0].nodes[1],
+    );
+    model.elements.push(squid_n_core::model::ElementData {
+        id: ElemId(model.elements.len() as u32),
+        kind: squid_n_core::model::ElementKind::Beam,
+        nodes: [a, b].into_iter().collect(),
+        section: None,
+        local_axis: squid_n_core::model::LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [
+            squid_n_core::model::EndCondition::Fixed,
+            squid_n_core::model::EndCondition::Fixed,
+        ],
+        force_regime: squid_n_core::model::ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model.unassigned_joists[0].end_support = Default::default();
+    let issues = model_issues(&model);
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.message.contains("どの床領域にも所属しない小梁")),
+        "実部材化済みの小梁は所属なしのエラーにしない"
+    );
+}
+
+/// 両端が自由端の二次部材は不安定としてエラーにする。
+#[test]
+fn test_model_issues_errors_both_free_secondary() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[500.0, 0.0, 0.0], [800.0, 0.0, 0.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.unassigned_joists.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(n), NodeId(n + 1)],
+        section: Some(SectionId(0)),
+        name: "両端自由".into(),
+        end_support: [EndSupport::Free, EndSupport::Free],
+    });
+
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("両端が自由端"))
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("両端自由のエラーがない: {msgs:?}")
+        });
+    assert_eq!(issue.severity, IssueSeverity::Error);
+}
+
+/// 幾何的には支持がある端を自由端として扱う場合は警告する。
+#[test]
+fn test_model_issues_warns_free_end_on_support() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[500.0, 0.0, 0.0], [800.0, 0.0, 0.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.unassigned_joists.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(n), NodeId(n + 1)],
+        section: Some(SectionId(0)),
+        name: "自由端が大梁上".into(),
+        end_support: [EndSupport::Free, EndSupport::Supported],
+    });
+
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("自由端として扱う"))
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("自由端指定の警告がない: {msgs:?}")
+        });
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+}
+
+/// 片持ち小梁の自由端に載る二次部材の端を Free にすると警告する。
+#[test]
+fn test_model_issues_warns_free_end_on_free_tip() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [
+        [200.0, 0.0, 0.0],
+        [200.0, 3000.0, 0.0],
+        [800.0, 0.0, 0.0],
+        [800.0, 3000.0, 0.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    for (nodes, end_support, name) in [
+        ([n, n + 1], [EndSupport::Supported, EndSupport::Free], "CA"),
+        (
+            [n + 2, n + 3],
+            [EndSupport::Supported, EndSupport::Free],
+            "CB",
+        ),
+        (
+            [n + 1, n + 3],
+            [EndSupport::Free, EndSupport::Supported],
+            "RIB",
+        ),
+    ] {
+        model.unassigned_joists.push(SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(nodes[0]), NodeId(nodes[1])],
+            section: None,
+            name: name.into(),
+            end_support,
+        });
+    }
+
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("自由端どうしが同じ節点"))
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("自由端の接続の警告がない: {msgs:?}")
+        });
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+}
+
+/// 取り付く床板の辺を全長で覆わない実部材は警告する。
+#[test]
+fn test_model_issues_warns_partial_beam_on_attached_edge() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, RegionAnchor, Slab,
+        SlabPlate, SlabShape,
+    };
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    // 先端辺の半分だけを覆う実部材。
+    for (i, c) in [[0.0, 1501.0, 0.0], [500.0, 1501.0, 0.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.elements.push(ElementData {
+        id: ElemId(model.elements.len() as u32),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(n), NodeId(n + 1)].into_iter().collect(),
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model.slabs.push(Slab {
+        id: SlabId(model.slabs.len() as u32),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: squid_n_core::model::LoadTransfer::Anchor,
+            },
+            extent: [1500.0, 1500.0],
+        },
+        plate: SlabPlate::default(),
+    });
+
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("全長で覆わない実部材"))
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("部分被覆の警告がない: {msgs:?}")
+        });
+    assert_eq!(issue.severity, IssueSeverity::Warning);
 }
 
 /// 大梁の床領域に載らない浮き床板は警告し、解析は止めない。

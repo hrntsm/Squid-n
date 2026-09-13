@@ -20,6 +20,9 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0012](0012-stbridge-partial-roundtrip.md) | accepted | ST-Bridge は完全往復を保証しない |
 | [0013](0013-adopt-wall-element-model.md) | accepted | 耐震壁は壁エレメント置換モデルを採用し、TVLEM は採用しない |
 | [0014](0014-schema-compatibility.md) | accepted | スキーマ互換は初回リリースまで維持しない |
+| [0015](0015-cantilever-secondary-members.md) | accepted | 片持ち小梁は支持条件で表し、基端モーメントは伝達しない |
+| [0016](0016-attached-slabs-between-members.md) | accepted | 取り付く床板は支持部材の間ごとに表す |
+| [0017](0017-attached-slab-support-edges.md) | accepted | 取り付く床板の荷重は、全長を覆う支持部材の辺へ最近接負担面積で分配する |
 
 ## 規約
 

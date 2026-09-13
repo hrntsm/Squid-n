@@ -2,7 +2,7 @@
 
 use super::*;
 use squid_n_core::ids::*;
-use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
+use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
 use std::collections::HashSet;
 
 fn secondary_member_ok(model: &Model, sm: &SecondaryMember) -> bool {
@@ -449,5 +449,103 @@ impl EditCommand for SetWallRegionPostSection {
 
     fn label(&self) -> &str {
         "壁領域間柱断面変更"
+    }
+}
+
+/// 二次部材（小梁・間柱）の端部支持条件を変更する。
+///
+/// 端点対で対象を探し、床領域内・壁領域内・未割当のいずれにあっても設定する。
+/// 端点対が同じ部材と一致する場合は端点の並び順を読み替えて適用する。対象が一意に
+/// 定まらない場合（同じ端点の小梁と間柱が併存する等）と、同じ条件の場合は Noop。
+pub struct SetSecondaryMemberEndSupport {
+    pub nodes: [NodeId; 2],
+    pub end_support: [EndSupport; 2],
+}
+
+fn find_secondary_mut(model: &mut Model, nodes: [NodeId; 2]) -> Option<&mut SecondaryMember> {
+    let want = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+    let key = |sm: &SecondaryMember| {
+        (
+            sm.nodes[0].0.min(sm.nodes[1].0),
+            sm.nodes[0].0.max(sm.nodes[1].0),
+        )
+    };
+    let count = model
+        .unassigned_joists
+        .iter()
+        .filter(|sm| key(sm) == want)
+        .count()
+        + model
+            .unassigned_posts
+            .iter()
+            .filter(|sm| key(sm) == want)
+            .count()
+        + model
+            .floor_regions
+            .iter()
+            .flat_map(|r| r.secondary_joists.iter())
+            .filter(|sm| key(sm) == want)
+            .count()
+        + model
+            .wall_regions
+            .iter()
+            .flat_map(|r| r.posts.iter())
+            .filter(|sm| key(sm) == want)
+            .count();
+    if count != 1 {
+        return None;
+    }
+    if let Some(sm) = model
+        .unassigned_joists
+        .iter_mut()
+        .find(|sm| key(sm) == want)
+    {
+        return Some(sm);
+    }
+    if let Some(sm) = model.unassigned_posts.iter_mut().find(|sm| key(sm) == want) {
+        return Some(sm);
+    }
+    for region in &mut model.floor_regions {
+        if let Some(sm) = region
+            .secondary_joists
+            .iter_mut()
+            .find(|sm| key(sm) == want)
+        {
+            return Some(sm);
+        }
+    }
+    for region in &mut model.wall_regions {
+        if let Some(sm) = region.posts.iter_mut().find(|sm| key(sm) == want) {
+            return Some(sm);
+        }
+    }
+    None
+}
+
+impl EditCommand for SetSecondaryMemberEndSupport {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(sm) = find_secondary_mut(model, self.nodes) else {
+            return Box::new(Noop);
+        };
+        let reversed = sm.nodes != self.nodes;
+        let new_support = if reversed {
+            [self.end_support[1], self.end_support[0]]
+        } else {
+            self.end_support
+        };
+        let old = sm.end_support;
+        if old == new_support {
+            return Box::new(Noop);
+        }
+        sm.end_support = new_support;
+        let inverse = if reversed { [old[1], old[0]] } else { old };
+        Box::new(SetSecondaryMemberEndSupport {
+            nodes: self.nodes,
+            end_support: inverse,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材の端部支持条件変更"
     }
 }

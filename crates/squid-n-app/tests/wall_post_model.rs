@@ -188,6 +188,7 @@ fn wall_post_model() -> Model {
         });
     }
     model.unassigned_posts.push(SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(8), NodeId(9)],
         section: Some(SectionId(3)),

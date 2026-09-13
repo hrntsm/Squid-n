@@ -8,7 +8,8 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SectionId};
 use squid_n_core::model::{
-    ElementData, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory, Node, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Node, Section,
 };
 use squid_n_core::units::GRAVITY_MM_S2;
 
@@ -50,6 +51,7 @@ fn beam(id: u32, i: u32, j: u32) -> ElementData {
 
 fn joist(a: u32, b: u32, name: &str) -> SecondaryMember {
     SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
@@ -211,6 +213,7 @@ fn vertical_post_splits_load_in_half() {
     m.elements.push(beam(0, 0, 1)); // 下の梁
     m.elements.push(beam(1, 2, 3)); // 上の梁
     m.unassigned_posts.push(SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -368,6 +371,7 @@ fn floating_joist_without_load_is_not_reported() {
     m.nodes.push(node(0, 0.0, 0.0, 0.0));
     m.nodes.push(node(1, 4000.0, 0.0, 0.0));
     m.unassigned_joists.push(SecondaryMember {
+        end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: None,
@@ -393,4 +397,198 @@ fn materialized_joist_is_skipped() {
 
     let t = solved(&m);
     assert!(t.members.is_empty(), "実部材化済みは対象外");
+}
+
+/// 片持ち小梁（`free_at` が自由端の位置）を作る。
+fn cantilever(a: u32, b: u32, free_at: usize, name: &str) -> SecondaryMember {
+    let mut sm = joist(a, b, name);
+    sm.end_support = if free_at == 0 {
+        [EndSupport::Free, EndSupport::Supported]
+    } else {
+        [EndSupport::Supported, EndSupport::Free]
+    };
+    sm
+}
+
+/// 大梁 0-1 に載る片持ち小梁の自重は、基端の反力だけになって主架構へ渡る。
+#[test]
+fn cantilever_joist_transfers_to_base_only() {
+    let mut m = base_model();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],       // 0 大梁端
+        [6000.0, 0.0, 0.0],    // 1 大梁端
+        [3000.0, 0.0, 0.0],    // 2 基端（大梁のスパン上）
+        [3000.0, 4000.0, 0.0], // 3 自由端
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.unassigned_joists.push(cantilever(2, 3, 1, "SB"));
+
+    let t = solved(&m);
+    let key = span_node_key(NodeId(2), NodeId(3));
+    let sm = t.members.get(&key).expect("片持ち小梁");
+    assert_eq!(
+        sm.supports,
+        [SupportAt::Primary, SupportAt::Free],
+        "基端のみ支持"
+    );
+    let expected = w_self() * 4000.0;
+    assert!((sm.reactions[0] - expected).abs() / expected < 1e-9);
+    assert_eq!(sm.reactions[1], 0.0);
+    assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
+    assert!(t.cyclic.is_empty());
+}
+
+/// 基端が nodes[1] の片持ち小梁も、全反力が基端へ渡る。
+#[test]
+fn cantilever_joist_base_at_second_node() {
+    let mut m = base_model();
+    for (i, c) in [
+        [0.0, 4000.0, 0.0],    // 0 大梁端
+        [6000.0, 4000.0, 0.0], // 1 大梁端
+        [3000.0, 0.0, 0.0],    // 2 自由端
+        [3000.0, 4000.0, 0.0], // 3 基端（大梁のスパン上）
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.unassigned_joists.push(cantilever(2, 3, 0, "SB"));
+
+    let t = solved(&m);
+    let key = span_node_key(NodeId(2), NodeId(3));
+    let sm = t.members.get(&key).expect("片持ち小梁");
+    assert_eq!(sm.supports, [SupportAt::Free, SupportAt::Primary]);
+    let expected = w_self() * 4000.0;
+    assert_eq!(sm.reactions[0], 0.0);
+    assert!((sm.reactions[1] - expected).abs() / expected < 1e-9);
+    assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
+}
+
+/// 先端リブは片持ち小梁の自由端に載れる。リブの反力は自由端を通り、
+/// 片持ち小梁の基端へまとめて渡る（荷重は消えない）。
+#[test]
+fn tip_rib_on_cantilever_free_ends_cascades_to_bases() {
+    let mut m = base_model();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],       // 0 大梁端
+        [6000.0, 0.0, 0.0],    // 1 大梁端
+        [1000.0, 0.0, 0.0],    // 2 片持ち A 基端（大梁のスパン上）
+        [1000.0, 3000.0, 0.0], // 3 片持ち A 自由端
+        [5000.0, 0.0, 0.0],    // 4 片持ち B 基端（大梁のスパン上）
+        [5000.0, 3000.0, 0.0], // 5 片持ち B 自由端
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.unassigned_joists.push(cantilever(2, 3, 1, "CA"));
+    m.unassigned_joists.push(cantilever(4, 5, 1, "CB"));
+    m.unassigned_joists.push(joist(3, 5, "RIB"));
+
+    let t = solved(&m);
+    let ca = t
+        .members
+        .get(&span_node_key(NodeId(2), NodeId(3)))
+        .expect("片持ち A");
+    let cb = t
+        .members
+        .get(&span_node_key(NodeId(4), NodeId(5)))
+        .expect("片持ち B");
+    let rib = t
+        .members
+        .get(&span_node_key(NodeId(3), NodeId(5)))
+        .expect("先端リブ");
+
+    for (joist, base) in [(&ca, NodeId(2)), (&cb, NodeId(4))] {
+        assert_eq!(joist.supports[1], SupportAt::Free);
+        assert_eq!(joist.reactions[1], 0.0, "自由端の反力は 0");
+        assert_eq!(joist.nodes[0], base);
+    }
+    assert!(matches!(rib.supports[0], SupportAt::Secondary { .. }));
+    assert!(matches!(rib.supports[1], SupportAt::Secondary { .. }));
+
+    let expected_total = w_self() * (3000.0 * 2.0 + 4000.0);
+    let total = ca.reactions[0] + cb.reactions[0];
+    assert!(
+        (total - expected_total).abs() / expected_total < 1e-9,
+        "総和={total} expected={expected_total}"
+    );
+    assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
+    assert!(t.cyclic.is_empty());
+}
+
+/// 取り付く床板の辺荷重は、境界の片持ち小梁（二次部材）へ渡り、反力として
+/// 基端の主架構へ流れる。取付き辺の残りは主架構への辺荷重として残る。
+#[test]
+fn attached_slab_load_reaches_side_joist() {
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{AreaLoad, LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
+    let w = 0.005_f64;
+    let mut m = base_model();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],    // 0 大梁端（取付き線）
+        [6000.0, 0.0, 0.0], // 1 大梁端
+        [0.0, 1500.0, 0.0], // 2 小梁の自由端
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.unassigned_joists.push(cantilever(0, 2, 1, "J"));
+    m.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1500.0, 1500.0],
+        },
+        plate: SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        },
+    });
+
+    let t = solve(&m, |_| w, true);
+    let joist = t
+        .members
+        .get(&span_node_key(NodeId(0), NodeId(2)))
+        .expect("小梁");
+    // 左辺の小梁は最寄り負担面積 d²/2 を受ける。
+    let joist_slab = w * (1500.0 * 1500.0 / 2.0);
+    let expected = joist_slab + w_self() * 1500.0;
+    assert!(
+        (joist.reactions[0] - expected).abs() / expected < 0.02,
+        "基端反力={} expected={expected}",
+        joist.reactions[0]
+    );
+    assert_eq!(joist.reactions[1], 0.0, "自由端の反力は 0");
+    assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
+
+    let leftover_total: f64 = t
+        .leftover_region_loads
+        .iter()
+        .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+        .sum();
+    let rest = w * (6000.0 * 1500.0 - 1500.0 * 1500.0 / 2.0);
+    assert!(
+        (leftover_total - rest).abs() / rest < 0.02,
+        "取付き辺 {leftover_total} expected={rest}"
+    );
 }
