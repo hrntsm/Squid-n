@@ -13,7 +13,7 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0005](0005-materials-on-sections.md) | accepted | 材料は断面が持つ |
 | [0006](0006-wall-elements-generated-from-wall-plates.md) | accepted | 壁エレメントは壁版から都度生成する派生物とする |
 | [0007](0007-floor-regions-slabs-secondary-members.md) | accepted | 床は床領域・床板・二次部材で表し、解析要素は柱と大梁までとする |
-| [0008](0008-secondary-member-load-cascade.md) | accepted | 二次部材の荷重は支持相手へ逐次伝達し、交点は常にピンとする |
+| [0008](0008-secondary-member-load-cascade.md) | superseded by ADR-0018 | 二次部材の荷重は支持相手へ逐次伝達し、交点は常にピンとする |
 | [0009](0009-fail-loud-unassigned-inputs.md) | accepted | 未設定の材料・断面を既定値で埋めない |
 | 0010 | — | 欠番（HHT-α 廃止は handoff と現行仕様で足りるため ADR 化しない） |
 | [0011](0011-no-gpu-reserved-crates.md) | accepted | GPU は恒久的に実装せず、予約クレートを置かない |
@@ -23,6 +23,8 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0015](0015-cantilever-secondary-members.md) | accepted | 片持ち小梁は支持条件で表し、基端モーメントは伝達しない |
 | [0016](0016-attached-slabs-between-members.md) | accepted | 取り付く床板は支持部材の間ごとに表す |
 | [0017](0017-attached-slab-support-edges.md) | accepted | 取り付く床板の荷重は、全長を覆う支持部材の辺へ最近接負担面積で分配する |
+| [0018](0018-explicit-gravity-supports.md) | accepted | 壁自重の支持辺と鉛直二次部材の端部負担率を明示する |
+| [0019](0019-material-wall-section-and-directional-strength.md) | accepted | 壁の材料別実断面と正負別せん断耐力を採用する |
 
 ## 規約
 

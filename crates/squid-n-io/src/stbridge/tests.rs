@@ -1973,6 +1973,7 @@ fn test_wall_roundtrip_export_import() {
         steel_material: None,
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -2076,6 +2077,7 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
         steel_material: None,
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
@@ -2527,6 +2529,7 @@ fn test_secondary_members_roundtrip() {
     m.elements.push(member(0, false, 0));
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
     m.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
@@ -2534,6 +2537,7 @@ fn test_secondary_members_roundtrip() {
         name: "B1".into(),
     });
     m.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(2)],

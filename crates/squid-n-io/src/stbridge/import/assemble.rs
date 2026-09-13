@@ -553,6 +553,7 @@ fn build_secondaries(
             }
         }
         let sm = squid_n_core::model::SecondaryMember {
+            gravity_end_shares: None,
             kind: s.kind,
             nodes: [NodeId(ni), NodeId(nj)],
             section,
@@ -759,6 +760,7 @@ fn build_walls(
         }
         let id = WallPlateId(model.wall_plates.len() as u32);
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id,
             shape: WallPlateShape::Enclosed { boundary },
             section,

@@ -277,6 +277,7 @@ mod tests {
 
     fn secondary_member(id: u32, section: Option<SectionId>) -> SecondaryMember {
         SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
@@ -458,6 +459,7 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let joists = vec![squid_n_core::model::SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
@@ -480,6 +482,7 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Post,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],

@@ -64,6 +64,7 @@ enum Branch {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HysteresisMaterial {
     pub rule: HysteresisRule,
+    negative_rule: Option<HysteresisRule>,
     committed: HystState,
     trial: HystState,
 }
@@ -72,8 +73,30 @@ impl HysteresisMaterial {
     pub fn new(rule: HysteresisRule) -> Self {
         Self {
             rule,
+            negative_rule: None,
             committed: HystState::default(),
             trial: HystState::default(),
+        }
+    }
+
+    /// 負側の包絡線を指定する。履歴則の種類と初期剛性は正側と一致させること。
+    pub fn with_negative_rule(mut self, rule: HysteresisRule) -> Self {
+        assert_eq!(
+            std::mem::discriminant(&self.rule),
+            std::mem::discriminant(&rule)
+        );
+        let kp = self.rule.skeleton(0.0).1;
+        let kn = rule.skeleton(0.0).1;
+        assert!((kp - kn).abs() <= 1e-10 * kp.abs());
+        self.negative_rule = Some(rule);
+        self
+    }
+
+    fn rule_for(&self, direction: f64) -> &HysteresisRule {
+        if direction < 0.0 {
+            self.negative_rule.as_ref().unwrap_or(&self.rule)
+        } else {
+            &self.rule
         }
     }
 
@@ -84,8 +107,8 @@ impl HysteresisMaterial {
 
     /// 反対側の目標点（劣化係数適用）。
     fn opposite_target_degraded(&self, dir: f64, degrade: f64) -> (f64, f64) {
-        let ty = self.rule.yield_deformation();
-        let my = self.rule.yield_strength();
+        let ty = self.rule_for(dir).yield_deformation();
+        let my = self.rule_for(dir).yield_strength();
         if dir > 0.0 {
             if self.committed.max_pos.0.abs() > 1e-15 {
                 (self.committed.max_pos.0, self.committed.max_pos.1 * degrade)
@@ -104,7 +127,8 @@ impl HysteresisMaterial {
     /// 降伏したか。
     fn has_yielded(&self) -> bool {
         let ty = self.rule.yield_deformation();
-        self.committed.max_pos.0.abs() >= ty || self.committed.max_neg.0.abs() >= ty
+        self.committed.max_pos.0.abs() >= ty
+            || self.committed.max_neg.0.abs() >= self.rule_for(-1.0).yield_deformation()
     }
 
     /// 最大経験変形（絶対値）。
@@ -127,7 +151,7 @@ impl HysteresisMaterial {
         }
 
         if self.rule.is_retrograde() {
-            let (m, kt) = self.rule.skeleton(theta);
+            let (m, kt) = self.rule_for(theta).skeleton(theta);
             s.theta = theta;
             s.m = m;
             s.kt = kt;
@@ -145,7 +169,7 @@ impl HysteresisMaterial {
         let reversed = c.dir != 0.0 && dir_new != c.dir;
         if reversed {
             s.reversal = (c.theta, c.m);
-            let ty = self.rule.yield_deformation();
+            let ty = self.rule_for(c.theta).yield_deformation();
             if matches!(c.branch, Branch::Skeleton) {
                 if c.theta > ty {
                     s.peak_count_pos = c.peak_count_pos + 1;
@@ -176,20 +200,15 @@ impl HysteresisMaterial {
             } else if matches!(c.branch, Branch::Reloading { .. })
                 || matches!(c.branch, Branch::InnerLoop { .. })
             {
-                let (prev_origin, prev_target, outer) = match c.branch {
-                    Branch::Reloading { origin, target } => (origin, target, target),
-                    Branch::InnerLoop {
-                        origin,
-                        outer_target,
-                        ..
-                    } => (origin, outer_target, outer_target),
-                    _ => ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0)),
+                let prev_origin = match c.branch {
+                    Branch::Reloading { origin, .. } => origin,
+                    Branch::InnerLoop { origin, .. } => origin,
+                    _ => (0.0, 0.0),
                 };
-                let _ = prev_target;
                 s.branch = Branch::InnerLoop {
                     origin: (c.theta, c.m),
                     target: prev_origin,
-                    outer_target: outer,
+                    outer_target: self.opposite_target(dir_new),
                 };
             } else if yielded {
                 let ku = self.unloading_slope(c.theta, c.m);
@@ -209,7 +228,7 @@ impl HysteresisMaterial {
         s.branch = branch_out;
 
         if matches!(s.branch, Branch::Skeleton) {
-            let ty = self.rule.yield_deformation();
+            let ty = self.rule_for(theta).yield_deformation();
             if theta > c.max_pos.0 && theta > ty {
                 s.max_pos = (theta, m);
             }
@@ -223,18 +242,18 @@ impl HysteresisMaterial {
 
     /// 反転点からの除荷剛性。
     fn unloading_slope(&self, tr: f64, mr: f64) -> f64 {
-        let ty = self.rule.yield_deformation();
-        let my = self.rule.yield_strength();
+        let ty = self.rule_for(tr).yield_deformation();
+        let my = self.rule_for(tr).yield_strength();
         if tr.abs() < 1e-15 {
             return my / ty;
         }
-        if self.rule.is_takeda() {
+        if self.rule_for(tr).is_takeda() {
             let ku = self
-                .rule
+                .rule_for(tr)
                 .unloading_stiffness(self.max_deformation())
                 .unwrap_or(mr / tr);
             let k1 = self
-                .rule
+                .rule_for(tr)
                 .crack_point()
                 .map(|(mc, tc)| mc / tc)
                 .unwrap_or(my / ty);
@@ -249,7 +268,9 @@ impl HysteresisMaterial {
         let degrade = s.degrade_factor(self.rule.degradation_rate());
         match s.branch {
             Branch::Skeleton => {
-                let (m, k) = self.rule.skeleton_with_degradation(theta, degrade);
+                let (m, k) = self
+                    .rule_for(theta)
+                    .skeleton_with_degradation(theta, degrade);
                 (m, k, Branch::Skeleton)
             }
             Branch::Unloading { ku } => {
@@ -260,7 +281,7 @@ impl HysteresisMaterial {
                     let theta_zero = tr - mr / ku;
                     let origin = (theta_zero, 0.0);
                     let target = self.opposite_target_degraded(s.dir, degrade);
-                    let (m2, k2) = reload_line(&self.rule, origin, target, theta);
+                    let (m2, k2) = reload_line(self.rule_for(s.dir), origin, target, theta);
                     (m2, k2, Branch::Reloading { origin, target })
                 } else {
                     (m, ku, Branch::Unloading { ku })
@@ -273,10 +294,12 @@ impl HysteresisMaterial {
                     theta <= target.0
                 };
                 if reached {
-                    let (m, k) = self.rule.skeleton_with_degradation(theta, degrade);
+                    let (m, k) = self
+                        .rule_for(theta)
+                        .skeleton_with_degradation(theta, degrade);
                     (m, k, Branch::Skeleton)
                 } else {
-                    let (m, k) = reload_line(&self.rule, origin, target, theta);
+                    let (m, k) = reload_line(self.rule_for(s.dir), origin, target, theta);
                     (m, k, Branch::Reloading { origin, target })
                 }
             }
@@ -291,7 +314,13 @@ impl HysteresisMaterial {
                     theta <= target.0
                 };
                 if reached_target {
-                    let (m, k) = reload_line(&self.rule, target, outer_target, theta);
+                    if s.dir * (theta - outer_target.0) >= 0.0 {
+                        let (m, k) = self
+                            .rule_for(theta)
+                            .skeleton_with_degradation(theta, degrade);
+                        return (m, k, Branch::Skeleton);
+                    }
+                    let (m, k) = reload_line(self.rule_for(s.dir), target, outer_target, theta);
                     (
                         m,
                         k,
@@ -301,7 +330,7 @@ impl HysteresisMaterial {
                         },
                     )
                 } else {
-                    let (m, k) = reload_line(&self.rule, origin, target, theta);
+                    let (m, k) = reload_line(self.rule_for(s.dir), origin, target, theta);
                     (
                         m,
                         k,
@@ -315,12 +344,17 @@ impl HysteresisMaterial {
             }
             Branch::Masing { reversal } => {
                 let (tr, qr) = reversal;
-                let arg = (tr - theta).abs() / 2.0;
-                let (g_mag, g_tan) = self.rule.skeleton(arg);
-                let q = qr - (tr - theta).signum() * 2.0 * g_mag;
-                let rejoined = s.dir * theta >= tr.abs();
+                let rule = self.rule_for(s.dir);
+                let scale = (self.rule.yield_strength() + self.rule_for(-1.0).yield_strength())
+                    / rule.yield_strength();
+                let arg = (tr - theta).abs() / scale;
+                let (g_mag, g_tan) = rule.skeleton(arg);
+                let q = qr - (tr - theta).signum() * scale * g_mag;
+                let opposite_peak =
+                    tr.abs() * rule.yield_deformation() / self.rule_for(tr).yield_deformation();
+                let rejoined = s.dir * theta >= opposite_peak;
                 if rejoined {
-                    let (m, k) = self.rule.skeleton(theta);
+                    let (m, k) = self.rule_for(theta).skeleton(theta);
                     (m, k, Branch::Skeleton)
                 } else {
                     (q, g_tan.max(1e-9), Branch::Masing { reversal })
@@ -333,7 +367,7 @@ impl HysteresisMaterial {
                     theta <= target.0
                 };
                 if reached {
-                    let (m, k) = self.rule.skeleton(theta);
+                    let (m, k) = self.rule_for(theta).skeleton(theta);
                     (m, k, Branch::Skeleton)
                 } else {
                     let dt = target.0 - origin.0;
@@ -403,6 +437,79 @@ mod tests {
     use super::*;
     use crate::hysteresis::rule::{max_point, retrograde, standard, takeda};
     use approx::assert_relative_eq;
+
+    #[test]
+    fn asymmetric_envelopes_preserve_initial_stiffness_and_cyclic_limits() {
+        for kind in 0..5 {
+            let rule = |q: f64| {
+                let crack = (q / 3.0, q / 3000.0);
+                let yield_point = (q, q / 1000.0);
+                let ultimate = (q, q * 10.0);
+                match kind {
+                    0 => HysteresisRule::MaxPointOriented {
+                        crack,
+                        yield_point,
+                        ultimate,
+                    },
+                    1 => HysteresisRule::Retrograde {
+                        crack,
+                        yield_point,
+                        ultimate,
+                    },
+                    2 => HysteresisRule::Standard {
+                        crack,
+                        yield_point,
+                        ultimate,
+                    },
+                    3 => HysteresisRule::OriginOriented {
+                        yield_point,
+                        ultimate,
+                    },
+                    _ => HysteresisRule::Takeda {
+                        crack,
+                        yield_point,
+                        ultimate,
+                        alpha: 0.4,
+                    },
+                }
+            };
+            let mut m = HysteresisMaterial::new(rule(100.0)).with_negative_rule(rule(200.0));
+            assert_relative_eq!(m.probe(0.001).0, 1.0, epsilon = 1e-10);
+            assert_relative_eq!(m.probe(-0.001).0, -1.0, epsilon = 1e-10);
+            let mut previous = 0.0;
+            for target in [0.5, -0.8, 0.7, -0.6, 0.03, -0.02, 0.9] {
+                let start = previous;
+                for step in 1..=100 {
+                    let u = start + (target - start) * step as f64 / 100.0;
+                    let (q, k) = m.trial(u);
+                    assert!(
+                        (-200.0 - 1e-7..=100.0 + 1e-7).contains(&q),
+                        "履歴則{kind}, u={u}, q={q}"
+                    );
+                    assert!(q.is_finite() && k.is_finite());
+                    let (_, tangent) = m.probe(u);
+                    let forward = (m.probe(u + 1e-8).0 - q) / 1e-8;
+                    let backward = (q - m.probe(u - 1e-8).0) / 1e-8;
+                    // 折点では中央差分が両側接線の平均になるため、片側接線と照合する。
+                    assert!(
+                        (tangent - forward).abs().min((tangent - backward).abs()) < 1e-3,
+                        "履歴則{kind}, u={u}, 接線{tangent}, 片側差分({forward}, {backward})"
+                    );
+                    m.commit();
+                    previous = u;
+                }
+            }
+            assert_relative_eq!(m.probe(1.0).0, 100.0, epsilon = 1e-7);
+            let before = m.probe(-1.0);
+            m.trial(0.0);
+            m.revert();
+            assert_eq!(before, m.probe(-1.0));
+            let snapshot = m.serialize_state();
+            let mut restored = HysteresisMaterial::new(rule(100.0));
+            restored.deserialize_state(&snapshot).unwrap();
+            assert_eq!(m.probe(-1.0), restored.probe(-1.0));
+        }
+    }
 
     #[test]
     fn test_hysteresis_monotonic_follows_skeleton() {

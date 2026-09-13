@@ -1,6 +1,7 @@
 //! 壁関連の型（開口・壁属性・雑壁・鉄骨/BRB/PCa 属性など）。
 
 use super::*;
+use crate::geom::vec3::{dot, norm, sub, unit};
 
 /// 複数開口の取り扱い（耐震壁の開口。RC 規準）。
 /// 建物全体で一律に選択する（`Model::multi_opening_mode`）。
@@ -454,4 +455,127 @@ pub struct PcaBeamAttr {
     pub sigma_y_joint: f64,
     /// 接合面の位置: 断面上端からの距離 [mm]（例: 後打ちスラブ厚）
     pub joint_depth_from_top: f64,
+}
+
+/// 壁の芯々面積へ乗じる内法係数。寸法は境界辺順の柱梁の幅・せい [mm]。
+/// 4節点以外は1、辺の断面が不明ならその辺の控除は0とする。
+pub fn wall_clear_area_factor(pts: &[[f64; 3]], edge_dimensions: &[Option<[f64; 2]>; 4]) -> f64 {
+    if pts.len() != 4 {
+        return 1.0;
+    }
+    let n = 4usize;
+    let mut l_len = 0.0;
+    let mut l_cnt = 0u32;
+    let mut h_len = 0.0;
+    let mut h_cnt = 0u32;
+    let mut l_deduct = 0.0;
+    let mut h_deduct = 0.0;
+    for i in 0..n {
+        let (pa, pb) = (pts[i], pts[(i + 1) % n]);
+        let dz = (pb[2] - pa[2]).abs();
+        let dh = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
+        let len = (dz * dz + dh * dh).sqrt();
+        if len <= 0.0 {
+            continue;
+        }
+        if dz > dh {
+            h_len += len;
+            h_cnt += 1;
+            if let Some([width, depth]) = edge_dimensions[i] {
+                l_deduct += width.min(depth).max(0.0) / 2.0;
+            }
+        } else {
+            l_len += len;
+            l_cnt += 1;
+            if let Some([_, depth]) = edge_dimensions[i] {
+                h_deduct += depth.max(0.0) / 2.0;
+            }
+        }
+    }
+    if l_cnt == 0 || h_cnt == 0 {
+        return 1.0;
+    }
+    let l = l_len / l_cnt as f64;
+    let h = h_len / h_cnt as f64;
+    if l <= 0.0 || h <= 0.0 {
+        return 1.0;
+    }
+    let fl = ((l - l_deduct) / l).clamp(0.0, 1.0);
+    let fh = ((h - h_deduct) / h).clamp(0.0, 1.0);
+    (fl * fh).clamp(0.0, 1.0)
+}
+
+/// 壁エレメント（4 節点）の幾何。
+///
+/// 節点は入力順に依らず標高 z で下辺 2 節点・上辺 2 節点に分ける。上辺は
+/// 下辺 a→b 軸への符号付き射影の小さい方を a として対応付ける。壁長 `lw` は上下辺長さの平均とする。
+pub struct WallElementGeometry {
+    /// 下辺の 2 節点（a→b）
+    pub bottom: [NodeId; 2],
+    /// 上辺の 2 節点（下辺 a に対応する側が先）
+    pub top: [NodeId; 2],
+    /// 下辺長さ
+    pub lw_bottom: f64,
+    /// 上辺長さ
+    pub lw_top: f64,
+    /// 壁長 lw = (下辺長 + 上辺長)/2（台形壁に対応）
+    pub lw: f64,
+    /// 壁高さ h（上下辺の中点間距離）
+    pub h: f64,
+    /// 下辺の軸方向単位ベクトル（a→b）
+    pub ex_bottom: [f64; 3],
+    /// 下辺中点
+    pub bottom_center: [f64; 3],
+    /// 上辺中点
+    pub top_center: [f64; 3],
+}
+
+/// 壁エレメント（4 節点）の幾何を算定する（[`WallElementGeometry`]）。
+///
+/// 4 節点未満・節点参照が欠落・退化（辺長や高さが 0）の場合は `None`。
+pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallElementGeometry> {
+    if data.nodes.len() < 4 {
+        return None;
+    }
+    let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
+    let coords: Vec<[f64; 3]> = ids
+        .iter()
+        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
+        .collect::<Option<Vec<_>>>()?;
+
+    let mut order: Vec<usize> = (0..4).collect();
+    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
+    let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
+
+    let (pa, pb) = (coords[b0], coords[b1]);
+    let ex_bot = unit(sub(pb, pa))?;
+    let (ta, tb) = {
+        let d0 = dot(sub(coords[t0], pa), ex_bot);
+        let d1 = dot(sub(coords[t1], pa), ex_bot);
+        if d0 <= d1 {
+            (t0, t1)
+        } else {
+            (t1, t0)
+        }
+    };
+
+    let lw_bot = norm(sub(pb, pa));
+    let lw_top = norm(sub(coords[tb], coords[ta]));
+    let bc = crate::geom::vec3::midpoint(pa, pb);
+    let tc = crate::geom::vec3::midpoint(coords[ta], coords[tb]);
+    let h = norm(sub(tc, bc));
+    if lw_bot <= 0.0 || lw_top <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some(WallElementGeometry {
+        bottom: [ids[b0], ids[b1]],
+        top: [ids[ta], ids[tb]],
+        lw_bottom: lw_bot,
+        lw_top,
+        lw: 0.5 * (lw_bot + lw_top),
+        h,
+        ex_bottom: ex_bot,
+        bottom_center: bc,
+        top_center: tc,
+    })
 }

@@ -1106,6 +1106,7 @@ fn copy_secondary(
             }
         });
         let new_sm = SecondaryMember {
+            gravity_end_shares: sm.gravity_end_shares,
             kind: sm.kind,
             nodes: [a, b],
             section,

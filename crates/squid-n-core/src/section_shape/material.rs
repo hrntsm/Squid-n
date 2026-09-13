@@ -1,7 +1,7 @@
 //! 材料に関する換算関数。
 //!
 //! - [`concrete_young_modulus`] — コンクリート強度 Fc からヤング係数 Ec を算定
-//! - [`wall_shear_shape_factor`] — 耐震壁のせん断形状係数
+//! - [`wall_shear_shape_factor_isection`] — 耐震壁のせん断形状係数
 
 use super::constants::{GAMMA_CONCRETE, KAPPA_RC};
 
@@ -20,26 +20,9 @@ pub fn concrete_young_modulus_gamma(fc: f64, gamma_kn_m3: f64) -> f64 {
     3.35e4 * (gamma_kn_m3 / 24.0).powi(2) * (fc / 60.0).powf(1.0 / 3.0)
 }
 
-/// 耐震壁（壁板＋両側柱＝平面 I 形断面）のせん断形状係数
-/// （側柱付き壁を I 形断面とみなしたせん断形状係数。材料力学）。
-///
-/// κ = 3(1+ξ)/(5·(1−ξ³(1−η))²)·[η + ξ(1−η)·((15/8)(1−ξ²)² − ξ⁴·η)]
-///
-/// ξ・η の定義は原典ページに明示がないため、
-/// ξ=壁板内法長さ/全長（側柱外面間）、η=壁厚/側柱幅 と仮定する（要照合）。
-/// ξ=1（側柱なし＝矩形断面）で κ=1.2（=`KAPPA_RC`）に一致する。
-/// 退化（非有限・非正）時は矩形の 1.2 にフォールバックする。
-/// 平面 I 形断面（壁板＝ウェブ、両端の側柱＝フランジ）の**厳密な**せん断形状係数
-/// κ = A/I²·∫(Q(y)²/b(y))dy（材料力学。Timoshenko 梁のせん断補正係数の定義）。
-///
-/// 面内曲げの断面は「壁長方向を断面のせい、壁厚方向を断面の幅」とみなす:
-/// - `d_total`: 側柱外面間の全長 D（せい方向）
-/// - `dc_each`: 側柱 1 本の沿壁方向せい dc（両端に 1 本ずつ。0 なら側柱なし）
-/// - `bc`: 側柱の壁直交方向の幅（フランジ幅）
-/// - `t`: 壁板厚（ウェブ幅）
-///
-/// 一様矩形（`dc_each = 0` または `bc == t`）では厳密に 1.2（=`KAPPA_RC`）を返す。
-/// 退化入力（非正・非有限）では 1.2 を返す。
+/// 平面I形断面のせん断形状係数を区分多項式の積分で求める。寸法は [mm]。
+/// 引数は全せい・片側フランジせい・フランジ幅・ウェブ幅の順。
+/// 非有限・非正の全せい/幅、側柱なし、フランジ幅が壁厚以下なら1.2を返す。
 pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: f64) -> f64 {
     if !(d_total.is_finite() && dc_each.is_finite() && bc.is_finite() && t.is_finite())
         || d_total <= 0.0
@@ -54,68 +37,17 @@ pub fn wall_shear_shape_factor_isection(d_total: f64, dc_each: f64, bc: f64, t: 
     if dc <= 0.0 || bc <= t {
         return KAPPA_RC;
     }
-    let width = |y: f64| -> f64 {
-        if y.abs() > a {
-            bc
-        } else {
-            t
-        }
+    let strips = if a > 0.0 {
+        vec![[dc, bc], [2.0 * a, t], [dc, bc]]
+    } else {
+        vec![[2.0 * dc, bc]]
     };
-    let area = 2.0 * dc * bc + 2.0 * a * t;
-    let i = bc * d_total.powi(3) / 12.0 - (bc - t) * (2.0 * a).powi(3) / 12.0;
-    if i <= 0.0 || area <= 0.0 {
+    let Some(properties) = super::shear::strip_section_properties(&strips) else {
         return KAPPA_RC;
-    }
-    let q_of = |y: f64| -> f64 {
-        if y >= a {
-            bc * (c * c - y * y) / 2.0
-        } else {
-            bc * (c * c - a * a) / 2.0 + t * (a * a - y * y) / 2.0
-        }
     };
-    let integrate = |lo: f64, hi: f64, n: usize| -> f64 {
-        if hi <= lo {
-            return 0.0;
-        }
-        let n = if n.is_multiple_of(2) { n } else { n + 1 };
-        let dx = (hi - lo) / n as f64;
-        let mut s = 0.0;
-        for k in 0..=n {
-            let y = lo + dx * k as f64;
-            let yy = y.clamp(lo + dx * 1e-9, hi - dx * 1e-9);
-            let v = q_of(y).powi(2) / width(yy);
-            let w = if k == 0 || k == n {
-                1.0
-            } else if k % 2 == 1 {
-                4.0
-            } else {
-                2.0
-            };
-            s += w * v;
-        }
-        s * dx / 3.0
-    };
-    let integral = 2.0 * (integrate(0.0, a, 200) + integrate(a, c, 200));
-    let kappa = area / (i * i) * integral;
+    let kappa = properties.area / properties.shear_area;
     if kappa.is_finite() && kappa >= 1.0 {
         kappa
-    } else {
-        KAPPA_RC
-    }
-}
-
-pub fn wall_shear_shape_factor(xi: f64, eta: f64) -> f64 {
-    let xi = xi.clamp(0.0, 1.0);
-    let eta = eta.clamp(1e-6, 1.0);
-    let denom = 5.0 * (1.0 - xi.powi(3) * (1.0 - eta)).powi(2);
-    if denom <= 1e-12 {
-        return KAPPA_RC;
-    }
-    let bracket =
-        eta + xi * (1.0 - eta) * ((15.0 / 8.0) * (1.0 - xi * xi).powi(2) - xi.powi(4) * eta);
-    let k = 3.0 * (1.0 + xi) / denom * bracket;
-    if k.is_finite() && k > 0.0 {
-        k
     } else {
         KAPPA_RC
     }
@@ -125,14 +57,31 @@ pub fn wall_shear_shape_factor(xi: f64, eta: f64) -> f64 {
 mod isection_kappa_tests {
     use super::*;
 
+    #[test]
+    fn test_kappa_matches_exact_polynomial_integral() {
+        // D=4, dc=1, bc=2, t=1: A=6, I=10。
+        // 半断面の積分はウェブ167/15、フランジ53/30。κ=387/250。
+        let expected = 387.0 / 250.0;
+        for scale in [0.001, 1.0, 1000.0] {
+            let actual = wall_shear_shape_factor_isection(4.0 * scale, scale, 2.0 * scale, scale);
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "κ={actual}, expected={expected}"
+            );
+        }
+    }
+
     /// 一様矩形（側柱なし、または側柱幅＝壁厚）では厳密に 1.2。
     #[test]
     fn test_kappa_uniform_rectangle_is_12() {
         assert!((wall_shear_shape_factor_isection(4000.0, 0.0, 150.0, 150.0) - 1.2).abs() < 1e-9);
         assert!((wall_shear_shape_factor_isection(4000.0, 600.0, 150.0, 150.0) - 1.2).abs() < 1e-9);
+        assert!(
+            (wall_shear_shape_factor_isection(4000.0, 2000.0, 600.0, 150.0) - 1.2).abs() < 1e-12
+        );
     }
 
-    /// I 形（側柱がウェブより厚い）では κ > 1.2 で、側柱が大きいほど増大する。
+    /// 代表的な3断面では κ > 1.2 となり、選んだ側柱寸法の範囲では増大する。
     /// 従来の閉形式は逆に 1.2 から減少していた（非物理）。
     #[test]
     fn test_kappa_increases_with_flange_size() {

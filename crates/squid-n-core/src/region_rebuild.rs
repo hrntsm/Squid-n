@@ -983,6 +983,7 @@ mod tests {
 
     fn joist(id: u32, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
+            gravity_end_shares: None,
             end_support: [crate::model::EndSupport::Supported; 2],
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],

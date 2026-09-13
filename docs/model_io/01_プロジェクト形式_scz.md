@@ -87,3 +87,7 @@ save_scz(Path::new("model.scz"), &model, SczExtras {
 let contents = load_scz(Path::new("model.scz"))?;
 let model = contents.model;
 ```
+
+壁版の自重支持辺の負担率と間柱の端部負担率は `.scz` に保存します。未指定は支持先なしとして扱い、対象壁版の解析前チェックでエラーになります。
+
+増分解析の部材応答には、壁の正負耐力の選択に用いる符号付き面内せん断力 `wall_shear_signed` [N]を保持します。壁以外はnullです。壁下辺a→bの向きを正とします。スキーマ番号は1です。

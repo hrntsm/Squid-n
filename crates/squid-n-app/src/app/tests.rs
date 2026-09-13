@@ -3322,6 +3322,7 @@ fn test_floor_design_skips_materialized_joist() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
@@ -3420,6 +3421,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
@@ -3512,6 +3514,7 @@ fn test_floor_design_checks_cantilever_joist() {
     model.floor_regions[0].slab_ids =
         vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         end_support: [EndSupport::Supported, EndSupport::Free],
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
@@ -3597,6 +3600,7 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
@@ -3693,6 +3697,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         );
         r.slab_ids = vec![SlabId(1), SlabId(2)];
         r.secondary_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
@@ -3798,6 +3803,7 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
         );
         r.slab_ids = vec![SlabId(0), SlabId(1)];
         r.secondary_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
@@ -5571,6 +5577,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         }],
         // 小梁: 大梁 y=0 の中間 (4000,0) と大梁 y=6000 の中間 (4000,6000) を結ぶ。
         unassigned_joists: vec![SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],

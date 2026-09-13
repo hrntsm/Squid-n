@@ -784,6 +784,7 @@ fn test_delete_section_referenced_by_joist() {
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
     region.secondary_joists = vec![SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
@@ -1380,6 +1381,7 @@ fn test_missing_target_is_noop() {
         (
             "存在しない壁版の属性変更",
             Box::new(SetWallPlateAttrs {
+                self_weight_shares: Vec::new(),
                 id: WallPlateId(0),
                 opening_area: 1.0,
                 opening_weight: 2.0,
@@ -2278,6 +2280,7 @@ fn model_with_enclosed_wall_plate() -> Model {
         steel_material: None,
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -2303,6 +2306,7 @@ fn test_set_wall_plate_attrs_roundtrip() {
     stack.run(
         &mut model,
         Box::new(SetWallPlateAttrs {
+            self_weight_shares: vec![1.0, 0.0, 0.0, 0.0],
             id,
             opening_area: 200.0,
             opening_weight: 80.0,
@@ -2326,6 +2330,10 @@ fn test_set_wall_plate_attrs_roundtrip() {
     assert_eq!(model.wall_plates[0].openings.len(), 1);
     assert_eq!(model.wall_plates[0].finish_intensity(), 1.0e-3);
     // 左右を独立に保存する（片側だけのスリットが両側へ広がらない）。
+    assert_eq!(
+        model.wall_plates[0].self_weight_shares,
+        vec![1.0, 0.0, 0.0, 0.0]
+    );
     assert_eq!(model.wall_plates[0].slit.column_face, [true, false]);
     assert_eq!(model.wall_plates[0].slit.beam_face, [false, true]);
 
@@ -2333,6 +2341,7 @@ fn test_set_wall_plate_attrs_roundtrip() {
     assert_eq!(model.wall_plates[0].opening_area, 0.0);
     assert_eq!(model.wall_plates[0].opening_weight, 0.0);
     assert!(model.wall_plates[0].openings.is_empty());
+    assert!(model.wall_plates[0].self_weight_shares.is_empty());
     assert!(model.wall_plates[0].loads.is_empty());
     assert!(!model.wall_plates[0].slit.any());
 }
@@ -3165,6 +3174,7 @@ fn test_composite_delete_nodes_descending_roundtrip() {
 
 fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [NodeId(n0), NodeId(n1)],
@@ -4668,6 +4678,7 @@ fn make_sm(
     kind: squid_n_core::model::SecondaryMemberKind,
 ) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind,
         nodes: [NodeId(id), NodeId(id + 1)],
@@ -4790,6 +4801,7 @@ fn set_secondary_member_end_support_applies_in_caller_order_and_undoes() {
     use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
     let mut model = sm_base_model();
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: None,
@@ -4829,6 +4841,7 @@ fn set_secondary_member_end_support_is_noop_when_ambiguous() {
         (SecondaryMemberKind::Post, "P"),
     ] {
         model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             kind,
             nodes: [NodeId(0), NodeId(1)],
             section: None,
@@ -4912,6 +4925,7 @@ fn test_copy_story_secondary_creates_unassigned_joist() {
     model
         .unassigned_joists
         .push(squid_n_core::model::SecondaryMember {
+            gravity_end_shares: None,
             end_support: Default::default(),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             nodes: [n2f[0], n2f[1]],
@@ -4959,6 +4973,7 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
         .map(|n| n.id)
         .collect();
     let joist = squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [n2f[0], n2f[1]],
@@ -5491,6 +5506,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
         n.coord[2] = 3000.0;
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -5648,6 +5664,7 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
         n.coord[2] = 3000.0;
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -5679,4 +5696,30 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
     assert_eq!(model.wall_plates.len(), 1);
     assert_eq!(model.wall_regions[0].wall_plate_ids, vec![WallPlateId(0)]);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+#[test]
+fn 間柱端部負担率は端点の順序を合わせて設定し取り消せる() {
+    let mut model = empty_model();
+    model
+        .unassigned_posts
+        .push(squid_n_core::model::SecondaryMember {
+            end_support: Default::default(),
+            kind: squid_n_core::model::SecondaryMemberKind::Post,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "P1".into(),
+            gravity_end_shares: None,
+        });
+    let cmd = SetPostGravityEndShares {
+        nodes: [NodeId(1), NodeId(0)],
+        shares: Some([0.25, 0.75]),
+    };
+    let undo = cmd.apply(&mut model);
+    assert_eq!(
+        model.unassigned_posts[0].gravity_end_shares,
+        Some([0.75, 0.25])
+    );
+    undo.apply(&mut model);
+    assert_eq!(model.unassigned_posts[0].gravity_end_shares, None);
 }

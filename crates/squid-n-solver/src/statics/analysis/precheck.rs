@@ -290,7 +290,38 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
+    let side_edges = squid_n_element::wall::side_column::SideColumnEdges::build(model);
+    let undefined_side_shapes = model
+        .elements
+        .iter()
+        .filter(|e| {
+            side_edges.release_axis(e, model).is_some()
+                && model.element_section(e).is_some_and(|s| s.shape.is_none())
+        })
+        .map(|e| e.id)
+        .collect::<Vec<_>>();
+    if !undefined_side_shapes.is_empty() {
+        issues.push(ModelIssue::members(
+            "耐震壁の側柱に断面形状が未定義の部材があります",
+            "ID ", undefined_side_shapes,
+            "側柱の断面形状が未定義です",
+            "断面タブで側柱の断面形状を指定してください。断面積・幅・せいだけでは壁との重複領域を確定できません。",
+        ));
+    }
+
     for e in &model.elements {
+        if e.kind == squid_n_core::model::ElementKind::Wall {
+            if let Err(message) =
+                squid_n_element::wall::shear_section::wall_shear_rigidity(e, model)
+            {
+                issues.push(ModelIssue {
+                    severity: IssueSeverity::Error,
+                    message,
+                    short: "壁のせん断断面を算定できません".into(),
+                    targets: IssueTargets::Members(vec![e.id]),
+                });
+            }
+        }
         if let Some(msg) = squid_n_element::wall::misc_wall::wall_frame_category_issue(e, model) {
             issues.push(ModelIssue {
                 severity: IssueSeverity::Error,
@@ -368,6 +399,12 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             let w_of =
                 |sl: &squid_n_core::model::Slab| model.slab_intensity(sl, LoadPurpose::Floor);
             let transfer = squid_n_load::cascade::solve(model, w_of, true);
+            if !transfer.invalid_end_shares.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "鉛直な二次部材の端部負担率が未指定または不正です（{} 本）。間柱の両端への負担率を非負・合計100%で指定し、自由端の負担率は0%にしてください。",
+                    transfer.invalid_end_shares.len()
+                )));
+            }
             if !transfer.unresolved.is_empty() {
                 issues.push(ModelIssue::model(format!(
                     "端部がどの主架構にも二次部材にも載っていない二次部材が {} 本あります。\
@@ -565,32 +602,13 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             );
         }
 
-        let both_beam_slit: Vec<_> = model
-            .wall_plates
-            .iter()
-            .filter(|p| p.has_quad_boundary() && p.slit.both_beam_faces())
-            .map(|p| p.id.0)
-            .collect();
-        if !both_beam_slit.is_empty() {
-            let ids = both_beam_slit
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            issues.push(ModelIssue::model(format!(
-                "上下の梁際がともに切れた壁版があります（壁版 {ids}）。\
-                 柱際の辺は壁の重量を受けないため、自重の伝達先がありません。\
-                 いずれかの梁際のスリットを外してください。"
-            )));
-        }
-
         let stranded = squid_n_load::wall_plate_load::wall_plates_without_load_path(model);
         if !stranded.is_empty() {
             let n = stranded.len();
             issues.push(ModelIssue::model(format!(
                 "自重の行き先が決まらない壁版が {n} 枚あります。\
-                 境界のどの辺にも支持する柱・大梁・間柱がありません。\
-                 壁版の境界、または取付き先の指定を確認してください。"
+                 支持辺の負担率が未指定・不正、指定辺がスリットで縁切り、全長を支持する部材がない、または支持する主架構部材の区間が重複しています。\
+                 壁版の自重負担率（合計100%）、境界、支持部材を確認してください。"
             )));
         }
         let uncovered: Vec<u32> = model

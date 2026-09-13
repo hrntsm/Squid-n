@@ -4,7 +4,7 @@
 //! - [`enumerate_self_weight`] — モデル全要素の自重を列挙する
 //! - [`steel_density_ton_mm3`] — 鋼材の質量密度 [ton/mm³]
 //! - [`finish_perimeter`] — 仕上げ周長 φ
-//! - [`wall_clear_area_factor`] — 耐震壁の内法係数
+//! - [`wall_clear_area`] — 耐震壁の内法面積
 
 use std::collections::HashMap;
 
@@ -99,10 +99,6 @@ pub(crate) enum SelfWeightItem {
         shares: Vec<(usize, f64)>,
         density_shares: Vec<(usize, f64)>,
     },
-    /// 二次部材（小梁・間柱）の自重（総量 [N]）。両端節点（`model.nodes` 添字）へ
-    /// 1/2 ずつ。要素ではないため部材荷重にはならず、節点荷重（→ 主架構梁上の
-    /// 節点なら CMQ 変換）として扱う。
-    SecondaryLine { ni: usize, nj: usize, total: f64 },
 }
 
 /// モデル全要素の自重を列挙する（§柱梁自重・§壁自重・§ダンパー自重）。
@@ -132,7 +128,7 @@ pub(crate) enum SelfWeightItem {
 ///   §1.2: 壁の重量を階高の中央で上下階の節点に分配する扱いに対応
 ///   （矩形壁なら上下2節点ずつに1/4ずつ配分される）。
 ///   §壁自重: 4 節点の耐震壁は「周辺の柱梁の内法寸法」で面積を評価する
-///   （[`wall_clear_area_factor`]。芯々面積に内法係数を乗じる。控除相手の
+///   （[`wall_clear_area`]。芯々面積に内法係数を乗じる。控除相手の
 ///   柱・梁が見つからない辺は控除なし＝芯々のまま保守側）。
 /// - ダンパー（`load_cfg.dampers` に登録された Beam/Brace 要素）: 断面自重
 ///   （ρ·A·L·g）は使わず、装置重量＋支持部重量に置き換える（§ダンパー自重。
@@ -282,8 +278,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     .iter()
                     .map(|n| model.nodes[n.index()].coord)
                     .collect();
-                let area =
-                    polygon_area_3d(&pts) * wall_clear_area_factor(model, elem, &pts, &beam_pairs);
+                let area = wall_clear_area(model, elem, &pts, &beam_pairs);
 
                 let attr = model.wall_attrs.iter().find(|a| a.elem == elem.id);
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
@@ -304,30 +299,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 });
             }
             _ => {}
-        }
-    }
-
-    for sm in model.joists().chain(model.posts()) {
-        let (Some(sec_id), Some(mat)) = (sm.section, model.secondary_material(sm)) else {
-            continue;
-        };
-        let Some(sec) = model.sections.get(sec_id.index()) else {
-            continue;
-        };
-        let ni = sm.nodes[0].index();
-        let nj = sm.nodes[1].index();
-        let (Some(n0), Some(n1)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
-            continue;
-        };
-        let len = dist3(n0.coord, n1.coord);
-        let factor = if mat.fc.is_some() {
-            1.0
-        } else {
-            load_cfg.effective_steel_factor()
-        };
-        let total = mat.density * sec.area * len * GRAVITY_MM_S2 * factor;
-        if total > 0.0 {
-            items.push(SelfWeightItem::SecondaryLine { ni, nj, total });
         }
     }
 
@@ -397,58 +368,25 @@ fn wall_corner_shares(
     equal(idx)
 }
 
-fn wall_clear_area_factor(
+fn wall_clear_area(
     model: &Model,
     elem: &ElementData,
     pts: &[[f64; 3]],
     beam_pairs: &HashMap<(NodeId, NodeId), usize>,
 ) -> f64 {
-    if elem.kind != ElementKind::Wall || elem.nodes.len() != 4 || pts.len() != 4 {
-        return 1.0;
+    if elem.kind != ElementKind::Wall || elem.nodes.len() != 4 {
+        return polygon_area_3d(pts);
     }
-    let n = 4usize;
-    let mut l_len = 0.0;
-    let mut l_cnt = 0u32;
-    let mut h_len = 0.0;
-    let mut h_cnt = 0u32;
-    let mut l_deduct = 0.0;
-    let mut h_deduct = 0.0;
-    for i in 0..n {
-        let (a, b) = (elem.nodes[i], elem.nodes[(i + 1) % n]);
-        let (pa, pb) = (pts[i], pts[(i + 1) % n]);
-        let dz = (pb[2] - pa[2]).abs();
-        let dh = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
-        let len = (dz * dz + dh * dh).sqrt();
-        if len <= 0.0 {
-            continue;
-        }
-        let member_sec = beam_pairs
-            .get(&ordered_pair(a, b))
-            .and_then(|&idx| model.elements[idx].section)
-            .and_then(|sid| model.sections.get(sid.index()));
-        if dz > dh {
-            h_len += len;
-            h_cnt += 1;
-            if let Some(sec) = member_sec {
-                l_deduct += sec.width.min(sec.depth).max(0.0) / 2.0;
-            }
-        } else {
-            l_len += len;
-            l_cnt += 1;
-            if let Some(sec) = member_sec {
-                h_deduct += sec.depth.max(0.0) / 2.0;
-            }
-        }
-    }
-    if l_cnt == 0 || h_cnt == 0 {
-        return 1.0;
-    }
-    let l = l_len / l_cnt as f64;
-    let h = h_len / h_cnt as f64;
-    if l <= 0.0 || h <= 0.0 {
-        return 1.0;
-    }
-    let fl = ((l - l_deduct) / l).clamp(0.0, 1.0);
-    let fh = ((h - h_deduct) / h).clamp(0.0, 1.0);
-    (fl * fh).clamp(0.0, 1.0)
+    let Some(geom) = squid_n_core::model::wall_element_geometry(elem, model) else {
+        return 0.0;
+    };
+    let boundary = [geom.bottom[0], geom.bottom[1], geom.top[1], geom.top[0]];
+    let points = boundary.map(|node| model.nodes[node.index()].coord);
+    let dimensions = std::array::from_fn(|i| {
+        beam_pairs
+            .get(&ordered_pair(boundary[i], boundary[(i + 1) % 4]))
+            .and_then(|&idx| model.element_section(&model.elements[idx]))
+            .map(|sec| [sec.width, sec.depth])
+    });
+    polygon_area_3d(&points) * squid_n_core::model::wall_clear_area_factor(&points, &dimensions)
 }

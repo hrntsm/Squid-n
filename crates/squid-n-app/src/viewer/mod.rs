@@ -1414,6 +1414,7 @@ mod wall_expanded_view_model_tests {
             steel_material: None,
         });
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1474,6 +1475,7 @@ mod wall_expanded_view_model_tests {
             steel_material: None,
         });
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],

@@ -301,7 +301,30 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let model = make_3node_model();
+        let mut model = make_3node_model();
+        model.wall_plates.push(squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![],
+            loads: vec![],
+            slit: Default::default(),
+            self_weight_shares: vec![0.75, 0.25, 0.0],
+        });
+        model
+            .unassigned_posts
+            .push(squid_n_core::model::SecondaryMember {
+                end_support: Default::default(),
+                kind: squid_n_core::model::SecondaryMemberKind::Post,
+                nodes: [NodeId(0), NodeId(1)],
+                section: None,
+                name: "P1".into(),
+                gravity_end_shares: Some([0.75, 0.25]),
+            });
         let dir = crate::test_util::test_tmp();
         let path = dir.join("p.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();

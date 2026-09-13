@@ -379,6 +379,7 @@ fn test_query_model_plates_and_regions() {
 
     let mut m = sample_model();
     m.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
@@ -443,6 +444,7 @@ fn test_apply_edit_set_wall_plate_slit() {
         .expect("temp store"),
     };
     state.model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
@@ -459,11 +461,17 @@ fn test_apply_edit_set_wall_plate_slit() {
     let body = serde_json::json!({
         "command": "SetWallPlateAttrs",
         "id": 0,
-        "slit": { "column_face": [true, true], "beam_face": [true, false] }
+        "slit": { "column_face": [true, true], "beam_face": [true, false] },
+        "self_weight_shares": [0.0, 0.0, 1.0, 0.0]
     });
     assert!(apply_edit(&mut state, &body).expect("apply").applied);
     assert_eq!(state.model.wall_plates[0].slit.column_face, [true, true]);
     assert_eq!(state.model.wall_plates[0].slit.beam_face, [true, false]);
+
+    assert_eq!(
+        state.model.wall_plates[0].self_weight_shares,
+        vec![0.0, 0.0, 1.0, 0.0]
+    );
 
     // 片方のキーだけでも指定できる。欠けた側は切れていない扱い。
     let body = serde_json::json!({
@@ -768,4 +776,34 @@ fn test_parse_set_secondary_member_end_support() {
     }))
     .expect("解析できる");
     assert_eq!(cmd.label(), "二次部材の端部支持条件変更");
+}
+
+#[test]
+fn mcpで間柱の端部負担率を指定し解除できる() {
+    let mut model = sample_model();
+    model
+        .unassigned_posts
+        .push(squid_n_core::model::SecondaryMember {
+            end_support: Default::default(),
+            kind: squid_n_core::model::SecondaryMemberKind::Post,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "P1".into(),
+            gravity_end_shares: None,
+        });
+    let cmd = crate::edit::parse_edit_command(&serde_json::json!({
+        "command": "SetPostGravityEndShares", "nodes": [1, 0], "shares": [0.25, 0.75]
+    }))
+    .unwrap();
+    cmd.apply(&mut model);
+    assert_eq!(
+        model.unassigned_posts[0].gravity_end_shares,
+        Some([0.75, 0.25])
+    );
+    crate::edit::parse_edit_command(&serde_json::json!({
+        "command": "SetPostGravityEndShares", "nodes": [0, 1], "shares": null
+    }))
+    .unwrap()
+    .apply(&mut model);
+    assert_eq!(model.unassigned_posts[0].gravity_end_shares, None);
 }

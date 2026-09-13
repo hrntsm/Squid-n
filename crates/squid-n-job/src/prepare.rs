@@ -304,6 +304,7 @@ mod tests {
         wall_sec.material = Some(MaterialId(0));
         with_wall.sections.push(wall_sec);
         with_wall.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],

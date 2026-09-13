@@ -30,6 +30,9 @@ pub enum EndSupport {
 /// [`super::Model::unassigned_joists`] / [`super::Model::unassigned_posts`] に置く。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SecondaryMember {
+    /// 鉛直材の重力荷重を両端へ渡す負担率（`nodes` 順）。既定の `None` は未指定。
+    #[serde(default)]
+    pub gravity_end_shares: Option<[f64; 2]>,
     pub kind: SecondaryMemberKind,
     /// 両端節点（小梁: 始端→終端、間柱: 下端→上端の順を推奨。順序に依存しない）。
     pub nodes: [NodeId; 2],
@@ -322,4 +325,15 @@ fn axes_are_collinear(model: &Model, a: &SecondaryMember, b: &SecondaryMember) -
     let dist =
         (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() / len2.sqrt();
     dist <= crate::geom::MEMBER_AXIS_TOL_MM
+}
+
+impl SecondaryMember {
+    /// 非負・有限で総和1、自由端への負担が0の端部負担率だけを返す。
+    pub fn valid_gravity_end_shares(&self) -> Option<[f64; 2]> {
+        self.gravity_end_shares.filter(|r| {
+            r.iter().all(|v| v.is_finite() && *v >= 0.0)
+                && (r[0] + r[1] - 1.0).abs() <= 1e-9
+                && (0..2).all(|i| self.end_support[i] != EndSupport::Free || r[i] == 0.0)
+        })
+    }
 }

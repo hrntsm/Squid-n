@@ -69,6 +69,9 @@ pub enum WallPlateShape {
 /// （パラペット・腰壁・垂れ壁・自立壁）ごとに 1 つ。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WallPlate {
+    /// 境界辺順の自重負担率。空は支持先未指定。指定時は非負・有限で総和 1。
+    #[serde(default)]
+    pub self_weight_shares: Vec<f64>,
     /// 壁版 ID（`Model::wall_plates` の配列インデックスと一致すること）。
     pub id: WallPlateId,
     pub shape: WallPlateShape,
@@ -100,26 +103,8 @@ pub struct WallPlate {
     pub slit: WallSlit,
 }
 
-/// 耐震スリット。壁版の 4 辺それぞれについて、周辺部材との縁を切ったかを持つ。
-///
-/// スリットは辺ごとに入れるものなので、辺ごとに持つ。三方スリットは柱際 2 辺と
-/// 上下いずれか 1 辺、完全スリットは 4 辺すべてが切れた状態として表す。
-///
-/// **垂れ壁・腰壁とは別の概念である。** 垂れ壁は上の梁からぶら下がる短い壁で、
-/// 下端に壁そのものが無い（[`WallPlateShape::Attached`] で表す）。一方、下辺に
-/// スリットを入れた壁は構面いっぱいの全高の壁であり、下の梁と接してはいるが縁が
-/// 切れている。形が違うので、どちらか一方では表せない。
-///
-/// 規則は 2 つある。**剛性は切れていない辺の部材にだけ算入し**（袖壁は柱際、
-/// 腰壁・垂れ壁は梁際）、**自重は切れていない辺へ伝える**。下辺が切れて上辺が
-/// 一体なら、自重は全量が上の梁へ向かう。
-///
-/// 4 辺すべてが一体でなければ耐震壁として成立しない
-/// （`squid_n_element::wall::misc_wall::wall_is_seismic`）。切れた辺があると、負担した
-/// 面内せん断を周辺の柱梁へ伝えられないためである。
-///
-/// 境界が 4 節点の囲まれた壁版でのみ意味を持つ。取り付く壁版は柱・梁と接する
-/// 4 辺を持たないため参照しない。
+/// 壁版の4辺の縁切り。切れた辺へ剛性・自重を伝えない。
+/// 4節点の囲まれた壁版に適用し、いずれかの辺が切れていれば耐震壁にしない。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WallSlit {
     /// 柱際（左右の鉛直辺）。添字は [`WallPlate::column_face_nodes`] が返す
@@ -141,15 +126,25 @@ impl WallSlit {
     }
 
     /// 上下の梁際がともに切れているか。
-    ///
-    /// この壁は自重の伝達先を持たない（柱際は壁の重量を受けない）。入力として
-    /// ありえないので、解析前チェックがエラーで止める。
     pub fn both_beam_faces(&self) -> bool {
         self.beam_face[0] && self.beam_face[1]
     }
 }
 
 impl WallPlate {
+    /// 要素にならない囲まれた壁版の自重負担率が指定済みかつ妥当か。
+    pub fn has_valid_self_weight_shares(&self) -> bool {
+        self.boundary_nodes().is_some_and(|boundary| {
+            boundary.len() >= 3
+                && self.self_weight_shares.len() == boundary.len()
+                && self
+                    .self_weight_shares
+                    .iter()
+                    .all(|r| r.is_finite() && *r >= 0.0)
+                && (self.self_weight_shares.iter().sum::<f64>() - 1.0).abs() <= 1e-9
+        })
+    }
+
     /// 取り付く壁版か。
     pub fn is_attached(&self) -> bool {
         matches!(self.shape, WallPlateShape::Attached { .. })
@@ -671,6 +666,7 @@ mod tests {
             [0.0, 0.0, 3000.0],
         ]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -696,6 +692,7 @@ mod tests {
 
         // 取り付く壁版も取付き先の節点座標に追従する。
         let attached = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(1),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -731,6 +728,7 @@ mod tests {
         ]);
         let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         m.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: boundary.clone(),
@@ -767,6 +765,7 @@ mod tests {
             [0.0, 0.0, 3000.0],
         ]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -789,6 +788,7 @@ mod tests {
     #[test]
     fn test_has_quad_boundary() {
         let quad = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -835,6 +835,7 @@ mod tests {
     fn test_attached_line_extrudes_upward_not_sideways() {
         let m = model_with_nodes(&[[0.0, 0.0, 3000.0], [4000.0, 0.0, 3000.0]]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -867,6 +868,7 @@ mod tests {
     fn attached_area_uses_abs_height_when_extent_sign_reverses() {
         let m = model_with_nodes(&[[0.0, 0.0, 3000.0], [4000.0, 0.0, 3000.0]]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -897,6 +899,7 @@ mod tests {
     fn test_attached_floor_region_anchor_uses_its_own_nodes_for_length() {
         let m = model_with_nodes(&[[0.0, 0.0, 3000.0], [2000.0, 0.0, 3000.0]]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
@@ -919,6 +922,7 @@ mod tests {
     fn test_attached_point_anchor_is_unsupported_for_wall() {
         let m = model_with_nodes(&[[0.0, 0.0, 3000.0]]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Point(NodeId(0)),
@@ -947,6 +951,7 @@ mod tests {
             [0.0, 0.0, 3000.0],
         ]);
         let mut p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -978,6 +983,7 @@ mod tests {
             [0.0, 0.0, 3000.0],
         ]);
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1015,6 +1021,7 @@ mod tests {
             });
         }
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
@@ -1079,6 +1086,7 @@ mod tests {
             steel_material: None,
         });
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1152,6 +1160,7 @@ mod tests {
     #[test]
     fn test_total_opening_area_falls_back_to_opening_area_field() {
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1171,6 +1180,7 @@ mod tests {
     fn test_self_weight_adds_opening_weight() {
         let m = model_with_wall_section();
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1236,6 +1246,7 @@ mod tests {
             });
         }
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
@@ -1394,6 +1405,7 @@ mod tests {
     fn coverage_is_none_for_enclosed() {
         let m = model_two_regions();
         let p = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)],

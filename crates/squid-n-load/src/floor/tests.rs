@@ -615,6 +615,7 @@ fn test_cantilever_with_side_joist_uses_support_edges() {
         ..Default::default()
     };
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(2)],
@@ -890,6 +891,7 @@ fn test_cantilever_support_edge_prefers_full_real_beam() {
         },
     };
     let mk_joist = || SecondaryMember {
+        gravity_end_shares: None,
         end_support: Default::default(),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(2), NodeId(3)],

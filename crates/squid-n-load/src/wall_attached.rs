@@ -376,6 +376,7 @@ mod tests {
 
     fn line_attached_plate(span: [f64; 2], extent: [f64; 2], transfer: LoadTransfer) -> WallPlate {
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -631,6 +632,7 @@ mod tests {
     /// 自立壁の壁版（節点 0-1 の間、Z=3000）。
     fn self_standing_plate() -> WallPlate {
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {

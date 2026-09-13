@@ -5,7 +5,7 @@ use crate::frame::beam::BeamElement;
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
-use squid_n_core::geom::vec3::{dot, midpoint as mid, norm, sub, unit};
+use squid_n_core::geom::vec3::{sub, unit};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, HysteresisModel, Model};
 use squid_n_core::section_shape::{SectionShape, E_STEEL, KAPPA_RC};
@@ -26,8 +26,8 @@ pub struct WallElement {
     /// トライアル変位（四隅 24 自由度、グローバル系）。Newton 反復中も蓄積され、
     /// internal_force はこちらを参照する。
     trial_disp: [f64; 24],
-    /// 面内せん断の終局強度 Qu [N]。`0` 以下は降伏しない（線形弾性）。
-    qu_shear: f64,
+    /// 面内せん断終局強度 [N]。正・負の順の正値。いずれか0以下なら線形弾性。
+    qu_shear: [f64; 2],
     /// 面内せん断モードベクトル p（24 自由度）。上辺 2 節点の並進を壁面内水平方向
     /// `ex_bottom` へ 1.0 ずつ与えたもの。`pᵀ·f` は上辺が伝達する面内水平力に等しく、
     /// `u − γp·p` で塑性すべりを差し引く（下記 [`WallElement::shear_return_map`]）。
@@ -49,80 +49,7 @@ pub struct WallElement {
     fiber_u12_committed: [f64; 12],
 }
 
-/// 壁エレメント（4 節点）の幾何。
-///
-/// 節点は入力順に依らず標高 z で下辺 2 節点・上辺 2 節点に分ける。上辺は
-/// 下辺 a に近い方を a として対応付ける。壁長 `lw` は上下辺長さの平均とする。
-pub struct WallElementGeometry {
-    /// 下辺の 2 節点（a→b）
-    pub bottom: [NodeId; 2],
-    /// 上辺の 2 節点（下辺 a に対応する側が先）
-    pub top: [NodeId; 2],
-    /// 下辺長さ
-    pub lw_bottom: f64,
-    /// 上辺長さ
-    pub lw_top: f64,
-    /// 壁長 lw = (下辺長 + 上辺長)/2（台形壁に対応）
-    pub lw: f64,
-    /// 壁高さ h（上下辺の中点間距離）
-    pub h: f64,
-    /// 下辺の軸方向単位ベクトル（a→b）
-    pub ex_bottom: [f64; 3],
-    /// 下辺中点
-    pub bottom_center: [f64; 3],
-    /// 上辺中点
-    pub top_center: [f64; 3],
-}
-
-/// 壁エレメント（4 節点）の幾何を算定する（[`WallElementGeometry`]）。
-///
-/// 4 節点未満・節点参照が欠落・退化（辺長や高さが 0）の場合は `None`。
-pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallElementGeometry> {
-    if data.nodes.len() < 4 {
-        return None;
-    }
-    let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
-    let coords: Vec<[f64; 3]> = ids
-        .iter()
-        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
-        .collect::<Option<Vec<_>>>()?;
-
-    let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
-    let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
-
-    let (pa, pb) = (coords[b0], coords[b1]);
-    let ex_bot = unit(sub(pb, pa))?;
-    let (ta, tb) = {
-        let d0 = dot(sub(coords[t0], pa), ex_bot).abs();
-        let d1 = dot(sub(coords[t1], pa), ex_bot).abs();
-        if d0 <= d1 {
-            (t0, t1)
-        } else {
-            (t1, t0)
-        }
-    };
-
-    let lw_bot = norm(sub(pb, pa));
-    let lw_top = norm(sub(coords[tb], coords[ta]));
-    let bc = mid(pa, pb);
-    let tc = mid(coords[ta], coords[tb]);
-    let h = norm(sub(tc, bc));
-    if lw_bot <= 0.0 || lw_top <= 0.0 || h <= 0.0 {
-        return None;
-    }
-    Some(WallElementGeometry {
-        bottom: [ids[b0], ids[b1]],
-        top: [ids[ta], ids[tb]],
-        lw_bottom: lw_bot,
-        lw_top,
-        lw: 0.5 * (lw_bot + lw_top),
-        h,
-        ex_bottom: ex_bot,
-        bottom_center: bc,
-        top_center: tc,
-    })
-}
+pub use squid_n_core::model::{wall_element_geometry, WallElementGeometry};
 
 /// 増分解析で壁柱がファイバー化されるときの塑性化域長 Lp [mm]。
 /// ファイバー化されない壁（耐震壁不成立・Qu を算定できない・Fc 未設定など）は `None`。
@@ -171,14 +98,17 @@ struct WallShearGeometry {
     fc: Option<f64>,
     /// 壁厚 t [mm]
     t: f64,
+    te: f64,
     /// 付帯柱中心間距離 lw [mm]
     lw: f64,
     /// 壁の上下梁中心間高さ h [mm]
     h: f64,
     /// 壁筋比 ps（小数）
     ps: f64,
-    /// 側柱 1 本あたりの沿壁方向せい Dc [mm]
-    dc_each: f64,
+    /// 側柱外面間の全長 [mm]。
+    d_wall: f64,
+    /// 圧縮側柱の壁長方向せい [mm]。
+    dc_compression: f64,
     /// 引張側柱の主筋断面積 at [mm²]
     col_main_at: f64,
     /// 側柱（付帯柱）があるか
@@ -238,60 +168,8 @@ impl WallElement {
             1.0
         };
 
-        let edge_pairs = [[ids_b0, ids_ta], [ids_b1, ids_tb]];
-        let mut col_area_sum = 0.0;
-        let mut col_depth_sum = 0.0;
-        let mut col_width_max: f64 = 0.0;
-        let mut col_main_at: f64 = 0.0;
-        let side_columns_released = crate::wall::misc_wall::wall_is_seismic(data, model);
-        for e in &model.elements {
-            if !side_columns_released {
-                break;
-            }
-            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
-                continue;
-            }
-            if let (Some(a), Some(b)) = (
-                model.nodes.get(e.nodes[0].index()),
-                model.nodes.get(e.nodes[1].index()),
-            ) {
-                if !squid_n_core::geom::is_vertical_axis(a.coord, b.coord) {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-            let (n0, n1) = (e.nodes[0], e.nodes[1]);
-            let is_edge = edge_pairs
-                .iter()
-                .any(|p| (p[0] == n0 && p[1] == n1) || (p[0] == n1 && p[1] == n0));
-            if !is_edge {
-                continue;
-            }
-            if let Some(cs) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                col_area_sum += cs.area;
-                col_depth_sum += cs.depth.max(cs.width);
-                col_width_max = col_width_max.max(cs.width.min(cs.depth).max(t));
-                if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
-                    col_main_at =
-                        col_main_at.max(squid_n_core::section_shape::bar_set_area(&rebar.main_x));
-                }
-            }
-        }
-        let dc_each = col_depth_sum / 2.0;
-        let kappa = if col_area_sum > 0.0 && col_width_max > 0.0 && dc_each > 0.0 {
-            squid_n_core::section_shape::wall_shear_shape_factor_isection(
-                lw + dc_each,
-                dc_each,
-                col_width_max,
-                t,
-            )
-        } else {
-            KAPPA_RC
-        };
-
+        let shear_rigidity = super::shear_section::wall_shear_rigidity(data, model).ok()?;
         let area = t * lw;
-        let as_gross = area + col_area_sum;
         let column = BeamElement {
             id: data.id,
             e: mat.young * stiffness_scale,
@@ -301,7 +179,7 @@ impl WallElement {
             iy: lw * t.powi(3) / 12.0,
             iz: t * lw.powi(3) / 12.0 * rebar_factor,
             j: lw * t.powi(3) / 3.0,
-            as_y: r * as_gross / kappa,
+            as_y: r * shear_rigidity / mat.shear_modulus(),
             as_z: r * area / KAPPA_RC,
             length: h,
             density: mat.density,
@@ -368,13 +246,35 @@ impl WallElement {
                 let attr = model.wall_attrs.iter().find(|a| a.elem == data.id);
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
-                let net_area = (lw * h - opening_area).max(0.0);
+                let boundary = [geom.bottom[0], geom.bottom[1], geom.top[1], geom.top[0]];
+                let points: Vec<_> = boundary
+                    .iter()
+                    .map(|n| model.nodes[n.index()].coord)
+                    .collect();
+                let dimensions = std::array::from_fn(|i| {
+                    let a = boundary[i];
+                    let b = boundary[(i + 1) % 4];
+                    model
+                        .elements
+                        .iter()
+                        .find(|e| {
+                            e.kind == squid_n_core::model::ElementKind::Beam
+                                && e.nodes.len() >= 2
+                                && ((e.nodes[0] == a && e.nodes[e.nodes.len() - 1] == b)
+                                    || (e.nodes[0] == b && e.nodes[e.nodes.len() - 1] == a))
+                        })
+                        .and_then(|e| model.element_section(e))
+                        .map(|s| [s.width, s.depth])
+                });
+                let area = squid_n_core::geom::polygon::area_3d(&points)
+                    * squid_n_core::model::wall_clear_area_factor(&points, &dimensions);
+                let net_area = (area - opening_area).max(0.0);
                 (mat.density * t * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
                     .max(0.0)
             },
             committed_disp: [0.0; 24],
             trial_disp: [0.0; 24],
-            qu_shear: 0.0,
+            qu_shear: [0.0; 2],
             shear_mode,
             committed_slip: 0.0,
             trial_slip: 0.0,
@@ -457,7 +357,7 @@ impl WallElement {
         };
 
         let col = &self.column;
-        let fiber = crate::frame::fiber::FiberBeam::from_raw_parts(
+        let mut fiber = crate::frame::fiber::FiberBeam::from_raw_parts(
             col.nodes,
             col.length,
             col.axis,
@@ -473,6 +373,12 @@ impl WallElement {
             0.5 * lw,
             [make_section(), make_section()],
         );
+        fiber.releases = [4, 10]
+            .into_iter()
+            .map(|dof| crate::frame::fiber::EndRelease { dof, spring: 0.0 })
+            .collect();
+        fiber.trial_int = smallvec::smallvec![0.0; 2];
+        fiber.committed_int = smallvec::smallvec![0.0; 2];
         self.fiber_column = Some(fiber);
         self
     }
@@ -484,10 +390,12 @@ impl WallElement {
         let &WallShearGeometry {
             fc,
             t,
+            te,
             lw,
             h,
             ps,
-            dc_each,
+            d_wall,
+            dc_compression,
             col_main_at,
             has_side_column,
             sigma_wh,
@@ -500,9 +408,7 @@ impl WallElement {
         if fc <= 0.0 || t <= 0.0 || lw <= 0.0 || h <= 0.0 {
             return 0.0;
         }
-        let te = t;
-        let d_wall = lw + dc_each;
-        let d_eff = d_wall - dc_each / 2.0;
+        let d_eff = d_wall - dc_compression / 2.0;
         if d_eff <= 0.0 {
             return 0.0;
         }
@@ -520,7 +426,7 @@ impl WallElement {
                 te,
                 t,
                 d_wall,
-                dc_compression: dc_each,
+                dc_compression,
                 tension_column_at: at,
                 sigma_wh,
                 pwh_ratio: ps.max(0.0),
@@ -542,63 +448,79 @@ impl WallElement {
         squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(opening)
     }
 
-    /// この壁の面内せん断終局強度 Qu [N] を、要素と同じ幾何・配筋から算定する。
+    /// 正負のせん断終局耐力の小さい値 [N]。算定可否の判定と方向未指定の表示用。
     pub fn shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
+        let qu = Self::directional_shear_capacity_of(data, model);
+        qu[0].min(qu[1])
+    }
+
+    /// 壁下辺a→b方向の正載荷・負載荷の終局せん断耐力 [N]。算定不能は0。
+    pub fn directional_shear_capacity_of(data: &ElementData, model: &Model) -> [f64; 2] {
         let Some(geom) = wall_element_geometry(data, model) else {
-            return 0.0;
+            return [0.0; 2];
         };
-        let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
-            return 0.0;
+        if !crate::wall::misc_wall::is_rc_wall(data, model) {
+            return [Self::steel_shear_capacity_of(data, model); 2];
+        }
+        let Some(sec) = model.element_section(data) else {
+            return [0.0; 2];
         };
         let (t, ps) = match &sec.shape {
             Some(SectionShape::RcWall { thickness, ps }) => (*thickness, (*ps).max(0.0)),
             _ => (sec.thickness.unwrap_or(sec.width), 0.0),
         };
-        if !crate::wall::misc_wall::is_rc_wall(data, model) {
-            return Self::steel_shear_capacity_of(data, model);
-        }
-        let fc = model.element_material(data).and_then(|m| m.fc);
-        let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
-        let mut col_depth_sum = 0.0;
-        let mut col_main_at: f64 = 0.0;
-        let mut has_side_column = false;
-        for e in &model.elements {
-            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
-                continue;
-            }
-            let (n0, n1) = (e.nodes[0], e.nodes[1]);
-            if !edge_pairs
-                .iter()
-                .any(|p| (p[0] == n0 && p[1] == n1) || (p[0] == n1 && p[1] == n0))
-            {
-                continue;
-            }
-            has_side_column = true;
-            if let Some(cs) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                col_depth_sum += cs.depth.max(cs.width);
-                if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
-                    col_main_at =
-                        col_main_at.max(squid_n_core::section_shape::bar_set_area(&rebar.main_x));
+        let Ok(section) = super::shear_section::WallSection::new(data, model) else {
+            return [0.0; 2];
+        };
+        let mut at = [0.0; 2];
+        let mut depth = [0.0; 2];
+        for (side, col) in section.columns.iter().enumerate() {
+            if let Some(col) = col {
+                let Some(shape) = model
+                    .element_section(&model.elements[col.element_index])
+                    .and_then(|sec| sec.shape.as_ref())
+                else {
+                    return [0.0; 2];
+                };
+                let rebar = match shape {
+                    SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. } => {
+                        rebar
+                    }
+                    _ => return [0.0; 2],
+                };
+                at[side] = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
+                    + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
+                if at[side] <= 0.0 {
+                    return [0.0; 2];
                 }
+                depth[side] = col.extent[1] - col.extent[0];
             }
         }
-        let opening = wall_opening_equiv_dims(data, model);
+        let d_wall = geom.lw + depth.iter().sum::<f64>() / 2.0;
+        let Ok(properties) = section.properties() else {
+            return [0.0; 2];
+        };
+        let te = (properties.area_mm2 / d_wall).min(1.5 * t);
         let shear_mat = model.element_shear_rebar_material(data);
         let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
             .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
-        Self::shear_capacity(&WallShearGeometry {
-            fc,
-            t,
-            lw: geom.lw,
-            h: geom.h,
-            ps,
-            dc_each: col_depth_sum / 2.0,
-            col_main_at,
-            has_side_column,
-            sigma_wh,
-            high_strength_shear_rebar:
-                squid_n_core::material_grade::is_high_strength_shear_material(shear_mat),
-            opening,
+        std::array::from_fn(|tension| {
+            Self::shear_capacity(&WallShearGeometry {
+                fc: model.element_material(data).and_then(|m| m.fc),
+                t,
+                te,
+                lw: geom.lw,
+                h: geom.h,
+                ps,
+                d_wall,
+                dc_compression: depth[1 - tension],
+                col_main_at: at[tension],
+                has_side_column: section.columns[tension].is_some(),
+                sigma_wh,
+                high_strength_shear_rebar:
+                    squid_n_core::material_grade::is_high_strength_shear_material(shear_mat),
+                opening: wall_opening_equiv_dims(data, model),
+            })
         })
     }
 
@@ -631,30 +553,16 @@ impl WallElement {
         t * geom.lw * f / 3.0_f64.sqrt()
     }
 
-    /// 耐震壁のせん断終局強度 Qu を算定できない設定不備があれば、その内容を返す。
-    ///
-    /// 検出する不備:
-    /// - 壁エレメントとして構築できない（4 節点未満／節点座標が退化）。
-    /// - 断面が設定されていない／壁厚が 0 以下。
-    /// - 材料が設定されていない。
-    /// - 材料にコンクリート強度 Fc が設定されていない、または Fc が 0 以下。
-    /// - 付帯柱（側柱）はあるのに、その断面から主筋量を読み取れない
-    ///   （断面形状が RcRect でない／主筋本数・径が 0）。
-    /// - 上記のいずれにも当てはまらないが Qu が 0 以下になる。
-    ///
-    /// 付帯柱がない壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
-    /// 算定する。`ps = 0` の場合は不備とする。
+    /// RC壁の耐力式を適用できない側柱・配筋・材料・幾何の不備を返す。
     pub fn wall_shear_capacity_issue(data: &ElementData, model: &Model) -> Option<String> {
         if !matches!(data.kind, squid_n_core::model::ElementKind::Wall) {
             return None;
         }
-        let geom = match wall_element_geometry(data, model) {
-            Some(g) => g,
+        match wall_element_geometry(data, model) {
+            Some(_) => (),
             None if data.nodes.len() >= 4 => {
                 return Some(format!(
-                    "耐震壁 ID {} を壁エレメントとして構築できません（4 節点の指定と節点座標を確認してください）。\
-                     壁エレメントを構築できない壁は弾性の等価梁として扱われ、\
-                     保有水平耐力計算で面内せん断が終局せん断強度で頭打ちになりません。",
+                    "耐震壁 ID {} を壁エレメントとして構築できません（4 節点の指定と節点座標を確認してください）。解析を開始できません。",
                     data.id.0
                 ));
             }
@@ -728,35 +636,21 @@ impl WallElement {
             Some(_) => {}
         }
 
-        let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
-        let mut has_side_column = false;
-        let mut col_main_at: f64 = 0.0;
-        for e in &model.elements {
-            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
-                continue;
+        let section = match super::shear_section::WallSection::new(data, model) {
+            Ok(section) => section,
+            Err(reason) => return Some(reason),
+        };
+        let has_side_column = section.columns.iter().any(Option::is_some);
+        for column in section.columns.iter().flatten() {
+            let shape = model
+                .element_section(&model.elements[column.element_index])
+                .and_then(|sec| sec.shape.as_ref());
+            match shape {
+                Some(SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. })
+                    if squid_n_core::section_shape::bar_set_area(&rebar.main_x)
+                        + squid_n_core::section_shape::bar_set_area(&rebar.main_y) > 0.0 => {}
+                _ => return Some(format!("耐震壁 ID {} の側柱の終局せん断耐力を算定できません。現在のRC耐力式は主筋を明示したRC矩形・円形側柱に適用します。SRC・CFT・鋼材側柱の弾性断面計算とは適用範囲が異なります。", data.id.0)),
             }
-            let (n0, n1) = (e.nodes[0], e.nodes[1]);
-            if !edge_pairs
-                .iter()
-                .any(|p| (p[0] == n0 && p[1] == n1) || (p[0] == n1 && p[1] == n0))
-            {
-                continue;
-            }
-            has_side_column = true;
-            if let Some(cs) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
-                    col_main_at =
-                        col_main_at.max(squid_n_core::section_shape::bar_set_area(&rebar.main_x));
-                }
-            }
-        }
-        if has_side_column && col_main_at <= 0.0 {
-            return Some(format!(
-                "耐震壁 ID {} の側柱（付帯柱）から主筋量を取得できません。\
-                 断面の形状を RC 矩形（RcRect）とし、主筋の本数・径を設定してください。\
-                 保有水平耐力計算では側柱主筋から耐震壁の等価引張鉄筋比 pte を算定します。",
-                data.id.0
-            ));
         }
         if !has_side_column && ps <= 0.0 {
             return Some(format!(
@@ -779,8 +673,8 @@ impl WallElement {
 
     /// 面内せん断の終局強度 Qu [N] を与えて弾完全塑性化する（保有水平耐力用）。
     /// `qu <= 0` は弾性のまま（降伏しない）。
-    pub(crate) fn with_shear_capacity(mut self, qu: f64) -> Self {
-        self.qu_shear = qu.max(0.0);
+    pub(crate) fn with_shear_capacity(mut self, qu: [f64; 2]) -> Self {
+        self.qu_shear = qu.map(|q| q.max(0.0));
         self
     }
 
@@ -790,10 +684,10 @@ impl WallElement {
     /// `qu_shear <= 0` や k_s0 が取れない場合は何もしない。
     pub(crate) fn with_shear_hysteresis(mut self, rule: HysteresisModel) -> Self {
         use squid_n_material::{HysteresisMaterial, HysteresisRule};
-        if self.qu_shear <= 0.0 {
+        if self.qu_shear.iter().any(|q| *q <= 0.0) {
             return self;
         }
-        let k12 = self.column.axis.to_global(&self.column.local_stiffness());
+        let k12 = self.column.axis.to_global(&self.column_stiffness_pinned());
         let mut v = [0.0_f64; 12];
         for (i, vi) in v.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -814,41 +708,49 @@ impl WallElement {
         if k_s0 <= 0.0 {
             return self;
         }
-        let qu = self.qu_shear;
-        let dy = qu / k_s0;
-        let crack = (qu / 3.0, dy / 3.0);
-        let yield_point = (qu, dy);
-        let ultimate = (qu, dy * 1.0e4);
-        let r = match rule {
-            HysteresisModel::Retrograde => HysteresisRule::Retrograde {
-                crack,
-                yield_point,
-                ultimate,
-            },
-            HysteresisModel::Standard => HysteresisRule::Standard {
-                crack,
-                yield_point,
-                ultimate,
-            },
-            HysteresisModel::OriginOriented => HysteresisRule::OriginOriented {
-                yield_point,
-                ultimate,
-            },
-            HysteresisModel::Takeda => HysteresisRule::Takeda {
-                crack,
-                yield_point,
-                ultimate,
-                alpha: 0.4,
-            },
-            _ => HysteresisRule::MaxPointOriented {
-                crack,
-                yield_point,
-                ultimate,
-            },
+        let make_rule = |qu: f64| {
+            let dy = qu / k_s0;
+            let crack = (qu / 3.0, dy / 3.0);
+            let yield_point = (qu, dy);
+            let ultimate = (qu, dy * 1.0e4);
+            match rule {
+                HysteresisModel::Retrograde => HysteresisRule::Retrograde {
+                    crack,
+                    yield_point,
+                    ultimate,
+                },
+                HysteresisModel::Standard => HysteresisRule::Standard {
+                    crack,
+                    yield_point,
+                    ultimate,
+                },
+                HysteresisModel::OriginOriented => HysteresisRule::OriginOriented {
+                    yield_point,
+                    ultimate,
+                },
+                HysteresisModel::Takeda => HysteresisRule::Takeda {
+                    crack,
+                    yield_point,
+                    ultimate,
+                    alpha: 0.4,
+                },
+                _ => HysteresisRule::MaxPointOriented {
+                    crack,
+                    yield_point,
+                    ultimate,
+                },
+            }
         };
-        self.shear_spring = Some(Box::new(HysteresisMaterial::new(r)));
+        self.shear_spring = Some(Box::new(
+            HysteresisMaterial::new(make_rule(self.qu_shear[0]))
+                .with_negative_rule(make_rule(self.qu_shear[1])),
+        ));
         self.shear_k0 = k_s0;
         self
+    }
+
+    fn shear_limit(&self, q: f64) -> f64 {
+        self.qu_shear[usize::from(q < 0.0)]
     }
 
     /// 面内せん断の弾完全塑性リターンマッピング。
@@ -861,7 +763,7 @@ impl WallElement {
     ///
     /// 戻り値は `(γp, 降伏しているか)`。`qu_shear <= 0` は常に弾性。
     fn shear_return_map(&self, k: &LocalMat, u24: &[f64; 24]) -> (f64, bool) {
-        if self.qu_shear <= 0.0 {
+        if self.qu_shear.iter().any(|q| *q <= 0.0) {
             return (0.0, false);
         }
         let kp = Self::mat_vec(k, &self.shear_mode);
@@ -889,14 +791,14 @@ impl WallElement {
             if self.shear_k0 > 0.0 {
                 let d = self.committed_slip + q_trial / self.shear_k0;
                 let (q_target, _) = sp.probe(d);
-                let yielded = (q_trial - q_target).abs() > self.qu_shear * 1e-9;
+                let yielded = (q_trial - q_target).abs() > self.shear_limit(q_trial) * 1e-9;
                 return (self.committed_slip + (q_trial - q_target) / k_s, yielded);
             }
         }
-        if q_trial.abs() <= self.qu_shear {
+        if q_trial.abs() <= self.shear_limit(q_trial) {
             return (self.committed_slip, false);
         }
-        let d_gamma = (q_trial.abs() - self.qu_shear) * q_trial.signum() / k_s;
+        let d_gamma = (q_trial.abs() - self.shear_limit(q_trial)) * q_trial.signum() / k_s;
         (self.committed_slip + d_gamma, true)
     }
 
@@ -915,12 +817,20 @@ impl WallElement {
         out
     }
 
+    /// 壁柱の局所 y 軸まわり（面外曲げ）の両端回転を静縮約した弾性剛性。
+    fn column_stiffness_pinned(&self) -> LocalMat {
+        crate::frame::prismatic::condense_end_releases(
+            &self.column.local_stiffness(),
+            &[(4, 0.0), (10, 0.0)],
+        )
+    }
+
     /// 壁柱の全体系 12×12 接線剛性（ファイバー壁柱があればその整合接線、
     /// なければ弾性壁柱）。
     fn k12_global(&self, ctx: &Ctx) -> LocalMat {
         match &self.fiber_column {
             Some(f) => f.tangent_stiffness(ctx),
-            None => self.column.axis.to_global(&self.column.local_stiffness()),
+            None => self.column.axis.to_global(&self.column_stiffness_pinned()),
         }
     }
 
@@ -1023,7 +933,7 @@ impl ElementBehavior for WallElement {
 
     fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
         let k = self.stiffness_24(ctx);
-        if self.qu_shear <= 0.0 {
+        if self.qu_shear.iter().any(|q| *q <= 0.0) {
             return k;
         }
         let kp = Self::mat_vec(&k, &self.shear_mode);
@@ -1040,7 +950,7 @@ impl ElementBehavior for WallElement {
             0.0
         } else {
             let yielded = match self.inplane_shear_fiber(ctx) {
-                Some(q) => q.abs() >= self.qu_shear * (1.0 - 1e-9),
+                Some(q) => q.abs() >= self.shear_limit(q) * (1.0 - 1e-9),
                 None => self.shear_return_map(&k, &self.trial_disp).1,
             };
             if yielded {
@@ -1103,7 +1013,7 @@ impl ElementBehavior for WallElement {
                 };
                 fiber.update_state(&dv, false, ctx);
                 self.fiber_u12_trial = u12;
-                if self.qu_shear <= 0.0 {
+                if self.qu_shear.iter().any(|q| *q <= 0.0) {
                     break;
                 }
                 let Some(q) = self.inplane_shear_fiber(ctx) else {
@@ -1117,12 +1027,12 @@ impl ElementBehavior for WallElement {
                         .map(|sp| sp.probe(d).0)
                         .unwrap_or(q);
                     q - q_target
-                } else if q.abs() > self.qu_shear {
-                    (q.abs() - self.qu_shear) * q.signum()
+                } else if q.abs() > self.shear_limit(q) {
+                    (q.abs() - self.shear_limit(q)) * q.signum()
                 } else {
                     0.0
                 };
-                if residual.abs() <= self.qu_shear * 1e-9 {
+                if residual.abs() <= self.shear_limit(q) * 1e-9 {
                     break;
                 }
                 let k = self.stiffness_24(ctx);
@@ -1286,12 +1196,32 @@ impl ElementBehavior for WallElement {
         LocalMat::zeros(24)
     }
 
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
+        if let Some(fiber) = &self.fiber_column {
+            return fiber.state_member_forces(ctx);
+        }
+        let k = self.stiffness_24(ctx);
+        let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
+        let mut u_eff = self.trial_disp;
+        for (u, p) in u_eff.iter_mut().zip(&self.shear_mode) {
+            *u -= slip * p;
+        }
+        self.recover_forces(&u_eff)
+    }
+
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 24 {
             return None;
         }
         let u12 = self.to_column_disp(&u_elem[..24]);
-        Some(self.column.recover_forces(&u12))
+        let u_local = self.column.axis.rotate_to_local(&u12);
+        let k = self.column_stiffness_pinned();
+        let f_local = std::array::from_fn(|i| (0..12).map(|j| k.get(i, j) * u_local[j]).sum());
+        Some(crate::frame::beam::member_forces_from_end_forces(
+            &f_local,
+            self.column.length,
+            &self.column.eval_sections,
+        ))
     }
 }
 
@@ -1398,6 +1328,56 @@ mod tests {
     }
 
     #[test]
+    fn test_wall_mass_uses_clear_area_between_surrounding_members() {
+        let (mut model, data) = make_wall_model();
+        let mut section = SectionShape::RcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: squid_n_core::section_shape::RcRebar {
+                main_x: squid_n_core::section_shape::BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: squid_n_core::section_shape::BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: squid_n_core::section_shape::ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+        .to_section(SectionId(1), "C600".into());
+        section.material = Some(MaterialId(0));
+        model.sections.push(section);
+        model.elements.clear();
+        for i in 0..4 {
+            let mut beam = data.clone();
+            beam.id = ElemId(i as u32 + 1);
+            beam.kind = ElementKind::Beam;
+            beam.nodes = smallvec::smallvec![data.nodes[i], data.nodes[(i + 1) % 4]];
+            beam.section = Some(SectionId(1));
+            model.elements.push(beam);
+        }
+        for order in [[0, 1, 2, 3], [0, 3, 2, 1], [0, 3, 1, 2], [2, 0, 3, 1]] {
+            let mut reordered = data.clone();
+            reordered.nodes = order.into_iter().map(|i| data.nodes[i]).collect();
+            let wall = WallElement::try_new(&reordered, &model).unwrap();
+            let expected = (4000.0 - 600.0) * (3000.0 - 600.0) * 150.0 * 2.4e-9;
+            let mass = wall.mass_matrix(MassOption::Lumped);
+            for dir in 0..3 {
+                let total: f64 = (0..4).map(|i| mass.get(i * 6 + dir, i * 6 + dir)).sum();
+                assert!((total - expected).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
     fn test_wall_element_rigid_translation_zero_force() {
         let (model, data) = make_wall_model();
         let wall = WallElement::try_new(&data, &model).unwrap();
@@ -1415,6 +1395,82 @@ mod tests {
                     "剛体移動で内力が生じた: dir={dir} i={i} f={f}"
                 );
             }
+        }
+    }
+
+    fn assert_rigid_rotation_zero_force(axis: usize, nonlinear: bool) {
+        let (model, data) = make_wall_model();
+        let mut wall = WallElement::try_new(&data, &model).unwrap();
+        if nonlinear {
+            wall = wall.with_fiber_flexure(
+                &data,
+                &model,
+                crate::factory::StrengthBasis::MaterialStrength,
+                squid_n_core::model::AnalysisKind::Incremental,
+            );
+            assert!(wall.fiber_column.is_some());
+        }
+        let k = wall.stiffness_24(&Ctx { model: &model });
+        let mut theta = [0.0; 3];
+        theta[axis] = 1e-3;
+        let mut u = [0.0; 24];
+        for (slot, node) in wall.nodes.iter().enumerate() {
+            let x = model.nodes[node.index()].coord;
+            let translation = [
+                theta[1] * x[2] - theta[2] * x[1],
+                theta[2] * x[0] - theta[0] * x[2],
+                theta[0] * x[1] - theta[1] * x[0],
+            ];
+            u[slot * 6..slot * 6 + 3].copy_from_slice(&translation);
+            u[slot * 6 + 3..slot * 6 + 6].copy_from_slice(&theta);
+        }
+        let max_force = (0..24)
+            .map(|i| (0..24).map(|j| k.get(i, j) * u[j]).sum::<f64>().abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_force < 1e-6,
+            "剛体回転で内力: axis={axis}, max={max_force}"
+        );
+        let ctx = Ctx { model: &model };
+        wall.update_state(
+            &LocalVec {
+                data: u.into_iter().collect(),
+            },
+            false,
+            &ctx,
+        );
+        let force = wall.internal_force(&ctx);
+        assert!(
+            force.data.iter().all(|v| v.abs() < 1e-6),
+            "剛体回転の状態内力: {:?}",
+            force.data
+        );
+        let recovered = wall.recover_forces(&u).unwrap();
+        assert!(recovered
+            .at
+            .iter()
+            .all(|(_, f)| f.iter().all(|v| v.abs() < 1e-6)));
+    }
+
+    #[test]
+    fn test_wall_element_rigid_rotation_horizontal_axis_zero_force() {
+        assert_rigid_rotation_zero_force(0, false);
+    }
+
+    #[test]
+    fn test_wall_element_rigid_rotation_normal_axis_zero_force() {
+        assert_rigid_rotation_zero_force(1, false);
+    }
+
+    #[test]
+    fn test_wall_element_rigid_rotation_vertical_axis_zero_force() {
+        assert_rigid_rotation_zero_force(2, false);
+    }
+
+    #[test]
+    fn test_fiber_wall_rigid_rotations_zero_force() {
+        for axis in 0..3 {
+            assert_rigid_rotation_zero_force(axis, true);
         }
     }
 
@@ -1574,9 +1630,9 @@ mod tests {
                 },
             },
         };
-        model
-            .sections
-            .push(col_shape.to_section(SectionId(1), "C600".into()));
+        let mut col_section = col_shape.to_section(SectionId(1), "C600".into());
+        col_section.material = Some(MaterialId(0));
+        model.sections.push(col_section);
         let base = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
         for (i, (a, b)) in [(NodeId(0), NodeId(3)), (NodeId(1), NodeId(2))]
             .into_iter()
@@ -1604,12 +1660,18 @@ mod tests {
             wall_cols.column.as_y,
             wall_plain.column.as_y
         );
-        let a_gross = 150.0 * 4000.0 + 2.0 * 360_000.0;
-        let kappa = a_gross / wall_cols.column.as_y;
-        assert!(
-            (kappa - 1.2).abs() > 1e-3,
-            "κ が I 形になっていない: {kappa}"
+        let area = 1_230_000.0;
+        let kappa = squid_n_core::section_shape::wall_shear_shape_factor_isection(
+            4600.0, 600.0, 600.0, 150.0,
         );
+        assert!((wall_cols.column.as_y / (area / kappa) - 1.0).abs() < 1e-12);
+        model.materials.push(model.materials[0].clone());
+        model.materials[1].id = MaterialId(1);
+        model.materials[1].shear = Some(model.materials[0].shear_modulus() * 2.0);
+        model.sections[1].material = Some(MaterialId(1));
+        let stiffer_columns = WallElement::try_new(&data, &model).unwrap();
+        assert!(stiffer_columns.column.as_y > wall_cols.column.as_y);
+        assert!(stiffer_columns.column.as_y < 2.0 * wall_cols.column.as_y);
     }
 
     #[test]
@@ -1740,6 +1802,22 @@ mod geometry_tests {
     /// 節点の並び順に依存しない（z でソートして下辺・上辺を決める）。
     /// 並び順を変えても壁長・高さは不変であること。特に「先頭 2 節点が鉛直辺」に
     /// なる並びでも壁高さを壁長として拾わないこと。
+    #[test]
+    fn test_wall_geometry_pairs_shifted_top_in_bottom_axis_order() {
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [-1000.0, 0.0, 3000.0],
+            [-5000.0, 0.0, 3000.0],
+        ];
+        let (model, data) = wall_with(coords, [0, 1, 2, 3]);
+        let geom = wall_element_geometry(&data, &model).unwrap();
+        assert_eq!(geom.top, [NodeId(3), NodeId(2)]);
+        let boundary = [geom.bottom[0], geom.bottom[1], geom.top[1], geom.top[0]];
+        let points = boundary.map(|n| model.nodes[n.index()].coord);
+        assert!((squid_n_core::geom::polygon::area_3d(&points) - 12_000_000.0).abs() < 1e-6);
+    }
+
     #[test]
     fn test_wall_geometry_is_independent_of_node_order() {
         let coords = [
@@ -1905,6 +1983,9 @@ mod shear_yield_tests {
             b.commit_state();
             let f = b.internal_force(&ctx);
             max_q = max_q.max((f.data[0] + f.data[6]).abs());
+            let recorded = b.state_member_forces(&ctx).expect("壁柱の状態断面力");
+            let recorded_q = recorded.at[0].1[1].abs();
+            assert!((recorded_q - (f.data[0] + f.data[6]).abs()).abs() < qu * 1e-8);
         }
         assert!(
             max_q <= qu * 1.001,
@@ -1945,6 +2026,8 @@ mod shear_yield_tests {
             b.update_state(&du, false, &ctx);
             b.commit_state();
             let f = b.internal_force(&ctx);
+            let recorded = b.state_member_forces(&ctx).expect("時刻歴の壁柱断面力");
+            assert!((recorded.at[0].1[1] - (f.data[0] + f.data[6])).abs() < qu * 1e-8);
             f.data[0] + f.data[6]
         };
 
@@ -2076,7 +2159,7 @@ mod capacity_issue_tests {
         edge(2, 3, 2, None);
         if let Some(sec) = side_sec {
             edge(3, 0, 3, Some(sec));
-            edge(4, 1, 2, None);
+            edge(4, 1, 2, Some(sec));
         }
         let wall = ElementData {
             id: ElemId(0),
@@ -2169,6 +2252,81 @@ mod capacity_issue_tests {
             }
         };
         shape.to_section(SectionId(1), "C600".into())
+    }
+
+    #[test]
+    fn different_column_reinforcement_produces_directional_wall_limits() {
+        let (mut model, wall) = model_with(Some(rc_col(true)), 0.0025);
+        let mut right = model.sections[1].clone();
+        right.id = SectionId(2);
+        if let Some(SectionShape::RcRect { rebar, .. }) = &mut right.shape {
+            rebar.main_x.count *= 2;
+            rebar.main_y.count *= 2;
+        }
+        model.sections.push(right);
+        model
+            .elements
+            .iter_mut()
+            .find(|e| e.id == ElemId(4))
+            .unwrap()
+            .section = Some(SectionId(2));
+        let qu = WallElement::directional_shear_capacity_of(&wall, &model);
+        assert!(qu[1] > qu[0] && qu[0] > 0.0, "{qu:?}");
+        for mode in 0..3 {
+            let limits = if mode == 2 { qu.map(|q| q * 0.001) } else { qu };
+            let mut element = WallElement::try_new_scaled(&wall, &model, 1.0)
+                .unwrap()
+                .with_shear_capacity(limits);
+            if mode > 0 {
+                element = element.with_shear_hysteresis(HysteresisModel::MaxPointOriented);
+            }
+            if mode == 2 {
+                element = element.with_fiber_flexure(
+                    &wall,
+                    &model,
+                    crate::factory::StrengthBasis::Nominal,
+                    crate::factory::AnalysisKind::Incremental,
+                );
+                assert!(element.fiber_column.is_some());
+            }
+            let ctx = Ctx { model: &model };
+            let mut displacement = 0.0;
+            for (target, expected) in [(100.0, limits[0]), (-150.0, -limits[1]), (150.0, limits[0])]
+            {
+                let start = displacement;
+                for step in 1..=100 {
+                    let next = start + (target - start) * step as f64 / 100.0;
+                    let mut delta = LocalVec {
+                        data: smallvec::smallvec![0.0; 24],
+                    };
+                    delta.data[12] = next - displacement;
+                    delta.data[18] = next - displacement;
+                    element.update_state(&delta, false, &ctx);
+                    element.commit_state();
+                    displacement = next;
+                }
+                let f = element.internal_force(&ctx);
+                let q = f.data[12] + f.data[18];
+                assert!(
+                    (q / expected - 1.0).abs() < 1e-7,
+                    "正負耐力: q={q}, expected={expected}"
+                );
+            }
+        }
+        let left = model
+            .elements
+            .iter()
+            .position(|e| e.id == ElemId(3))
+            .unwrap();
+        let right = model
+            .elements
+            .iter()
+            .position(|e| e.id == ElemId(4))
+            .unwrap();
+        model.elements[left].section = Some(SectionId(2));
+        model.elements[right].section = Some(SectionId(1));
+        let reversed = WallElement::directional_shear_capacity_of(&wall, &model);
+        assert_eq!(qu, [reversed[1], reversed[0]]);
     }
 
     /// 側柱があり主筋も設定されていれば不備なし・Qu が算定できる。

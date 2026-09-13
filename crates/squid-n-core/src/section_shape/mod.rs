@@ -18,6 +18,7 @@ mod geometry;
 mod label;
 mod material;
 mod properties;
+mod shear;
 mod types;
 
 #[cfg(test)]
@@ -29,8 +30,12 @@ use crate::ids::SectionId;
 pub use composite::{CftCoreProps, CompositeProps};
 pub use constants::{E_STEEL, KAPPA_RC, N_S_EQ};
 pub use material::{
-    concrete_young_modulus, concrete_young_modulus_gamma, wall_shear_shape_factor,
-    wall_shear_shape_factor_isection,
+    concrete_young_modulus, concrete_young_modulus_gamma, wall_shear_shape_factor_isection,
+};
+pub use shear::{
+    material_strip_section_properties, strip_section_properties,
+    wall_rectangular_section_properties, MaterialSectionStrip, MaterialStripSectionProperties,
+    StripSectionProperties,
 };
 pub use types::{
     bar_set_area, one_bar_area, shear_legs_area, BarSet, RcRebar, SectionShape, ShearBar,

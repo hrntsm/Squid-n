@@ -559,6 +559,7 @@ mod tests {
 
     fn enclosed_plate(boundary: Vec<squid_n_core::ids::NodeId>) -> squid_n_core::model::WallPlate {
         squid_n_core::model::WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: squid_n_core::model::WallPlateShape::Enclosed { boundary },
             section: None,
