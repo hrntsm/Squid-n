@@ -264,6 +264,8 @@ mdbook build
 
 `docs/` は利用者向けの現在の仕様・計算根拠、`dev_docs/` は開発経緯・V&V・申し送り・ロードマップです。変更内容に対応する文書を更新してください。既定値を変更した場合は、利用者が結果の根拠を追えるよう `docs/` に既定値を反映します。
 
+ドメイン語彙の正本は `CONTEXT.md`、設計判断の正本は `dev_docs/adr/` です。新しい用語が確定したら `CONTEXT.md` を、重要な設計判断が確定したら ADR を更新してください（`dev_docs/specs/用語集.md` は実装リンク付きの詳細辞書、handoff は実装経緯・検証・残課題を担います）。
+
 ### dev_docs（申し送り・V&V）
 
 実装・修正の申し送りや V&V レポートを追加・更新したら、**集約一覧も合わせて更新**してください。
@@ -276,6 +278,8 @@ mdbook build
 | 残課題が解消した | 上記 `残課題一覧.md` から該当行を削除 |
 | V&V レポートを追加・更新 | [`dev_docs/v_and_v/README.md`](dev_docs/v_and_v/README.md) のレポート目録と索引 #N の状態（✅/🔶/❌）を更新 |
 | 未検証・一部が残る | [`dev_docs/v_and_v/未検証一覧.md`](dev_docs/v_and_v/未検証一覧.md) に 1 行追加 |
+| 用語が確定した | `CONTEXT.md`（意味）と [`dev_docs/specs/用語集.md`](dev_docs/specs/用語集.md)（実装リンク）を更新 |
+| 重要な設計判断が確定した | [`dev_docs/adr/`](dev_docs/adr/) に ADR を追加（handoff は実装経緯・検証・残課題に限る） |
 
 申し送りの詳細は個別ファイル、横断的な未完了は [`残課題一覧.md`](dev_docs/handoff/残課題一覧.md)、
 V&V の未完了は [`未検証一覧.md`](dev_docs/v_and_v/未検証一覧.md) が入口です。
