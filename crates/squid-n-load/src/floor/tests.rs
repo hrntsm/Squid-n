@@ -781,6 +781,7 @@ fn test_cantilever_with_real_beam_edge_uses_beam() {
 }
 
 /// 1 枚の取り付く床板の内部を通る実片持ち梁も、ベイ分割後に支持辺として荷重を受ける。
+/// 実梁が途中節点で 2 要素に分かれていても連結して全長を覆い、両要素へ分配される。
 #[test]
 fn test_cantilever_real_beam_inside_slab_after_rebuild() {
     use squid_n_core::ids::{ElemId, NodeId, SlabId};
@@ -804,60 +805,79 @@ fn test_cantilever_real_beam_inside_slab_after_rebuild() {
         plastic_zone: None,
         spring: None,
     };
-    let mut model = Model {
-        nodes: vec![
-            mk_node(0, 0.0, 0.0),
-            mk_node(1, l, 0.0),
-            mk_node(2, l, depth),
-            mk_node(3, 0.0, depth),
-            mk_node(4, 2000.0, 0.0),
-            mk_node(5, 2000.0, depth),
-        ],
-        ..Default::default()
-    };
-    model.elements.push(mk_beam(0, 0, 1));
-    model.elements.push(mk_beam(1, 4, 5));
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Attached {
-            anchor: RegionAnchor::Line {
-                nodes: [NodeId(0), NodeId(1)],
-                span: [0.0, 1.0],
-                transfer: LoadTransfer::Anchor,
-            },
-            extent: [depth, depth],
-        },
-        plate: SlabPlate {
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: w,
-            }],
+    for spliced in [false, true] {
+        let mut model = Model {
+            nodes: vec![
+                mk_node(0, 0.0, 0.0),
+                mk_node(1, l, 0.0),
+                mk_node(2, l, depth),
+                mk_node(3, 0.0, depth),
+                mk_node(4, 2000.0, 0.0),
+            ],
             ..Default::default()
-        },
-    });
+        };
+        model.elements.push(mk_beam(0, 0, 1));
+        if spliced {
+            model.nodes.push(mk_node(5, 2000.0, depth / 2.0));
+            model.nodes.push(mk_node(6, 2000.0, depth));
+            model.elements.push(mk_beam(1, 4, 5));
+            model.elements.push(mk_beam(2, 5, 6));
+        } else {
+            model.nodes.push(mk_node(5, 2000.0, depth));
+            model.elements.push(mk_beam(1, 4, 5));
+        }
+        model.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [depth, depth],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: w,
+                }],
+                ..Default::default()
+            },
+        });
 
-    rebuild_floor_regions(&mut model);
-    assert_eq!(model.slabs.len(), 2, "内部の実梁で分割される");
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "内部の実梁で分割される");
 
-    let loads: Vec<_> = model
-        .slabs
-        .iter()
-        .flat_map(|s| distribute_slab(&model, s))
-        .collect();
-    let expected = w * l * depth;
-    let total = total_load(&loads);
-    assert!((total - expected).abs() / expected < 1e-9, "総和 {total}");
+        let loads: Vec<_> = model
+            .slabs
+            .iter()
+            .flat_map(|s| distribute_slab(&model, s))
+            .collect();
+        let expected = w * l * depth;
+        let total = total_load(&loads);
+        assert!((total - expected).abs() / expected < 1e-9, "総和 {total}");
 
-    let beam_total: f64 = loads
-        .iter()
-        .filter(|bl| matches!(&bl.target, LoadTarget::Span { nodes, .. } if *nodes == [NodeId(4), NodeId(5)]))
-        .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
-        .sum();
-    let expected_beam = w * depth * depth;
-    assert!(
-        (beam_total - expected_beam).abs() / expected_beam < 0.02,
-        "内部実梁への分配 {beam_total} expected {expected_beam}"
-    );
+        let beam_total: f64 = loads
+            .iter()
+            .filter(|bl| matches!(&bl.target, LoadTarget::Span { .. }))
+            .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+            .sum();
+        let expected_beam = w * depth * depth;
+        assert!(
+            (beam_total - expected_beam).abs() / expected_beam < 0.02,
+            "内部実梁への分配 {beam_total} expected {expected_beam} (spliced={spliced})"
+        );
+        if spliced {
+            for id in [1u32, 2] {
+                let elem_total: f64 = loads
+                    .iter()
+                    .filter(|bl| bl.elem == ElemId(id))
+                    .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+                    .sum();
+                assert!(elem_total > 0.0, "分割要素 {id} にも載る");
+            }
+        }
+    }
 }
 
 /// 同じ辺に実部材と小梁がある場合は実部材を優先し、全長を覆わない実部材は支持辺にしない。

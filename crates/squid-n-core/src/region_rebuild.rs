@@ -182,7 +182,7 @@ fn merge_attached_slabs(model: &mut Model) {
         }
     }
 
-    let axes = model.secondary_joist_axes();
+    let axes = attachment_split_axes(model);
     let tol = MEMBER_AXIS_TOL_MM;
     const SPAN_EPS: f64 = 1e-9;
     let mut removed = std::collections::HashSet::new();
@@ -249,13 +249,13 @@ fn set_attached_bay(
 }
 
 /// 取付き線上の位置 `span_pos`・張り出し量 `extent_pos` の境界辺が、小梁または
-/// 実部材（2 節点 `Beam`）の材軸上にあるか。
+/// 実部材（連結した 2 節点 `Beam`）の材軸上にあるか。
 fn attachment_boundary_on_member(
     model: &Model,
     nodes: [NodeId; 2],
     span_pos: f64,
     extent_pos: f64,
-    axes: &[crate::model::SecondaryJoistAxis],
+    axes: &[([f64; 3], [f64; 3])],
 ) -> bool {
     let (Some(a), Some(b)) = (
         model.nodes.get(nodes[0].index()),
@@ -282,20 +282,7 @@ fn attachment_boundary_on_member(
         point_segment_dist3(p0, a, b) <= MEMBER_AXIS_TOL_MM
             && point_segment_dist3(p1, a, b) <= MEMBER_AXIS_TOL_MM
     };
-    let on_secondary = axes.iter().any(|axis| on_segment(axis.a, axis.b));
-    let on_beam = model.elements.iter().any(|e| {
-        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
-            return false;
-        }
-        let (Some(ea), Some(eb)) = (
-            model.nodes.get(e.nodes[0].index()),
-            model.nodes.get(e.nodes[1].index()),
-        ) else {
-            return false;
-        };
-        on_segment(ea.coord, eb.coord)
-    });
-    on_secondary || on_beam
+    axes.iter().any(|(a, b)| on_segment(*a, *b))
 }
 
 fn point_segment_dist3(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -346,13 +333,21 @@ fn split_attached_slabs_into_bays(model: &mut Model) {
     }
 }
 
-/// 取り付く床板の分割候補となる材軸。実部材化していない小梁と、2 節点の実 `Beam`。
+/// 取り付く床板の分割・統合に使う材軸。実部材化していない小梁と、端点一致と
+/// 同一直線で連結した 2 節点 `Beam`（途中節点の分割を 1 本へ束ねる）。
 fn attachment_split_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
     let mut axes: Vec<([f64; 3], [f64; 3])> = model
         .secondary_joist_axes()
         .into_iter()
         .map(|a| (a.a, a.b))
         .collect();
+    axes.extend(beam_axes(model));
+    axes
+}
+
+/// 2 節点 `Beam` の材軸を、端点一致と同一直線で連結して束ねる。
+fn beam_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
+    let mut segs: Vec<([f64; 3], [f64; 3])> = Vec::new();
     for e in &model.elements {
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
             continue;
@@ -363,9 +358,66 @@ fn attachment_split_axes(model: &Model) -> Vec<([f64; 3], [f64; 3])> {
         ) else {
             continue;
         };
-        axes.push((a.coord, b.coord));
+        segs.push((a.coord, b.coord));
+    }
+    let mut used = vec![false; segs.len()];
+    let mut axes = Vec::new();
+    for i in 0..segs.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let (mut p0, mut p1) = segs[i];
+        while let Some((j, (np0, np1))) = (0..segs.len())
+            .filter(|j| !used[*j])
+            .find_map(|j| extend_axis(p0, p1, segs[j].0, segs[j].1).map(|s| (j, s)))
+        {
+            (p0, p1) = (np0, np1);
+            used[j] = true;
+        }
+        axes.push((p0, p1));
     }
     axes
+}
+
+/// 軸 `p0`–`p1` の端と一致する端点を持つ線分 `q0`–`q1` が同一直線上にあるとき、
+/// 軸へ継ぎ足した両端を返す。
+fn extend_axis(
+    p0: [f64; 3],
+    p1: [f64; 3],
+    q0: [f64; 3],
+    q1: [f64; 3],
+) -> Option<([f64; 3], [f64; 3])> {
+    let at = |a: [f64; 3], b: [f64; 3]| crate::geom::vec3::dist(a, b) <= MEMBER_AXIS_TOL_MM;
+    let candidates = [
+        (at(p1, q0), p0, q1),
+        (at(p1, q1), p0, q0),
+        (at(p0, q0), q1, p1),
+        (at(p0, q1), q0, p1),
+    ];
+    candidates
+        .into_iter()
+        .find(|(connected, end_a, end_b)| {
+            *connected
+                && point_line_dist3(*end_b, p0, p1) <= MEMBER_AXIS_TOL_MM
+                && crate::geom::vec3::dist(*end_a, *end_b) > 1e-9
+        })
+        .map(|(_, end_a, end_b)| (end_a, end_b))
+}
+
+fn point_line_dist3(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if len2 <= 1.0 {
+        return crate::geom::vec3::dist(p, a);
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let cross = [
+        ap[1] * d[2] - ap[2] * d[1],
+        ap[2] * d[0] - ap[0] * d[2],
+        ap[0] * d[1] - ap[1] * d[0],
+    ];
+    (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() / len2.sqrt()
 }
 
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -1195,6 +1247,36 @@ mod tests {
         assert_eq!(model.slabs.len(), 2, "冪等");
     }
 
+    /// 実梁が途中節点で 2 要素に分かれていても、連結した全長でベイに分割される。
+    #[test]
+    fn test_cantilever_splits_into_bays_at_spliced_real_beam() {
+        let mut model = cantilever_rect();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 800.0, 0.0));
+        model.nodes.push(node(6, 2000.0, 1500.0, 0.0));
+        model.elements.push(beam(1, 4, 5));
+        model.elements.push(beam(2, 5, 6));
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "2 要素の実梁でも分割");
+        for (i, expected) in [[0.0, 0.5], [0.5, 1.0]].iter().enumerate() {
+            match &model.slabs[i].shape {
+                SlabShape::Attached {
+                    anchor: RegionAnchor::Line { span, .. },
+                    extent,
+                } => {
+                    assert!((span[0] - expected[0]).abs() < 1e-9, "{span:?}");
+                    assert!((span[1] - expected[1]).abs() < 1e-9, "{span:?}");
+                    assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+                    assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                }
+                other => panic!("Attached ではない: {other:?}"),
+            }
+        }
+
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.slabs.len(), 2, "冪等");
+    }
+
     /// 小梁を消すと、同じ版仕様の隣り合うベイは 1 枚に統合される。
     #[test]
     fn test_cantilever_bays_merge_when_joist_is_removed() {
@@ -1334,6 +1416,20 @@ mod tests {
         with_beam.elements.push(beam(0, 2, 3));
         rebuild_floor_regions(&mut with_beam);
         assert_eq!(with_beam.slabs.len(), 2, "境界に実部材があれば統合しない");
+
+        // 境界の実部材が途中節点で 2 要素に分かれていても統合しない。
+        let mut spliced = pair([0.0, 0.5], [1000.0, 2000.0], [0.5, 1.0], [2000.0, 3000.0]);
+        spliced.nodes.push(node(2, 2000.0, 0.0, 0.0));
+        spliced.nodes.push(node(3, 2000.0, 1000.0, 0.0));
+        spliced.nodes.push(node(4, 2000.0, 2000.0, 0.0));
+        spliced.elements.push(beam(0, 2, 3));
+        spliced.elements.push(beam(1, 3, 4));
+        rebuild_floor_regions(&mut spliced);
+        assert_eq!(
+            spliced.slabs.len(),
+            2,
+            "境界の実部材が 2 要素でも統合しない"
+        );
     }
 
     /// 取付き線に直交しない小梁、先端まで届かない小梁は分割境界にしない。
