@@ -1,4 +1,4 @@
-# 8.5 SRC / SRRC 梁 せん断終局（充腹・非充腹）
+# SRC / SRRC 梁 せん断終局（充腹・非充腹）
 
 SRC/SRRC 梁のせん断終局耐力は、技術基準解説書（SRC 梁せん断終局）と SRC規準（SRC 梁せん断終局）に基づき、充腹と非充腹に分けて算定し、非充腹は荒川 mean 式系によります。
 
@@ -12,4 +12,4 @@ SRC/SRRC 梁のせん断終局耐力は、技術基準解説書（SRC 梁せん�
   （√ は帯板項まで全体に掛かる。\\( p_t = {}_r p_t + {}_s p_t \\)、\\( j = 0.8D \\)、\\( M/Qd \in [1,3] \\)、\\( \kappa = 0.053 \\)／高強度0.068）
 - 非充腹 ラチス材 \\( Q_{su} = \\{\dots\\} \cdot b_e \cdot {}_r j + {}_s Q_u \\)
 
-**実装**：`srrc::beam_nonlinear`（`beam_nonlinear.rs`）。
+**実装**：`squid_n_design_jp::srrc::beam_nonlinear`（`beam_nonlinear.rs`）。

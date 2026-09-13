@@ -1,6 +1,6 @@
-# 7.4 形状係数 Fes（剛性率 Fs・偏心率 Fe）
+# 形状係数 Fes（剛性率 Fs・偏心率 Fe）
 
-## 7.4.1 剛性率 Rs・Fs
+## 剛性率 Rs・Fs
 
 建築基準法施行令 第82条の6 と告示第1792号に基づき、剛性率 Rs（規定は \\( R_s \ge 0.6 \\)）から Fs を算定します。
 
@@ -12,12 +12,12 @@
 
 \\[ F_s = \begin{cases} 1.0 & (R_s \ge 0.6) \\\\ 2.0 - R_s/0.6 & (R_s < 0.6) \end{cases} \\]
 
-**実装**：`holding_capacity::{stiffness_ratios, fs}` が算定し、δg は `secondary::stiffness_ratio::cog_story_drifts` です。
+**実装**：`squid_n_design_jp::secondary::holding_capacity::{stiffness_ratios, fs}` が算定し、δg は `squid_n_design_jp::secondary::stiffness_ratio::cog_story_drifts` です。
 剛性率に使う層間変位は、柱の最大変位ではなく、重心位置の水平変位 δg です。
 各層の δg は、上端の床レベル上の節点と下端の床レベル上の節点について、重心位置の水平変位の差として求めます。
 δg は柱の層間変位とは別の量であり、中間節点は床レベルにないため平均には入れません。
 
-## 7.4.2 偏心率 Re・Fe
+## 偏心率 Re・Fe
 
 建築基準法施行令第 82 条の 6 と告示第 1792 号に基づき、偏心率 Re から Fe を算定します。
 規定は \\( R_e \le 0.15 \\) です。
@@ -52,14 +52,14 @@ D 値（一般階）:
 
 \\[ F_e = \begin{cases} 1.0 & (R_e \le 0.15) \\\\ \min(1.0 + 0.5(R_e - 0.15)/0.15, 1.5) & (R_e > 0.15) \end{cases} \\]
 
-**実装**：`holding_capacity::fe` が Fe を算定します。
+**実装**：`squid_n_design_jp::secondary::holding_capacity::fe` が Fe を算定します。
 地震時の応力解析結果があるときは、柱の水平剛性を \\( k_i = Q_i/\delta_i \\) として剛心を求めます。
 ここでの \\( \delta_i \\) は、層間変形角と同じく上下端床の変位差です。
 中間節点で柱を分割するとセグメント単体の変位差は層高より短くなるため、連なりを 1 本の柱とみなします。
 重心は、鉛直荷重を支持する柱の長期軸力を重みにして求めます。
 引張の柱は鉛直荷重を支持しないため、重みに入れません。
-この精算は `secondary::eccentricity_analysis` です。
-応力解析結果がないときは、武藤 D 値法の略算（`secondary::eccentricity`）を使います。
+この精算は `squid_n_design_jp::secondary::eccentricity_analysis`（`crates/squid-n-design-jp/src/secondary/eccentricity_analysis.rs`）です。
+応力解析結果がないときは、武藤 D 値法の略算（`squid_n_design_jp::secondary::eccentricity`）を使います。
 略算でも中間節点で分割された鉛直材は連なりを 1 本の柱とみなし、層の上下端の高さを \\( h \\) として D 値を求めます。
 セグメントの材長を \\( h \\) にすると \\( 12EI/h^3 \\) が過大になるためです。
 
@@ -72,7 +72,7 @@ D 値（一般階）:
 \\[ K_w' = n \cdot A_w' \cdot \sum K_c / \sum A_c \\]
 
 \\( A_w' \\) は壁の平面長さ × 構造厚です。
-構造厚は断面の板厚で、仕上げ・増打ちの面荷重（[1.9 壁の断面と自重](../01_荷重/09_壁の断面と自重.md)）は
+構造厚は断面の板厚で、仕上げ・増打ちの面荷重（[壁の断面と自重](../01_荷重/09_壁の断面と自重.md)）は
 重さの入力であって厚さではないため含めません。
 方向別に \\( K_{wx}' \\)・\\( K_{wy}' \\) を求め、壁面内方向の方向余弦 \\( (c_x, c_y) \\) で
 \\( D_x = K_{wx}' c_x^2 \\)、\\( D_y = K_{wy}' c_y^2 \\) として、壁の平面中点に置きます。
@@ -81,7 +81,7 @@ D 値（一般階）:
 **対象は自立壁（床領域に取り付く壁版）だけです。**
 腰壁・垂れ壁・パラペットは、フロア間で壁がつながっていないため層剛性に影響しません。
 これらが周辺の柱梁へ及ぼす剛性は、袖壁・腰壁として部材の断面性能へ算入する経路
-（[4.1 ティモシェンコ梁要素](../04_要素剛性/01_ティモシェンコ梁要素.md)）が受け持つので、
+（[ティモシェンコ梁要素](../04_要素剛性/01_ティモシェンコ梁要素.md)）が受け持つので、
 ここで等価剛性要素としても数えると二重に計上することになります。
 
 自立壁も同じ基準で切り分け、**立ち上がりが直上の階レベルに達している壁だけ**を対象とします。
@@ -91,7 +91,9 @@ D 値（一般階）:
 
 **既定値**は \\( n \\) が未設定で、そのときは雑壁の剛性を考慮しません。
 
-## 7.4.3 形状係数 Fes
+**実装**：`squid_n_design_jp::secondary::eccentricity::{misc_wall_stiffness, append_misc_wall_stiffnesses}`（`crates/squid-n-design-jp/src/secondary/eccentricity/misc_wall.rs`）が算定します。
+
+## 形状係数 Fes
 
 形状係数 Fes は、剛性率による Fs と偏心率による Fe の積として算定します。
 
@@ -99,4 +101,4 @@ D 値（一般階）:
 
 \\[ F_{es} = F_s \cdot F_e \\]
 
-**実装**：`holding_capacity::fes` が算定します。
+**実装**：`squid_n_design_jp::secondary::holding_capacity::fes` が算定します。

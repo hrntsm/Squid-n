@@ -1,4 +1,4 @@
-# 3.6 SRC / CFT の等価断面性能
+# SRC / CFT の等価断面性能
 
 SRC/CFT の等価断面性能は、ヤング係数比による等価換算断面の累加（SRC 規準の考え方）で算定し、SRC は次の式により求めます。
 
@@ -33,5 +33,5 @@ CFT（充填コンクリートを鋼基準へ換算）:
 
 \\[ I\_y = I\_{y,\text{steel}} + {}\_c i\_y/n \\]
 
-**実装**：`section_shape::{src_equivalent_props, cft_equivalent_props}` が算定します。
+**実装**：`squid_n_core::section_shape::SectionShape::{src_equivalent_props, cft_equivalent_props}`（`crates/squid-n-core/src/section_shape/composite.rs`）が算定します。
 ns の暫定既定は N_S_EQ = 15 とします。
