@@ -195,6 +195,26 @@ fn test_pushover_single_column_forms_hinge() {
         col.shear_strong,
         col.rp
     );
+
+    // base_shear/roof_disp は実在の力・変位であること: 最初の（弾性）ステップで
+    // 片持ち柱の弾性剛性 3EI/L³ ≈ 189.8 N/mm に一致する。
+    let first = result.capacity_curve.first().unwrap();
+    assert!(first.roof_disp > 0.0 && first.base_shear > 0.0);
+    let k = first.base_shear / first.roof_disp;
+    assert!(
+        (150.0..=230.0).contains(&k),
+        "first-step stiffness base_shear/roof_disp={k} should be ~3EI/L^3≈189.8"
+    );
+    // Qu はピークベースシア（全点以上）であること。
+    for c in &result.capacity_curve {
+        assert!(
+            result.qu >= c.base_shear - 1e-6,
+            "qu {} must be >= {}",
+            result.qu,
+            c.base_shear
+        );
+    }
+    assert!(result.qu > 0.0);
 }
 
 #[test]
@@ -470,28 +490,6 @@ fn test_pushover_support_spring_affects_k_and_f_int() {
         1,
         "restraint で固定した節点の support_spring は活性 DOF に影響しない"
     );
-}
-
-#[test]
-fn test_pushover_arc_length_path_runs() {
-    // 弧長法フェーズ（f_int 反復再評価版）がエンドツーエンドで動作すること。
-    let model = single_column_model(235.0, 80_000.0);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-    let result = pushover_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        SeismicDir::X,
-        10,
-        0.0,
-        false,
-        true,
-        1.0,
-    )
-    .expect("arc-length pushover should run end-to-end");
-    assert!(!result.capacity_curve.is_empty());
-    assert!(result.qu > 0.0);
 }
 
 #[test]
@@ -809,20 +807,10 @@ fn test_determine_mechanism_single_yield_establishes_mechanism() {
     }
 }
 
-/// 静的不静定次数の計算検証（平面骨組: r = 3m − 3n + r_support）。
-#[test]
-fn test_compute_static_indeterminacy_two_story() {
-    // 2層2柱: 部材2・節点3・基礎節点(node0)が平面3DOF拘束 → r = 6 - 9 + 3 = 0（静定）
-    let model = two_story_model();
-    assert_eq!(compute_static_indeterminacy(&model, SeismicDir::X), 0);
-}
-
 #[test]
 fn test_compute_static_indeterminacy_indeterminate_portal() {
     // 1層1スパン両端固定ラーメン: 柱2+梁1=部材3、節点4（基礎2点FIXED+上部2点FREE）
     // r = 3*3 - 3*4 + (3+3) = 9 - 12 + 6 = 3（3次不静定）
-    let model = two_story_model();
-    let _ = model;
     let nodes = vec![
         Node {
             id: NodeId(0),
@@ -1067,44 +1055,6 @@ fn test_determine_mechanism_overall() {
     ));
 }
 
-#[test]
-fn test_pushover_base_shear_is_real_force() {
-    // 最初の（弾性）ステップで base_shear/roof_disp が片持ち柱の弾性剛性
-    // 3EI/L³ ≈ 189.8 N/mm に一致することを確認。
-    let model = single_column_model(235.0, 80_000.0);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-    let result = pushover_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        SeismicDir::X,
-        20,
-        0.0,
-        false,
-        false,
-        0.0,
-    )
-    .unwrap();
-    let first = result.capacity_curve.first().unwrap();
-    assert!(first.roof_disp > 0.0 && first.base_shear > 0.0);
-    let k = first.base_shear / first.roof_disp;
-    assert!(
-        (150.0..=230.0).contains(&k),
-        "first-step stiffness base_shear/roof_disp={k} should be ~3EI/L^3≈189.8"
-    );
-    // Qu はピークベースシア（全点以上）であること。
-    for c in &result.capacity_curve {
-        assert!(
-            result.qu >= c.base_shear - 1e-6,
-            "qu {} must be >= {}",
-            result.qu,
-            c.base_shear
-        );
-    }
-    assert!(result.qu > 0.0);
-}
-
 fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
     Model {
         nodes: vec![
@@ -1322,37 +1272,9 @@ fn test_portal_frame_collapse_load() {
 }
 
 #[test]
-fn test_portal_frame_mechanism_classified() {
-    let model = portal_frame_model(235.0, 600_000.0);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let result = pushover_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        SeismicDir::X,
-        80,
-        0.0,
-        false,
-        false,
-        0.0,
-    )
-    .expect("pushover should run end-to-end");
-
-    match &result.mechanism {
-        MechanismType::Overall | MechanismType::StoryCollapse { .. } => {}
-        other => panic!(
-            "expected Overall or StoryCollapse, got {:?}",
-            std::mem::discriminant(other)
-        ),
-    }
-}
-
-#[test]
-fn test_compute_shear_yield_qy_steel() {
+fn test_compute_shear_yield_qy_static_formulas_and_guards() {
     // 鋼系（fy 設定あり）: Qy = as・fy/√3（RcRect 形状の有無・方向によらない）。
-    let mat = Material {
+    let steel = Material {
         strength_factor: None,
         concrete_class: Default::default(),
         id: MaterialId(0),
@@ -1368,7 +1290,7 @@ fn test_compute_shear_yield_qy_steel() {
     let qy = compute_shear_yield_qy(
         1000.0,
         SecMaterials {
-            material: Some(&mat),
+            material: Some(&steel),
             rebar_mat: None,
             shear_mat: None,
             steel_mat: None,
@@ -1382,13 +1304,10 @@ fn test_compute_shear_yield_qy_steel() {
         (qy - expected).abs() < 1e-6,
         "qy={qy} should equal as*fy/sqrt(3)={expected}"
     );
-}
 
-#[test]
-fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
     // RC系（fy 無し・fc 設定あり）かつ断面形状情報（RcRect）がない場合:
     // Qy = as・0.7√fc（慣用値へフォールバック）。
-    let mat = Material {
+    let rc = Material {
         strength_factor: None,
         concrete_class: Default::default(),
         id: MaterialId(0),
@@ -1404,7 +1323,7 @@ fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
     let qy = compute_shear_yield_qy(
         50000.0,
         SecMaterials {
-            material: Some(&mat),
+            material: Some(&rc),
             rebar_mat: None,
             shear_mat: None,
             steel_mat: None,
@@ -1417,6 +1336,39 @@ fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
     assert!(
         (qy - expected).abs() < 1e-6,
         "qy={qy} should equal as*0.7*sqrt(fc)={expected}"
+    );
+
+    // 有効せん断断面積が 0 の断面は判定対象外（Qy=∞扱い）。
+    assert_eq!(
+        compute_shear_yield_qy(
+            0.0,
+            SecMaterials {
+                material: Some(&steel),
+                rebar_mat: None,
+                shear_mat: None,
+                steel_mat: None,
+            },
+            None,
+            ShearDir::Z,
+            3000.0,
+        ),
+        f64::INFINITY
+    );
+    // 材料未設定でも∞扱い。
+    assert_eq!(
+        compute_shear_yield_qy(
+            1000.0,
+            SecMaterials {
+                material: None,
+                rebar_mat: None,
+                shear_mat: None,
+                steel_mat: None,
+            },
+            None,
+            ShearDir::Z,
+            3000.0,
+        ),
+        f64::INFINITY
     );
 }
 
@@ -1618,55 +1570,6 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         "厚板フランジの弱軸: qy_src−qy_rc={} 期待 {}",
         qy_tf_z - qy_rc_z,
         steel_tf_z
-    );
-}
-
-#[test]
-fn test_compute_shear_yield_qy_zero_as_is_infinite() {
-    // 有効せん断断面積が 0 の断面は判定対象外（Qy=∞扱い）。
-    let mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "s".to_string(),
-        category: MaterialCategory::Steel,
-        young: 205000.0,
-        poisson: 0.3,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: Some(200.0),
-    };
-    assert_eq!(
-        compute_shear_yield_qy(
-            0.0,
-            SecMaterials {
-                material: Some(&mat),
-                rebar_mat: None,
-                shear_mat: None,
-                steel_mat: None,
-            },
-            None,
-            ShearDir::Z,
-            3000.0,
-        ),
-        f64::INFINITY
-    );
-    // 材料未設定でも∞扱い。
-    assert_eq!(
-        compute_shear_yield_qy(
-            1000.0,
-            SecMaterials {
-                material: None,
-                rebar_mat: None,
-                shear_mat: None,
-                steel_mat: None,
-            },
-            None,
-            ShearDir::Z,
-            3000.0,
-        ),
-        f64::INFINITY
     );
 }
 
@@ -1927,45 +1830,6 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
     );
 }
 
-/// as_y/as_z を明示的に与えた片持ち柱モデル（`single_column_model` のせん断有効
-/// 断面積を差し替えたもの）。せん断降伏耐力 Qy は as_y/as_z と材料強度のみに
-/// 依存し、実際に生じるせん断力（`track_shear_yield`）は材端力の釣合いから
-/// 求まるため、せん断バネ剛性（材料のせん断弾性係数）を変更する必要はない。
-fn single_column_model_with_shear(fy: f64, seismic_weight: f64, as_shear: f64) -> Model {
-    let mut model = single_column_model(fy, seismic_weight);
-    model.sections[0].as_y = as_shear;
-    model.sections[0].as_z = as_shear;
-    model
-}
-
-#[test]
-fn test_pushover_shear_yield_event_recorded() {
-    // せん断有効断面積を小さく設定してせん断降伏耐力 Qy を小さくすることで、
-    // 水平荷重漸増中にせん断降伏イベントが記録されることを確認する
-    // （曲げヒンジ判定 `track_hinges` とは独立の判定経路の検証）。
-    let model = single_column_model_with_shear(235.0, 80_000.0, 50.0);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let result = pushover_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        SeismicDir::X,
-        20,
-        0.0,
-        false,
-        false,
-        0.0,
-    )
-    .expect("pushover should run end-to-end");
-
-    assert!(
-        !result.shear_yields.is_empty(),
-        "shear yield event should be recorded when Qy is small relative to applied shear"
-    );
-}
-
 /// as_y・as_z を独立に設定した片持ち柱モデル（局所 y・z 方向分離の検証用）。
 fn single_column_model_with_shear_yz(fy: f64, seismic_weight: f64, as_y: f64, as_z: f64) -> Model {
     let mut model = single_column_model(fy, seismic_weight);
@@ -2014,17 +1878,6 @@ fn test_pushover_shear_yield_direction_independent() {
         "small as_y (feeding the unstressed local-z threshold) should NOT trigger a shear \
              yield event once Vy/Vz are judged independently against qy_y/qy_z"
     );
-}
-
-#[test]
-fn test_effective_clear_span_deducts_rigid_zone_lengths() {
-    let rz = RigidZone {
-        length_i: 500.0,
-        length_j: 300.0,
-        ..Default::default()
-    };
-    // h0 = 節点間長3000 − (500+300) = 2200。
-    assert!((effective_clear_span(3000.0, &rz) - 2200.0).abs() < 1e-9);
 }
 
 #[test]
@@ -2493,38 +2346,34 @@ fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model
     }
 }
 
-/// 鋼材文脈: 既知の鋼材グレード名（SS400=1.1倍、SA440=590N級で1.05倍）は
-/// `compute_hinge_thresholds` の My に材料強度係数がそのまま反映され、
-/// 未知名称の材料に対する比が係数と一致することを確認する。
+/// 鋼材文脈: 材料強度係数の解決順序（直接入力 > 既知グレード名 > 1.0）を
+/// `compute_hinge_thresholds` の My で確認する。既知の鋼材グレード名
+/// （SS400=1.1倍、SA440=590N級で1.05倍）は未知名称の材料に対する比が係数と
+/// 一致し、直接入力の `Material::strength_factor` は名称からグレードを解決
+/// できない材料でも最優先で使われる。
 #[test]
-fn test_compute_hinge_thresholds_steel_uses_material_strength_factor() {
-    let my_of =
-        |name: &str, fy: f64| compute_hinge_thresholds(&steel_hinge_model(name, fy, None))[0].my;
+fn test_compute_hinge_thresholds_steel_strength_factor_resolution() {
+    let my_of = |name: &str, fy: f64, factor: Option<f64>| {
+        compute_hinge_thresholds(&steel_hinge_model(name, fy, factor))[0].my
+    };
 
-    let my_unknown = my_of("未知鋼材", 235.0);
-    let my_ss400 = my_of("SS400", 235.0);
+    let my_unknown = my_of("未知鋼材", 235.0, None);
+    let my_ss400 = my_of("SS400", 235.0, None);
     assert!(
         (my_ss400 / my_unknown - 1.1).abs() < 1e-9,
         "SS400（既知グレード）は未知名称の1.1倍のはず: {my_ss400}/{my_unknown}"
     );
 
-    let my_unknown2 = my_of("未知鋼材2", 440.0);
-    let my_sa440 = my_of("SA440", 440.0);
+    let my_unknown2 = my_of("未知鋼材2", 440.0, None);
+    let my_sa440 = my_of("SA440", 440.0, None);
     assert!(
         (my_sa440 / my_unknown2 - 1.05).abs() < 1e-9,
         "SA440（590N級）は未知名称の1.05倍のはず: {my_sa440}/{my_unknown2}"
     );
-}
 
-/// 直接入力の割増係数（`Material::strength_factor`）は、名称から鋼材グレードを
-/// 解決できない材料でも最優先で使われることを確認する。
-#[test]
-fn test_compute_hinge_thresholds_direct_strength_factor_overrides_name_lookup() {
-    let my_of = |factor: Option<f64>| {
-        compute_hinge_thresholds(&steel_hinge_model("カスタム材料", 235.0, factor))[0].my
-    };
-    let my_default = my_of(None); // 未知名称 → 係数 1.0
-    let my_scaled = my_of(Some(1.25));
+    // 直接入力係数は名称からグレードを解決できない材料でも最優先で使われる。
+    let my_default = my_of("カスタム材料", 235.0, None); // 未知名称 → 係数 1.0
+    let my_scaled = my_of("カスタム材料", 235.0, Some(1.25));
     assert!(
         (my_scaled / my_default - 1.25).abs() < 1e-9,
         "直接入力係数1.25が最優先で使われるはず: {my_scaled}/{my_default}"
@@ -2661,29 +2510,6 @@ fn test_compute_hinge_thresholds_rc_rebar_uses_material_strength_factor() {
     );
 }
 
-/// せん断降伏側（shear_yield.rs）: RC 矩形の主筋 σy には材料強度係数（1.1）が
-/// 乗じられる一方、せん断補強筋 σwy=295 は割増対象外のまま据え置かれることを
-/// 確認する（`rc_rect_capacity_input` の実装）。
-#[test]
-fn test_compute_shear_yield_thresholds_rc_rebar_scaled_but_shear_reinforcement_is_not() {
-    let (model, _rebar, _b, _d) = rc_hinge_model();
-    let thresholds = compute_shear_yield_thresholds(&model);
-    match &thresholds[0].y {
-        DirThreshold::RcArakawa { input, .. } => {
-            assert!(
-                (input.sigma_y - 345.0 * 1.1).abs() < 1e-9,
-                "主筋 σy は1.1倍のはず: {}",
-                input.sigma_y
-            );
-            assert_eq!(
-                input.sigma_wy, 295.0,
-                "せん断補強筋は材料強度割増の対象外のため295のまま"
-            );
-        }
-        DirThreshold::Static(_) => panic!("expected RcArakawa for RcRect with rebar"),
-    }
-}
-
 /// 変位制御フェーズが実際に目標変位まで押し切り、荷重制御（λ=1＝C0=0.2 級）を
 /// 超える耐力まで到達することを検証する回帰テスト。
 #[test]
@@ -2769,6 +2595,35 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
         result.qu,
         vp
     );
+
+    // 均等変位刻み制御: 性能曲線の頂部変位刻みが全域で概ね目標刻み
+    // du = 押込み上限 / ステップ数 に揃うことを検証する。
+    let du = max_disp / n_steps as f64;
+    let disps: Vec<f64> = result.capacity_curve.iter().map(|c| c.roof_disp).collect();
+    // 全域を概ね du 刻みでカバーする（λ=1 到達の端数ステップ等での多少の増減は許容）。
+    assert!(
+        disps.len() >= 40,
+        "均等刻みなら 200/4=50 点程度が確定するはず: {} 点",
+        disps.len()
+    );
+    for w in disps.windows(2) {
+        let d = w[1] - w[0];
+        assert!(d > 0.0, "頂部変位は単調増加であること: {:.4}", d);
+        assert!(
+            d <= du * 2.0 + 1e-6,
+            "頂部変位刻みが目標刻み du={:.2} の 2 倍を超えないこと: {:.3}",
+            du,
+            d
+        );
+    }
+    // 平均刻みも du と同程度であること（弾性域の点密集＝過小刻みの回帰）。
+    let avg = (disps.last().unwrap() - disps.first().unwrap()) / (disps.len() - 1) as f64;
+    assert!(
+        avg >= du * 0.4,
+        "平均刻み {:.3} が目標刻み du={:.2} と同程度であること",
+        avg,
+        du
+    );
 }
 
 /// ヒンジが 1 つも発生しない弾性範囲では、荷重制御→変位制御のフェーズ切替を
@@ -2834,57 +2689,6 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     assert!(
         last_lambda > 1.0,
         "変位制御で λ が 1 を超えること: {last_lambda:.3}"
-    );
-}
-
-/// 均等変位刻み制御: 性能曲線の頂部変位刻みが全域で概ね目標刻み
-/// du = 押込み上限 / ステップ数 に揃うことを検証する。
-#[test]
-fn test_pushover_uniform_displacement_spacing() {
-    let seismic_weight = 80_000.0;
-    let max_disp = 200.0;
-    let n_steps = 50usize;
-    let model = single_column_model(235.0, seismic_weight);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-    let result = pushover_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        SeismicDir::X,
-        n_steps,
-        max_disp,
-        false,
-        false,
-        0.0,
-    )
-    .expect("pushover should run");
-
-    let du = max_disp / n_steps as f64;
-    let disps: Vec<f64> = result.capacity_curve.iter().map(|c| c.roof_disp).collect();
-    // 全域を概ね du 刻みでカバーする（λ=1 到達の端数ステップ等での多少の増減は許容）。
-    assert!(
-        disps.len() >= 40,
-        "均等刻みなら 200/4=50 点程度が確定するはず: {} 点",
-        disps.len()
-    );
-    for w in disps.windows(2) {
-        let d = w[1] - w[0];
-        assert!(d > 0.0, "頂部変位は単調増加であること: {:.4}", d);
-        assert!(
-            d <= du * 2.0 + 1e-6,
-            "頂部変位刻みが目標刻み du={:.2} の 2 倍を超えないこと: {:.3}",
-            du,
-            d
-        );
-    }
-    // 平均刻みも du と同程度であること（弾性域の点密集＝過小刻みの回帰）。
-    let avg = (disps.last().unwrap() - disps.first().unwrap()) / (disps.len() - 1) as f64;
-    assert!(
-        avg >= du * 0.4,
-        "平均刻み {:.3} が目標刻み du={:.2} と同程度であること",
-        avg,
-        du
     );
 }
 

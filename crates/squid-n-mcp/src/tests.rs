@@ -67,21 +67,24 @@ fn sample_model() -> Model {
 }
 
 #[test]
-fn test_query_model_nodes() {
+fn test_query_model_basic_kinds_and_filter() {
     let m = sample_model();
-    let items = query_model(&m, "node", None);
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["id"], 0);
-    assert_eq!(items[1]["story"], 0);
-}
+    let nodes = query_model(&m, "node", None);
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0]["id"], 0);
+    assert_eq!(nodes[1]["story"], 0);
 
-#[test]
-fn test_query_model_elements_and_sections() {
-    let m = sample_model();
     assert_eq!(query_model(&m, "member", None).len(), 1);
     let secs = query_model(&m, "section", None);
     assert_eq!(secs.len(), 1);
     assert_eq!(secs[0]["name"], "H-400");
+
+    // 名前で絞り込み（断面名 H-400 を含むものだけ）。
+    assert_eq!(query_model(&m, "section", Some("H-400")).len(), 1);
+    assert_eq!(query_model(&m, "section", Some("RC")).len(), 0);
+
+    // 未知 kind は空を返す。
+    assert!(query_model(&m, "bogus", None).is_empty());
 }
 
 /// 断面の問い合わせは材料 4 欄を出す。材料は断面が持ち、未割当は解析前チェックが
@@ -101,24 +104,10 @@ fn test_query_model_sections_expose_materials() {
     }
 }
 
-#[test]
-fn test_query_model_filter() {
-    let m = sample_model();
-    // 名前で絞り込み（断面名 H-400 を含むものだけ）。
-    assert_eq!(query_model(&m, "section", Some("H-400")).len(), 1);
-    assert_eq!(query_model(&m, "section", Some("RC")).len(), 0);
-}
-
-#[test]
-fn test_query_model_unknown_kind() {
-    let m = sample_model();
-    assert!(query_model(&m, "bogus", None).is_empty());
-}
-
 /// 部材付帯情報（ハンチ・継手位置）が登録された部材は、`query_model` の
 /// member/elements 出力に `haunch_i`/`haunch_j`/`joints` が含まれる。
 /// 付帯情報がない部材（本テストには含めない）は従来どおりのフィールドのみとなる
-/// （`test_query_model_elements_and_sections` で確認済み）。
+/// （`test_query_model_basic_kinds_and_filter` で確認済み）。
 #[test]
 fn test_query_model_elements_with_member_detail() {
     let mut m = sample_model();
@@ -287,27 +276,25 @@ fn test_compute_ultimate_check_job() {
 }
 
 /// DesignCheck ジョブは既定では危険断面位置（柱フェイス [face=0 につき節点芯]・
-/// 中央）の 3 断面のみを検定する（付帯情報なし）。
+/// 中央）の 3 断面のみを検定する（付帯情報なし）。部材付帯情報（継手位置）が
+/// 登録された部材は、継手位置でも断面力が評価され（squid-n-element の
+/// `eval_sections` 拡張）、検定位置にも継手位置が加わる（既定 3 断面 + 継手 1 = 4 検定）。
 #[test]
-fn test_compute_design_check_job_default_positions() {
-    let model = rc_column_model();
+fn test_compute_design_check_job_positions() {
+    let mut model = rc_column_model();
     let outcome = compute_job(&model, JobKind::DesignCheck, &JobParams::default())
         .expect("断面検定ジョブは成功するはず");
     match outcome {
         JobOutcome::DesignCheck { summary, .. } => {
             assert_eq!(summary["kind"], "DesignCheck");
-            assert_eq!(summary["n_checks"], 3);
+            assert_eq!(
+                summary["n_checks"], 3,
+                "既定位置ケース（柱フェイス・中央の 3 断面）"
+            );
         }
         _ => panic!("expected DesignCheck outcome"),
     }
-}
 
-/// 部材付帯情報（継手位置）が登録された部材は、継手位置でも断面力が評価され
-/// （squid-n-element の `eval_sections` 拡張）、DesignCheck の検定位置にも
-/// 継手位置が加わる（既定 3 断面 + 継手 1 = 4 検定）。
-#[test]
-fn test_compute_design_check_job_member_detail_joint() {
-    let mut model = rc_column_model();
     // 節点間距離 3000mm の柱に、始端から 1000mm（正規化 1/3）の現場継手を追加する。
     model.member_detail_attrs.push(MemberDetailAttr {
         elem: ElemId(0),
@@ -332,7 +319,7 @@ fn test_compute_design_check_job_member_detail_joint() {
                 .iter()
                 .any(|(_, pos, _)| (pos - 1000.0 / 3000.0).abs() < 1e-6));
             // 継手位置分だけ検定数が増える（3 -> 4）。
-            assert_eq!(summary["n_checks"], 4);
+            assert_eq!(summary["n_checks"], 4, "継手ケース（既定 3 + 継手位置 1）");
         }
         _ => panic!("expected DesignCheck outcome"),
     }
@@ -384,9 +371,11 @@ fn test_quantity_takeoff_json_column() {
 }
 
 #[test]
-fn test_query_model_wall_plates() {
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{WallPlate, WallPlateShape};
+fn test_query_model_plates_and_regions() {
+    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
+    use squid_n_core::model::{
+        DistributionMethod, Slab, SlabPlate, SlabShape, WallPlate, WallPlateShape,
+    };
 
     let mut m = sample_model();
     m.wall_plates.push(WallPlate {
@@ -401,6 +390,25 @@ fn test_query_model_wall_plates() {
         loads: vec![],
         slit: Default::default(),
     });
+    m.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
+        },
+        plate: SlabPlate {
+            section: Some(SectionId(0)),
+            method: DistributionMethod::TriTrapezoid,
+            ..Default::default()
+        },
+    });
+    m.floor_regions.push(squid_n_core::model::FloorRegion {
+        id: FloorRegionId(0),
+        name: "R1".into(),
+        boundary: vec![NodeId(0), NodeId(1)],
+        secondary_joists: Vec::new(),
+        slab_ids: vec![SlabId(0)],
+    });
+
     let items = query_model(&m, "wall_plate", None);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], 0);
@@ -412,6 +420,11 @@ fn test_query_model_wall_plates() {
     );
     // 壁エレメントになるかも出す（どの壁版が解析に効いているかを引けるようにする）。
     assert_eq!(items[0]["becomes_element"], serde_json::json!(false));
+
+    assert_eq!(query_model(&m, "slab", None).len(), 1);
+    let regions = query_model(&m, "floor_region", None);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0]["name"], "R1");
 }
 
 /// 耐震スリットは辺ごとに読み書きでき、省略時はどの辺も切れていない扱いになる。
@@ -478,39 +491,11 @@ fn test_apply_edit_set_wall_plate_slit() {
 }
 
 #[test]
-fn test_apply_edit_add_enclosed_wall_plate() {
-    use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{Node, WallPlateShape};
+fn test_apply_edit_add_wall_plates() {
+    use squid_n_core::model::WallPlateShape;
 
-    let mut state = ServerState {
-        model: Model {
-            nodes: (0..4)
-                .map(|i| Node {
-                    id: NodeId(i),
-                    coord: match i {
-                        0 => [0.0, 0.0, 0.0],
-                        1 => [3000.0, 0.0, 0.0],
-                        2 => [3000.0, 0.0, 3000.0],
-                        _ => [0.0, 0.0, 3000.0],
-                    },
-                    restraint: Dof6Mask::FREE,
-                    mass: None,
-                    story: None,
-                    support_spring: None,
-                })
-                .collect(),
-            sections: sample_model().sections,
-            ..Default::default()
-        },
-        undo: squid_n_edit::UndoStack::new(),
-        jobs: JobRegistry::new(),
-        results: squid_n_io::results::FsResultStore::open(
-            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_edit_test", std::process::id())),
-        )
-        .expect("temp store"),
-    };
-
+    // 囲まれた壁版（境界 4 節点）。
+    let mut state = four_node_edit_state("add_wall_enclosed");
     let body = serde_json::json!({
         "command": "AddEnclosedWallPlate",
         "boundary": [0, 1, 2, 3],
@@ -529,6 +514,40 @@ fn test_apply_edit_add_enclosed_wall_plate() {
 
     let items = query_model(&state.model, "wall_plate", None);
     assert_eq!(items.len(), 1);
+
+    // 取り付く壁版。
+    let mut state = four_node_edit_state("add_wall_attached");
+    let body = serde_json::json!({
+        "command": "AddAttachedWallPlate",
+        "anchor": {
+            "Line": {
+                "nodes": [0, 1],
+                "span": [0.0, 1.0],
+                "transfer": "Anchor"
+            }
+        },
+        "extent": [1200.0, 1200.0],
+        "section": 0
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.wall_plates.len(), 1);
+    assert!(matches!(
+        state.model.wall_plates[0].shape,
+        WallPlateShape::Attached { .. }
+    ));
+
+    // body ラップ形式（ツール呼び出しの入れ子）でも適用される。
+    let mut state = four_node_edit_state("add_wall_nested_body");
+    let body = serde_json::json!({
+        "body": {
+            "command": "AddEnclosedWallPlate",
+            "boundary": [0, 1, 2, 3]
+        }
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.wall_plates.len(), 1);
 }
 
 #[test]
@@ -549,85 +568,6 @@ fn test_apply_edit_noop_unknown_node() {
     let result = apply_edit(&mut state, &body).expect("parse ok");
     assert!(!result.applied);
     assert!(state.model.wall_plates.is_empty());
-}
-
-#[test]
-fn test_query_model_slabs_and_floor_regions() {
-    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab, SlabPlate, SlabShape};
-
-    let mut m = sample_model();
-    m.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
-        },
-        plate: SlabPlate {
-            section: Some(SectionId(0)),
-            method: DistributionMethod::TriTrapezoid,
-            ..Default::default()
-        },
-    });
-    m.floor_regions.push(squid_n_core::model::FloorRegion {
-        id: FloorRegionId(0),
-        name: "R1".into(),
-        boundary: vec![NodeId(0), NodeId(1)],
-        secondary_joists: Vec::new(),
-        slab_ids: vec![SlabId(0)],
-    });
-    assert_eq!(query_model(&m, "slab", None).len(), 1);
-    let regions = query_model(&m, "floor_region", None);
-    assert_eq!(regions.len(), 1);
-    assert_eq!(regions[0]["name"], "R1");
-}
-
-#[test]
-fn test_apply_edit_add_slab() {
-    use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{Node, SlabShape};
-
-    let mut state = ServerState {
-        model: Model {
-            nodes: (0..4)
-                .map(|i| Node {
-                    id: NodeId(i),
-                    coord: match i {
-                        0 => [0.0, 0.0, 0.0],
-                        1 => [3000.0, 0.0, 0.0],
-                        2 => [3000.0, 3000.0, 0.0],
-                        _ => [0.0, 3000.0, 0.0],
-                    },
-                    restraint: Dof6Mask::FREE,
-                    mass: None,
-                    story: None,
-                    support_spring: None,
-                })
-                .collect(),
-            sections: sample_model().sections,
-            ..Default::default()
-        },
-        undo: squid_n_edit::UndoStack::new(),
-        jobs: JobRegistry::new(),
-        results: squid_n_io::results::FsResultStore::open(
-            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_edit_slab", std::process::id())),
-        )
-        .expect("temp store"),
-    };
-
-    let body = serde_json::json!({
-        "command": "AddSlab",
-        "boundary": [0, 1, 2, 3],
-        "section": null,
-        "method": "TriTrapezoid"
-    });
-    let result = apply_edit(&mut state, &body).expect("apply");
-    assert!(result.applied);
-    assert_eq!(state.model.slabs.len(), 1);
-    assert!(matches!(
-        state.model.slabs[0].shape,
-        SlabShape::Enclosed { .. }
-    ));
 }
 
 fn four_node_edit_state(name: &str) -> ServerState {
@@ -666,23 +606,26 @@ fn four_node_edit_state(name: &str) -> ServerState {
 }
 
 #[test]
-fn test_apply_edit_nested_body_wrapper() {
-    let mut state = four_node_edit_state("nested_body");
+fn test_apply_edit_add_slabs() {
+    use squid_n_core::model::SlabShape;
+
+    // 囲まれた床板（境界 4 節点）。
+    let mut state = four_node_edit_state("add_slab_enclosed");
     let body = serde_json::json!({
-        "body": {
-            "command": "AddEnclosedWallPlate",
-            "boundary": [0, 1, 2, 3]
-        }
+        "command": "AddSlab",
+        "boundary": [0, 1, 2, 3],
+        "section": null,
+        "method": "TriTrapezoid"
     });
     let result = apply_edit(&mut state, &body).expect("apply");
     assert!(result.applied);
-    assert_eq!(state.model.wall_plates.len(), 1);
-}
+    assert_eq!(state.model.slabs.len(), 1);
+    assert!(matches!(
+        state.model.slabs[0].shape,
+        SlabShape::Enclosed { .. }
+    ));
 
-#[test]
-fn test_apply_edit_add_attached_slab_flat_and_plate() {
-    use squid_n_core::model::SlabShape;
-
+    // 取り付く床板: フラット引数（section）。
     let mut state = four_node_edit_state("attached_slab_flat");
     let flat = serde_json::json!({
         "command": "AddAttachedSlab",
@@ -734,32 +677,6 @@ fn test_apply_edit_add_attached_slab_flat_and_plate() {
 }
 
 #[test]
-fn test_apply_edit_add_attached_wall_plate() {
-    use squid_n_core::model::WallPlateShape;
-
-    let mut state = four_node_edit_state("attached_wall");
-    let body = serde_json::json!({
-        "command": "AddAttachedWallPlate",
-        "anchor": {
-            "Line": {
-                "nodes": [0, 1],
-                "span": [0.0, 1.0],
-                "transfer": "Anchor"
-            }
-        },
-        "extent": [1200.0, 1200.0],
-        "section": 0
-    });
-    let result = apply_edit(&mut state, &body).expect("apply");
-    assert!(result.applied);
-    assert_eq!(state.model.wall_plates.len(), 1);
-    assert!(matches!(
-        state.model.wall_plates[0].shape,
-        WallPlateShape::Attached { .. }
-    ));
-}
-
-#[test]
 fn test_apply_edit_set_floor_region_name() {
     use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
 
@@ -791,42 +708,55 @@ fn expect_parse_err(value: serde_json::Value) -> String {
     }
 }
 
+/// 廃止したコマンド・旧キーは、黙って無視せず明示エラーにする（§3.4 F1）。
 #[test]
-fn test_parse_rejects_obsolete_set_slab_secondary_joist_ids() {
+fn test_parse_rejects_obsolete_commands_and_keys() {
     let err = expect_parse_err(serde_json::json!({
         "command": "SetSlabSecondaryJoistIds",
         "floor_region": 0,
         "secondary_joist_ids": [1, 2]
     }));
     assert!(err.contains("廃止"), "{err}");
-}
 
-#[test]
-fn test_parse_requires_secondary_joists_array() {
-    let err = expect_parse_err(serde_json::json!({
-        "command": "SetFloorRegionSecondaryJoists",
-        "floor_region": 0
-    }));
-    assert!(err.contains("secondary_joists"), "{err}");
-}
-
-#[test]
-fn test_parse_rejects_legacy_secondary_joist_ids_key() {
     let err = expect_parse_err(serde_json::json!({
         "command": "SetFloorRegionSecondaryJoists",
         "floor_region": 0,
         "secondary_joist_ids": [1, 2]
     }));
     assert!(err.contains("廃止"), "{err}");
+
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionJoists",
+        "id": 0,
+        "joists": []
+    }));
+    assert!(err.contains("廃止"), "{err}");
 }
 
 #[test]
-fn test_parse_requires_wall_region_posts() {
+fn test_parse_requires_required_keys() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionSecondaryJoists",
+        "floor_region": 0
+    }));
+    assert!(err.contains("secondary_joists"), "{err}");
+
     let err = expect_parse_err(serde_json::json!({
         "command": "SetWallRegionPosts",
         "wall_region": 0
     }));
     assert!(err.contains("posts"), "{err}");
+
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetSecondaryMemberEndSupport",
+        "nodes": [0, 1]
+    }));
+    assert!(err.contains("end_support"), "{err}");
+
+    let err = expect_parse_err(serde_json::json!({
+        "command": "AddUnassignedJoist"
+    }));
+    assert!(err.contains("joist"), "{err}");
 }
 
 #[test]
@@ -838,32 +768,4 @@ fn test_parse_set_secondary_member_end_support() {
     }))
     .expect("解析できる");
     assert_eq!(cmd.label(), "二次部材の端部支持条件変更");
-}
-
-#[test]
-fn test_parse_requires_end_support() {
-    let err = expect_parse_err(serde_json::json!({
-        "command": "SetSecondaryMemberEndSupport",
-        "nodes": [0, 1]
-    }));
-    assert!(err.contains("end_support"), "{err}");
-}
-
-/// 廃止した手入力小梁ラインのコマンドは、黙って無視せず明示エラーにする（§3.4 F1）。
-#[test]
-fn test_parse_rejects_obsolete_set_floor_region_joists() {
-    let err = expect_parse_err(serde_json::json!({
-        "command": "SetFloorRegionJoists",
-        "id": 0,
-        "joists": []
-    }));
-    assert!(err.contains("廃止"), "{err}");
-}
-
-#[test]
-fn test_parse_requires_unassigned_joist_body() {
-    let err = expect_parse_err(serde_json::json!({
-        "command": "AddUnassignedJoist"
-    }));
-    assert!(err.contains("joist"), "{err}");
 }

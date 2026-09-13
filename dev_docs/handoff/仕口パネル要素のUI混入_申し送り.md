@@ -85,8 +85,7 @@ STKR400）を `import_stbridge_with_report` へ通した結果は次のとおり
 
 | テスト | 内容 |
 | --- | --- |
-| `model::tests::test_requires_section_and_material_covers_line_and_area_elements` | 線材・面材が真 |
-| `model::tests::test_requires_section_and_material_excludes_property_driven_elements` | パネル・バネ・免震・ダンパーが偽 |
+| `model::tests::test_requires_section_and_material` | 線材・面材が真、パネル・バネ・免震・ダンパーが偽（テスト再編により旧 2 テストを統合） |
 | `app::tests::test_run_diagnostics_ignores_generated_panel_zones` | 準備計算を通した S 造モデルで未割当警告が出ない |
 | `app::tests::test_member_material_groups_excludes_generated_panel_zones` | パネル生成後も RC 部材が 0 のまま |
 | `viewer::tests::要素の描き方は種別ごとに一意に決まる` | 部材線・ハイライトの描き方の対応表 |

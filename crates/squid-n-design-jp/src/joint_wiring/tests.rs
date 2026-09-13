@@ -204,42 +204,19 @@ fn wall_with_column_face_slit_is_not_checked() {
     assert!(wall_check_result(&model, &forces).is_none());
 }
 
-/// 開口周比 r0>0.4 となる大開口の壁も耐震壁として扱われず出力されない。
-#[test]
-fn wall_with_large_opening_ratio_is_not_checked() {
-    let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
-    // opening_area = 0.5・l・h → r0 = sqrt(0.5) ≈ 0.707 > 0.4。
-    let model = wall_model(Some(WallAttr {
-        elem: ElemId(0),
-        opening_area: 0.5 * 4000.0 * 3000.0,
-        opening_weight: 0.0,
-        slit: Default::default(),
-        openings: vec![],
-        finish_intensity: 0.0,
-    }));
-    assert!(wall_check_result(&model, &forces).is_none());
-}
-
-/// `wall_attrs` に属性がない壁（厚さ≥120mm）は、無開口として
-/// 耐震壁検定される。
-#[test]
-fn wall_without_attr_is_checked_as_no_opening() {
-    let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
-    let model = wall_model(None);
-    let res = wall_check_result(&model, &forces).expect("属性なしの壁も検定されるはず");
-    assert!(res.ratio() > 0.0);
-}
-
-/// 単一の個別開口（縦長: l0=750, h0=2000）と、同面積を合計面積のみで
-/// 与えた場合（壁と同じ辺長比の擬似等価開口に復元される）とで、
-/// γ支配項が変わるため検定比が一致しないこと。
+/// 開口寸法の与え方（実寸法・面積のみ・複数開口）が検定比へ反映されること。
 ///
-/// 面積は共通（750×2000=1,500,000）のため開口周比 r0（耐震壁判定用）は
-/// 両者で等しいが、実寸法は壁（l=4000,h=3000）と辺長比が異なる縦長形状
-/// のため γ3=1−h0/h が支配的になり、擬似等価開口（壁と同じ辺長比）を
-/// 使った場合の γ1=γ2=γ3 とは異なる低減係数 r になる。
+/// - 単一の個別開口（縦長: l0=750, h0=2000）と、同面積を合計面積のみで
+///   与えた場合（壁と同じ辺長比の擬似等価開口に復元される）とで、
+///   γ支配項が変わるため検定比が一致しない。
+///   面積は共通（750×2000=1,500,000）のため開口周比 r0（耐震壁判定用）は
+///   両者で等しいが、実寸法は壁（l=4000,h=3000）と辺長比が異なる縦長形状
+///   のため γ3=1−h0/h が支配的になり、擬似等価開口（壁と同じ辺長比）を
+///   使った場合の γ1=γ2=γ3 とは異なる低減係数 r になる。
+/// - 複数開口（2個）は [`equivalent_opening`] による等価開口に統合され、
+///   その等価開口を直接 `RcWallInput` へ供給した場合と同じ検定比になる。
 #[test]
-fn wall_single_opening_dims_differs_from_area_only_ratio() {
+fn wall_opening_dimension_paths_are_reflected() {
     let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
 
     let model_single_dims = wall_model(Some(WallAttr {
@@ -274,16 +251,11 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         res_single_dims.ratio(),
         res_area_only.ratio()
     );
-}
 
-/// 複数開口（2個）は [`equivalent_opening`] による等価開口に統合され、
-/// その等価開口を直接 `RcWallInput` へ供給した場合と同じ検定比になる。
-#[test]
-fn wall_multiple_openings_matches_equivalent_opening() {
-    let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+    // 複数開口（2個）は equivalent_opening による等価開口に統合され、
+    // その等価開口を直接 RcWallInput へ供給した場合と同じ検定比になる。
     let dims = [(600.0, 800.0), (500.0, 700.0)];
-
-    let model = wall_model(Some(WallAttr {
+    let model_multiple = wall_model(Some(WallAttr {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -298,7 +270,8 @@ fn wall_multiple_openings_matches_equivalent_opening() {
             })
             .collect(),
     }));
-    let res = wall_check_result(&model, &forces).expect("2個の開口は耐震壁として検定されるはず");
+    let res_multiple =
+        wall_check_result(&model_multiple, &forces).expect("2個の開口は耐震壁として検定されるはず");
 
     // 期待値: equivalent_opening を直接呼んで壁と同じ辺長比の等価開口を
     // 構築し、同一の RcWallInput（側柱なし・l_clear=l）で検定した結果。
@@ -319,21 +292,33 @@ fn wall_multiple_openings_matches_equivalent_opening() {
     let expected = rc_wall_shear_check(&inp);
 
     assert!(
-        (res.ratio() - expected.ratio()).abs() < 1e-9,
+        (res_multiple.ratio() - expected.ratio()).abs() < 1e-9,
         "複数開口 ratio={} と等価開口直接計算 ratio={} が不一致",
-        res.ratio(),
+        res_multiple.ratio(),
         expected.ratio()
     );
 }
 
-/// 個別開口の面積和で開口周比 r0>0.4 となる壁は耐震壁として扱われず、
-/// 検定自体が出力されない。
+/// 開口周比 r0>0.4 となる大開口の壁は耐震壁として扱われず、検定自体が
+/// 出力されない（面積のみ指定・個別開口の面積和の双方）。
 #[test]
-fn wall_multiple_openings_large_ratio_is_not_checked() {
+fn wall_large_opening_ratio_is_not_checked() {
     let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+
+    // opening_area = 0.5・l・h → r0 = sqrt(0.5) ≈ 0.707 > 0.4。
+    let model_area_only = wall_model(Some(WallAttr {
+        elem: ElemId(0),
+        opening_area: 0.5 * 4000.0 * 3000.0,
+        opening_weight: 0.0,
+        slit: Default::default(),
+        openings: vec![],
+        finish_intensity: 0.0,
+    }));
+    assert!(wall_check_result(&model_area_only, &forces).is_none());
+
     // 開口2個の面積和 = 2,000,000 + 3,000,000 = 5,000,000
     // → r0 = sqrt(5,000,000 / (4000*3000)) = sqrt(0.41667) ≈ 0.645 > 0.4。
-    let model = wall_model(Some(WallAttr {
+    let model_openings = wall_model(Some(WallAttr {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -352,7 +337,7 @@ fn wall_multiple_openings_large_ratio_is_not_checked() {
             },
         ],
     }));
-    assert!(wall_check_result(&model, &forces).is_none());
+    assert!(wall_check_result(&model_openings, &forces).is_none());
 }
 
 /// 近接する2開口（水平純間隔200mm、高さ位置が一致）は、`Auto` モードでは

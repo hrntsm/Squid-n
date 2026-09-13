@@ -109,17 +109,32 @@ fn horiz_resultant(f: &LocalVec) -> f64 {
     (f.data[6] * f.data[6] + f.data[7] * f.data[7]).sqrt()
 }
 
+/// 積層ゴムの弾性剛性: 水平は初期剛性 K1、鉛直は軸剛性 Kv。
 #[test]
-fn test_laminated_elastic_horizontal_stiffness() {
+fn test_laminated_elastic_stiffness() {
     let model = iso_model(laminated());
     let ctx = Ctx { model: &model };
+
     let mut elem = IsolatorElement::new(&model.elements[0], &model);
     let f = push_horizontal(&mut elem, &ctx, 10.0);
     assert!(
         (horiz_resultant(&f) - 2000.0 * 10.0).abs() < 1.0,
-        "elastic |F|={} expected {}",
+        "弾性水平 |F|={} expected {}",
         horiz_resultant(&f),
         2000.0 * 10.0
+    );
+
+    let mut elem = IsolatorElement::new(&model.elements[0], &model);
+    let mut du = LocalVec {
+        data: smallvec::smallvec![0.0; 12],
+    };
+    du.data[8] = 2.0;
+    elem.update_state(&du, true, &ctx);
+    let f = elem.internal_force(&ctx);
+    assert!(
+        (f.data[8].abs() - 5_000_000.0 * 2.0).abs() < 1.0,
+        "弾性鉛直軸 Fz={}",
+        f.data[8]
     );
 }
 
@@ -134,24 +149,6 @@ fn test_laminated_yields_past_qd() {
     assert!(
         (fr - 120_000.0).abs() < 500.0,
         "バイリニア降伏後 |F|={fr} 期待 120kN"
-    );
-}
-
-#[test]
-fn test_vertical_axial_elastic() {
-    let model = iso_model(laminated());
-    let ctx = Ctx { model: &model };
-    let mut elem = IsolatorElement::new(&model.elements[0], &model);
-    let mut du = LocalVec {
-        data: smallvec::smallvec![0.0; 12],
-    };
-    du.data[8] = 2.0;
-    elem.update_state(&du, true, &ctx);
-    let f = elem.internal_force(&ctx);
-    assert!(
-        (f.data[8].abs() - 5_000_000.0 * 2.0).abs() < 1.0,
-        "鉛直軸剛性 Fz={}",
-        f.data[8]
     );
 }
 
