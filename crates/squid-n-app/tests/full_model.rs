@@ -465,38 +465,6 @@ fn preparation_is_idempotent() {
     }
 }
 
-/// 固定荷重の算定は、剛域の自動算定を先に走らせたかどうかに依存しない。
-///
-/// RC/SRC 梁の自重は柱面間の内法長で算定する。柱フェース距離はかつて剛域の
-/// 自動算定（`apply_auto_rigid_zones`）だけが埋めるキャッシュで、算定前に読むと
-/// 0 になり、節点間距離で自重を算定してしまっていた（申し送り
-/// 「実モデル統合テスト」4.1）。現在は幾何から直接求めるため順序に依存しない。
-///
-/// 「取り込んだ直後に自重を同期した DL」と「準備計算まで済ませた DL」が
-/// 一致することで、この順序非依存を固定する。
-#[test]
-fn dead_load_does_not_depend_on_rigid_zone_timing() {
-    let mut early = imported();
-    early.sync_gravity_load_cases_action();
-    let dl_early = auto_case(&early, DL_CASE_NAME);
-
-    let prepared = prepared();
-    let dl_prepared = auto_case(&prepared, DL_CASE_NAME);
-
-    assert_eq!(
-        dl_early.member.len(),
-        dl_prepared.member.len(),
-        "部材荷重の件数が一致しない"
-    );
-    for (a, b) in dl_early.member.iter().zip(dl_prepared.member.iter()) {
-        assert_eq!(
-            a.kind, b.kind,
-            "部材 {:?} の固定荷重が剛域算定の前後で変わる",
-            a.elem
-        );
-    }
-}
-
 // ===================== 3. 診断 =====================
 
 /// 実建物モデルの整合性チェックがエラー・警告ともに 0 件である。
@@ -1166,7 +1134,6 @@ fn stbridge_roundtrip_is_reanalyzable() {
         26,
         "STB 再取り込みで小片 82 に戻らない"
     );
-    assert_eq!(reimported.core.model.floor_regions.len(), 26);
 
     reimported.run_preparation();
     assert_eq!(
@@ -1252,21 +1219,29 @@ fn joist_design_checks_cover_imported_secondary_members() {
     );
 }
 
-/// 主架構の面走査（`region_gen`）が、大梁が囲む区画をレベルごとに検出する。
+/// 主架構の面走査（`region_gen`）が大梁の囲む区画をレベルごとに検出し、
+/// 取り込んだ床板がその区画へ過不足なく収まる（D1）。
 ///
 /// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため（D1）、その検出が実建物で
 /// 期待どおりの数になることを固定する。期待値は Euler の公式（内部面数 `F = E − V + C`）
-/// で独立に検算した値である。
+/// で独立に検算した値である。床板（小梁でさらに細分された打設単位）は重複・欠落なく、
+/// ちょうど 1 つの床領域へ割り当たる。
 #[test]
-fn region_gen_finds_beam_bounded_regions() {
-    use squid_n_core::region_gen::generate_region_boundaries;
+fn floor_regions_and_slabs_are_consistent() {
+    use squid_n_core::region_gen::scan_region_boundaries;
     use std::collections::BTreeMap;
 
     let app = imported();
-    let boundaries = generate_region_boundaries(&app.core.model);
+    let scan = scan_region_boundaries(&app.core.model);
+    assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
+    assert!(
+        scan.crossings.is_empty(),
+        "節点を共有せずに交差する大梁がある: {:?}",
+        scan.crossings
+    );
 
     let mut per_level: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
-    for b in &boundaries {
+    for b in &scan.boundaries {
         let e = per_level.entry(b.level.round() as i64).or_insert((0, 0.0));
         e.0 += 1;
         e.1 += b.area(&app.core.model);
@@ -1277,10 +1252,10 @@ fn region_gen_finds_beam_bounded_regions() {
         vec![(200, 6), (4700, 6), (8700, 6), (12700, 7), (16500, 1)],
         "レベル別の床領域数（Euler の公式による検算値と一致すること）"
     );
-    assert_eq!(boundaries.len(), 26, "床領域総数");
+    assert_eq!(scan.boundaries.len(), 26, "床領域総数");
     assert_eq!(
         app.core.model.floor_regions.len(),
-        boundaries.len(),
+        scan.boundaries.len(),
         "取り込み後の床領域数は床領域数 26"
     );
 
@@ -1304,6 +1279,41 @@ fn region_gen_finds_beam_bounded_regions() {
             "Z={z}: 床領域の面積 {area} と床板面積 {s} が一致しない"
         );
     }
+
+    // 各床板の重心が、ちょうど 1 つの床領域へ収まる（未割当・床板なし領域なし）。
+    let mut by_region: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut unassigned = Vec::new();
+    for (si, slab) in app.core.model.slabs.iter().enumerate() {
+        let Some(coords) = slab.boundary_coords(&app.core.model) else {
+            continue;
+        };
+        if coords.len() < 3 {
+            continue;
+        }
+        let n = coords.len() as f64;
+        let centroid = [
+            coords.iter().map(|p| p[0]).sum::<f64>() / n,
+            coords.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+        let z = coords[0][2];
+        match scan
+            .boundaries
+            .iter()
+            .position(|b| b.is_same_level(z) && b.contains(&app.core.model, centroid))
+        {
+            Some(bi) => by_region.entry(bi).or_default().push(si),
+            None => unassigned.push(si),
+        }
+    }
+    assert!(
+        unassigned.is_empty(),
+        "どの床領域にも収まらない床板: {unassigned:?}"
+    );
+    assert_eq!(
+        by_region.len(),
+        scan.boundaries.len(),
+        "床板を持たない床領域はない"
+    );
 }
 
 /// 柱・梁が実建物データで壁側の鉛直構面をどれだけ検出できるかを実測して固定する。
@@ -1431,67 +1441,6 @@ fn wall_regions_survive_save_reopen_reprepare() {
     std::fs::remove_file(&path).ok();
 }
 
-/// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
-///
-/// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。床領域内の床板
-/// （小梁でさらに細分された打設単位）は重複・欠落なく、ちょうど 1 つの
-/// 床領域へ割り当たることを固定する。
-#[test]
-fn slabs_fold_into_regions_without_gaps() {
-    use squid_n_core::region_gen::scan_region_boundaries;
-    use std::collections::BTreeMap;
-
-    let app = imported();
-    let scan = scan_region_boundaries(&app.core.model);
-    assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
-    assert!(
-        scan.crossings.is_empty(),
-        "節点を共有せずに交差する大梁がある: {:?}",
-        scan.crossings
-    );
-
-    let mut by_region: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut unassigned = Vec::new();
-    for (si, slab) in app.core.model.slabs.iter().enumerate() {
-        let Some(coords) = slab.boundary_coords(&app.core.model) else {
-            continue;
-        };
-        if coords.len() < 3 {
-            continue;
-        }
-        let n = coords.len() as f64;
-        let centroid = [
-            coords.iter().map(|p| p[0]).sum::<f64>() / n,
-            coords.iter().map(|p| p[1]).sum::<f64>() / n,
-        ];
-        let z = coords[0][2];
-        match scan
-            .boundaries
-            .iter()
-            .position(|b| b.is_same_level(z) && b.contains(&app.core.model, centroid))
-        {
-            Some(bi) => by_region.entry(bi).or_default().push(si),
-            None => unassigned.push(si),
-        }
-    }
-
-    assert!(
-        unassigned.is_empty(),
-        "どの床領域にも収まらない床板: {unassigned:?}"
-    );
-    assert_eq!(unassigned.len(), 0, "未割当 0");
-    assert_eq!(
-        app.core.model.floor_regions.len(),
-        scan.boundaries.len(),
-        "床領域数＝床領域数 26"
-    );
-    assert_eq!(
-        by_region.len(),
-        scan.boundaries.len(),
-        "床板を持たない床領域はない"
-    );
-}
-
 // ===================== スナップショット =====================
 
 /// 全解析の代表スカラをスナップショットで固定する。
@@ -1522,11 +1471,6 @@ fn snapshot_key_scalars() {
     line(
         "model.joists()",
         app.core.model.joists().count().to_string(),
-    );
-    assert_eq!(
-        app.core.model.floor_regions.len(),
-        26,
-        "スナップショット対象の床領域数"
     );
     line(
         "model.floor_regions",

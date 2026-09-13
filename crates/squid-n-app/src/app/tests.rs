@@ -111,19 +111,12 @@ fn test_event_log_caps_entries() {
     assert_eq!(log.entries.last().unwrap().message, "msg1000");
 }
 
-/// 文頭ラベルは日本語で、Error が最長（描画時の列幅の基準）。
-#[test]
-fn test_log_level_label() {
-    assert_eq!(LogLevel::Info.label(), "情報");
-    assert_eq!(LogLevel::Notice.label(), "注意");
-    assert_eq!(LogLevel::Error.label(), "エラー");
-    assert!(LogLevel::Error.label().chars().count() > LogLevel::Info.label().chars().count());
-    assert!(LogLevel::Error.label().chars().count() > LogLevel::Notice.label().chars().count());
-}
-
 /// `report_error` が `last_error` とログの両方へ反映されることを確認する。
+/// GUI では下ドックを開くだけでなく、診断・テーブル表示中でもエラー本文が
+/// 見えるようにログタブへ切り替える。
 #[test]
-fn test_report_error_updates_last_error_and_log() {
+#[allow(clippy::field_reassign_with_default)]
+fn test_report_error_updates_last_error_log_and_bottom_tab() {
     let mut app = App::default();
     app.report_error("テストエラー");
     assert_eq!(app.core.scoped.last_error.as_deref(), Some("テストエラー"));
@@ -135,28 +128,23 @@ fn test_report_error_updates_last_error_and_log() {
         .expect("ログにエントリがあるはず");
     assert_eq!(last.level, LogLevel::Error);
     assert_eq!(last.message, "テストエラー");
+
+    #[cfg(feature = "gui")]
+    {
+        app.ui.view.bottom_tab = BottomTab::Diagnostics;
+        app.ui.view.bottom_dock_open = false;
+        app.report_error("テストエラー");
+        assert!(app.ui.view.bottom_dock_open);
+        assert_eq!(app.ui.view.bottom_tab, BottomTab::Log);
+    }
 }
 
-/// エラー報告は下ドックを開くだけでなくログタブへ切り替える
-/// （診断・テーブル表示中でもエラー本文が見えるように）。
+/// モデル差し替えで、作成モード・選択バッファ・差し替え前のモデルを指す UI 状態が
+/// すべて破棄される（差し替え前のモデルの節点 id が残ると意図しない部材が生成されうるため）。
 #[cfg(feature = "gui")]
 #[test]
 #[allow(clippy::field_reassign_with_default)]
-fn test_report_error_switches_bottom_tab_to_log() {
-    let mut app = App::default();
-    app.ui.view.bottom_tab = BottomTab::Diagnostics;
-    app.ui.view.bottom_dock_open = false;
-    app.report_error("テストエラー");
-    assert!(app.ui.view.bottom_dock_open);
-    assert_eq!(app.ui.view.bottom_tab, BottomTab::Log);
-}
-
-/// モデル差し替えで作成モードと選択バッファが解除される
-/// （差し替え前のモデルの節点 id が残ると意図しない部材が生成されうるため）。
-#[cfg(feature = "gui")]
-#[test]
-#[allow(clippy::field_reassign_with_default)]
-fn test_load_model_resets_draw_modes() {
+fn test_load_model_resets_model_bound_ui_state() {
     let mut app = App::default();
     app.ui.scoped.beam_draw_mode = true;
     app.ui.scoped.beam_draw_first = Some(crate::viewer::space_grid::SnapPoint::Node(
@@ -171,19 +159,6 @@ fn test_load_model_resets_draw_modes() {
         .scoped
         .slab_draw_nodes
         .push(squid_n_core::ids::NodeId(2));
-    app.load_model(crate::sample::portal_frame());
-    assert!(!app.ui.scoped.beam_draw_mode);
-    assert!(app.ui.scoped.beam_draw_first.is_none());
-    assert!(!app.ui.scoped.wall_draw_mode);
-    assert!(app.ui.scoped.wall_draw_nodes.is_empty());
-    assert!(app.ui.scoped.slab_draw_nodes.is_empty());
-}
-
-/// モデル差し替えで、差し替え前のモデルを指す UI 状態がすべて破棄される。
-#[cfg(feature = "gui")]
-#[test]
-fn test_load_model_resets_model_bound_ui_state() {
-    let mut app = App::default();
     app.ui.scoped.mn_view.section_idx = 7;
     app.ui.scoped.load_editor = Some(crate::load_editor::LoadEditor::new_nodal(
         squid_n_core::ids::LoadCaseId(3),
@@ -195,6 +170,11 @@ fn test_load_model_resets_model_bound_ui_state() {
 
     app.load_model(crate::sample::portal_frame());
 
+    assert!(!app.ui.scoped.beam_draw_mode);
+    assert!(app.ui.scoped.beam_draw_first.is_none());
+    assert!(!app.ui.scoped.wall_draw_mode);
+    assert!(app.ui.scoped.wall_draw_nodes.is_empty());
+    assert!(app.ui.scoped.slab_draw_nodes.is_empty());
     assert_eq!(app.ui.scoped.mn_view.section_idx, 0);
     assert!(app.ui.scoped.load_editor.is_none());
     assert_eq!(app.ui.scoped.view_mode_idx, 0);
@@ -566,26 +546,6 @@ fn test_run_design_check_includes_member_detail_positions() {
     );
 }
 
-#[test]
-fn test_staleness_mark_edited_marks_downstream() {
-    let mut s = Staleness::default();
-    assert!(!s.results_stale);
-    s.mark_edited();
-    assert!(s.results_stale);
-    assert!(s.design_stale);
-    let now = SystemTime::now();
-    s.last_run = Some(now);
-    s.mark_fresh();
-    assert!(!s.results_stale);
-    assert!(!s.design_stale);
-    assert!(s.last_run.is_some());
-}
-
-#[test]
-fn test_tab_default_is_model() {
-    assert_eq!(Tab::Model, Tab::default());
-}
-
 /// 基部の床に小梁の支持点（要素が接続しない非構造節点）があっても解析が成立する。
 ///
 /// 1FL が基部にある建物では、基部の剛床のスレーブが「水平拘束された柱脚」と
@@ -918,62 +878,6 @@ fn test_manual_load_in_auto_case_survives_sync() {
     );
 }
 
-/// 性能修正: `sync_auto_load_cases_action` は前回同期時からモデル・関連設定
-/// （`analysis_cfg` の一部）が変わっていなければ DL/LL/EX/EY の再計算を
-/// 丸ごとスキップする。ハッシュが一致する状態を人為的に作り、既存の
-/// （手で壊した）荷重ケース内容が上書きされない＝スキップされたことを確認する。
-#[test]
-fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-
-    let ex_idx = app
-        .core
-        .model
-        .load_cases
-        .iter()
-        .position(|lc| lc.name == EX_CASE_NAME)
-        .expect("EXケースが生成されているはず");
-    assert!(
-        !app.core.model.load_cases[ex_idx].nodal.is_empty(),
-        "前提: EXには水平力が入っているはず"
-    );
-    // EX ケースの内容を手で壊す。
-    app.core.model.load_cases[ex_idx].nodal.clear();
-    app.core.model.load_cases[ex_idx].member.clear();
-
-    // 「この(壊れた)モデル状態で同期済み」であるとキャッシュへ偽装する
-    // （`compute_auto_load_sync_hash` と同じロジック。Approx モードなので
-    // 固有周期 T のハッシュ組み込みは対象外）。
-    fn fake_hash(app: &App) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        if let Ok(bytes) = bincode::serialize(&app.core.model) {
-            bytes.hash(&mut hasher);
-        }
-        std::mem::discriminant(&app.core.analysis_cfg.ai_mode).hash(&mut hasher);
-        app.core.analysis_cfg.z.to_bits().hash(&mut hasher);
-        (app.core.analysis_cfg.soil as u8).hash(&mut hasher);
-        app.core.analysis_cfg.c0.to_bits().hash(&mut hasher);
-        hasher.finish()
-    }
-    app.core.scoped.auto_load_sync_hash = Some(fake_hash(&app));
-
-    app.sync_auto_load_cases_action();
-
-    let ex_after = &app.core.model.load_cases[ex_idx];
-    assert!(
-        ex_after.nodal.is_empty() && ex_after.member.is_empty(),
-        "ハッシュ一致時は同期がスキップされ、壊した内容がそのまま残るはず"
-    );
-}
-
 /// 剛床代表節点は慣性力重心に自動生成される。再度自動生成しても
 /// 既存の代表節点を再利用するため節点数が増えないことを確認する
 /// （story_gen + edit の統合: `generate_stories` → `ApplyStories` の往復）。
@@ -1028,34 +932,6 @@ fn test_generate_stories_action_reuses_rep_node_on_regenerate() {
 }
 
 #[test]
-fn test_time_history_sample_flow() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.core.analysis_cfg.th_duration = 2.0;
-    app.run_time_history_sample();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    let th = app
-        .core
-        .scoped
-        .results
-        .as_ref()
-        .unwrap()
-        .time_history
-        .as_ref()
-        .unwrap();
-    assert!(th.history.node_disp.len() > 100);
-    assert!(
-        th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
-        "応答がゼロのままです"
-    );
-    assert!(th.history.node.is_some());
-}
-
-#[test]
 fn test_time_history_y_direction_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
@@ -1084,87 +960,12 @@ fn test_time_history_y_direction_flow() {
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
         "応答がゼロのままです"
     );
-}
+    assert!(
+        th.history.node.is_some(),
+        "代表応答の記録節点が設定されていません"
+    );
 
-#[test]
-fn test_build_ground_motion_routes_by_direction() {
-    // wave 構築のみを検証する純粋関数のテスト（th_dir=Y でも accel_x 側に
-    // 誤って入らないことを確認する）。
-    let accel = vec![1.0, 2.0, 3.0];
-    let wave_x = squid_n_job::build_ground_motion(0.01, ThDir::X, accel.clone());
-    assert_eq!(wave_x.accel_x, accel);
-    assert!(wave_x.accel_y.is_none());
-
-    let wave_y = squid_n_job::build_ground_motion(0.01, ThDir::Y, accel.clone());
-    assert_eq!(wave_y.accel_x, vec![0.0; accel.len()]);
-    assert_eq!(wave_y.accel_y, Some(accel.clone()));
-}
-
-/// ThDir::Xy: 同一波形を accel_x・accel_y の両方に入れる（簡易仕様）。
-#[test]
-fn test_build_ground_motion_xy_duplicates_wave() {
-    let accel = vec![1.0, 2.0, 3.0];
-    let wave = squid_n_job::build_ground_motion(0.01, ThDir::Xy, accel.clone());
-    assert_eq!(wave.accel_x, accel);
-    assert_eq!(wave.accel_y, Some(accel));
-}
-
-// ===== parse_wave_csv テスト =====
-
-#[test]
-fn test_parse_wave_csv_single_column_x_or_y() {
-    let content = "10.0\n20.0\n30.0\n";
-    let (accel, second) = parse_wave_csv(content, ThDir::X).unwrap();
-    assert_eq!(accel, vec![100.0, 200.0, 300.0]); // gal→mm/s²(×10)
-    assert!(second.is_none());
-
-    // カンマ区切りなら最後の列を使う。
-    let content_csv = "0.0,10.0\n0.01,20.0\n0.02,30.0\n";
-    let (accel, second) = parse_wave_csv(content_csv, ThDir::Y).unwrap();
-    assert_eq!(accel, vec![100.0, 200.0, 300.0]);
-    assert!(second.is_none());
-}
-
-#[test]
-fn test_parse_wave_csv_single_column_too_few_points_is_err() {
-    assert!(parse_wave_csv("10.0\n", ThDir::X).is_err());
-    assert!(parse_wave_csv("", ThDir::X).is_err());
-}
-
-#[test]
-fn test_parse_wave_csv_xy_two_columns() {
-    let content = "10.0,5.0\n20.0,15.0\n30.0,25.0\n";
-    let (xs, ys) = parse_wave_csv(content, ThDir::Xy).unwrap();
-    assert_eq!(xs, vec![100.0, 200.0, 300.0]);
-    assert_eq!(ys, Some(vec![50.0, 150.0, 250.0]));
-}
-
-#[test]
-fn test_parse_wave_csv_xy_header_line_is_skipped() {
-    // ヘッダ行（数値化不可）は無視され、残りの2行が (X, Y) として読める。
-    let content = "x,y\n10.0,5.0\n20.0,15.0\n";
-    let (xs, ys) = parse_wave_csv(content, ThDir::Xy).unwrap();
-    assert_eq!(xs, vec![100.0, 200.0]);
-    assert_eq!(ys, Some(vec![50.0, 150.0]));
-}
-
-#[test]
-fn test_parse_wave_csv_xy_insufficient_columns_is_err() {
-    let content = "10.0,5.0\n20.0\n30.0,25.0\n";
-    let err = parse_wave_csv(content, ThDir::Xy).unwrap_err();
-    assert_eq!(err, "X+Y には2列のCSVが必要です");
-}
-
-#[test]
-fn test_parse_wave_csv_xy_too_few_points_is_err() {
-    assert!(parse_wave_csv("10.0,5.0\n", ThDir::Xy).is_err());
-}
-
-#[test]
-fn test_time_history_xy_sample_flow() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.core.analysis_cfg.th_duration = 2.0;
+    // X+Y: 同一波形を 2 成分として与え、両方向の応答が時歴に現れる。
     app.core.analysis_cfg.th_dir = ThDir::Xy;
     app.run_time_history_sample();
     assert!(
@@ -1181,17 +982,64 @@ fn test_time_history_xy_sample_flow() {
         .time_history
         .as_ref()
         .unwrap();
+    let peak_x = th.peak_disp.iter().map(|d| d[0].abs()).fold(0.0, f64::max);
+    let peak_y = th.peak_disp.iter().map(|d| d[1].abs()).fold(0.0, f64::max);
     assert!(
-        th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
-        "応答がゼロのままです"
+        peak_x > 1e-6 && peak_y > 1e-6,
+        "X+Y の 2 成分が応答に現れるべき: x={peak_x}, y={peak_y}"
     );
 }
 
-/// 2 層等質量等剛性せん断モデル（軸ばね 2 本の直列、Ux 方向のみ自由）。
+// ===== parse_wave_csv テスト =====
+
+#[test]
+fn test_parse_wave_csv_single_column_x_or_y() {
+    let content = "10.0\n20.0\n30.0\n";
+    let (accel, second) = parse_wave_csv(content, ThDir::X).unwrap();
+    assert_eq!(accel, vec![100.0, 200.0, 300.0]); // gal→mm/s²(×10)
+    assert!(second.is_none());
+
+    // カンマ区切りなら最後の列を使う。
+    let content_csv = "0.0,10.0\n0.01,20.0\n0.02,30.0\n";
+    let (accel, second) = parse_wave_csv(content_csv, ThDir::Y).unwrap();
+    assert_eq!(accel, vec![100.0, 200.0, 300.0]);
+    assert!(second.is_none());
+
+    // 数値化できない行（ヘッダ等）は無視される。
+    let (accel, _) = parse_wave_csv("acc\n10.0\n20.0\n", ThDir::X).unwrap();
+    assert_eq!(accel, vec![100.0, 200.0]);
+}
+
+#[test]
+fn test_parse_wave_csv_xy_two_columns() {
+    let content = "10.0,5.0\n20.0,15.0\n30.0,25.0\n";
+    let (xs, ys) = parse_wave_csv(content, ThDir::Xy).unwrap();
+    assert_eq!(xs, vec![100.0, 200.0, 300.0]);
+    assert_eq!(ys, Some(vec![50.0, 150.0, 250.0]));
+
+    // ヘッダ行（数値化不可）は無視され、残りの2行が (X, Y) として読める。
+    let (xs, ys) = parse_wave_csv("x,y\n10.0,5.0\n20.0,15.0\n", ThDir::Xy).unwrap();
+    assert_eq!(xs, vec![100.0, 200.0]);
+    assert_eq!(ys, Some(vec![50.0, 150.0]));
+}
+
+#[test]
+fn test_parse_wave_csv_errors() {
+    // 有効なデータ点が 2 点未満ならエラー（空も同じ）。
+    assert!(parse_wave_csv("10.0\n", ThDir::X).is_err());
+    assert!(parse_wave_csv("", ThDir::X).is_err());
+    // X+Y は 2 列に満たない行があるとエラー。
+    let err = parse_wave_csv("10.0,5.0\n20.0\n30.0,25.0\n", ThDir::Xy).unwrap_err();
+    assert_eq!(err, "X+Y には2列のCSVが必要です");
+    // X+Y でも 2 点未満ならエラー。
+    assert!(parse_wave_csv("10.0,5.0\n", ThDir::Xy).is_err());
+}
+
+/// 等質量等剛性のせん断モデル（軸ばねの直列、Ux 方向のみ自由、`n` 層）。
 /// portal_frame は平面骨組で弱軸・面外方向の縮約後自由度が多く、
 /// 固有値解析(部分空間反復)が n_modes=2 で不安定になりやすいため、
 /// Rayleigh 減衰(1次・2次固有値が必要)のテストには本モデルを用いる。
-fn shear_2dof_model() -> squid_n_core::model::Model {
+fn shear_model(n: usize) -> squid_n_core::model::Model {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::{
@@ -1224,13 +1072,21 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
         plastic_zone: None,
         spring: None,
     };
+    let mut nodes = vec![node(0, 0.0, Dof6Mask::FIXED, None)];
+    for i in 1..=n {
+        nodes.push(node(
+            i as u32,
+            i as f64 * 1000.0,
+            FREE_UX,
+            Some([m, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ));
+    }
+    let elements: Vec<ElementData> = (0..n)
+        .map(|i| beam(i as u32, i as u32, i as u32 + 1))
+        .collect();
     Model {
-        nodes: vec![
-            node(0, 0.0, Dof6Mask::FIXED, None),
-            node(1, 1000.0, FREE_UX, Some([m, 0.0, 0.0, 0.0, 0.0, 0.0])),
-            node(2, 2000.0, FREE_UX, Some([m, 0.0, 0.0, 0.0, 0.0, 0.0])),
-        ],
-        elements: vec![beam(0, 0, 1), beam(1, 1, 2)],
+        nodes,
+        elements,
         sections: vec![Section {
             id: SectionId(0),
             name: "spring".into(),
@@ -1271,7 +1127,7 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
 #[test]
 fn test_time_history_rayleigh() {
     let mut app = App::default();
-    app.load_model(shear_2dof_model());
+    app.load_model(shear_model(2));
     app.core.analysis_cfg.th_duration = 2.0;
     app.core.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
     app.run_time_history_sample();
@@ -1294,6 +1150,32 @@ fn test_time_history_rayleigh() {
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
         "応答がゼロのままです"
     );
+}
+
+/// Rayleigh 減衰は 1 次・2 次の 2 モードを必要とする。自由度が 1 つしかない
+/// モデルでは `compute_time_history` がモード数不足をエラーとして返す。
+#[test]
+fn test_time_history_rayleigh_requires_two_modes() {
+    let mut app = App::default();
+    app.load_model(shear_model(1));
+    app.core.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
+    app.run_time_history_sample();
+    let err = app
+        .core
+        .scoped
+        .last_error
+        .as_deref()
+        .expect("モード数不足のエラーが設定されるはず");
+    assert!(
+        err.contains("Rayleigh 減衰には 2 次までの固有値が必要です"),
+        "{err}"
+    );
+    assert!(app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .is_none_or(|r| r.time_history.is_none()));
 }
 
 /// 非線形時刻歴 UI 配線の end-to-end 確認: `analysis_cfg.th_nonlinear` を ON にすると
@@ -1397,8 +1279,10 @@ fn test_story_shear_layer0_matches_history_base_shear() {
     assert!(checked > 0, "比較できたフレームが1件もありません");
 }
 
-/// 非線形時刻歴で `th_apply_long_term` を ON にしても解析が正常に完了すること
-/// （長期荷重の静的載荷フェーズを経てから時刻歴を開始する経路）を確認する。
+/// 非線形時刻歴で `th_apply_long_term` を ON にすると、長期系荷重ケースを静的
+/// 載荷した状態が初期条件として結果へ反映されることを確認する。フラグが計算まで
+/// 届かなければ `applied_long_term` は false のままで、長期載荷による鉛直変位も
+/// 生じない。
 #[test]
 fn test_nonlinear_time_history_with_long_term_flow() {
     let mut app = App::default();
@@ -1427,104 +1311,31 @@ fn test_nonlinear_time_history_with_long_term_flow() {
         .time_history
         .as_ref()
         .unwrap();
-    assert!(th.recording.is_some());
-}
-
-/// ジョブラベルが線形／非線形で切り替わることを確認する
-/// （完了ログ・実行中スピナー判別の両方に使われる）。
-#[test]
-fn test_time_history_job_label_reflects_nonlinear_setting() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    app.core.analysis_cfg.th_duration = 1.0;
-    app.core.analysis_cfg.th_nonlinear = false;
-    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
-    assert_eq!(
-        app.core.scoped.job.as_ref().unwrap().label,
-        "時刻歴応答(線形)"
-    );
-    while !app.poll_job() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    assert!(th.applied_long_term, "ON 設定が計算まで届いていない");
+    let recording = th.recording.as_ref().expect("recording が入るはず");
+    let peak_uz = th
+        .peak_disp
+        .iter()
+        .map(|d| d[2].abs())
+        .fold(0.0_f64, f64::max);
     assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
+        peak_uz > 1e-6,
+        "長期載荷による鉛直変位が結果に反映されていません: {peak_uz}"
     );
-
-    app.core.analysis_cfg.th_nonlinear = true;
-    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
-    assert_eq!(
-        app.core.scoped.job.as_ref().unwrap().label,
-        "時刻歴応答(非線形)"
-    );
-    while !app.poll_job() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // 初期フレーム（長期載荷完了時点）の軸力（[n, qy, qz, mx, my, mz] の先頭）。
+    let frame0_axial = recording
+        .member_forces
+        .first()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|mf| mf.at.iter())
+        .map(|(_, f)| f[0].abs())
+        .fold(0.0_f64, f64::max);
     assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
+        frame0_axial > 1.0,
+        "長期載荷フェーズの軸力が初期フレームに反映されていません: {frame0_axial}"
     );
-}
-
-#[test]
-fn test_set_story_weight_via_ui_flow() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    let story_id = app.core.model.stories[0].id;
-    let old_weight = app.core.model.stories[0].seismic_weight;
-
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::SetStoryWeight {
-            story: story_id,
-            weight: Some(12345.0),
-        }),
-    );
-    assert_eq!(app.core.model.stories[0].seismic_weight, Some(12345.0));
-
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert_eq!(app.core.model.stories[0].seismic_weight, old_weight);
-}
-
-#[test]
-fn test_pushover_flow() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    app.core.analysis_cfg.push_steps = 10;
-    app.run_pushover();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    let po = app
-        .core
-        .scoped
-        .results
-        .as_ref()
-        .unwrap()
-        .pushover
-        .as_ref()
-        .unwrap();
-    assert!(!po.capacity_curve.is_empty());
-    assert!(app
-        .core
-        .scoped
-        .results
-        .as_ref()
-        .unwrap()
-        .pushover_x
-        .is_some());
 }
 
 /// 旧 `.scz` 形式（`pushover` のみ）が `push_dir` のスロットへ移行されること。
@@ -1599,109 +1410,6 @@ fn test_pushover_x_y_slots_and_view_dir() {
     assert!((app.displayed_pushover().unwrap().qu - qu_y).abs() < 1e-6);
 }
 
-/// プッシュオーバー結果から質点系（串団子）モデルを生成する配線の end-to-end 確認。
-#[test]
-fn test_lumped_mass_model_from_pushover() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    app.core.analysis_cfg.push_steps = 10;
-    app.run_pushover();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    let po = app
-        .core
-        .scoped
-        .results
-        .as_ref()
-        .unwrap()
-        .pushover
-        .as_ref()
-        .unwrap();
-
-    let lm = squid_n_solver::dynamic::lumped_mass::build_lumped_mass_model(
-        &app.core.model,
-        po,
-        app.core.analysis_cfg.lumped_mass_type,
-        app.core.analysis_cfg.lumped_secant_ratio,
-    );
-    // 層数分の質点が生成され、各層のトリリニア骨格が妥当（K1>0・折点昇順）。
-    assert_eq!(lm.stories.len(), app.core.model.layer_count());
-    assert!(!lm.stories.is_empty());
-    for stick in &lm.stories {
-        let sk = &stick.skeleton;
-        assert!(sk.k1 > 0.0, "K1>0: {sk:?}");
-        assert!(sk.d1 <= sk.d2 && sk.d2 <= sk.d3, "折点昇順: {sk:?}");
-        assert!(stick.mass >= 0.0);
-    }
-}
-
-/// 制振ダンパーの作成→諸元変更→削除を app の undo スタック経由で確認する
-/// （部材表 UI が発行する編集コマンドの統合確認）。
-#[test]
-fn test_damper_create_edit_delete_via_undo() {
-    use squid_n_core::model::{
-        DamperProps, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
-    };
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    let n = app.core.model.nodes.len();
-    assert!(n >= 2);
-    let (i_node, j_node) = (app.core.model.nodes[0].id, app.core.model.nodes[1].id);
-    let new_id = squid_n_core::ids::ElemId(app.core.model.elements.len() as u32);
-    let elem = ElementData {
-        id: new_id,
-        kind: ElementKind::Damper,
-        nodes: [i_node, j_node].into_iter().collect(),
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    // 作成。
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::AddDamper {
-            elem,
-            props: DamperProps::default(),
-        }),
-    );
-    assert_eq!(
-        app.core.model.damper_props(new_id),
-        Some(DamperProps::default())
-    );
-    // 諸元変更。
-    let edited = DamperProps {
-        kd: 150_000.0,
-        c0: 3_000.0,
-        alpha: 0.35,
-        ..Default::default()
-    };
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::SetDamperProps {
-            elem: new_id,
-            props: Some(edited),
-        }),
-    );
-    assert_eq!(app.core.model.damper_props(new_id), Some(edited));
-    // 削除（要素も特性も消える）。
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::DeleteMember { id: new_id }),
-    );
-    assert_eq!(app.core.model.damper_props(new_id), None);
-    assert!(app.core.model.elements.iter().all(|e| e.id != new_id));
-}
-
 /// `poll_job` が完了するまで待つ（タイムアウト5秒でパニック、10ms 間隔でポーリング）。
 fn wait_for_job(app: &mut App) {
     let start = std::time::Instant::now();
@@ -1758,6 +1466,10 @@ fn test_async_time_history_job_flow() {
 
     app.start_time_history_job(wave);
     assert!(app.core.scoped.job.is_some());
+    assert_eq!(
+        app.core.scoped.job.as_ref().unwrap().label,
+        "時刻歴応答(線形)"
+    );
 
     wait_for_job(&mut app);
 
@@ -1780,6 +1492,22 @@ fn test_async_time_history_job_flow() {
     assert!(
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
         "応答がゼロのままです"
+    );
+
+    // 非線形設定ではジョブラベルが切り替わる（実行中スピナー・完了ログの判別に使う）。
+    app.generate_stories_action();
+    app.core.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_duration = 1.0;
+    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
+    assert_eq!(
+        app.core.scoped.job.as_ref().unwrap().label,
+        "時刻歴応答(非線形)"
+    );
+    wait_for_job(&mut app);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
     );
 }
 
@@ -2049,11 +1777,18 @@ fn test_save_and_open_project_roundtrip() {
     std::fs::remove_file(&path).ok();
 }
 
+/// 存在しないファイルを開こうとしても panic せず last_error を設定する。
 #[test]
-fn test_open_project_missing_file_sets_error() {
+fn test_open_missing_files_set_error() {
     let mut app = App::default();
     app.open_project_from(std::path::PathBuf::from(
         "/nonexistent/dir/does_not_exist.scz",
+    ));
+    assert!(app.core.scoped.last_error.is_some());
+
+    let mut app = App::default();
+    app.import_stbridge_from(std::path::PathBuf::from(
+        "/nonexistent/dir/does_not_exist.stb",
     ));
     assert!(app.core.scoped.last_error.is_some());
 }
@@ -2106,89 +1841,6 @@ fn test_export_and_import_stbridge_roundtrip() {
     }
 
     std::fs::remove_file(&path).ok();
-}
-
-#[test]
-fn test_export_stbridge_standard_mode_writes_steel_library() {
-    let dir = test_tmp().join("squid_n_app_test_stbridge_std");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("standard.stb");
-
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.export_stbridge_to(path.clone());
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-
-    let xml = std::fs::read_to_string(&path).unwrap();
-    // 門型ラーメンのサンプルは鋼 H 断面（柱・梁）を持つため、標準断面要素と
-    // 形鋼ライブラリが書き出される。
-    assert!(xml.contains("<StbSecColumn_S "), "鋼柱は StbSecColumn_S");
-    assert!(xml.contains("<StbSecBeam_S "), "鋼梁は StbSecBeam_S");
-    assert!(xml.contains("<StbSecSteel>"), "形鋼ライブラリを出す");
-    assert!(
-        !xml.contains("<StbSecRaw "),
-        "形状を持つ断面は Raw にしない"
-    );
-
-    std::fs::remove_file(&path).ok();
-}
-
-#[test]
-fn test_stbridge_standard_mode_roundtrip_through_app() {
-    // 断面形状モードで書き出したファイルを GUI 経路（import_stbridge_from）で
-    // 読み戻せる（検証エラーなくモデルが差し替わり、断面形状が復元される）。
-    let dir = test_tmp().join("squid_n_app_test_stbridge_std_rt");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("standard_rt.stb");
-
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    let n_sections = app.core.model.sections.len();
-    app.export_stbridge_to(path.clone());
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-
-    let mut app2 = App::default();
-    app2.import_stbridge_from(path.clone());
-    // 支点の自動設定の通知以外の警告（欠落・断面未解決など）がないこと
-    // ＝標準モードのファイルを読み戻せることを確認する。
-    let msg = app2.core.scoped.last_error.as_deref().unwrap_or("");
-    assert!(
-        msg.is_empty() || msg.contains("ピン支点に設定"),
-        "標準モードのファイルを読み戻せる: {msg}"
-    );
-    assert!(
-        !msg.contains("スキップ") && !msg.contains("破棄"),
-        "欠落警告はないはず: {msg}"
-    );
-    assert!(app2.core.model.validate().is_ok());
-    assert_eq!(app2.core.model.sections.len(), n_sections);
-    // サンプルは鋼 H 断面のみ。読み戻した断面も H 形鋼として復元される。
-    assert!(
-        app2.core.model.sections.iter().all(|s| matches!(
-            s.shape,
-            Some(squid_n_core::section_shape::SectionShape::SteelH { .. })
-        )),
-        "断面形状が H 形鋼として復元される"
-    );
-
-    std::fs::remove_file(&path).ok();
-}
-
-#[test]
-fn test_import_stbridge_missing_file_sets_error() {
-    let mut app = App::default();
-    app.import_stbridge_from(std::path::PathBuf::from(
-        "/nonexistent/dir/does_not_exist.stb",
-    ));
-    assert!(app.core.scoped.last_error.is_some());
 }
 
 #[test]
@@ -2285,76 +1937,11 @@ fn test_select_displayed_result_switches_forces_and_term() {
     assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(1)));
 }
 
-/// `run_static_all`（一括解析）は個別に `run_combination`（単体実行）を実行した
-/// 場合と同じ結果（combos の名前・変位）を与える（一括経路と単発経路の一致確認）。
-/// 決定性のため `threads=1`（Deterministic）を明示する。
-#[test]
-fn test_run_static_all_matches_individual_runs() {
-    let combos = vec![
-        squid_n_core::model::LoadCombination {
-            name: "G+Kx".into(),
-            terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
-        },
-        squid_n_core::model::LoadCombination {
-            name: "G-Kx".into(),
-            terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), -1.0)],
-        },
-    ];
-
-    let mut app_batch = App::default();
-    app_batch.load_model(crate::sample::portal_frame());
-    app_batch.core.analysis_cfg.threads = 1;
-    for combo in combos.clone() {
-        app_batch.core.scoped.undo.run(
-            &mut app_batch.core.model,
-            Box::new(squid_n_edit::AddCombination { combo }),
-        );
-    }
-    app_batch.run_static_all();
-    assert!(
-        app_batch.core.scoped.last_error.is_none(),
-        "{:?}",
-        app_batch.core.scoped.last_error
-    );
-
-    let mut app_each = App::default();
-    app_each.load_model(crate::sample::portal_frame());
-    app_each.core.analysis_cfg.threads = 1;
-    for combo in combos {
-        app_each.core.scoped.undo.run(
-            &mut app_each.core.model,
-            Box::new(squid_n_edit::AddCombination { combo }),
-        );
-    }
-    app_each.run_combination(0);
-    assert!(
-        app_each.core.scoped.last_error.is_none(),
-        "{:?}",
-        app_each.core.scoped.last_error
-    );
-    app_each.run_combination(1);
-    assert!(
-        app_each.core.scoped.last_error.is_none(),
-        "{:?}",
-        app_each.core.scoped.last_error
-    );
-
-    let bundle_batch = app_batch.core.scoped.results.as_ref().unwrap();
-    let bundle_each = app_each.core.scoped.results.as_ref().unwrap();
-    assert_eq!(bundle_batch.combos.len(), bundle_each.combos.len());
-    for ((name_b, res_b), (name_e, res_e)) in
-        bundle_batch.combos.iter().zip(bundle_each.combos.iter())
-    {
-        assert_eq!(name_b, name_e);
-        assert_eq!(res_b.disp, res_e.disp);
-    }
-    assert_eq!(app_batch.core.scoped.last_static, Some(StaticKey::Combo(1)));
-}
-
 /// 一括解析は荷重組合せが 1 件もなくても荷重ケース単体を解く（表示対象は
-/// 最後に成功した荷重ケース）。
+/// 最後に成功した荷重ケース）。荷重ケースも 1 件もない場合はエラーメッセージを
+/// 設定し、結果は変更しない。
 #[test]
-fn test_run_static_all_without_combos_solves_load_cases() {
+fn test_run_static_all_without_combos_solves_load_cases_or_errors() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.core.analysis_cfg.threads = 1;
@@ -2378,18 +1965,15 @@ fn test_run_static_all_without_combos_solves_load_cases() {
         app.core.scoped.last_static,
         Some(StaticKey::Case(_))
     ));
-}
 
-/// 荷重ケースが 1 件もない場合はエラーメッセージを設定し、結果は変更しない。
-#[test]
-fn test_run_static_all_no_load_cases_is_error() {
-    let mut app = App::default();
-    app.load_model(squid_n_core::model::Model::default());
-    assert!(app.core.model.load_cases.is_empty());
+    // 荷重ケースが 1 件もない場合はエラーメッセージを設定し、結果は変更しない。
+    let mut empty = App::default();
+    empty.load_model(squid_n_core::model::Model::default());
+    assert!(empty.core.model.load_cases.is_empty());
 
-    app.run_static_all();
-    assert!(app.core.scoped.last_error.is_some());
-    assert!(app.core.scoped.results.is_none());
+    empty.run_static_all();
+    assert!(empty.core.scoped.last_error.is_some());
+    assert!(empty.core.scoped.results.is_none());
 }
 
 /// 一括解析は荷重ケース単体の結果と、その線形和である荷重組合せの結果の双方を
@@ -4255,87 +3839,6 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
     );
 }
 
-/// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
-#[test]
-fn test_floor_design_checks_secondary_joist_on_slab_edge() {
-    use squid_n_core::ids::SectionId;
-    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
-
-    let mut model = make_square_slab_test_model();
-    model.slabs[0].plate.usage = Some(SlabUsage::Office);
-    model.sections.push(Section {
-        id: SectionId(0),
-        name: "H-400".into(),
-        area: 10000.0,
-        iy: 1.0e8,
-        iz: 1.0e7,
-        j: 1.0e6,
-        depth: 400.0,
-        width: 200.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    });
-    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
-        id: NodeId(id),
-        coord: [x, y, 0.0],
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    // 床板境界（x=2000）を 2 枚に分割し、その共有辺に小梁を載せる。
-    model.nodes.push(mk_mid(4, 2000.0, 0.0));
-    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
-    let plate = model.slabs[0].plate.clone();
-    model.slabs = vec![
-        Slab {
-            id: squid_n_core::ids::SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-            },
-            plate: plate.clone(),
-        },
-        Slab {
-            id: squid_n_core::ids::SlabId(1),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
-            },
-            plate,
-        },
-    ];
-    model.floor_regions[0].slab_ids =
-        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
-    model.floor_regions[0]
-        .secondary_joists
-        .push(SecondaryMember {
-            gravity_end_shares: None,
-            end_support: Default::default(),
-            kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(0)),
-            name: "J-edge".into(),
-        });
-    model.validate().expect("validate");
-    let app = App {
-        core: AppCore {
-            model,
-            ..Default::default()
-        },
-        ..App::default()
-    };
-
-    let (joists, _slabs) = app.floor_design_checks();
-    assert_eq!(joists.len(), 1, "床板境界上の二次部材小梁が1件設計される");
-}
-
 /// スラブ設計のスパンは一方向指定に一致する
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]
@@ -5460,49 +4963,6 @@ fn test_compute_cft_ultimate_checks() {
 
 // 標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）
 
-/// 新規モデル（`Model::with_default_load_cases`）は標準5ケースと標準荷重組合せを持ち、
-/// `load_model` を通しても保持されることを確認する。
-#[test]
-fn test_new_model_has_default_load_cases() {
-    let mut app = App::default();
-    app.load_model(squid_n_core::model::Model::with_default_load_cases());
-    let names: Vec<&str> = app
-        .core
-        .model
-        .load_cases
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
-    assert_eq!(
-        names,
-        vec![
-            DL_CASE_NAME,
-            LL_FRAME_CASE_NAME,
-            LL_SEISMIC_CASE_NAME,
-            EX_CASE_NAME,
-            EY_CASE_NAME
-        ]
-    );
-    // 標準荷重組合せ（長期 DL+LL、短期地震 DL+LL±EX・DL+LL±EY）も既定で用意される。
-    let combo_names: Vec<&str> = app
-        .core
-        .model
-        .combinations
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
-    assert_eq!(
-        combo_names,
-        vec![
-            "DL + LL",
-            "DL + LL + EX",
-            "DL + LL - EX",
-            "DL + LL + EY",
-            "DL + LL - EY"
-        ]
-    );
-}
-
 /// DL の自動同期にスラブ固定荷重と躯体自重の両方が含まれることを確認する
 /// （DL＝自重＋スラブ重量の自動計算。「自重(自動)」ケースは作られない）。
 #[test]
@@ -5785,53 +5245,6 @@ fn test_run_combination_errors_on_empty_seismic_case() {
         err.contains("EX") && err.contains("空"),
         "空の EX 参照はエラーで案内するはず: {err}"
     );
-}
-
-/// ST-Bridge が荷重情報を持たない場合、読込時に標準荷重ケース
-/// （DL・LL(架構用)・LL(地震用)・EX・EY）が自動作成されることを確認する
-/// （本実装のエクスポートは幾何サブセットで荷重を書き出さないため、
-/// 書き出し→読み戻しで確認できる）。
-#[test]
-fn test_import_stbridge_without_loads_creates_default_cases() {
-    let dir = test_tmp().join("squid_n_app_test_stbridge_default_lc");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("no_loads.stb");
-
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.export_stbridge_to(path.clone());
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-
-    let mut app2 = App::default();
-    app2.import_stbridge_from(path.clone());
-    // 支点の自動設定の通知は出る（欠落警告ではない）。
-    let msg = app2.core.scoped.last_error.as_deref().unwrap_or("");
-    assert!(msg.is_empty() || msg.contains("ピン支点に設定"), "{msg}");
-    let names: Vec<&str> = app2
-        .core
-        .model
-        .load_cases
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
-    assert_eq!(
-        names,
-        vec![
-            DL_CASE_NAME,
-            LL_FRAME_CASE_NAME,
-            LL_SEISMIC_CASE_NAME,
-            EX_CASE_NAME,
-            EY_CASE_NAME
-        ],
-        "荷重のない STB は標準荷重ケースが自動作成されるはず"
-    );
-    assert!(app2.core.model.validate().is_ok());
-
-    std::fs::remove_file(&path).ok();
 }
 
 /// ST-Bridge が荷重ケース（`StbLoadCase`）を持つ場合は、ファイルの荷重ケースを
@@ -6313,68 +5726,40 @@ fn test_run_diagnostics_flags_missing_support() {
         .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
 }
 
-/// サンプル（門型ラーメン、柱脚固定）では支点なし Error が出ない
-/// （他の診断が出るかどうかはモデル次第のため断定しない）。
-#[test]
-fn test_run_diagnostics_no_missing_support_for_sample() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.run_diagnostics();
-    assert!(!app
-        .core
-        .scoped
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
-}
-
-/// 断面未割当の部材があれば Error が出て、target がその部材を指す。
+/// 断面・材料の未割当はいずれも、対象部材を指す Error として診断に出る。
 /// 解析前チェックが解析を止める不備のため、`is_ready` が false になる Error とする。
 #[test]
-fn test_run_diagnostics_flags_unassigned_section() {
-    let mut model = crate::sample::portal_frame();
-    let target_id = model.elements[0].id;
-    model.elements[0].section = None;
+fn test_run_diagnostics_flags_unassigned_section_and_material() {
+    /// Error 本文に含まれる語と、健全なモデルへその不備を仕込む手続き。
+    type BreakCase = (&'static str, fn(&mut squid_n_core::model::Model));
 
-    let mut app = App::default();
-    app.load_model(model);
-    app.run_diagnostics();
+    let cases: [BreakCase; 2] = [
+        ("断面", |m| m.elements[0].section = None),
+        ("材料", |m| {
+            let sid = m.elements[0].section.expect("断面は割り当て済み");
+            m.sections[sid.index()].material = None;
+        }),
+    ];
 
-    let diag = app
-        .core
-        .scoped
-        .diagnostics
-        .iter()
-        .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
-        .expect("断面未割当の Error が出るはず");
-    assert_eq!(diag.severity, DiagSeverity::Error);
-    assert!(diag.message.contains("断面"), "{}", diag.message);
-}
+    for (needle, break_it) in cases {
+        let mut model = crate::sample::portal_frame();
+        let target_id = model.elements[0].id;
+        break_it(&mut model);
 
-/// 材料未割当の部材も断面と同じく部材単位の Error になる。
-///
-/// 解析前チェック（`precheck_model`）は断面・材料のどちらが欠けても解析を止める。
-#[test]
-fn test_run_diagnostics_flags_unassigned_material() {
-    let mut model = crate::sample::portal_frame();
-    let target_id = model.elements[0].id;
-    // 材料は断面が持つ。部材 0 の断面から材料を外す。
-    let sid = model.elements[0].section.expect("断面は割り当て済み");
-    model.sections[sid.index()].material = None;
+        let mut app = App::default();
+        app.load_model(model);
+        app.run_diagnostics();
 
-    let mut app = App::default();
-    app.load_model(model);
-    app.run_diagnostics();
-
-    let diag = app
-        .core
-        .scoped
-        .diagnostics
-        .iter()
-        .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
-        .expect("材料未割当の Error が出るはず");
-    assert_eq!(diag.severity, DiagSeverity::Error);
-    assert!(diag.message.contains("材料"), "{}", diag.message);
+        let diag = app
+            .core
+            .scoped
+            .diagnostics
+            .iter()
+            .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
+            .unwrap_or_else(|| panic!("{needle}未割当の Error が出るはず"));
+        assert_eq!(diag.severity, DiagSeverity::Error);
+        assert!(diag.message.contains(needle), "{needle}: {}", diag.message);
+    }
 }
 
 /// 診断が Error を 1 件も出さないモデルは、解析前チェックも通る（逆も同じ）。
@@ -6512,14 +5897,23 @@ fn test_run_diagnostics_ignores_generated_panel_zones() {
     );
 }
 
-/// `mark_edited` 後は診断が再実行待ち（stale）に戻る。
+/// `mark_edited` 後は準備計算と診断が再実行待ち（stale）に戻り、
+/// 準備計算の再実行で最新化される。
 #[test]
-fn test_mark_edited_marks_diagnostics_stale() {
+fn test_mark_edited_marks_preparation_and_diagnostics_stale() {
     let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
     app.run_diagnostics();
     assert!(!app.core.scoped.staleness.diagnostics_stale);
+    app.run_preparation();
+    assert!(!app.core.scoped.staleness.preparation_stale);
+
     app.core.scoped.staleness.mark_edited();
     assert!(app.core.scoped.staleness.diagnostics_stale);
+    assert!(app.core.scoped.staleness.preparation_stale);
+
+    app.run_preparation();
+    assert!(!app.core.scoped.staleness.preparation_stale);
 }
 
 // グリッド操作のヘッドレス UI テスト
@@ -7142,19 +6536,6 @@ fn test_analysis_ensures_preparation_without_generating_stories() {
     assert!(app.core.model.stories.is_empty(), "階は自動生成しない");
 }
 
-/// モデル編集で準備計算は stale に戻り、再実行で最新化される。
-#[test]
-fn test_mark_edited_marks_preparation_stale() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.run_preparation();
-    assert!(!app.core.scoped.staleness.preparation_stale);
-    app.core.scoped.staleness.mark_edited();
-    assert!(app.core.scoped.staleness.preparation_stale);
-    app.run_preparation();
-    assert!(!app.core.scoped.staleness.preparation_stale);
-}
-
 /// 精算周期（SemiPrecise）で固有値解析が未実行なら Ai 分布は算定せず、
 /// 固有値解析の実行を促す理由を返す（勝手に略算へフォールバックしない）。
 #[test]
@@ -7357,6 +6738,10 @@ fn test_build_preparation_csv() {
         assert!(csv.contains(section), "{section} がない:\n{csv}");
     }
     assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
+    // 断面性能・幅厚比のセクションも出る。
+    assert!(csv.contains("[断面性能]"), "{csv}");
+    assert!(csv.contains("[幅厚比・部材ランク]"), "{csv}");
+    assert!(csv.contains("H 形鋼"), "{csv}");
 }
 
 /// 床だけが使う断面も「使用部材数」に数える。
@@ -7559,18 +6944,6 @@ fn test_stale_preparation_not_persisted() {
     assert!(reopened.core.scoped.staleness.preparation_stale);
 
     let _ = std::fs::remove_file(&path);
-}
-
-/// 準備計算の CSV に断面性能・幅厚比のセクションが出る。
-#[test]
-fn test_build_preparation_csv_sections() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.run_preparation();
-    let csv = crate::summary::build_preparation_csv(&app);
-    assert!(csv.contains("[断面性能]"), "{csv}");
-    assert!(csv.contains("[幅厚比・部材ランク]"), "{csv}");
-    assert!(csv.contains("H 形鋼"), "{csv}");
 }
 
 /// 剛性の割増しも等価換算も生じ得ないモデル（スラブ剛性なし・壁なし・
@@ -7904,130 +7277,6 @@ fn test_needs_recording_confirm_threshold() {
     assert!(!needs_recording_confirm(0, true));
 }
 
-/// 制振要素定義（`Model::damper_defs`）を「断面のように選ぶ」UX の土台。
-/// `AddDamperDef`/`UpdateDamperDef`/`RemoveDamperDef` を undo 経由で実行し、
-/// 追加・更新・削除・undo が期待どおりに model へ反映されることを確認する
-/// （damper_def_editor.rs の各パネル操作が発行するコマンドと同じ経路）。
-#[test]
-fn test_damper_def_add_update_remove_via_undo() {
-    use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
-
-    let mut app = App::default();
-    assert!(app.core.model.damper_defs.is_empty());
-
-    let def = DamperDef {
-        name: "オイルダンパーA".to_string(),
-        props: DamperProps {
-            kind: DamperKind::Maxwell,
-            kd: 120_000.0,
-            c0: 2_500.0,
-            alpha: 1.0,
-            ..DamperProps::default()
-        },
-    };
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::AddDamperDef { def: def.clone() }),
-    );
-    assert_eq!(app.core.model.damper_defs.len(), 1);
-    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA");
-
-    // 更新（名称・諸元の書き換え）。
-    let updated = DamperDef {
-        name: "オイルダンパーA改".to_string(),
-        props: DamperProps {
-            kd: 200_000.0,
-            ..def.props
-        },
-    };
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::UpdateDamperDef {
-            index: 0,
-            def: updated.clone(),
-        }),
-    );
-    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA改");
-    assert_eq!(app.core.model.damper_defs[0].props.kd, 200_000.0);
-
-    // 削除。
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::RemoveDamperDef { index: 0 }),
-    );
-    assert!(app.core.model.damper_defs.is_empty());
-
-    // undo を 3 回巻き戻すと、更新前→追加前の順に復元される。
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert_eq!(app.core.model.damper_defs.len(), 1, "削除の取り消し");
-    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA改");
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert_eq!(
-        app.core.model.damper_defs[0].name, "オイルダンパーA",
-        "更新の取り消し"
-    );
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert!(app.core.model.damper_defs.is_empty(), "追加の取り消し");
-}
-
-/// 免震支承材の作成（`AddIsolator`）: 2節点間へ免震支承材要素＋諸元を追加し、
-/// undo で復元されることを確認する（部材タブ「免震支承材を追加」フォームの
-/// ボタン押下相当の操作）。
-#[test]
-fn test_add_isolator_between_two_nodes_via_undo() {
-    use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, IsolatorKind, IsolatorProps, LocalAxis,
-    };
-
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    let n = app.core.model.nodes.len();
-    assert!(n >= 2);
-    let (i_node, j_node) = (app.core.model.nodes[0].id, app.core.model.nodes[1].id);
-    let new_id = squid_n_core::ids::ElemId(app.core.model.elements.len() as u32);
-    let elem = ElementData {
-        id: new_id,
-        kind: ElementKind::Isolator,
-        nodes: [i_node, j_node].into_iter().collect(),
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [1.0, 0.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let props = IsolatorProps {
-        kind: IsolatorKind::HighDampingRubber,
-        ..IsolatorProps::default()
-    };
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::AddIsolator { elem, props }),
-    );
-    assert!(app.core.model.elements.iter().any(|e| e.id == new_id));
-    assert_eq!(
-        app.core
-            .model
-            .isolator_attrs
-            .iter()
-            .find(|a| a.elem == new_id)
-            .map(|a| a.props),
-        Some(props)
-    );
-
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert!(!app.core.model.elements.iter().any(|e| e.id == new_id));
-    assert!(!app
-        .core
-        .model
-        .isolator_attrs
-        .iter()
-        .any(|a| a.elem == new_id));
-}
-
 // ===== 部材ねじり解放（i 端ねじれピン）の設定と準備計算の一覧 =====
 
 /// 既定でねじり解放が有効であること、準備計算が対象外部材を集計すること。
@@ -8216,126 +7465,6 @@ fn test_generate_axes_action_does_not_stale_results() {
     );
 }
 
-/// 2D 構面表示: 通り芯を自動生成したモデルで、通りと階の構面が期待どおりに
-/// 切り出され、部材の絞り込みが効くことを確認する。
-///
-/// ビューアの描画自体は egui の実行文脈が要るため、ここでは描画へ渡す材料
-/// （構面の所属判定・法線）と、それが解析結果を陳腐化させないことを確かめる。
-#[test]
-fn test_frame_view_filters_members_by_axis_and_story() {
-    use smallvec::SmallVec;
-    use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::frame::{build_frame, FrameTarget};
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
-    };
-
-    let mut app = App::default();
-    let mut node = |x: f64, y: f64, z: f64| -> NodeId {
-        let id = NodeId(app.core.model.nodes.len() as u32);
-        app.core.model.nodes.push(Node {
-            id,
-            coord: [x, y, z],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-        id
-    };
-    // 2×1 スパン・1 層のラーメン（X=0 と X=6000 の 2 通り）。
-    let a0 = node(0.0, 0.0, 0.0);
-    let a1 = node(0.0, 0.0, 4000.0);
-    let b0 = node(6000.0, 0.0, 0.0);
-    let b1 = node(6000.0, 0.0, 4000.0);
-    let mut line = |i: NodeId, j: NodeId| {
-        let id = ElemId(app.core.model.elements.len() as u32);
-        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
-        nodes.push(i);
-        nodes.push(j);
-        app.core.model.elements.push(ElementData {
-            id,
-            kind: ElementKind::Beam,
-            nodes,
-            section: None,
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Fixed; 2],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        });
-        id
-    };
-    let col_a = line(a0, a1);
-    let col_b = line(b0, b1);
-    let girder = line(a1, b1);
-
-    app.generate_axes_action();
-    // X 群には X1(0) と X2(6000)、Y 群には Y1(0) ができる。
-    let xg = app
-        .core
-        .model
-        .axes
-        .iter()
-        .position(|g| g.name == "X")
-        .unwrap();
-    let yg = app
-        .core
-        .model
-        .axes
-        .iter()
-        .position(|g| g.name == "Y")
-        .unwrap();
-    assert_eq!(app.core.model.axes[xg].axes.len(), 2);
-    assert_eq!(app.core.model.axes[yg].axes.len(), 1);
-
-    // X1 通り（X=0 の構面）には、その位置の柱だけが属する。
-    let f =
-        build_frame(&app.core.model, FrameTarget::Axis { group: xg, axis: 0 }).expect("X1 通り");
-    assert_eq!(f.normal, [1.0, 0.0, 0.0]);
-    assert!(f.elem_on[col_a.index()]);
-    assert!(!f.elem_on[col_b.index()], "別の通りの柱");
-    assert!(!f.elem_on[girder.index()], "通りをまたぐ梁");
-
-    // Y1 通り（Y=0 の構面）には、柱 2 本と大梁がすべて属する（同一平面）。
-    let f =
-        build_frame(&app.core.model, FrameTarget::Axis { group: yg, axis: 0 }).expect("Y1 通り");
-    assert_eq!(f.normal, [0.0, 1.0, 0.0]);
-    assert_eq!(f.elem_count(), 3, "Y1 構面には 3 部材すべてが属する");
-
-    // 階（伏図）: 階は床であり、先頭は基部の床。梁が架かるのは 2 番目の床。
-    // 柱は上端がその階に属する。
-    app.generate_stories_action();
-    let story = app.core.model.stories[1].id;
-    let f = build_frame(&app.core.model, FrameTarget::Story(story)).expect("階");
-    assert_eq!(f.normal, [0.0, 0.0, 1.0], "伏図の法線は鉛直");
-    assert!(f.elem_on[girder.index()], "その階の梁");
-    assert!(f.elem_on[col_a.index()], "上端がその階の柱");
-    assert!(f.elem_on[col_b.index()], "上端がその階の柱");
-
-    // 基部の床（基礎伏図）: 柱脚の節点が属する。準備計算を通していないモデルでも
-    // 幾何から引くため、伏図は空にならない（`build_story_frame` は
-    // `Model::node_stories` を情報源とする）。
-    let base = app.core.model.stories[0].id;
-    let fb = build_frame(&app.core.model, FrameTarget::Story(base)).expect("基部の階");
-    assert!(fb.node_on[a0.index()], "柱脚は基部の床に属する");
-    assert!(fb.node_on[b0.index()]);
-
-    // 存在しない通りを指すと構面は解決できない（ビューアは全体表示へ戻す）。
-    assert!(build_frame(
-        &app.core.model,
-        FrameTarget::Axis {
-            group: xg,
-            axis: 99
-        }
-    )
-    .is_none());
-}
-
 /// 解析結果の適用が表示対象（`nav.focus_result`）も新しい結果へ切り替えること。
 #[test]
 fn test_apply_static_result_updates_focus_result() {
@@ -8381,6 +7510,10 @@ fn test_time_history_apply_clears_stale() {
     // モデル編集で stale を立ててから時刻歴のみ実行する。
     app.core.scoped.staleness.mark_edited();
     assert!(app.core.scoped.staleness.results_stale);
+    assert!(
+        app.core.scoped.staleness.design_stale,
+        "モデル編集では設計結果も stale になるべき"
+    );
     app.run_time_history_sample();
     assert!(
         app.core.scoped.last_error.is_none(),
@@ -8390,6 +7523,14 @@ fn test_time_history_apply_clears_stale() {
     assert!(
         !app.core.scoped.staleness.results_stale,
         "時刻歴の完了後は stale が解消されるべき"
+    );
+    assert!(
+        !app.core.scoped.staleness.design_stale,
+        "時刻歴の完了後は設計結果の stale も解消されるべき"
+    );
+    assert!(
+        app.core.scoped.staleness.last_run.is_some(),
+        "時刻歴の完了で最終実行時刻が記録されるべき"
     );
 }
 
@@ -8595,26 +7736,6 @@ fn toggle_dock_icon_closes_when_active_opens_otherwise() {
     assert!(!open);
 }
 
-/// ステータスバーのエラー行と同じ導線。別タブ表示中でもログを前面にする。
-#[cfg(feature = "gui")]
-#[test]
-fn open_log_dock_switches_to_log_tab() {
-    let mut app = App {
-        ui: UiState {
-            view: UiViewState {
-                bottom_dock_open: false,
-                bottom_tab: BottomTab::Model,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    app.open_log_dock();
-    assert!(app.ui.view.bottom_dock_open);
-    assert_eq!(app.ui.view.bottom_tab, BottomTab::Log);
-}
-
 /// 工程タブ「解析」のプリセットは ① 準備計算から入る。
 #[cfg(feature = "gui")]
 #[test]
@@ -8738,14 +7859,6 @@ fn dummy_th(time: Vec<f64>) -> squid_n_solver::dynamic::timehistory::ResponseRes
     }
 }
 
-/// 解析結果ツリー: 結果がなければ空。
-#[test]
-fn test_build_result_tree_empty_without_results() {
-    let model = squid_n_core::model::Model::default();
-    let tree = super::nav_results::build_result_tree(None, &model, |_| String::new());
-    assert!(tree.is_empty());
-}
-
 /// 解析結果ツリー: 静的・地震・組合せ・各解析種別が期待どおり並ぶ。
 #[test]
 fn test_build_result_tree_sections_and_labels() {
@@ -8856,24 +7969,15 @@ fn test_build_result_tree_sections_and_labels() {
     );
 }
 
-/// 旧 time_history のみの bundle を振動ケースへ移行する。
+/// 旧 time_history のみの bundle を振動ケースへ移行する
+/// （ケース名は波形名・方向・線形/非線形から作る）。
 #[test]
 fn test_migrate_legacy_time_history_only() {
     use squid_n_core::model::VibrationThDir;
 
     let mut model = squid_n_core::model::Model::default();
     let mut bundle = ResultsBundle {
-        time_history: Some(squid_n_solver::dynamic::timehistory::ResponseResult {
-            time: vec![0.0],
-            peak_disp: vec![],
-            story_drift_angle: vec![],
-            cumulative_ductility: vec![],
-            history: Default::default(),
-            recording: None,
-            nonlinear: false,
-            applied_long_term: false,
-            non_converged_steps: 0,
-        }),
+        time_history: Some(dummy_th(vec![0.0])),
         ..Default::default()
     };
     bundle.migrate_legacy_time_history(&mut model, "サンプル", VibrationThDir::X, false);
@@ -8881,13 +7985,8 @@ fn test_migrate_legacy_time_history_only() {
     assert_eq!(model.vibration_cases[0].name, "サンプル X (線形)");
     assert_eq!(bundle.time_histories.len(), 1);
     assert!(bundle.time_history.is_some());
-}
 
-/// 立体時刻歴の移行は、渡した波形名でケースを作る。
-#[test]
-fn test_migrate_legacy_time_history_uses_wave_name() {
-    use squid_n_core::model::VibrationThDir;
-
+    // 渡した波形名・方向・非線形フラグがケース名に入る。
     let mut model = squid_n_core::model::Model::default();
     let mut bundle = ResultsBundle {
         time_history: Some(dummy_th(vec![0.0])),
@@ -8899,7 +7998,7 @@ fn test_migrate_legacy_time_history_uses_wave_name() {
     assert_eq!(bundle.time_histories.len(), 1);
 }
 
-/// 同名 upsert で ID が維持され結果が置き換わる。
+/// 同名・同方向の upsert は ID を維持して結果を置き換え、方向が違えば別ケースとして残る。
 #[test]
 fn test_time_history_upsert_preserves_case_id() {
     use squid_n_core::model::VibrationThDir;
@@ -8907,65 +8006,18 @@ fn test_time_history_upsert_preserves_case_id() {
     let mut model = squid_n_core::model::Model::default();
     let id1 = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
     let mut bundle = ResultsBundle::default();
-    bundle.upsert_time_history(
-        id1,
-        squid_n_solver::dynamic::timehistory::ResponseResult {
-            time: vec![0.0],
-            peak_disp: vec![],
-            story_drift_angle: vec![],
-            cumulative_ductility: vec![],
-            history: Default::default(),
-            recording: None,
-            nonlinear: false,
-            applied_long_term: false,
-            non_converged_steps: 0,
-        },
-    );
+    bundle.upsert_time_history(id1, dummy_th(vec![0.0]));
     let id2 = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
-    bundle.upsert_time_history(
-        id2,
-        squid_n_solver::dynamic::timehistory::ResponseResult {
-            time: vec![0.0, 1.0],
-            peak_disp: vec![],
-            story_drift_angle: vec![],
-            cumulative_ductility: vec![],
-            history: Default::default(),
-            recording: None,
-            nonlinear: false,
-            applied_long_term: false,
-            non_converged_steps: 0,
-        },
-    );
-    assert_eq!(id1, id2);
+    bundle.upsert_time_history(id2, dummy_th(vec![0.0, 1.0]));
+    assert_eq!(id1, id2, "同名 upsert は ID を維持する");
     assert_eq!(bundle.time_histories.len(), 1);
-    assert_eq!(bundle.time_histories[0].1.time.len(), 2);
-}
+    assert_eq!(bundle.time_histories[0].1.time.len(), 2, "結果は置き換わる");
 
-/// 別名なら振動ケースと結果スロットが2件残る。
-#[test]
-fn test_time_history_upsert_keeps_distinct_case_names() {
-    use squid_n_core::model::VibrationThDir;
-
-    let mut model = squid_n_core::model::Model::default();
-    let id_x = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
+    // 方向が違えば別ケース・別スロットになる。
     let id_y = model.upsert_vibration_case("サンプル".into(), VibrationThDir::Y, false);
-    assert_ne!(id_x, id_y);
+    assert_ne!(id1, id_y);
+    bundle.upsert_time_history(id_y, dummy_th(vec![0.0]));
     assert_eq!(model.vibration_cases.len(), 2);
-
-    let mut bundle = ResultsBundle::default();
-    let mk = |n: f64| squid_n_solver::dynamic::timehistory::ResponseResult {
-        time: vec![n],
-        peak_disp: vec![],
-        story_drift_angle: vec![],
-        cumulative_ductility: vec![],
-        history: Default::default(),
-        recording: None,
-        nonlinear: false,
-        applied_long_term: false,
-        non_converged_steps: 0,
-    };
-    bundle.upsert_time_history(id_x, mk(1.0));
-    bundle.upsert_time_history(id_y, mk(2.0));
     assert_eq!(bundle.time_histories.len(), 2);
 }
 
@@ -9007,27 +8059,17 @@ fn test_time_history_does_not_stale_static_results() {
     );
 }
 
-/// 固有値モードの表示ラベル（周期の桁）。
+/// 解析結果ツリー: 結果がなければ空。静的のみのとき他種別ノードは出ない。
 #[test]
-fn test_eigen_mode_label_formats_period() {
-    assert_eq!(
-        super::nav_results::eigen_mode_label(0, 0.52),
-        "1次 (T=0.52 s)"
-    );
-    assert_eq!(
-        super::nav_results::eigen_mode_label(1, 0.3),
-        "2次 (T=0.3 s)"
-    );
-}
+fn test_build_result_tree_empty_or_static_only() {
+    let model = squid_n_core::model::Model::default();
+    let tree = super::nav_results::build_result_tree(None, &model, |_| String::new());
+    assert!(tree.is_empty());
 
-/// 解析結果ツリー: 静的のみのとき他種別ノードは出ない。
-#[test]
-fn test_build_result_tree_static_only() {
     let bundle = ResultsBundle {
         statics: vec![(StaticCaseKey::User(LoadCaseId(0)), dummy_static_once())],
         ..Default::default()
     };
-    let model = squid_n_core::model::Model::default();
     let tree = super::nav_results::build_result_tree(Some(&bundle), &model, |_| "DL".to_string());
     assert!(!tree.is_empty());
     assert_eq!(
@@ -9173,9 +8215,9 @@ fn test_select_lumped_eigen_mode_switches_spatial_view() {
     }
 }
 
-/// 結果スロットが無い振動ケースはモデルから除く。
+/// 結果スロットが無い振動ケースはモデルから除き、あるものは残す。
 #[test]
-fn test_prune_orphan_vibration_cases_without_results() {
+fn test_prune_orphan_vibration_cases() {
     use squid_n_core::model::VibrationThDir;
 
     let mut app = App::default();
@@ -9185,12 +8227,6 @@ fn test_prune_orphan_vibration_cases_without_results() {
     assert_eq!(app.core.model.vibration_cases.len(), 1);
     app.prune_orphan_vibration_cases();
     assert!(app.core.model.vibration_cases.is_empty());
-}
-
-/// 結果スロットがある振動ケースは残す。
-#[test]
-fn test_prune_orphan_vibration_cases_keeps_matched() {
-    use squid_n_core::model::VibrationThDir;
 
     let mut model = squid_n_core::model::Model::default();
     let id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);

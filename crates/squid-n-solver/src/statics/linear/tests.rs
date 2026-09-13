@@ -2,8 +2,9 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material,
-    MaterialCategory, MemberLoad, MemberLoadKind, Model, NodalLoad, Node, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, JointKind, LoadCase, LocalAxis, Material,
+    MaterialCategory, MemberDetailAttr, MemberJoint, MemberLoad, MemberLoadKind, Model, NodalLoad,
+    Node, Section,
 };
 
 /// 単純梁（i:ピン, j:ローラ）に等分布荷重 → 中央曲げ wL²/8、端部 0 を検証。
@@ -211,40 +212,72 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
     }
 }
 
-fn mid_value(mf: &squid_n_element::frame::beam::MemberForces, comp: usize) -> f64 {
+fn value_at(mf: &squid_n_element::frame::beam::MemberForces, xi: f64, comp: usize) -> f64 {
     mf.at
         .iter()
-        .find(|(xi, _)| (xi - 0.5).abs() < 1e-9)
+        .find(|(x, _)| (x - xi).abs() < 1e-9)
         .map(|(_, v)| v[comp])
-        .expect("midspan")
+        .expect("section present")
 }
 
-/// 単純梁・中央集中荷重 P → 中央曲げ PL/4。
+fn mid_value(mf: &squid_n_element::frame::beam::MemberForces, comp: usize) -> f64 {
+    value_at(mf, 0.5, comp)
+}
+
+/// 単純梁・材長 1/4 点の集中荷重 P の内力回復を、荷重より先の断面 x=3L/8 で
+/// 検証する。x>a なので `fixed_internal_local` の Point 回復項（合力・
+/// モーメント）が非ゼロで効く。
+///
+/// 静定梁の手計算: 支点反力 R_i = P·b/L（b = L−a）、M(x) = R_i·x − P·(x−a)、
+/// Qy(x) = R_i − P。評価断面 x=3L/8 は既定の評価断面（0, L/2, L）に含まれない
+/// ため、部材付帯情報の継手位置で追加する（剛性・応力解析には影響しない）。
 #[test]
-fn simply_supported_point_mid_moment() {
+fn simply_supported_off_center_point_load_internal_force() {
     let l = 1000.0_f64;
     let p = 500.0_f64;
-    let model = ss_beam(
+    let a = l / 4.0;
+    let b = l - a;
+    let r_i = p * b / l;
+    let x = 3.0 * l / 8.0;
+    let mut model = ss_beam(
         l,
         vec![MemberLoad::manual(
             ElemId(0),
             [0.0, 0.0, -1.0],
-            MemberLoadKind::Point { a: l / 2.0, p },
+            MemberLoadKind::Point { a, p },
         )],
     );
+    model.member_detail_attrs.push(MemberDetailAttr {
+        elem: ElemId(0),
+        haunch_i: None,
+        haunch_j: None,
+        joints: vec![MemberJoint {
+            distance: x,
+            kind: JointKind::Site,
+        }],
+    });
     let res = linear_static_once(&model, LoadCaseId(1)).expect("solve");
     let (_, mf) = res
         .member_forces
         .iter()
         .find(|(id, _)| *id == ElemId(0))
         .unwrap();
-    let expected = p * l / 4.0;
-    let mid = mid_value(mf, 5).abs();
+    let xi = x / l;
+    let m = value_at(mf, xi, 5);
+    let expected_m = r_i * x - p * (x - a);
     assert!(
-        (mid - expected).abs() / expected < 1e-3,
-        "point mid Mz={} expected {}",
-        mid,
-        expected
+        (m - expected_m).abs() / expected_m < 1e-3,
+        "point Mz={} expected {}",
+        m,
+        expected_m
+    );
+    let shear = value_at(mf, xi, 1);
+    let expected_shear = r_i - p;
+    assert!(
+        (shear - expected_shear).abs() / expected_shear.abs() < 1e-3,
+        "point Qy={} expected {}",
+        shear,
+        expected_shear
     );
 }
 
@@ -575,114 +608,6 @@ fn test_linear_static_vertical_cantilever_bending() {
 }
 
 #[test]
-fn test_linear_static_shell_element() {
-    let model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Dof6Mask::FIXED,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [100.0, 0.0, 0.0],
-                restraint: Dof6Mask::FIXED,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [100.0, 100.0, 0.0],
-                restraint: Dof6Mask::FREE,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(3),
-                coord: [0.0, 100.0, 0.0],
-                restraint: Dof6Mask::FREE,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![ElementData {
-            id: ElemId(1),
-            kind: ElementKind::Shell,
-            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            section: Some(SectionId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        }],
-        sections: vec![Section {
-            id: SectionId(0),
-            name: "shell".to_string(),
-            area: 0.0,
-            iy: 0.0,
-            iz: 0.0,
-            j: 0.0,
-            depth: 0.0,
-            width: 0.0,
-            as_y: 0.0,
-            as_z: 0.0,
-            floor: None,
-            panel_thickness: None,
-            thickness: Some(10.0),
-            shape: None,
-            material: Some(MaterialId(0)),
-            rebar_material: None,
-            shear_rebar_material: None,
-            steel_material: None,
-        }],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "mat".to_string(),
-            category: MaterialCategory::Steel,
-            young: 1000.0,
-            poisson: 0.3,
-            density: 0.0,
-            shear: None,
-            fc: None,
-            fy: None,
-        }],
-        load_cases: vec![LoadCase {
-            kind: Default::default(),
-            id: LoadCaseId(1),
-            name: "shell_load".to_string(),
-            nodal: vec![NodalLoad::manual(NodeId(2), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
-            member: vec![],
-        }],
-        ..Default::default()
-    };
-    let result = linear_static_once(&model, LoadCaseId(1));
-    assert!(result.is_ok(), "solver failed: {:?}", result.err());
-    let result = result.unwrap();
-    assert!(
-        result.disp[2][2] > 0.0,
-        "loaded node should displace upward: {}",
-        result.disp[2][2]
-    );
-    assert!(
-        result.disp[3][2] > 0.0,
-        "free node should also displace upward: {}",
-        result.disp[3][2]
-    );
-}
-
-#[test]
 fn test_linear_static_deterministic() {
     let model = make_axial_cantilever();
     let first = linear_static_once(&model, LoadCaseId(1)).unwrap();
@@ -695,309 +620,6 @@ fn test_linear_static_deterministic() {
             assert_eq!(a.1.at, b.1.at);
         }
     }
-}
-
-#[test]
-fn test_shell_membrane_patch_test() {
-    let e = 1000.0;
-    let nu = 0.3;
-    let t = 10.0;
-
-    let nodes = vec![
-        Node {
-            id: NodeId(0),
-            coord: [0.0, 0.0, 0.0],
-            restraint: Dof6Mask::FIXED,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(1),
-            coord: [1000.0, 0.0, 0.0],
-            restraint: Dof6Mask::FIXED,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(2),
-            coord: [1000.0, 1000.0, 0.0],
-            restraint: Dof6Mask::FIXED,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(3),
-            coord: [0.0, 1000.0, 0.0],
-            restraint: Dof6Mask::FIXED,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(4),
-            coord: [500.0, 0.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(5),
-            coord: [1000.0, 500.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(6),
-            coord: [500.0, 1000.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(7),
-            coord: [0.0, 500.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-        Node {
-            id: NodeId(8),
-            coord: [450.0, 550.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        },
-    ];
-
-    let model = Model {
-        nodes,
-        elements: vec![
-            ElementData {
-                id: ElemId(0),
-                kind: ElementKind::Shell,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(4), NodeId(8), NodeId(7)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Shell,
-                nodes: smallvec::smallvec![NodeId(4), NodeId(1), NodeId(5), NodeId(8)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(2),
-                kind: ElementKind::Shell,
-                nodes: smallvec::smallvec![NodeId(8), NodeId(5), NodeId(2), NodeId(6)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(3),
-                kind: ElementKind::Shell,
-                nodes: smallvec::smallvec![NodeId(7), NodeId(8), NodeId(6), NodeId(3)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-        ],
-        sections: vec![Section {
-            id: SectionId(0),
-            name: "shell".to_string(),
-            area: 0.0,
-            iy: 0.0,
-            iz: 0.0,
-            j: 0.0,
-            depth: 0.0,
-            width: 0.0,
-            as_y: 0.0,
-            as_z: 0.0,
-            floor: None,
-            panel_thickness: None,
-            thickness: Some(t),
-            shape: None,
-            material: Some(MaterialId(0)),
-            rebar_material: None,
-            shear_rebar_material: None,
-            steel_material: None,
-        }],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "mat".to_string(),
-            category: MaterialCategory::Steel,
-            young: e,
-            poisson: nu,
-            density: 0.0,
-            shear: None,
-            fc: None,
-            fy: None,
-        }],
-        load_cases: vec![LoadCase {
-            kind: Default::default(),
-            id: LoadCaseId(1),
-            name: "patch".to_string(),
-            nodal: vec![NodalLoad::manual(NodeId(8), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
-            member: vec![],
-        }],
-        ..Default::default()
-    };
-
-    let result = linear_static_once(&model, LoadCaseId(1));
-    assert!(result.is_ok(), "patch solve failed: {:?}", result.err());
-}
-
-#[test]
-fn test_shell_membrane_off_no_diaphragm() {
-    let mut model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Dof6Mask::FIXED,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [100.0, 0.0, 0.0],
-                restraint: Dof6Mask::FIXED,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [100.0, 100.0, 0.0],
-                restraint: Dof6Mask::FREE,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(3),
-                coord: [0.0, 100.0, 0.0],
-                restraint: Dof6Mask::FREE,
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Shell,
-            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            section: Some(SectionId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        }],
-        sections: vec![Section {
-            id: SectionId(0),
-            name: "shell".to_string(),
-            area: 0.0,
-            iy: 0.0,
-            iz: 0.0,
-            j: 0.0,
-            depth: 0.0,
-            width: 0.0,
-            as_y: 0.0,
-            as_z: 0.0,
-            floor: None,
-            panel_thickness: None,
-            thickness: Some(10.0),
-            shape: None,
-            material: Some(MaterialId(0)),
-            rebar_material: None,
-            shear_rebar_material: None,
-            steel_material: None,
-        }],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "mat".to_string(),
-            category: MaterialCategory::Steel,
-            young: 1000.0,
-            poisson: 0.3,
-            density: 0.0,
-            shear: None,
-            fc: None,
-            fy: None,
-        }],
-        load_cases: vec![LoadCase {
-            kind: Default::default(),
-            id: LoadCaseId(1),
-            name: "shell_load".to_string(),
-            nodal: vec![NodalLoad::manual(NodeId(2), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
-            member: vec![],
-        }],
-        ..Default::default()
-    };
-    // 剛床（`Constraint::RigidDiaphragm`）を置くと ShellElement::new が
-    // membrane_active=false にする。剛床の情報源は拘束のみなので、階と対で登録する。
-    use squid_n_core::model::{Constraint, Story};
-    model.constraints.push(Constraint::rigid_diaphragm(
-        StoryId(0),
-        NodeId(0),
-        vec![NodeId(1), NodeId(2), NodeId(3)],
-    ));
-    model.stories.push(Story {
-        level_kind: Default::default(),
-        structure: Default::default(),
-        id: StoryId(0),
-        name: "floor".to_string(),
-        elevation: 0.0,
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        seismic_weight: None,
-        weight_override: None,
-    });
-    let result = linear_static_once(&model, LoadCaseId(1));
-    assert!(result.is_ok(), "solver failed: {:?}", result.err());
 }
 
 #[test]
@@ -1239,77 +861,50 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
     }
 }
 
-/// 単純支持正方形板の中央たわみが参照解（α·q·a⁴/D, α=0.00406）に収束すること。
+/// 正方形板（等分布荷重）の中央たわみが参照解 α·q·a⁴/D に収束すること。
+///
+/// ケース表で境界条件と α を切り替える。単純支持 α=0.00406、四辺固定（クランプ）
+/// α=0.00126。各ケースで 4・8・16 分割の誤差が単調減少し、16×16 で参照解の
+/// ±2% 以内（仕様 §9.3）に入る。
 #[test]
-fn test_ss_plate_convergence() {
+fn test_plate_convergence() {
     let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
     let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
-    let ref_w = 0.00406 * q * a.powi(4) / d;
 
-    let center_w = |n: usize| -> f64 {
-        let model = make_ss_plate(n, a, t, e, nu, q, false);
-        let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
-        let nn = n + 1;
-        let c = (n / 2) * nn + (n / 2);
-        res.disp[c][2].abs()
-    };
+    for (clamped, alpha, label) in [
+        (false, 0.00406_f64, "単純支持"),
+        (true, 0.00126_f64, "四辺固定"),
+    ] {
+        let ref_w = alpha * q * a.powi(4) / d;
+        let center_w = |n: usize| -> f64 {
+            let model = make_ss_plate(n, a, t, e, nu, q, clamped);
+            let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+            let nn = n + 1;
+            let c = (n / 2) * nn + (n / 2);
+            res.disp[c][2].abs()
+        };
 
-    let w4 = center_w(4);
-    let w8 = center_w(8);
-    let w16 = center_w(16);
-    let e4 = (w4 - ref_w).abs();
-    let e8 = (w8 - ref_w).abs();
-    let e16 = (w16 - ref_w).abs();
+        let w4 = center_w(4);
+        let w8 = center_w(8);
+        let w16 = center_w(16);
+        let e4 = (w4 - ref_w).abs();
+        let e8 = (w8 - ref_w).abs();
+        let e16 = (w16 - ref_w).abs();
 
-    // 細分化で誤差が単調減少して参照解へ近づく
-    assert!(
-        e8 < e4 && e16 < e8,
-        "誤差が単調減少しない: e4={e4} e8={e8} e16={e16} (w4={w4} w8={w8} w16={w16} ref={ref_w})"
-    );
-    // 16×16 で参照解の ±2% 以内
-    assert!(
-        e16 / ref_w < 0.02,
-        "16x16 誤差 {:.2}% > 2% (w16={} ref={})",
-        e16 / ref_w * 100.0,
-        w16,
-        ref_w
-    );
-}
-
-/// クランプ（四辺固定）正方形板の中央たわみ（α=0.00126, 参照解≈0.688mm）の収束。
-#[test]
-fn test_clamped_plate_convergence() {
-    let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
-    let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
-    let ref_w = 0.00126 * q * a.powi(4) / d;
-
-    let center_w = |n: usize| -> f64 {
-        let model = make_ss_plate(n, a, t, e, nu, q, true);
-        let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
-        let nn = n + 1;
-        let c = (n / 2) * nn + (n / 2);
-        res.disp[c][2].abs()
-    };
-
-    let w4 = center_w(4);
-    let w8 = center_w(8);
-    let w16 = center_w(16);
-    let e4 = (w4 - ref_w).abs();
-    let e8 = (w8 - ref_w).abs();
-    let e16 = (w16 - ref_w).abs();
-
-    assert!(
-        e8 < e4 && e16 < e8,
-        "誤差が単調減少しない: e4={e4} e8={e8} e16={e16} (w4={w4} w8={w8} w16={w16} ref={ref_w})"
-    );
-    // 16×16 で参照解の ±2% 以内（仕様 §9.3）。
-    assert!(
-        e16 / ref_w < 0.02,
-        "16x16 誤差 {:.2}% > 2% (w16={} ref={})",
-        e16 / ref_w * 100.0,
-        w16,
-        ref_w
-    );
+        // 細分化で誤差が単調減少して参照解へ近づく
+        assert!(
+            e8 < e4 && e16 < e8,
+            "{label}: 誤差が単調減少しない: e4={e4} e8={e8} e16={e16} (w4={w4} w8={w8} w16={w16} ref={ref_w})"
+        );
+        // 16×16 で参照解の ±2% 以内
+        assert!(
+            e16 / ref_w < 0.02,
+            "{label}: 16x16 誤差 {:.2}% > 2% (w16={} ref={})",
+            e16 / ref_w * 100.0,
+            w16,
+            ref_w
+        );
+    }
 }
 
 // 1 スパン・2 柱・頂部大梁・対角ブレース 1 本のモデル（ブレース付きラーメン）。
@@ -1653,26 +1248,7 @@ fn test_no_long_axial_column_zeros_column_force() {
     );
 }
 
-#[test]
-fn test_long_axial_factor_defaults_to_one() {
-    let model = braced_frame(squid_n_core::model::LoadCaseKind::Dead);
-    for elem in &model.elements {
-        assert_eq!(long_axial_factor(&model, elem, LoadCaseId(1)), 1.0);
-    }
-}
-
-/// 検証3b: フラグが既定（false）のとき、既定値では通しで解けること。
-#[test]
-fn test_default_stress_cfg_matches_plain_model() {
-    let model = braced_frame(squid_n_core::model::LoadCaseKind::Dead);
-    assert_eq!(model.stress_cfg, Default::default());
-    let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
-    // 変位・内力が有限（解けている）ことの素朴な確認。
-    assert!(res.disp.iter().all(|d| d.iter().all(|v| v.is_finite())));
-    assert!(axial_force(&res, ElemId(0)).is_finite());
-}
-
-/// 検証4: 短期（Seismic）荷重ケースでは、`no_long_axial_brace=true` でも
+/// 検証3: 短期（Seismic）荷重ケースでは、`no_long_axial_brace=true` でも
 /// 適用されない（ブレース軸力が長期無効化なしの基準値と同程度に残ること）。
 #[test]
 fn test_axial_cut_not_applied_to_short_term_case() {
@@ -1957,8 +1533,9 @@ fn test_tension_only_iteration_tension_side_matches_full_brace() {
 /// 圧縮の軸力を負担すること。
 #[test]
 fn test_tension_only_iteration_compression_side_is_slack() {
-    // 反復 OFF（一括解析）: 全剛性 E·A/L で圧縮を負担する
+    // 反復 OFF（既定の一括解析）: 全剛性 E·A/L で圧縮を負担する
     let base = tension_only_portal(-1.0e4, true);
+    assert!(!base.stress_cfg.tension_only_iteration);
     let base_res = linear_static_once(&base, LoadCaseId(1)).unwrap();
     let base_brace = axial_force(&base_res, ElemId(3));
     assert!(
@@ -1976,22 +1553,6 @@ fn test_tension_only_iteration_compression_side_is_slack() {
     assert!(
         brace.abs() <= base_brace.abs() * 1e-3,
         "圧縮側では軸力が0へ落ちるはず: base={base_brace} to={brace}"
-    );
-}
-
-/// 反復が既定（OFF）のとき、引張専用ブレースは一括解析で全剛性 E·A/L のまま
-/// 圧縮軸力を負担すること（フラグ ON/OFF で挙動が切り替わること）。
-#[test]
-fn test_tension_only_iteration_flag_off_is_default_full_stiffness() {
-    let model = tension_only_portal(-1.0e4, true);
-    assert!(!model.stress_cfg.tension_only_iteration);
-    let off = linear_static_once(&model, LoadCaseId(1)).unwrap();
-    let off_brace = axial_force(&off, ElemId(3));
-
-    // フラグ OFF のときは圧縮でも全剛性で軸力を負担する。
-    assert!(
-        off_brace < 0.0 && off_brace.abs() > 1.0,
-        "OFF では従来どおり圧縮軸力を負担するはず: {off_brace}"
     );
 }
 

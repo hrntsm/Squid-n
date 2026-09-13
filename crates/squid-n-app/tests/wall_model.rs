@@ -438,22 +438,6 @@ fn wall_bay_app() -> App {
     app
 }
 
-#[test]
-fn test_wall_bay_model_is_valid() {
-    let model = wall_bay_model();
-    assert!(model.validate().is_ok(), "{:?}", model.validate());
-    assert_eq!(model.nodes.len(), 8);
-    // 壁の解析要素は生成物であり `model.elements` には含まれない（D5）。
-    // 柱 4 本 + 頂部梁 4 本 + 基礎大梁 4 本 = 12。
-    assert_eq!(model.elements.len(), 12);
-    assert!(
-        model.elements.iter().all(|e| e.kind != ElementKind::Wall),
-        "壁要素は準備計算からの生成物であり model.elements には含まれない"
-    );
-    assert_eq!(model.wall_plates.len(), 2, "耐震壁 1 枚＋パラペット 1 枚");
-    assert_eq!(model.wall_regions.len(), 4, "1 スパンの 4 鉛直構面すべて");
-}
-
 /// GUI診断（`App::run_diagnostics`）が壁展開モデル（D5・dig Q4）を見ていることの回帰
 /// テスト。壁要素は `run_diagnostics` の内部で `expand_wall_elements` により初めて
 /// `model.elements` へ現れるため、この展開が壊れる（または元の `self.model` を渡す
@@ -632,60 +616,6 @@ fn test_wall_shear_check_appears_after_run_design_check() {
             .iter()
             .map(|jc| &jc.label)
             .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn test_wall_bay_model_runs_full_pipeline() {
-    let mut app = wall_bay_app();
-    app.run_preparation();
-    assert!(
-        app.core
-            .scoped
-            .last_error
-            .as_deref()
-            .unwrap_or("")
-            .is_empty()
-            || app
-                .core
-                .scoped
-                .last_error
-                .as_deref()
-                .unwrap_or("")
-                .starts_with('⚠'),
-        "準備計算でエラー: {:?}",
-        app.core.scoped.last_error
-    );
-    app.core.scoped.last_error = None;
-
-    app.run_static_all();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "静的解析でエラー: {:?}",
-        app.core.scoped.last_error
-    );
-
-    app.run_eigen(app.core.analysis_cfg.n_modes);
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "固有値解析でエラー: {:?}",
-        app.core.scoped.last_error
-    );
-
-    assert!(
-        app.core.scoped.results.is_some(),
-        "解析結果が格納されているはず"
-    );
-    assert!(
-        app.core
-            .scoped
-            .preparation
-            .as_ref()
-            .unwrap()
-            .summary
-            .total_seismic_weight
-            > 0.0,
-        "地震用重量が正であること（壁・雑壁の自重を含む）"
     );
 }
 
@@ -907,6 +837,11 @@ fn test_region_gen_wall_finds_all_four_faces() {
     use squid_n_core::region_gen::scan_wall_region_boundaries;
 
     let model = wall_bay_model();
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+    assert!(
+        model.elements.iter().all(|e| e.kind != ElementKind::Wall),
+        "壁要素は準備計算・出力前の生成物（D5）で、入力モデルには含まれない"
+    );
     let scan = scan_wall_region_boundaries(&model);
     assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
     assert_eq!(

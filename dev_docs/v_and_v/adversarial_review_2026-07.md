@@ -75,7 +75,7 @@ Masing 拡張記憶・Ds 表・梁往復並べ替え・壁孤立断面）は要�
   （w=0, θx=0, θy=a → γ_xz=a, γ_yz=0）を課すと、修正前は
   γ_xz=0.0006875（正 0.001）, γ_yz=0.000625（正 0）とパッチテスト破れ、修正後は厳密再現。
   回帰テスト `test_mitc4_constant_shear_patch_skewed` を追加。矩形メッシュの
-  板収束テスト（`test_ss_plate_convergence`・`test_clamped_plate_convergence`）は不変。
+  板収束テスト（現在は `test_plate_convergence`。テスト再編により単純支持・四辺固定の 2 テストを統合）は不変。
 - **修正:** 最終射影を列アクセス（`J⁻¹·e_cov`）へ。
 
 ---

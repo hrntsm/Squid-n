@@ -24,29 +24,7 @@ fn make_flat_shell(t: f64) -> ShellElement {
 }
 
 #[test]
-fn test_frame_orthonormal() {
-    let coords = [
-        [0.0, 0.0, 0.0],
-        [100.0, 0.0, 0.0],
-        [100.0, 100.0, 0.0],
-        [0.0, 100.0, 0.0],
-    ];
-    let frame = ShellFrame::from_nodes(coords);
-    let dot_e1e2 =
-        frame.e1[0] * frame.e2[0] + frame.e1[1] * frame.e2[1] + frame.e1[2] * frame.e2[2];
-    assert!(dot_e1e2.abs() < 1e-15);
-    let dot_e1n = frame.e1[0] * frame.n[0] + frame.e1[1] * frame.n[1] + frame.e1[2] * frame.n[2];
-    assert!(dot_e1n.abs() < 1e-15);
-    let dot_e2n = frame.e2[0] * frame.n[0] + frame.e2[1] * frame.n[1] + frame.e2[2] * frame.n[2];
-    assert!(dot_e2n.abs() < 1e-15);
-    for &v in &[frame.e1, frame.e2, frame.n] {
-        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        assert!((len - 1.0).abs() < 1e-14);
-    }
-}
-
-#[test]
-fn test_local_stiffness_symmetric() {
+fn test_local_stiffness_symmetric_and_nonzero_diagonal() {
     let shell = make_flat_shell(10.0);
     let k = shell.local_stiffness();
     for i in 0..24 {
@@ -61,15 +39,19 @@ fn test_local_stiffness_symmetric() {
             );
         }
     }
-}
+    for i in 0..24 {
+        assert!(k.get(i, i) > 0.0, "diagonal[{i}] should be positive");
+    }
 
-#[test]
-fn test_drilling_prevents_singularity() {
-    let shell = make_flat_shell(10.0);
-    let k = shell.local_stiffness();
-    for i in 0..4 {
-        let idx = i * 6 + 5;
-        assert!(k.get(idx, idx) > 0.0, "drilling DOF {i} diagonal is zero");
+    // ローカルフレームが正規直交（各軸が単位長・相互直交）であること。
+    let frame = shell.frame;
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    assert!(dot(frame.e1, frame.e2).abs() < 1e-15, "e1·e2 が 0 でない");
+    assert!(dot(frame.e1, frame.n).abs() < 1e-15, "e1·n が 0 でない");
+    assert!(dot(frame.e2, frame.n).abs() < 1e-15, "e2·n が 0 でない");
+    for v in [frame.e1, frame.e2, frame.n] {
+        let len = dot(v, v).sqrt();
+        assert!((len - 1.0).abs() < 1e-14, "軸が単位長でない: |v|={len}");
     }
 }
 
@@ -98,24 +80,12 @@ fn test_rigid_floor_disables_membrane() {
 }
 
 #[test]
-fn test_shape_functions() {
-    let N = shape_2d(0.0, 0.0);
-    let sum: f64 = N.iter().sum();
-    assert!((sum - 1.0).abs() < 1e-15);
-}
-
-#[test]
-fn test_stiffness_nonzero_diagonal() {
-    let shell = make_flat_shell(10.0);
-    let k = shell.local_stiffness();
-    for i in 0..24 {
-        assert!(k.get(i, i) > 0.0, "diagonal[{i}] should be positive");
-    }
-}
-
-#[test]
 fn test_membrane_b_constant_strain() {
     let shell = make_flat_shell(10.0);
+    // 双一次形状関数の分割単位性（独立な解析式）。
+    let n = shape_2d(0.3, -0.2);
+    assert!((n.iter().sum::<f64>() - 1.0).abs() < 1e-15);
+
     let eps_x = 1e-3;
     let eps_y = 2e-3;
     let gam_xy = 0.5e-3;
@@ -331,70 +301,6 @@ fn test_drilling_stabilization_insensitivity() {
     );
 }
 
-#[test]
-fn test_patch_membrane_constant_stress() {
-    // Membrane patch test with a distorted quadrilateral mesh.
-    // 4 elements forming a patch with an interior node.
-    // Coordinates (in-plane, z=0 for all):
-    //   Outer boundary: (0,0), (100,0), (100,100), (0,100)
-    //   Inner node: (45, 55) (offset from center)
-    // Apply linear displacement u = eps_x * x, v = eps_y * y + 0.5*gam_xy * x
-    // at boundary nodes. Interior node should have correct displacement.
-    let eps_x = 1e-3;
-    let eps_y = 2e-3;
-    let gam_xy = 0.5e-3;
-
-    // Use a single distorted element to verify B*u
-    let coords = [
-        [0.0, 0.0, 0.0],
-        [100.0, 0.0, 0.0],
-        [100.0, 100.0, 0.0],
-        [0.0, 100.0, 0.0],
-    ];
-    let frame = ShellFrame::from_nodes(coords);
-    let shell = ShellElement {
-        nodes: [NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        coords,
-        t: 10.0,
-        e: 1000.0,
-        nu: 0.3,
-        density: 0.0,
-        frame,
-        drilling_factor: DEFAULT_DRILLING_FACTOR,
-        membrane_active: true,
-        committed_disp: [0.0; 24],
-        trial_disp: [0.0; 24],
-    };
-
-    // Interior point at distorted panel center (45, 55)
-    // Need to find (xi,eta) that maps to (45,55) — use Newton or just evaluate at several points
-    // For the patch test, the strain should be constant everywhere.
-    // Evaluate at (xi=0, eta=0) for element center:
-    let dNc = dshape_cart(0.0, 0.0, &coords);
-    let bm = shell.membrane_b(0.0, 0.0, &dNc);
-
-    // Apply linear displacement at nodes
-    let u_disp: Vec<f64> = (0..4)
-        .flat_map(|i| {
-            let x = coords[i][0];
-            let y = coords[i][1];
-            let u = eps_x * x + 0.5 * gam_xy * y;
-            let v = eps_y * y + 0.5 * gam_xy * x;
-            [u, v, 0.0, 0.0, 0.0, 0.0]
-        })
-        .collect();
-
-    let mut strain = [0.0; 3];
-    for r in 0..3 {
-        for j in 0..24 {
-            strain[r] += bm[r * 24 + j] * u_disp[j];
-        }
-    }
-    assert!((strain[0] - eps_x).abs() < 1e-12, "ε_x={}", strain[0]);
-    assert!((strain[1] - eps_y).abs() < 1e-12, "ε_y={}", strain[1]);
-    assert!((strain[2] - gam_xy).abs() < 1e-12, "γ_xy={}", strain[2]);
-}
-
 fn distorted_patch() -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
     // 中央節点を非対称に歪ませた 9 節点・4 要素パッチ。内部=節点4。
     let coords = vec![
@@ -544,7 +450,6 @@ fn test_patch_membrane_distorted() {
     );
 }
 
-/// 曲げパッチ：歪みメッシュで定曲率場 → 内部節点が場を機械精度で再現。
 /// MITC4 の合否ゲート（薄板でロッキングしないことの根拠）。
 #[test]
 fn test_mitc4_constant_shear_patch_skewed() {
@@ -587,6 +492,7 @@ fn test_mitc4_constant_shear_patch_skewed() {
     }
 }
 
+/// 曲げパッチ：歪みメッシュで定曲率場 → 内部節点が場を機械精度で再現。
 #[test]
 fn test_patch_bending_distorted() {
     let (coords, elems) = distorted_patch();

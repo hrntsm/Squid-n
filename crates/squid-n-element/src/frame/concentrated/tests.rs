@@ -245,31 +245,6 @@ fn test_tangent_stiffness_symmetric() {
 }
 
 #[test]
-fn test_spring_model_default() {
-    let elem = make_test_element();
-    assert_eq!(elem.model, SpringModel::OneComponent);
-    let k_node = compute_kstar(
-        &elem.elastic,
-        &elem.elastic.local_stiffness_flex(),
-        1.0e10,
-        1.0e10,
-    );
-    let u = &elem.elastic.committed_disp;
-    let mut f = [0.0; 12];
-    for i in 0..12 {
-        let mut s = 0.0;
-        for j in 0..12 {
-            s += k_node.get(i, j) * u[j];
-        }
-        f[i] = s;
-    }
-    assert!(
-        f.iter().all(|&v| v.abs() < 1e-12),
-        "zero disp => zero force"
-    );
-}
-
-#[test]
 fn test_condense_springs_zero_stiffness() {
     let beam = make_test_beam();
     let k_raw = beam.local_stiffness_raw();
@@ -279,18 +254,6 @@ fn test_condense_springs_zero_stiffness() {
         k_pinned.get(5, 5) < k_fixed.get(5, 5) * 0.5,
         "pinned rz_i should be much softer than fixed"
     );
-}
-
-/// 材端ばねが作用しない自由度（rx・ry）はばね剛性に依らないこと。
-#[test]
-fn test_rx_ry_unaffected_by_spring() {
-    let beam = make_test_beam();
-    let k_raw = beam.local_stiffness_raw();
-    let k_soft = condense_springs(&k_raw, 1.0, 1.0);
-    let k_stiff = condense_springs(&k_raw, 1e30, 1e30);
-    for &dof in &[3, 4, 9, 10] {
-        assert_relative_eq!(k_soft.get(dof, dof), k_stiff.get(dof, dof), epsilon = 1.0);
-    }
 }
 
 #[test]
@@ -453,7 +416,7 @@ fn test_spring_acts_on_strong_axis_rz() {
             k_stiff.get(dof, dof)
         );
     }
-    for &dof in &[4usize, 10] {
+    for &dof in &[3usize, 4, 9, 10] {
         assert_relative_eq!(k_soft.get(dof, dof), k_stiff.get(dof, dof), epsilon = 1.0);
     }
 }

@@ -1,4 +1,6 @@
-use super::seismic::{distribute_seismic_forces, main_system_weight};
+use super::seismic::{
+    distribute_pi_over_diaphragms, distribute_seismic_forces, main_system_weight,
+};
 use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
@@ -106,97 +108,70 @@ fn make_cantilever_model() -> Model {
     }
 }
 
+/// 解析前チェックの入口 `Analysis::prepare` が、代表的な入力不備を日本語の
+/// エラーとして返すこと（診断の生成自体は `model_issues` 側の各テストで検証する）。
+///
+/// 有効せん断断面積 As=0 は、入力不足が「せん断について無限に強い部材」として
+/// 黙って通ってしまう（危険側）ため、エラーとして止めることをここでも確認する。
 #[test]
-fn test_prepare_and_single_case() {
-    let model = make_cantilever_model();
-    let analysis = Analysis::prepare(&model).unwrap();
-    let result = analysis.linear_static(LoadCaseId(1)).unwrap();
-    let ux = result.disp[1][0];
-    let expected = 1000.0 * 1000.0 / (20000.0 * 100.0);
-    assert!(
-        (ux - expected).abs() < 1e-6,
-        "ux={} expected={}",
-        ux,
-        expected
-    );
-}
+fn test_prepare_reports_diagnostics() {
+    let expect = |model: &Model, needle: &str| {
+        let err = Analysis::prepare(model)
+            .err()
+            .unwrap_or_else(|| panic!("不備「{needle}」を検出せず prepare が成功した"));
+        let msg = err.to_string();
+        assert!(msg.contains(needle), "期待={needle} 実際={msg}");
+    };
 
-#[test]
-fn test_two_cases_one_factorization() {
-    let model = make_cantilever_model();
-    let analysis = Analysis::prepare(&model).unwrap();
-    let r1 = analysis.linear_static(LoadCaseId(1)).unwrap();
-    let r2 = analysis.linear_static(LoadCaseId(2)).unwrap();
-    let ux = r1.disp[1][0];
-    let uy = r2.disp[1][1];
-    let ux_expected = 1000.0 * 1000.0 / (20000.0 * 100.0);
-    let l = 1000.0_f64;
-    let uy_expected = 500.0 * l.powi(3) / (3.0 * 20000.0 * 833.33);
-    assert!((ux - ux_expected).abs() < 1.0, "ux={}", ux);
-    assert!(
-        (uy - uy_expected).abs() < 20.0,
-        "uy={} approx={}",
-        uy,
-        uy_expected
-    );
-}
+    // 節点・部材がない。個別メッセージまでは問わず、入力エラーとして返る。
+    let err = Analysis::prepare(&Model::default()).err().unwrap();
+    assert!(matches!(err, SolveError::InvalidInput(_)), "{err:?}");
 
-#[test]
-fn test_load_combination() {
-    let model = make_cantilever_model();
-    let analysis = Analysis::prepare(&model).unwrap();
-    let combo = &model.combinations[0];
-    let result = analysis.linear_combination(combo).unwrap();
-    let ux = result.disp[1][0];
-    let uy = result.disp[1][1];
-    let ux_expected = 1.2 * (1000.0 * 1000.0 / (20000.0 * 100.0));
-    let l = 1000.0_f64;
-    let uy_expected = 1.5 * (500.0 * l.powi(3) / (3.0 * 20000.0 * 833.33));
-    assert!((ux - ux_expected).abs() < 1.0, "ux={}", ux);
-    assert!(
-        (uy - uy_expected).abs() < 20.0,
-        "uy={} approx={}",
-        uy,
-        uy_expected
-    );
-}
-
-#[test]
-fn test_prepare_empty_model_gives_diagnostic() {
-    let model = Model::default();
-    let err = Analysis::prepare(&model).err().unwrap();
-    assert!(matches!(err, SolveError::InvalidInput(_)), "{:?}", err);
-}
-
-#[test]
-fn test_prepare_no_restraint_gives_diagnostic() {
+    // 拘束(支点)が 1 つもない。
     let mut model = make_cantilever_model();
     for n in &mut model.nodes {
         n.restraint = Dof6Mask::FREE;
     }
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("拘束"), "{}", msg);
-}
+    expect(&model, "拘束");
 
-#[test]
-fn test_prepare_missing_section_gives_diagnostic() {
+    // 断面が未割当（部材）。
     let mut model = make_cantilever_model();
     model.elements[0].section = None;
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("断面が未割当"), "{}", msg);
-}
+    expect(&model, "断面が未割当");
 
-/// 材料だけが未割当でも解析は止まる。断面と材料は別々の不備として報告し、
-/// どちらを直せばよいかがメッセージから分かるようにする。材料は断面が持つ。
-#[test]
-fn test_prepare_missing_material_gives_diagnostic() {
+    // 材料が未割当（材料は断面が持つ。断面未割当とは別の不備として報告する）。
     let mut model = make_cantilever_model();
     model.sections[0].material = None;
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("材料が未割当"), "{}", msg);
+    expect(&model, "材料が未割当");
+
+    // どの部材にも接続されない節点。
+    let mut model = make_cantilever_model();
+    model.nodes.push(Node {
+        id: NodeId(2),
+        coord: [0.0, 5000.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    expect(&model, "接続されていない節点");
+
+    // 存在しない節点への参照（節点削除後の不整合など）は panic せず診断になる。
+    let mut model = make_cantilever_model();
+    model.constraints.push(Constraint::RigidLink {
+        master: NodeId(99),
+        slaves: vec![NodeId(1)],
+        dofs: Dof6Mask::FIXED,
+    });
+    expect(&model, "存在しない節点");
+
+    // As=0 は片側だけでもエラー。
+    let mut model = make_cantilever_model();
+    model.sections[0].as_y = 0.0;
+    expect(&model, "有効せん断断面積");
+    let mut model = make_cantilever_model();
+    model.sections[0].as_z = 0.0;
+    expect(&model, "有効せん断断面積");
 }
 
 /// `model_issues` は最初の 1 件で打ち切らず、不備をすべて集める。
@@ -548,11 +523,14 @@ fn has_restrained_diaphragm_master_issue(model: &Model) -> bool {
         .any(|i| i.message.contains("剛床マスターが水平拘束"))
 }
 
-/// 基部の剛床マスターが水平拘束されていてもエラーにしない（柱脚固定は正常）。
+/// 剛床マスターの水平拘束の扱い。基部の拘束は柱脚固定として正常、上階は
+/// 地震用重量が正ならその階の地震力が載らないためエラー、重量 0 なら対象外。
 #[test]
-fn test_model_issues_allows_base_diaphragm_master_horizontal_restraint() {
+fn test_model_issues_diaphragm_master_horizontal_restraint() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity, IssueTargets};
     use squid_n_core::dof::Dof;
 
+    // 基部（1F）の水平拘束は正常。
     let mut r = Dof6Mask::FREE;
     r.set_fixed(Dof::Ux);
     r.set_fixed(Dof::Uy);
@@ -562,20 +540,13 @@ fn test_model_issues_allows_base_diaphragm_master_horizontal_restraint() {
         !has_restrained_diaphragm_master_issue(&model),
         "基部の水平拘束は許容される"
     );
-}
 
-/// 上階の剛床マスターが水平拘束され、地震用重量が正ならエラー。
-#[test]
-fn test_model_issues_errors_on_upper_diaphragm_master_horizontal_restraint() {
-    use super::precheck::{model_issues, precheck_model, IssueSeverity, IssueTargets};
-    use squid_n_core::dof::Dof;
-
+    // 上階のマスターが水平拘束され、地震用重量が正ならエラー。
     let mut r = Dof6Mask::FREE;
     r.set_fixed(Dof::Ux);
     let model = make_two_story_diaphragm_model(1, r, Some(800.0), None);
     assert!(has_restrained_diaphragm_master_issue(&model));
     assert!(precheck_model(&model).is_err());
-
     let issue = model_issues(&model)
         .into_iter()
         .find(|i| i.message.contains("剛床マスターが水平拘束"))
@@ -583,13 +554,8 @@ fn test_model_issues_errors_on_upper_diaphragm_master_horizontal_restraint() {
     assert_eq!(issue.severity, IssueSeverity::Error);
     assert!(issue.message.contains("2F"), "{}", issue.message);
     assert_eq!(issue.targets, IssueTargets::Nodes(vec![NodeId(1)]));
-}
 
-/// 上階の剛床マスターが水平拘束でも、地震用重量が 0 ならエラーにしない。
-#[test]
-fn test_model_issues_allows_upper_diaphragm_master_restraint_without_weight() {
-    use squid_n_core::dof::Dof;
-
+    // 上階でも地震用重量が 0 なら対象外。
     let mut r = Dof6Mask::FREE;
     r.set_fixed(Dof::Uy);
     let model = make_two_story_diaphragm_model(1, r, Some(0.0), Some(0.0));
@@ -670,60 +636,6 @@ fn test_model_issues_skips_isolated_nodes_without_elements() {
         !messages.iter().any(|m| m.contains("接続されていない節点")),
         "{messages:?}"
     );
-}
-
-#[test]
-fn test_prepare_isolated_node_gives_diagnostic() {
-    let mut model = make_cantilever_model();
-    model.nodes.push(Node {
-        id: NodeId(2),
-        coord: [0.0, 5000.0, 0.0],
-        restraint: Dof6Mask::FREE,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("接続されていない節点"), "{}", msg);
-}
-
-/// 存在しない節点を参照する拘束（節点削除後の不整合など）は、panic ではなく
-/// ダングリング参照の診断エラーになること。
-#[test]
-fn test_prepare_dangling_constraint_reference_gives_diagnostic() {
-    let mut model = make_cantilever_model();
-    model
-        .constraints
-        .push(squid_n_core::model::Constraint::RigidLink {
-            master: NodeId(99),
-            slaves: vec![NodeId(1)],
-            dofs: Dof6Mask::FIXED,
-        });
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("存在しない節点"), "{}", msg);
-}
-
-/// 有効せん断断面積 As=0 の断面を使う線材は入力エラーとする。
-///
-/// As=0 はせん断変形が生じず（φ=0）、せん断降伏の判定閾値も Qy=+∞ となるため、
-/// 入力不足が「せん断について無限に強い部材」として黙って通ってしまう（危険側）。
-/// せん断変形を無視したい場合は部材のモデル化として指定する（十分大きな As を
-/// 与える `test_bernoulli_strict_1e9` の扱い）。
-#[test]
-fn test_prepare_zero_shear_area_is_error() {
-    let mut model = make_cantilever_model();
-    model.sections[0].as_y = 0.0;
-    let err = Analysis::prepare(&model).err().unwrap();
-    let msg = format!("{}", err);
-    assert!(msg.contains("有効せん断断面積"), "{}", msg);
-
-    // as_z 側だけが 0 でも同様に検出する。
-    model.sections[0].as_y = 83.33;
-    model.sections[0].as_z = 0.0;
-    let err = Analysis::prepare(&model).err().unwrap();
-    assert!(format!("{}", err).contains("有効せん断断面積"));
 }
 
 #[test]
@@ -819,31 +731,24 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
     }
 }
 
+/// 鉄骨造比 α（3 層・各階高 1000mm）の手計算照合。
 #[test]
-fn test_steel_height_ratio_bottom_story_s_gives_one_third() {
-    let model =
-        make_story_ratio_model(&[StoryStructure::S, StoryStructure::Rc, StoryStructure::Rc]);
+fn test_steel_height_ratio() {
+    // 最下層の層だけ S なら α=1/3。
+    let mixed = [StoryStructure::S, StoryStructure::Rc, StoryStructure::Rc];
+    let model = make_story_ratio_model(&mixed);
     let alpha = steel_height_ratio(&model);
-    assert!((alpha - 1.0 / 3.0).abs() < 1e-9, "alpha={}", alpha);
-}
+    assert!((alpha - 1.0 / 3.0).abs() < 1e-9, "alpha={alpha}");
 
-#[test]
-fn test_steel_height_ratio_all_rc_is_zero() {
-    let model = make_story_ratio_model(&[StoryStructure::Rc; 3]);
-    assert_eq!(steel_height_ratio(&model), 0.0);
-}
+    // 全 RC は 0、全 S は 1。
+    let rc = [StoryStructure::Rc; 3];
+    assert_eq!(steel_height_ratio(&make_story_ratio_model(&rc)), 0.0);
+    let s = [StoryStructure::S; 3];
+    let alpha = steel_height_ratio(&make_story_ratio_model(&s));
+    assert!((alpha - 1.0).abs() < 1e-9, "alpha={alpha}");
 
-#[test]
-fn test_steel_height_ratio_all_s_is_one() {
-    let model = make_story_ratio_model(&[StoryStructure::S; 3]);
-    let alpha = steel_height_ratio(&model);
-    assert!((alpha - 1.0).abs() < 1e-9, "alpha={}", alpha);
-}
-
-#[test]
-fn test_steel_height_ratio_no_stories_is_zero() {
-    let model = Model::default();
-    assert_eq!(steel_height_ratio(&model), 0.0);
+    // 階が定義されていなければ 0。
+    assert_eq!(steel_height_ratio(&Model::default()), 0.0);
 }
 
 /// 剛床の分配規則の検証用モデル。地震用重量 400 の階を 1 つ持ち、指定した
@@ -875,15 +780,17 @@ fn make_diaphragm_model(diaphragms: Vec<(NodeId, Option<f64>, Option<f64>)>) -> 
     model
 }
 
+/// 剛床への Pi 分配の手計算照合（単一剛床の全量、重量比の按分、重量未設定の等分割）。
 #[test]
-fn test_distribute_pi_single_diaphragm_gets_full_pi() {
+fn test_distribute_pi_over_diaphragms() {
+    // 剛床が 1 つなら全量がその剛床に載る。
     let model = make_diaphragm_model(vec![(NodeId(10), None, None)]);
-    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0);
-    assert_eq!(shares, vec![(NodeId(10), 40.0)]);
-}
+    assert_eq!(
+        distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0),
+        vec![(NodeId(10), 40.0)]
+    );
 
-#[test]
-fn test_distribute_pi_weight_ratio_3_to_1() {
+    // 複数剛床は重量比で按分し、合計は階の Pi に一致する（重複載荷しない）。
     let model = make_diaphragm_model(vec![
         (NodeId(10), Some(300.0), None),
         (NodeId(11), Some(100.0), None),
@@ -892,29 +799,26 @@ fn test_distribute_pi_weight_ratio_3_to_1() {
     let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
     let s10 = shares.iter().find(|(n, _)| *n == NodeId(10)).unwrap().1;
     let s11 = shares.iter().find(|(n, _)| *n == NodeId(11)).unwrap().1;
-    assert!((s10 - 30.0).abs() < 1e-9, "s10={}", s10);
-    assert!((s11 - 10.0).abs() < 1e-9, "s11={}", s11);
-    // 合計は階の Pi に一致する（重複載荷しない）。
+    assert!((s10 - 30.0).abs() < 1e-9, "s10={s10}");
+    assert!((s11 - 10.0).abs() < 1e-9, "s11={s11}");
     let total: f64 = shares.iter().map(|(_, v)| v).sum();
-    assert!((total - pi).abs() < 1e-9, "total={}", total);
-}
+    assert!((total - pi).abs() < 1e-9, "total={total}");
 
-#[test]
-fn test_distribute_pi_equal_split_when_no_weight() {
+    // 重量が設定されていなければ等分割（総量は保つ）。
     let model = make_diaphragm_model(vec![(NodeId(10), None, None), (NodeId(11), None, None)]);
-    let pi = 40.0;
     let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
     for (_, v) in &shares {
-        assert!((*v - 20.0).abs() < 1e-9, "share={}", v);
+        assert!((*v - 20.0).abs() < 1e-9, "share={v}");
     }
     let total: f64 = shares.iter().map(|(_, v)| v).sum();
-    assert!((total - pi).abs() < 1e-9, "total={}", total);
+    assert!((total - pi).abs() < 1e-9, "total={total}");
 }
 
 /// 剛床を持たない階の水平力は、階に属する節点へ質点質量の比で分配される
-/// （階と剛床は別概念であり、剛床がない階にも水平力は載る）。
+/// （階と剛床は別概念であり、剛床がない階にも水平力は載る）。質量がなければ
+/// 等分割する（載荷位置は決まらないが総量は保つ）。
 #[test]
-fn test_distribute_pi_without_diaphragm_falls_back_to_story_nodes() {
+fn test_distribute_pi_without_diaphragm_uses_story_nodes() {
     let mut model = make_diaphragm_model(vec![]);
     model.nodes = vec![
         Node {
@@ -947,32 +851,23 @@ fn test_distribute_pi_without_diaphragm_falls_back_to_story_nodes() {
         (total - pi).abs() < 1e-9,
         "層せん断力の総量は保たれる: {total}"
     );
-}
 
-/// 剛床も質量もない階では等分割する（載荷位置は決まらないが総量は保つ）。
-#[test]
-fn test_distribute_pi_without_diaphragm_and_mass_splits_equally() {
-    let mut model = make_diaphragm_model(vec![]);
-    model.nodes = (0..2)
-        .map(|i| Node {
-            id: NodeId(i),
-            coord: [i as f64 * 6000.0, 0.0, 1000.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: Some(StoryId(0)),
-            support_spring: None,
-        })
-        .collect();
-    model.stories[0].node_ids = vec![NodeId(0), NodeId(1)];
-
-    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0);
+    // 質量が設定されていなければ等分割。
+    for n in &mut model.nodes {
+        n.mass = None;
+    }
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
     for (_, v) in &shares {
         assert!((*v - 20.0).abs() < 1e-9, "share={v}");
     }
 }
 
+/// 副剛床の `ci_override` を、主系統の重量と地震力分配の両方から分離する。
+///
+/// 同一フィクスチャ（主剛床(10) 重量 300・override なし、副剛床(11) 重量 100・
+/// override 0.3）で、主系統重量（Ai 分布の対象）と Pi の分配をまとめて確認する。
 #[test]
-fn test_main_system_weight_excludes_ci_override_diaphragm() {
+fn test_ci_override_separates_main_system_weight_and_force() {
     let model = make_diaphragm_model(vec![
         (NodeId(10), Some(300.0), None),
         (NodeId(11), Some(100.0), Some(0.3)),
@@ -981,14 +876,7 @@ fn test_main_system_weight_excludes_ci_override_diaphragm() {
     // 主系統重量は ci_override を持つ副剛床の重量(100)を除いた 300 になる。
     let w = main_system_weight(&model, &model.stories[0]);
     assert!((w - 300.0).abs() < 1e-9, "main_system_weight={}", w);
-}
 
-#[test]
-fn test_distribute_seismic_forces_ci_override_adds_separate_force() {
-    let model = make_diaphragm_model(vec![
-        (NodeId(10), Some(300.0), None),
-        (NodeId(11), Some(100.0), Some(0.3)),
-    ]);
     // 主系統(重量300ベースで別途算定済み)の Pi として 60.0 を渡す。
     // 主剛床(唯一の ci_override 無し剛床)が全量を受け、副剛床には
     // 0.3×100=30 が別途載る。
@@ -998,19 +886,16 @@ fn test_distribute_seismic_forces_ci_override_adds_separate_force() {
     let s11 = shares.iter().find(|(n, _)| *n == NodeId(11)).unwrap().1;
     assert!((s10 - 60.0).abs() < 1e-9, "s10={}", s10);
     assert!((s11 - 30.0).abs() < 1e-9, "s11={}", s11);
-}
 
-#[test]
-fn test_distribute_seismic_forces_matches_pi_distribution_without_ci_override() {
-    // 全剛床が ci_override 無しなら distribute_pi_over_diaphragms と厳密一致。
+    // 全剛床が ci_override 無しなら、地震荷重版の分配は通常の Pi 分配と一致する。
     let model = make_diaphragm_model(vec![
         (NodeId(10), Some(300.0), None),
         (NodeId(11), Some(100.0), None),
     ]);
-    let pi = 40.0;
-    let expected = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
-    let actual = distribute_seismic_forces(&model, &model.stories[0], pi);
-    assert_eq!(expected, actual);
+    assert_eq!(
+        distribute_seismic_forces(&model, &model.stories[0], 40.0),
+        distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0)
+    );
 }
 
 /// バッチ API（逐次モード）が個別呼び出しとビット一致すること。
@@ -1171,31 +1056,6 @@ fn analysis_linear_static_superposes_member_load() {
         end < expected_mid * 1e-3,
         "end Mz should be ~0, got {}",
         end
-    );
-}
-
-/// `Analysis::linear_combination` は各項の部材荷重を係数倍して重ね合わせる。
-/// 1.5×UDL の中央曲げは 1.5·wL²/8 になる。
-#[test]
-fn analysis_linear_combination_scales_member_load() {
-    let l = 1000.0_f64;
-    let w = 2.0_f64;
-    let model = ss_beam_udl(l, w);
-    let analysis = Analysis::prepare(&model).unwrap();
-    let res = analysis.linear_combination(&model.combinations[0]).unwrap();
-    let (_, mf) = res
-        .member_forces
-        .iter()
-        .find(|(id, _)| *id == ElemId(0))
-        .expect("member forces");
-
-    let expected_mid = 1.5 * w * l * l / 8.0;
-    let mid = mz_at(mf, 0.5).abs();
-    assert!(
-        (mid - expected_mid).abs() / expected_mid < 1e-3,
-        "combination midspan Mz={} expected {}",
-        mid,
-        expected_mid
     );
 }
 

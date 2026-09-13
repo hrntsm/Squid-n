@@ -212,25 +212,23 @@ fn panel_stiffness(model: &Model) -> (f64, f64) {
 }
 
 /// 1: パネルを設けないモデルでは追加自由度が 1 つも払い出されず、
-///    独立自由度数が従来（節点 × 6）と一致する。
-#[test]
-fn test_no_panel_model_is_unchanged() {
-    let model = l_frame(false);
-    let dofmap = DofMap::build(&model);
-    // 節点 0・1 は面内 3 成分（Ux・Uz・Ry）のみ自由、節点 2 は固定。
-    assert_eq!(dofmap.n_active(), 6);
-    for ni in 0..model.nodes.len() {
-        assert!(!dofmap.has_panel_dof(ni), "パネル無しで追加自由度は出ない");
-    }
-}
-
-/// パネルを設けると、その節点にだけ γX・γY の 2 自由度が増える。
+///    接合部へパネルを設けると当該節点にだけ γX・γY の 2 自由度が増える。
 #[test]
 fn test_panel_adds_exactly_two_dofs() {
-    let base = DofMap::build(&l_frame(false)).n_active();
+    let base_model = l_frame(false);
+    let base_map = DofMap::build(&base_model);
+    // 節点 0・1 は面内 3 成分（Ux・Uz・Ry）のみ自由、節点 2 は固定。
+    assert_eq!(base_map.n_active(), 6);
+    for ni in 0..base_model.nodes.len() {
+        assert!(
+            !base_map.has_panel_dof(ni),
+            "パネル無しで追加自由度は出ない"
+        );
+    }
+
     let model = l_frame(true);
     let dofmap = DofMap::build(&model);
-    assert_eq!(dofmap.n_active(), base + 2);
+    assert_eq!(dofmap.n_active(), base_map.n_active() + 2);
     assert!(dofmap.has_panel_dof(0), "接合部節点にパネル自由度");
     assert!(!dofmap.has_panel_dof(1));
 }
@@ -346,48 +344,38 @@ fn test_panel_dof_equilibrium_residual_is_zero() {
     }
 }
 
-/// パネルのせん断変形の分だけ架構が柔らかくなる。
+/// パネル導入が架構剛性へ与える 2 つの効果を、同一のパネル有りモデルの求解 1 回で確認する。
 ///
-/// 比較対象は「同じ剛域（接合部の有限寸法）を持ち、パネルが剛（せん断変形しない）」
-/// モデルとする。剛域の有無で比べると、パネル導入に伴う剛域の追加で逆に硬くなる
-/// ため、パネルのせん断変形の効果だけを取り出せない。
+/// - 「同じ剛域（接合部の有限寸法）を持ち、パネルが剛（せん断変形しない）」モデル
+///   との比較: パネル有りはせん断変形の分だけ柔らかくなる。剛域の有無で比べると、
+///   パネル導入に伴う剛域の追加で逆に硬くなるため、せん断変形の効果だけを取り出せない。
+/// - 「接合部を無視した（剛域なし・パネルなし）」モデルとの比較: 剛域が付いて硬く
+///   なる効果が勝り、パネル有りの方が硬くなる。この向きが逆転した場合は剛域の
+///   折り込み（`panel_offset::resolve`）が効いていないことを意味するため、回帰として押さえる。
 #[test]
-fn test_panel_shear_adds_flexibility() {
+fn test_panel_stiffness_effects() {
+    let with_panel =
+        squid_n_solver::statics::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
+            .expect("パネル有りの解析");
     let rigid_joint = squid_n_solver::statics::linear::linear_static_once(
         &l_frame_with(false, true),
         LoadCaseId(1),
     )
     .expect("剛パネル（剛域のみ）の解析");
-    let with_panel =
-        squid_n_solver::statics::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
-            .expect("パネル有りの解析");
+    let plain = squid_n_solver::statics::linear::linear_static_once(&l_frame(false), LoadCaseId(1))
+        .expect("接合部無視モデルの解析");
 
     // 荷重点（節点 1）の鉛直変位（下向き荷重なので負）。
-    let d_rigid = rigid_joint.disp[1][2].abs();
     let d_panel = with_panel.disp[1][2].abs();
+    let d_rigid = rigid_joint.disp[1][2].abs();
+    let d_plain = plain.disp[1][2].abs();
     assert!(d_rigid > 0.0 && d_panel > 0.0, "変位が生じている");
     assert!(
         d_panel > d_rigid,
         "パネルのせん断変形で柔らかくなるはず: 剛パネル {d_rigid}, パネル有り {d_panel}"
     );
-}
-
-/// 仕口パネルの導入は「接合部の有限寸法（剛域）が付いて硬くなる」効果と
-/// 「パネルがせん断変形して柔らかくなる」効果の両方を持つ。接合部を無視した
-/// 従来モデル（剛域なし・パネルなし）との比較では、前者が勝って全体としては
-/// 硬くなる。この向きが逆転した場合は剛域の折り込み（`panel_offset::resolve`）が
-/// 効いていないことを意味するため、回帰として押さえる。
-#[test]
-fn test_panel_is_stiffer_than_ignoring_joint_size() {
-    let plain = squid_n_solver::statics::linear::linear_static_once(&l_frame(false), LoadCaseId(1))
-        .expect("接合部無視モデルの解析");
-    let with_panel =
-        squid_n_solver::statics::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
-            .expect("パネル有りの解析");
     assert!(
-        with_panel.disp[1][2].abs() < plain.disp[1][2].abs(),
-        "剛域が折り込まれていない: 接合部無視 {}, パネル有り {}",
-        plain.disp[1][2].abs(),
-        with_panel.disp[1][2].abs()
+        d_panel < d_plain,
+        "剛域が折り込まれていない: 接合部無視 {d_plain}, パネル有り {d_panel}"
     );
 }

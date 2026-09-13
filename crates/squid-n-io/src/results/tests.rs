@@ -1,13 +1,13 @@
 use super::*;
 
 #[test]
-fn test_parquet_roundtrip() {
+fn test_parquet_roundtrip_basic_schemas() {
     let dir = crate::test_util::test_tmp();
-    let path = dir.join("p2_test_nodal.parquet");
-    let path_str = path.to_str().unwrap();
 
+    let nodal_path = dir.join("p2_test_nodal.parquet");
+    let nodal_path_str = nodal_path.to_str().unwrap();
     {
-        let mut writer = ParquetWriter::create(path_str, nodal_disp_schema()).unwrap();
+        let mut writer = ParquetWriter::create(nodal_path_str, nodal_disp_schema()).unwrap();
         let batch = nodal_disp_batch(
             &[0, 1, 2],
             &[
@@ -20,12 +20,26 @@ fn test_parquet_roundtrip() {
         writer.write_rows(&batch).unwrap();
         Box::new(writer).finish().unwrap();
     }
-
-    let batches = read_all(path_str).unwrap();
+    let batches = read_all(nodal_path_str).unwrap();
     assert_eq!(batches.len(), 1);
-    let batch = &batches[0];
-    assert_eq!(batch.num_rows(), 3);
-    assert_eq!(batch.num_columns(), 7);
+    assert_eq!(batches[0].num_rows(), 3);
+    assert_eq!(batches[0].num_columns(), 7);
+
+    let member_path = dir.join("p2_test_member.parquet");
+    let member_path_str = member_path.to_str().unwrap();
+    {
+        let mut writer = ParquetWriter::create(member_path_str, member_force_schema()).unwrap();
+        let batch = member_force_batch(&[
+            (1, 0.0, [100.0, 5.0, 0.0, 0.0, 0.0, 200.0]),
+            (1, 1.0, [100.0, 5.0, 0.0, 0.0, 0.0, -200.0]),
+        ])
+        .unwrap();
+        writer.write_rows(&batch).unwrap();
+        Box::new(writer).finish().unwrap();
+    }
+    let batches = read_all(member_path_str).unwrap();
+    assert_eq!(batches[0].num_rows(), 2);
+    assert_eq!(batches[0].num_columns(), 8);
 }
 
 #[test]
@@ -53,27 +67,7 @@ fn test_modal_roundtrip_partial() {
 }
 
 #[test]
-fn test_member_force_roundtrip() {
-    let dir = crate::test_util::test_tmp();
-    let path = dir.join("p2_test_member.parquet");
-    let path_str = path.to_str().unwrap();
-    {
-        let mut writer = ParquetWriter::create(path_str, member_force_schema()).unwrap();
-        let batch = member_force_batch(&[
-            (1, 0.0, [100.0, 5.0, 0.0, 0.0, 0.0, 200.0]),
-            (1, 1.0, [100.0, 5.0, 0.0, 0.0, 0.0, -200.0]),
-        ])
-        .unwrap();
-        writer.write_rows(&batch).unwrap();
-        Box::new(writer).finish().unwrap();
-    }
-    let batches = read_all(path_str).unwrap();
-    assert_eq!(batches[0].num_rows(), 2);
-    assert_eq!(batches[0].num_columns(), 8);
-}
-
-#[test]
-fn test_time_history_schema_fields() {
+fn test_time_history_schema_and_batch_layout() {
     let schema = time_history_schema();
     assert_eq!(schema.fields().len(), 9);
     assert_eq!(schema.field(0).name(), "step");
@@ -88,10 +82,7 @@ fn test_time_history_schema_fields() {
     assert_eq!(schema.field(0).data_type(), &DataType::UInt64);
     assert_eq!(schema.field(1).data_type(), &DataType::Float64);
     assert_eq!(schema.field(2).data_type(), &DataType::UInt32);
-}
 
-#[test]
-fn test_time_history_batch_values() {
     let batch = time_history_batch(
         5,
         2.5,
@@ -137,7 +128,7 @@ fn test_time_history_batch_values() {
 }
 
 #[test]
-fn test_time_history_write_read_roundtrip() {
+fn test_time_history_write_read_and_node_filter() {
     let dir = crate::test_util::test_tmp();
     let path = dir.join("p6_th_roundtrip.parquet");
     let path_str = path.to_str().unwrap();
@@ -158,31 +149,16 @@ fn test_time_history_write_read_roundtrip() {
         writer.finish().unwrap();
     }
 
+    // 全行が書かれている。
     let batches = read_all(path_str).unwrap();
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total_rows, 9);
-}
 
-#[test]
-fn test_time_history_partial_read_step_range() {
-    let dir = crate::test_util::test_tmp();
-    let path = dir.join("p6_th_step_range.parquet");
-    let path_str = path.to_str().unwrap();
-
-    {
-        let mut writer = TimeHistoryWriter::create(path_str).unwrap();
-        for s in 0..3 {
-            writer
-                .write_step(s as f64 * 0.1, &[1, 2], &[[0.1; 6], [0.2; 6]])
-                .unwrap();
-        }
-        writer.finish().unwrap();
-    }
-
+    // 低レベル API の step_range 境界: 両端を含むステップ 1..=2 の
+    // 2 ステップ × 3 節点 = 6 行（旧テストは 2 節点/step で 4 行だった）。
     let batches = read_time_history_range(path_str, Some((1, 2)), None).unwrap();
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(total_rows, 4);
-
+    assert_eq!(total_rows, 6, "step_range は両端を含む");
     for batch in &batches {
         let step_col = batch
             .column(0)
@@ -191,66 +167,62 @@ fn test_time_history_partial_read_step_range() {
             .unwrap();
         for i in 0..batch.num_rows() {
             let s = step_col.value(i);
-            assert!((1..=2).contains(&s));
+            assert!((1..=2).contains(&s), "step_range 外の行が残った: {s}");
+        }
+    }
+
+    // node_filter: 節点 1 の行だけを返す。
+    let batches = read_time_history_range(path_str, None, Some(&[1u32])).unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 3);
+    for batch in &batches {
+        let node_col = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            assert_eq!(node_col.value(i), 1);
         }
     }
 }
 
 #[test]
-fn test_time_history_partial_read_node_filter() {
-    let dir = crate::test_util::test_tmp();
-    let path = dir.join("p6_th_node_filter.parquet");
-    let path_str = path.to_str().unwrap();
-
-    {
-        let mut writer = TimeHistoryWriter::create(path_str).unwrap();
-        writer
-            .write_step(0.0, &[1, 2, 3], &[[0.1; 6], [0.2; 6], [0.3; 6]])
-            .unwrap();
-        writer.finish().unwrap();
-    }
-
-    let batches = read_time_history_range(path_str, None, Some(&[1u32])).unwrap();
-    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(total_rows, 1);
-
-    let batch = &batches[0];
-    let node_col = batch
-        .column(2)
-        .as_any()
-        .downcast_ref::<UInt32Array>()
-        .unwrap();
-    assert_eq!(node_col.value(0), 1);
-}
-
-#[test]
-fn test_fs_result_store_writer_and_manifest() {
-    let dir = crate::test_util::test_tmp().join("p8_fsrs_basic");
+fn test_fs_result_store_writer_manifest_and_reopen() {
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_writer_reopen");
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = FsResultStore::open(&dir).unwrap();
-
     {
-        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
-        let batch = nodal_disp_batch(
-            &[1, 2, 3],
-            &[
-                [0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.3, 0.0, 0.0, 0.0, 0.0, 0.0],
-            ],
-        )
-        .unwrap();
-        writer.write_rows(&batch).unwrap();
-        writer.finish().unwrap();
-    }
-    store.sync().unwrap();
+        let mut store = FsResultStore::open(&dir).unwrap();
+        {
+            let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
+            let batch = nodal_disp_batch(
+                &[1, 2, 3],
+                &[
+                    [0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.3, 0.0, 0.0, 0.0, 0.0, 0.0],
+                ],
+            )
+            .unwrap();
+            writer.write_rows(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        store.sync().unwrap();
 
+        let manifest = store.manifest();
+        assert_eq!(manifest.entries.len(), 1);
+        let entry = &manifest.entries[0];
+        assert_eq!(entry.case, 1);
+        assert_eq!(entry.kind, ResultKind::NodalDisp);
+        assert_eq!(entry.rows, 3);
+    }
+
+    // 閉じて再度 open しても manifest が復元される。
+    let store = FsResultStore::open(&dir).unwrap();
     let manifest = store.manifest();
     assert_eq!(manifest.entries.len(), 1);
-    let entry = &manifest.entries[0];
-    assert_eq!(entry.case, 1);
-    assert_eq!(entry.kind, ResultKind::NodalDisp);
-    assert_eq!(entry.rows, 3);
+    assert_eq!(manifest.entries[0].rows, 3);
+    assert_eq!(manifest.entries[0].case, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -353,28 +325,6 @@ fn test_fs_result_store_query_node_filter() {
         .downcast_ref::<UInt32Array>()
         .unwrap();
     assert_eq!(node_col.value(0), 2);
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn test_fs_result_store_reopen_restores_manifest() {
-    let dir = crate::test_util::test_tmp().join("p8_fsrs_reopen");
-    let _ = std::fs::remove_dir_all(&dir);
-    {
-        let mut store = FsResultStore::open(&dir).unwrap();
-        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
-        let batch = nodal_disp_batch(&[1, 2], &[[0.1; 6], [0.2; 6]]).unwrap();
-        writer.write_rows(&batch).unwrap();
-        writer.finish().unwrap();
-        store.sync().unwrap();
-    }
-
-    let store2 = FsResultStore::open(&dir).unwrap();
-    let manifest = store2.manifest();
-    assert_eq!(manifest.entries.len(), 1);
-    assert_eq!(manifest.entries[0].rows, 2);
-    assert_eq!(manifest.entries[0].case, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

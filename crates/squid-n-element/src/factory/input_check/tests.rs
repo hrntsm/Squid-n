@@ -141,37 +141,51 @@ fn beam_model_inner(section: Section, materials: Vec<Material>) -> Model {
     }
 }
 
-/// 鋼断面（形状未設定）＋ fy 設定済みの部材は不備なし。
+/// 有効な入力（耐力算定に必要な強度が揃っている）は不備なしと判定される。
 #[test]
-fn test_no_issue_for_steel_member_with_fy() {
+fn test_valid_inputs_produce_no_issues() {
+    // 鋼材部材（形状未設定）＋ 正の fy
     let mut sec = rc_section();
     sec.shape = None;
     let model = beam_model(sec, steel_material());
     assert!(nonlinear_input_issues(&model).is_empty());
     assert!(ensure_nonlinear_input(&model).is_ok());
-}
 
-/// RC 断面＋ Fc 設定済みの部材は不備なし。
-#[test]
-fn test_no_issue_for_rc_member_with_fc() {
+    // RC 断面 ＋ 正の Fc
     let model = beam_model(rc_section(), concrete_material());
     assert!(nonlinear_input_issues(&model).is_empty());
+
+    // 鋼断面 ＋ 正の fy
+    let model = beam_model(steel_h_section(), steel_material());
+    assert!(nonlinear_input_issues(&model).is_empty());
+
+    // SRC 断面 ＋ 内蔵鉄骨の材料（主材料 fy 未設定でも降伏強度を解決できる）
+    let model = beam_model(src_section(), concrete_material());
+    assert!(nonlinear_input_issues(&model).is_empty());
+
+    // 鋼断面 ＋ コンクリート区分の材料 ＋ fy。
+    // 構造種別は材料の区分で決まる仕様であり、断面形状は力学的な性質ではないため
+    // 区分の矛盾とはしない。
+    let mut mat = concrete_material();
+    mat.fy = Some(235.0);
+    let model = beam_model(steel_h_section(), mat);
+    assert!(
+        nonlinear_input_issues(&model).is_empty(),
+        "{:?}",
+        nonlinear_input_issues(&model)
+    );
 }
 
-/// 主筋の材料が未割当の RC 部材はエラーとする。
-/// 既定 345 N/mm² で埋めると SD295 の部材で曲げ降伏耐力を過大評価する（危険側）。
+/// 主筋の材料が未割当、または材料はあっても fy が無い RC 部材はエラーとする
+/// （材料名 "SD345" からは推定しない）。既定 345 N/mm² で埋めると SD295 の
+/// 部材で曲げ降伏耐力を過大評価する（危険側）。
 #[test]
-fn test_issue_when_rebar_material_unset() {
+fn test_issue_when_rebar_yield_strength_unresolvable() {
     let model = beam_model(rc_section_without_rebar_material(), concrete_material());
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("主筋の材料"), "{}", issues[0]);
-}
 
-/// 主筋の材料はあっても fy が無ければ σy を決められないためエラーとする
-/// （材料名 "SD345" からは推定しない）。
-#[test]
-fn test_issue_when_rebar_material_has_no_fy() {
     let mut mats = vec![
         concrete_material(),
         rebar_material(),
@@ -186,71 +200,54 @@ fn test_issue_when_rebar_material_has_no_fy() {
     assert!(issues[0].contains("主筋の材料"), "{}", issues[0]);
 }
 
-/// RC 断面なのに Fc が未設定の部材はエラーとする。
+/// RC 断面なのに Fc が未設定または 0 以下の部材はエラーとする。
 /// Fc=0 相当で解析を通すと Mc=0 となりヒンジが一切検出されない（危険側）。
 #[test]
-fn test_issue_when_rc_member_has_no_fc() {
-    let mut mat = concrete_material();
-    mat.fc = None;
-    let model = beam_model(rc_section(), mat);
-    let issues = nonlinear_input_issues(&model);
-    assert_eq!(issues.len(), 1, "{:?}", issues);
-    assert!(issues[0].contains("Fc"), "{}", issues[0]);
-    assert!(ensure_nonlinear_input(&model).is_err());
+fn test_issue_when_rc_member_fc_missing_or_not_positive() {
+    for fc in [None, Some(0.0)] {
+        let mut mat = concrete_material();
+        mat.fc = fc;
+        let model = beam_model(rc_section(), mat);
+        let issues = nonlinear_input_issues(&model);
+        assert_eq!(issues.len(), 1, "{:?}", issues);
+        assert!(issues[0].contains("Fc"), "{}", issues[0]);
+        assert!(ensure_nonlinear_input(&model).is_err());
+    }
 }
 
-/// RC 断面で Fc が 0 以下の部材もエラーとする（未設定と同じく耐力を算定できない）。
+/// 断面形状未設定の部材で正の耐力を算定できない材料はエラーとする。
+/// - fy なし: せん断降伏耐力が ∞ となり降伏しない。
+/// - fy=0（非正値）: 「設定済み」と素通しすると要素生成（`steel_fiber_material`）が
+///   解析スレッド内で panic し、UI には「解析スレッドが異常終了しました」としか
+///   表示されず原因が利用者に伝わらない（時刻歴解析スレッドの panic 不具合の回帰）。
+/// - Fc=0（非正値）: コンクリートのファイバが剛性 0 となり剛性行列が特異化する。
 #[test]
-fn test_issue_when_rc_member_fc_not_positive() {
-    let mut mat = concrete_material();
-    mat.fc = Some(0.0);
-    let model = beam_model(rc_section(), mat);
-    let issues = nonlinear_input_issues(&model);
-    assert_eq!(issues.len(), 1, "{:?}", issues);
-    assert!(issues[0].contains("Fc"), "{}", issues[0]);
-}
+fn test_issue_when_shapeless_member_lacks_positive_strength() {
+    let shapeless = || {
+        let mut sec = rc_section();
+        sec.shape = None;
+        sec
+    };
 
-/// fy も Fc もない材料の部材はエラーとする（せん断降伏耐力が ∞ となり降伏しない）。
-#[test]
-fn test_issue_when_material_has_no_strength() {
-    let mut sec = rc_section();
-    sec.shape = None;
     let mut mat = steel_material();
     mat.fy = None;
-    let model = beam_model(sec, mat);
+    let model = beam_model(shapeless(), mat);
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("fy"), "{}", issues[0]);
-}
 
-/// 回帰テスト（時刻歴解析スレッドの panic 不具合）: 断面形状未設定の部材で
-/// fy が 0（非正値）の材料は「設定済み」と素通しせずエラーとする。
-/// 素通しすると入力チェック後の要素生成（`steel_fiber_material`）が解析
-/// スレッド内で panic し、UI には「解析スレッドが異常終了しました」としか
-/// 表示されず原因が利用者に伝わらない。
-#[test]
-fn test_issue_when_shapeless_member_fy_not_positive() {
-    let mut sec = rc_section();
-    sec.shape = None;
     let mut mat = steel_material();
     mat.fy = Some(0.0);
-    let model = beam_model(sec, mat);
+    let model = beam_model(shapeless(), mat);
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("fy"), "{}", issues[0]);
     assert!(ensure_nonlinear_input(&model).is_err());
-}
 
-/// 断面形状未設定の部材で Fc が 0（非正値）の材料もエラーとする
-/// （コンクリートのファイバが剛性 0 となり剛性行列が特異化する）。
-#[test]
-fn test_issue_when_shapeless_member_fc_not_positive() {
-    let mut sec = rc_section();
-    sec.shape = None;
     let mut mat = steel_material();
     mat.fy = None;
     mat.fc = Some(0.0);
-    let model = beam_model(sec, mat);
+    let model = beam_model(shapeless(), mat);
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("Fc"), "{}", issues[0]);
@@ -265,13 +262,6 @@ fn steel_h_section() -> Section {
         flange_thick: 13.0,
     }
     .to_section(SectionId(0), "H400".into())
-}
-
-/// 鋼材断面形状＋ fy 設定済みは不備なし。
-#[test]
-fn test_no_issue_for_steel_shape_with_fy() {
-    let model = beam_model(steel_h_section(), steel_material());
-    assert!(nonlinear_input_issues(&model).is_empty());
 }
 
 /// 鋼材断面形状なのに fy 未設定の部材はエラーとする。
@@ -314,13 +304,6 @@ fn src_section_bare() -> Section {
         steel_flange_thick: 9.0,
     }
     .to_section(SectionId(0), "SRC".into())
-}
-
-/// SRC 断面は内蔵鉄骨の材料から降伏強度を解決できれば、主材料 fy 未設定でも不備なし。
-#[test]
-fn test_no_issue_for_src_section_with_steel_material() {
-    let model = beam_model(src_section(), concrete_material());
-    assert!(nonlinear_input_issues(&model).is_empty());
 }
 
 /// SRC 断面で内蔵鉄骨の材料も主材料 fy も解決できない部材はエラーとする。
@@ -384,24 +367,6 @@ fn test_issue_when_member_material_is_rebar() {
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("区分が鉄筋"), "{}", issues[0]);
-}
-
-/// 鋼断面にコンクリート区分の材料が付いても区分の不備とはしない。
-/// 構造種別は材料の区分で決まる仕様であり、H 形のコンクリート部材は
-/// 正しい入力である（断面形状は見た目であって力学的な性質ではない）。
-///
-/// ファイバー断面は形鋼の板要素を鋼材ファイバとして組み立てるため fy を要求するが、
-/// これは区分の矛盾ではなく材料強度の不足として扱う。
-#[test]
-fn test_no_category_issue_for_steel_shape_with_concrete_material() {
-    let mut mat = concrete_material();
-    mat.fy = Some(235.0);
-    let model = beam_model(steel_h_section(), mat);
-    assert!(
-        nonlinear_input_issues(&model).is_empty(),
-        "{:?}",
-        nonlinear_input_issues(&model)
-    );
 }
 
 /// 複数件の不備はメッセージへ 5 件まで列挙し、残りは件数で示す。

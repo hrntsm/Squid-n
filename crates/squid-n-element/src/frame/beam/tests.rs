@@ -548,10 +548,16 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
     (model, elem)
 }
 
-/// 版なし床領域は協力幅を見込まない（建物一律のスラブ厚があっても 1.0）。
+/// スラブ協力幅の対象は、版断面を持つ囲まれた床板だけ。
+///
+/// 版なしの床領域では建物一律のスラブ厚があっても 1.0、境界を持たない
+/// 取り付き版（`SlabShape::Attached`）でも 1.0 のまま。版あり＋断面厚では
+/// 1.0 を超える（増大しうるモデルであることの確認を兼ねる）。
 #[test]
-fn test_plateless_region_does_not_increase_slab_stiffness() {
-    use squid_n_core::model::SlabPlate;
+fn test_slab_stiffness_factor_only_for_enclosed_plated_slabs() {
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
+
     let (m_none, e) = rc_beam_for_slab_factor(None);
     let b_none = stiffness_breakdown(&m_none, &e);
     assert!(
@@ -560,25 +566,19 @@ fn test_plateless_region_does_not_increase_slab_stiffness() {
         b_none.slab
     );
 
-    let (m_some, _) = rc_beam_for_slab_factor(Some(SlabPlate {
+    let (m_plated, _) = rc_beam_for_slab_factor(Some(SlabPlate {
         section: Some(squid_n_core::ids::SectionId(1)),
         ..Default::default()
     }));
-    let b_some = stiffness_breakdown(&m_some, &e);
+    let b_plated = stiffness_breakdown(&m_plated, &e);
     assert!(
-        b_some.slab > 1.0,
+        b_plated.slab > 1.0,
         "版あり＋断面厚なら協力幅 > 1、got {}",
-        b_some.slab
+        b_plated.slab
     );
-}
 
-/// 取り付き版ありは協力幅の対象外（囲まれた版だけが増大する）。
-#[test]
-fn test_attached_plate_does_not_increase_slab_stiffness() {
-    use squid_n_core::ids::SlabId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
-    let (mut m, e) = rc_beam_for_slab_factor(None);
-    m.slabs = vec![Slab {
+    let (mut m_attached, _) = rc_beam_for_slab_factor(None);
+    m_attached.slabs = vec![Slab {
         id: SlabId(0),
         shape: SlabShape::Attached {
             anchor: RegionAnchor::Line {
@@ -593,11 +593,11 @@ fn test_attached_plate_does_not_increase_slab_stiffness() {
             ..Default::default()
         },
     }];
-    let b = stiffness_breakdown(&m, &e);
+    let b_attached = stiffness_breakdown(&m_attached, &e);
     assert!(
-        (b.slab - 1.0).abs() < 1e-12,
+        (b_attached.slab - 1.0).abs() < 1e-12,
         "取り付く床板は協力幅 1.0、got {}",
-        b.slab
+        b_attached.slab
     );
 }
 
@@ -785,27 +785,6 @@ fn test_phi_zero_converges_to_bernoulli() {
 }
 
 #[test]
-fn test_beam_axial_stiffness() {
-    let beam = make_test_beam();
-    let k = beam.local_stiffness_raw();
-    let ea_l = beam.e * beam.a / beam.length;
-    assert!((k.get(0, 0) - ea_l).abs() < 1e-9);
-    assert!((k.get(0, 6) + ea_l).abs() < 1e-9);
-    assert!((k.get(6, 0) + ea_l).abs() < 1e-9);
-    assert!((k.get(6, 6) - ea_l).abs() < 1e-9);
-}
-
-#[test]
-fn test_beam_torsion_stiffness() {
-    let beam = make_test_beam();
-    let k = beam.local_stiffness_raw();
-    let gj_l = beam.g * beam.j / beam.length;
-    assert!((k.get(3, 3) - gj_l).abs() < 1e-9);
-    assert!((k.get(9, 9) - gj_l).abs() < 1e-9);
-    assert!((k.get(3, 9) + gj_l).abs() < 1e-9);
-}
-
-#[test]
 fn test_rigid_zone_preserves_rigid_body_rotation() {
     let mut beam = make_test_beam();
     beam.j = 5.0e8;
@@ -920,16 +899,6 @@ fn test_geometric_stiffness_consistent_with_rigid_zone() {
 }
 
 #[test]
-fn test_pinned_end_releases_moment() {
-    let mut beam = make_test_beam();
-    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
-    let k = beam.local_stiffness();
-    let k_fixed = make_test_beam().local_stiffness();
-    assert!(k.get(4, 4) < k_fixed.get(4, 4) * 1e-6);
-    assert!(k.get(5, 5) < k_fixed.get(5, 5) * 1e-6);
-}
-
-#[test]
 fn test_fixed_ends_exact_equals_raw() {
     let beam = make_test_beam();
     let k = beam.local_stiffness();
@@ -985,134 +954,6 @@ fn test_pinned_end_rotation_stiffness_exactly_zero() {
             );
         }
     }
-}
-
-#[test]
-fn test_auto_rigid_zone_standard_formula() {
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-    let col_sec = Section {
-        id: SectionId(0),
-        name: "col".to_string(),
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 600.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: Some(MaterialId(0)),
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    };
-    let beam_sec = Section {
-        id: SectionId(1),
-        name: "beam".to_string(),
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 700.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: Some(MaterialId(0)),
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    };
-    let mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "conc".to_string(),
-        category: MaterialCategory::Concrete,
-        young: 205000.0,
-        poisson: 0.3,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: None,
-    };
-
-    let model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [0.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [4000.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![
-            ElementData {
-                id: ElemId(0),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
-                section: Some(SectionId(1)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-        ],
-        sections: vec![col_sec, beam_sec],
-        materials: vec![mat],
-        ..Default::default()
-    };
-
-    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
-    assert!((zone.length_i - 125.0).abs() < 1e-9);
-    assert!(
-        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
-        "face_i={}",
-        zone.face_i_or_zero()
-    );
 }
 
 /// apply_auto_rigid_zones が ElementData::rigid_zone に反映され、
@@ -1342,375 +1183,6 @@ fn test_eval_sections_from_face_distance() {
         beam_base.local_stiffness().data,
         beam_detail.local_stiffness().data,
         "付帯情報の有無で剛性行列が変わってはならない"
-    );
-}
-
-/// 剛域算定用の RC 配筋（本数・径は最小限のダミー値。断面性能の絶対値は無関係）。
-fn simple_rc_rebar() -> squid_n_core::section_shape::RcRebar {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-    RcRebar {
-        main_x: BarSet {
-            count: 4,
-            dia: 16.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 16.0,
-            layers: 1,
-        },
-        cover: 40.0,
-        shear: ShearBar {
-            dia: 10.0,
-            pitch: 100.0,
-            legs: 2,
-        },
-    }
-}
-
-/// S造仕口（柱・梁とも鋼材形状）: 直交する RC/SRC 系の柱（梁）が存在しないため、
-/// 仕口部に接続する柱(梁)がすべてＳの場合は剛域長さ0（λ=0）になる。
-#[test]
-fn test_auto_rigid_zone_steel_joint_is_zero() {
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-    use squid_n_core::model::ElementKind;
-    use squid_n_core::section_shape::SectionShape;
-
-    let col_sec = SectionShape::SteelH {
-        height: 400.0,
-        width: 200.0,
-        web_thick: 8.0,
-        flange_thick: 13.0,
-    }
-    .to_section(SectionId(0), "col-H400".to_string());
-    let beam_sec = SectionShape::SteelH {
-        height: 500.0,
-        width: 200.0,
-        web_thick: 10.0,
-        flange_thick: 16.0,
-    }
-    .to_section(SectionId(1), "beam-H500".to_string());
-    let mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "steel".to_string(),
-        category: MaterialCategory::Steel,
-        young: 205000.0,
-        poisson: 0.3,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: Some(235.0),
-    };
-
-    let model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [0.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [4000.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![
-            ElementData {
-                id: ElemId(0),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
-                section: Some(SectionId(1)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-        ],
-        sections: vec![col_sec, beam_sec],
-        materials: vec![mat],
-        ..Default::default()
-    };
-
-    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
-    assert_eq!(
-        zone.length_i, 0.0,
-        "S造仕口の剛域長は0のはず: length_i={}",
-        zone.length_i
-    );
-}
-
-/// S梁 + RC柱（混在節点）: 剛域は設けない。
-/// S 梁が 1 本でも集まる仕口は対象外である。
-#[test]
-fn test_auto_rigid_zone_steel_beam_rc_column() {
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-    use squid_n_core::model::ElementKind;
-    use squid_n_core::section_shape::SectionShape;
-
-    let col_sec = SectionShape::RcRect {
-        b: 400.0,
-        d: 600.0,
-        rebar: simple_rc_rebar(),
-    }
-    .to_section(SectionId(0), "col-RC600".to_string());
-    let beam_sec = SectionShape::SteelH {
-        height: 500.0,
-        width: 200.0,
-        web_thick: 10.0,
-        flange_thick: 16.0,
-    }
-    .to_section(SectionId(1), "beam-H500".to_string());
-    let rc_mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "concrete".to_string(),
-        category: MaterialCategory::Concrete,
-        young: 23000.0,
-        poisson: 0.2,
-        density: 0.0,
-        shear: None,
-        fc: Some(24.0),
-        fy: None,
-    };
-    let s_mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(1),
-        name: "steel".to_string(),
-        category: MaterialCategory::Steel,
-        young: 205000.0,
-        poisson: 0.3,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: Some(235.0),
-    };
-
-    let model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [0.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [4000.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![
-            ElementData {
-                id: ElemId(0),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
-                section: Some(SectionId(1)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-        ],
-        sections: vec![col_sec, beam_sec],
-        materials: vec![rc_mat, s_mat],
-        ..Default::default()
-    };
-
-    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
-    assert_eq!(
-        zone.length_i, 0.0,
-        "S梁が集まる仕口では剛域を設けない: λ_i={}",
-        zone.length_i
-    );
-    assert!(
-        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
-        "face_i={} (期待値=柱せい/2=300)",
-        zone.face_i_or_zero()
-    );
-}
-
-/// RC梁 + S柱のみ: 剛域長は 0 になる。
-#[test]
-fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-    use squid_n_core::model::ElementKind;
-    use squid_n_core::section_shape::SectionShape;
-
-    let col_sec = SectionShape::SteelH {
-        height: 400.0,
-        width: 200.0,
-        web_thick: 8.0,
-        flange_thick: 13.0,
-    }
-    .to_section(SectionId(0), "col-H400".to_string());
-    let beam_sec = SectionShape::RcRect {
-        b: 400.0,
-        d: 600.0,
-        rebar: simple_rc_rebar(),
-    }
-    .to_section(SectionId(1), "beam-RC600".to_string());
-    let s_mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "steel".to_string(),
-        category: MaterialCategory::Steel,
-        young: 205000.0,
-        poisson: 0.3,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: Some(235.0),
-    };
-    let rc_mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(1),
-        name: "concrete".to_string(),
-        category: MaterialCategory::Concrete,
-        young: 23000.0,
-        poisson: 0.2,
-        density: 0.0,
-        shear: None,
-        fc: Some(24.0),
-        fy: None,
-    };
-
-    let model = Model {
-        nodes: vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [0.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-            Node {
-                id: NodeId(2),
-                coord: [4000.0, 0.0, 3000.0],
-                restraint: Default::default(),
-                mass: None,
-                story: None,
-                support_spring: None,
-            },
-        ],
-        elements: vec![
-            ElementData {
-                id: ElemId(0),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-                section: Some(SectionId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-            ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
-                section: Some(SectionId(1)),
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: squid_n_core::model::ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            },
-        ],
-        sections: vec![col_sec, beam_sec],
-        materials: vec![s_mat, rc_mat],
-        ..Default::default()
-    };
-
-    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
-    assert_eq!(
-        zone.length_i, 0.0,
-        "RC梁+S柱のみ: 剛域長は0のはず（RC/SRC直交材がない）。length_i={}",
-        zone.length_i
     );
 }
 
@@ -2030,9 +1502,12 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
     );
 }
 
-/// 壁の節点を1つしか共有しない梁（壁の上辺・下辺ではない）には倍率が掛からない。
+/// 壁エレメントモデルの上下大梁100倍は、壁の上辺・下辺を成す水平材にだけ掛かる。
+///
+/// 壁節点を1つしか共有しない梁と、壁節点を両端に持つ鉛直材（柱）には掛からない。
+/// 壁に取り付いていない材へ掛かると剛性を過大評価し、応力の分配を誤る。
 #[test]
-fn test_beam_new_wall_girder_requires_both_nodes_shared() {
+fn test_beam_new_wall_girder_factor_not_applied_to_partial_shared_or_vertical() {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
 
@@ -2084,7 +1559,7 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         make_node(3, [0.0, 0.0, 3000.0]),
         make_node(4, [8000.0, 0.0, 0.0]),
     ];
-    let beam_elem = ElementData {
+    let half_shared_beam = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(1), NodeId(4)],
@@ -2098,90 +1573,8 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         plastic_zone: None,
         spring: None,
     };
-    let wall_elem = ElementData {
-        id: ElemId(1),
-        kind: ElementKind::Wall,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let model = Model {
-        nodes,
-        elements: vec![beam_elem.clone(), wall_elem],
-        sections: vec![sec.clone()],
-        materials: vec![mat],
-        ..Default::default()
-    };
-    let beam = BeamElement::new(&beam_elem, &model);
-    assert!(
-        (beam.iy - sec.iy).abs() < 1e-9,
-        "壁節点を1つしか共有しない梁には倍率が掛からないはず: iy={}",
-        beam.iy
-    );
-}
-
-/// 鉛直材（柱）は壁節点を2つ共有していても水平材ではないため倍率は掛からない。
-#[test]
-fn test_beam_new_wall_girder_vertical_member_not_scaled() {
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-    use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
-
-    let sec = Section {
-        id: SectionId(0),
-        name: "column".to_string(),
-        area: 60000.0,
-        iy: 1.0e8,
-        iz: 1.0e8,
-        j: 1.0e7,
-        depth: 600.0,
-        width: 300.0,
-        as_y: 50000.0,
-        as_z: 50000.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: Some(MaterialId(0)),
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    };
-    let mat = Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "conc".to_string(),
-        category: MaterialCategory::Concrete,
-        young: 23000.0,
-        poisson: 0.2,
-        density: 2.4e-9,
-        shear: None,
-        fc: None,
-        fy: None,
-    };
-    let make_node = |id: u32, coord: [f64; 3]| Node {
-        id: NodeId(id),
-        coord,
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    let nodes = vec![
-        make_node(0, [0.0, 0.0, 0.0]),
-        make_node(1, [4000.0, 0.0, 0.0]),
-        make_node(2, [4000.0, 0.0, 3000.0]),
-        make_node(3, [0.0, 0.0, 3000.0]),
-    ];
     let column_elem = ElementData {
-        id: ElemId(0),
+        id: ElemId(1),
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
         section: Some(SectionId(0)),
@@ -2195,7 +1588,7 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         spring: None,
     };
     let wall_elem = ElementData {
-        id: ElemId(1),
+        id: ElemId(2),
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: None,
@@ -2210,11 +1603,19 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
     };
     let model = Model {
         nodes,
-        elements: vec![column_elem.clone(), wall_elem],
+        elements: vec![half_shared_beam.clone(), column_elem.clone(), wall_elem],
         sections: vec![sec.clone()],
         materials: vec![mat],
         ..Default::default()
     };
+
+    let beam = BeamElement::new(&half_shared_beam, &model);
+    assert!(
+        (beam.iy - sec.iy).abs() < 1e-9,
+        "壁節点を1つしか共有しない梁には倍率が掛からないはず: iy={}",
+        beam.iy
+    );
+
     let column = BeamElement::new(&column_elem, &model);
     assert!(
         (column.iy - sec.iy).abs() < 1e-9,

@@ -223,42 +223,27 @@ fn test_parse_tsv_keeps_empty_cells() {
 // ---- tile_block ----
 
 #[test]
-fn test_tile_block_multiple_both_axes() {
+fn test_tile_block_tiles_both_axes() {
     // 1×1 → 3×2: 単一値での範囲埋め
     let t = tile_block(&block(&[&["7"]]), 3, 2);
     assert_eq!(t, block(&[&["7", "7"], &["7", "7"], &["7", "7"]]));
-}
-
-#[test]
-fn test_tile_block_multiple_rows_only() {
     // 2×1 → 4×1: 行方向に 2 回繰り返し
     let t = tile_block(&block(&[&["1"], &["2"]]), 4, 1);
     assert_eq!(t, block(&[&["1"], &["2"], &["1"], &["2"]]));
-}
-
-#[test]
-fn test_tile_block_multiple_cols_only() {
     // 1×2 → 1×4: 列方向に 2 回繰り返し
     let t = tile_block(&block(&[&["1", "2"]]), 1, 4);
     assert_eq!(t, block(&[&["1", "2", "1", "2"]]));
 }
 
 #[test]
-fn test_tile_block_not_divisible_returns_original() {
+fn test_tile_block_returns_original_when_not_expanding() {
     // 2×1 → 3×1: 割り切れないので展開しない（起点から 2 セルだけ貼る）
     let b = block(&[&["1"], &["2"]]);
     assert_eq!(tile_block(&b, 3, 1), b);
-}
-
-#[test]
-fn test_tile_block_same_size_returns_original() {
     // 拡大方向でない（1 倍）は展開扱いにしない
     let b = block(&[&["1", "2"]]);
     assert_eq!(tile_block(&b, 1, 2), b);
-}
-
-#[test]
-fn test_tile_block_empty_block() {
+    // 空ブロックは素通し
     let b: Vec<Vec<String>> = vec![];
     assert_eq!(tile_block(&b, 3, 3), b);
     // 空行だけのブロック（最大列数 0）も素通し
@@ -351,10 +336,7 @@ fn test_plan_paste_counts_extra_rows() {
     .expect("はみ出し行があっても計画は成功する");
     assert_eq!(plan.extra_rows, 2); // 行 1..=4 に貼る → 表 3 行を 2 行超える
     assert_eq!(plan.set.len(), 4);
-}
 
-#[test]
-fn test_plan_paste_extra_rows_zero_when_all_cells_empty() {
     // 全セル空なら適用対象がなく、はみ出し行も 0
     let plan = plan_paste(&block(&[&[""], &[""]]), cell(2, 0), 3, 1, validate_f64)
         .expect("全空セルも成功する");
@@ -386,13 +368,9 @@ fn test_plan_paste_validate_receives_target_coords() {
 // ---- rect_to_tsv ----
 
 #[test]
-fn test_rect_to_tsv_single_cell() {
+fn test_rect_to_tsv() {
     let s = rect_to_tsv(rect(1, 1, 2, 2), |r, c| format!("{r}-{c}"));
     assert_eq!(s, "1-2");
-}
-
-#[test]
-fn test_rect_to_tsv_rectangle() {
     let s = rect_to_tsv(rect(0, 1, 0, 2), |r, c| format!("{r}{c}"));
     assert_eq!(s, "00\t01\t02\n10\t11\t12");
 }

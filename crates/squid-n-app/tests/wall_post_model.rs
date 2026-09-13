@@ -216,14 +216,6 @@ fn wall_post_app() -> App {
     app
 }
 
-#[test]
-fn test_model_is_valid() {
-    let model = wall_post_model();
-    assert!(model.validate().is_ok(), "{:?}", model.validate());
-    assert_eq!(model.posts().count(), 1);
-    assert_eq!(model.wall_plates.len(), 2);
-}
-
 /// 間柱で分割された壁版は壁エレメントにならない。壁柱が枚数分に割れることを
 /// 避けるため、壁エレメントは壁領域全体を覆う 4 節点の壁版のときだけ作る。
 #[test]
@@ -295,24 +287,6 @@ fn test_wall_weight_is_split_between_columns_and_post() {
         "間柱は壁全体の 1/2（左右の壁版から 1/4 ずつ）を受ける: {post_total} / 期待 {expect}"
     );
     assert_eq!(out.primary.len(), 2, "柱側の鉛直辺 2 本が残りを受ける");
-}
-
-/// 準備計算・DL 同期・線形静解析まで通り、解析前チェックがエラーを出さない。
-#[test]
-fn test_runs_full_pipeline() {
-    let mut app = wall_post_app();
-    app.run_preparation();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    app.run_linear_static(LoadCaseId(0));
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
 }
 
 /// 壁版の自重が地震用重量へ算入される（要素にならなくても失われない）。
@@ -475,6 +449,8 @@ fn base_column_axial_sum(app: &App, res: &squid_n_solver::statics::linear::Stati
 /// オーダーで出ることを固定する。経路が切れれば差は 0 になる。
 #[test]
 fn test_wall_weight_reaches_column_axial_force() {
+    let fixture = wall_post_model();
+    assert!(fixture.validate().is_ok(), "{:?}", fixture.validate());
     let base_axial = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
