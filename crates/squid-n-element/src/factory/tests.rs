@@ -74,67 +74,51 @@ fn make_diaphragm_model() -> Model {
     }
 }
 
+/// フォースレジームの解決: 明示指定はそのまま、Auto はトポロジ
+/// （剛床所属 × 鉛直材か）から判定する。
 #[test]
-fn test_resolve_force_regime_explicit() {
+fn test_resolve_force_regime_explicit_and_auto() {
     let model = make_diaphragm_model();
-    let elem = ElementData {
-        id: ElemId(0),
+    let make = |id: u32, nodes: [NodeId; 2], force_regime: ForceRegime| ElementData {
+        id: ElemId(id),
         kind: ElementKind::Beam,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        nodes: smallvec::smallvec![nodes[0], nodes[1]],
         section: Some(SectionId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::UniaxialBendingShear,
+        force_regime,
         rigid_zone: Default::default(),
         plastic_zone: None,
         spring: None,
     };
+
+    let beam_explicit = make(0, [NodeId(0), NodeId(1)], ForceRegime::UniaxialBendingShear);
     assert!(matches!(
-        resolve_force_regime(&elem, &model),
+        resolve_force_regime(&beam_explicit, &model),
         ResolvedRegime::ConcentratedSpring
     ));
-}
-
-#[test]
-fn test_resolve_force_regime_auto() {
-    let model = make_diaphragm_model();
-    let beam = ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Beam,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 1.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
+    let col_explicit = make(1, [NodeId(0), NodeId(2)], ForceRegime::AxialBendingInteract);
     assert!(matches!(
-        resolve_force_regime(&beam, &model),
+        resolve_force_regime(&col_explicit, &model),
+        ResolvedRegime::Fiber
+    ));
+    // 柱トポロジ（Auto なら Fiber）でも明示指定が優先されること
+    let col_explicit_spring = make(2, [NodeId(0), NodeId(2)], ForceRegime::UniaxialBendingShear);
+    assert!(matches!(
+        resolve_force_regime(&col_explicit_spring, &model),
         ResolvedRegime::ConcentratedSpring
     ));
 
-    let col = ElementData {
-        id: ElemId(1),
-        kind: ElementKind::Beam,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 1.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
+    let beam_auto = make(0, [NodeId(0), NodeId(1)], ForceRegime::Auto);
     assert!(matches!(
-        resolve_force_regime(&col, &model),
+        resolve_force_regime(&beam_auto, &model),
+        ResolvedRegime::ConcentratedSpring
+    ));
+    let col_auto = make(1, [NodeId(0), NodeId(2)], ForceRegime::Auto);
+    assert!(matches!(
+        resolve_force_regime(&col_auto, &model),
         ResolvedRegime::Fiber
     ));
 }
@@ -146,12 +130,12 @@ fn test_resolve_force_regime_auto() {
 /// (1) 材端ばねが直列に入って弾性剛性が落ち、(2) 材端集中ばね梁は
 /// `recover_forces` を持たないため部材内力が丸ごと欠落する。
 #[test]
-fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
+fn test_build_behavior_linear_is_always_elastic_beam() {
     let model = make_diaphragm_model();
-    let beam = ElementData {
+    let make = |nodes: [NodeId; 2]| ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        nodes: smallvec::smallvec![nodes[0], nodes[1]],
         section: Some(SectionId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
@@ -162,55 +146,30 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
         plastic_zone: None,
         spring: None,
     };
-    assert!(matches!(
-        resolve_force_regime(&beam, &model),
-        ResolvedRegime::ConcentratedSpring
-    ));
+    let beam = make([NodeId(0), NodeId(1)]);
+    let col = make([NodeId(0), NodeId(2)]);
 
-    let behavior = build_behavior(&beam, &model);
-    assert!(
-        behavior.recover_forces(&[0.0; 12]).is_some(),
-        "線形解析の梁は内力を回収できる弾性 BeamElement であること"
-    );
-    let elastic = crate::frame::beam::BeamElement::new(&beam, &model);
-    let k_ref = elastic.local_stiffness();
-    let k_ref = elastic.axis.to_global(&k_ref);
-    let k = behavior.tangent_stiffness(&crate::behavior::Ctx { model: &model });
-    for i in 0..12 {
-        for j in 0..12 {
-            assert!(
-                (k.get(i, j) - k_ref.get(i, j)).abs() <= k_ref.get(i, j).abs() * 1e-12 + 1e-9,
-                "K[{i}][{j}] が弾性梁と一致しない: {} vs {}",
-                k.get(i, j),
-                k_ref.get(i, j)
-            );
+    let ctx = crate::behavior::Ctx { model: &model };
+    for (label, data) in [("集中ばね判定", &beam), ("ファイバー判定", &col)] {
+        let behavior = build_behavior(data, &model);
+        assert!(
+            behavior.recover_forces(&[0.0; 12]).is_some(),
+            "{label}: 線形解析の梁は内力を回収できる弾性 BeamElement であること"
+        );
+        let elastic = crate::frame::beam::BeamElement::new(data, &model);
+        let k_ref = elastic.axis.to_global(&elastic.local_stiffness());
+        let k = behavior.tangent_stiffness(&ctx);
+        for i in 0..12 {
+            for j in 0..12 {
+                assert!(
+                    (k.get(i, j) - k_ref.get(i, j)).abs() <= k_ref.get(i, j).abs() * 1e-12 + 1e-9,
+                    "{label}: K[{i}][{j}] が弾性梁と一致しない: {} vs {}",
+                    k.get(i, j),
+                    k_ref.get(i, j)
+                );
+            }
         }
     }
-}
-
-#[test]
-fn test_build_behavior_fiber_still_fiber() {
-    let model = make_diaphragm_model();
-    let col = ElementData {
-        id: ElemId(1),
-        kind: ElementKind::Beam,
-        nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 1.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let behavior = build_behavior(&col, &model);
-    assert!(
-        behavior.recover_forces(&[0.0; 12]).is_some(),
-        "Fiber regime should use BeamElement for linear analysis"
-    );
-    assert_eq!(behavior.n_dof(), 12);
 }
 
 #[test]
@@ -355,45 +314,37 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
     (model, elem)
 }
 
-/// 一般ブレース（引張専用でない）: build_behavior は factor=1.0 の TrussElement
-/// を生成し、軸剛性 K = E·A/L に一致する（材料力学・トラス要素）。
+/// ブレース: 線形・非線形のどちらの生成でも要素側の特別扱いはせず、全剛性
+/// E·A/L の TrussElement を生成する。引張専用の圧縮側無効化は線形応力解析の
+/// active-set 反復で扱う。
 #[test]
-fn test_build_behavior_brace_normal_full_stiffness() {
-    let (model, elem) = make_brace_model(false);
-    let behavior = build_behavior(&elem, &model);
-    let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&ctx);
+fn test_build_behavior_brace_uses_full_truss_stiffness() {
     let ea_l = 205000.0 * 2000.0 / 4000.0;
-    assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
-}
+    for tension_only in [false, true] {
+        let (model, elem) = make_brace_model(tension_only);
+        let ctx = crate::behavior::Ctx { model: &model };
+        let k = build_behavior(&elem, &model).tangent_stiffness(&ctx);
+        assert!(
+            (k.get(0, 0) - ea_l).abs() < 1e-6,
+            "線形 tension_only={tension_only}: k00={}",
+            k.get(0, 0)
+        );
+    }
 
-/// 引張専用ブレース: 要素側では特別扱いせず、build_behavior は全剛性 E·A/L の
-/// TrussElement を生成する（圧縮側の無効化は線形応力解析の active-set 反復で扱う）。
-#[test]
-fn test_build_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
-    let behavior = build_behavior(&elem, &model);
     let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&ctx);
-    let ea_l = 205000.0 * 2000.0 / 4000.0;
-    assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
-}
-
-/// 引張専用ブレース: 弾塑性解析（build_nonlinear_behavior）でも全剛性 E·A/L の
-/// TrussElement を生成する（要素側では特別扱いしない）。
-#[test]
-fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
-    let (model, elem) = make_brace_model(true);
-    let behavior = build_nonlinear_behavior(
+    let k = build_nonlinear_behavior(
         &elem,
         &model,
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
+    )
+    .tangent_stiffness(&ctx);
+    assert!(
+        (k.get(0, 0) - ea_l).abs() < 1e-6,
+        "非線形 tension_only: k00={}",
+        k.get(0, 0)
     );
-    let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&ctx);
-    let ea_l = 205000.0 * 2000.0 / 4000.0;
-    assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
 
 /// 壁要素の開口低減: wall_attrs の開口面積からせん断剛性が低減されること
@@ -827,6 +778,11 @@ fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
     );
 }
 
+/// 材端曲げバネの降伏時剛性低下率 αy。
+/// - 形状未設定・非 RC 矩形・鉛直材（柱）は既定 0.3。
+/// - RC 矩形の梁は菅野式。b=400・D=700・4-D22（1 段）・かぶり 50・帯筋 D10・
+///   可撓長 5000・Ec=20000 のときの手計算値 αy≈0.19546
+///   （pt=0.002715、a/D=3.571、d/D=629/700、n=10.25）。
 #[test]
 fn test_flexural_alpha_y_sugano_for_rc_beam() {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
@@ -871,20 +827,12 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
     model.sections[0].shape = Some(SectionShape::RcRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar.clone(),
+        rebar,
     });
-    let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(700.0, &rebar);
-    let expected = squid_n_core::rc_capacity::rc_alpha_y_sugano(
-        at / (400.0 * 700.0),
-        2500.0 / 700.0,
-        d_eff / 700.0,
-        205000.0 / 20000.0,
-    );
     let got = flexural_alpha_y(&beam, &model);
     assert!(
-        (got - expected).abs() < 1e-12,
-        "αy: got={got}, expected={expected}"
+        (got - 0.195_459_048_474_485).abs() < 1e-12,
+        "菅野式の αy: got={got}"
     );
     assert!(got > 0.0 && got < 1.0);
     assert!(

@@ -45,8 +45,9 @@ fn seeded_model(n_nodes: u32, n_elems: u32) -> Model {
     model
 }
 
+/// 節点の単純な値置換コマンド（座標・拘束・支点ばね）が往復すること。
 #[test]
-fn test_set_node_coord_roundtrip() {
+fn test_node_value_setters_roundtrip() {
     let mut model = empty_model();
     model.nodes.push(Node {
         id: NodeId(0),
@@ -58,48 +59,18 @@ fn test_set_node_coord_roundtrip() {
     });
     let mut stack = UndoStack::new();
 
-    let cmd = SetNodeCoord {
-        node: NodeId(0),
-        coord: [1000.0, 2000.0, 0.0],
-    };
-    stack.run(&mut model, Box::new(cmd));
-    assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 0.0]);
-
-    stack.undo(&mut model);
-    assert_eq!(model.nodes[0].coord, [0.0, 0.0, 0.0]);
-
-    stack.redo(&mut model);
-    assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 0.0]);
-}
-
-#[test]
-fn test_set_node_coord_invalid_id_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
     stack.run(
         &mut model,
         Box::new(SetNodeCoord {
-            node: NodeId(99),
-            coord: [1.0, 2.0, 3.0],
+            node: NodeId(0),
+            coord: [1000.0, 2000.0, 0.0],
         }),
     );
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.nodes.is_empty());
-}
-
-#[test]
-fn test_set_node_restraint_roundtrip() {
-    let mut model = empty_model();
-    model.nodes.push(Node {
-        id: NodeId(0),
-        coord: [0.0, 0.0, 0.0],
-        restraint: Dof6Mask::FREE,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    let mut stack = UndoStack::new();
+    assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 0.0]);
+    stack.undo(&mut model);
+    assert_eq!(model.nodes[0].coord, [0.0, 0.0, 0.0]);
+    stack.redo(&mut model);
+    assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 0.0]);
 
     stack.run(
         &mut model,
@@ -109,42 +80,10 @@ fn test_set_node_restraint_roundtrip() {
         }),
     );
     assert_eq!(model.nodes[0].restraint, Dof6Mask::PINNED);
-
     stack.undo(&mut model);
     assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
-
     stack.redo(&mut model);
     assert_eq!(model.nodes[0].restraint, Dof6Mask::PINNED);
-}
-
-#[test]
-fn test_set_node_restraint_invalid_id_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetNodeRestraint {
-            node: NodeId(99),
-            restraint: Dof6Mask::FIXED,
-        }),
-    );
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.nodes.is_empty());
-}
-
-#[test]
-fn test_set_node_support_spring_roundtrip() {
-    let mut model = empty_model();
-    model.nodes.push(Node {
-        id: NodeId(0),
-        coord: [0.0, 0.0, 0.0],
-        restraint: Dof6Mask(0b111110), // Ux のみ自由
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    let mut stack = UndoStack::new();
 
     let spring = [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     stack.run(
@@ -155,10 +94,8 @@ fn test_set_node_support_spring_roundtrip() {
         }),
     );
     assert_eq!(model.nodes[0].support_spring, Some(spring));
-
     stack.undo(&mut model);
     assert_eq!(model.nodes[0].support_spring, None);
-
     stack.redo(&mut model);
     assert_eq!(model.nodes[0].support_spring, Some(spring));
 
@@ -201,50 +138,12 @@ fn test_set_node_support_spring_clamps_negative_to_zero() {
     );
 }
 
+/// 節点追加は末尾へ `NodeId(len)` で積まれ、undo/redo で往復すること。
 #[test]
-fn test_set_node_support_spring_invalid_id_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetNodeSupportSpring {
-            node: NodeId(99),
-            spring: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-        }),
-    );
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.nodes.is_empty());
-}
-
-#[test]
-fn test_add_node_roundtrip() {
+fn test_add_node_assigns_id_and_roundtrips() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
 
-    stack.run(
-        &mut model,
-        Box::new(AddNode {
-            coord: [1000.0, 2000.0, 3000.0],
-            restraint: Dof6Mask::FREE,
-        }),
-    );
-    assert_eq!(model.nodes.len(), 1);
-    assert_eq!(model.nodes[0].id, NodeId(0));
-    assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 3000.0]);
-
-    stack.undo(&mut model);
-    assert_eq!(model.nodes.len(), 0);
-
-    stack.redo(&mut model);
-    assert_eq!(model.nodes.len(), 1);
-    assert_eq!(model.nodes[0].id, NodeId(0));
-}
-
-#[test]
-fn test_add_node_id_equals_index() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
     for i in 0..3 {
         stack.run(
             &mut model,
@@ -253,10 +152,16 @@ fn test_add_node_id_equals_index() {
                 restraint: Dof6Mask::FREE,
             }),
         );
+        assert_eq!(model.nodes[i].id, NodeId(i as u32));
     }
-    for (i, node) in model.nodes.iter().enumerate() {
-        assert_eq!(node.id, NodeId(i as u32));
-    }
+    assert_eq!(model.nodes[2].coord, [2.0, 0.0, 0.0]);
+
+    stack.undo(&mut model);
+    assert_eq!(model.nodes.len(), 2);
+
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 3);
+    assert_eq!(model.nodes[2].id, NodeId(2));
 }
 
 #[test]
@@ -408,6 +313,41 @@ fn test_add_delete_member_load_roundtrip() {
     assert_eq!(model.load_cases[0].member[0], load);
 }
 
+/// 部材追加（`AddMember`）は `ElemId(elements.len())` の部材を末尾へ積み、
+/// ID・部材内容が入り、undo/redo で往復すること（成功経路）。
+#[test]
+fn test_add_member_assigns_id_and_roundtrips() {
+    let mut model = seeded_model(2, 0);
+    let mut stack = UndoStack::new();
+    let elem = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    assert!(stack.run(&mut model, Box::new(AddMember { elem })));
+    assert_eq!(model.elements.len(), 1);
+    assert_eq!(model.elements[0].id, ElemId(0));
+    assert_eq!(model.elements[0].nodes.to_vec(), vec![NodeId(0), NodeId(1)]);
+    assert!(model.validate().is_ok());
+
+    stack.undo(&mut model);
+    assert!(model.elements.is_empty(), "undo で部材が消える");
+
+    stack.redo(&mut model);
+    assert_eq!(model.elements.len(), 1);
+    assert_eq!(model.elements[0].id, ElemId(0));
+}
+
 #[test]
 fn test_delete_member_undo_preserves_member_load_order() {
     use squid_n_core::ids::LoadCaseId;
@@ -476,49 +416,26 @@ fn test_delete_member_undo_preserves_member_load_order() {
     );
 }
 
+/// 断面の追加（`AddSectionShape`）と削除（`DeleteSection`）が往復し、
+/// ID＝配列インデックスが保たれること。
 #[test]
-fn test_add_delete_member_roundtrip() {
-    let mut model = seeded_model(2, 0);
-    let mut stack = UndoStack::new();
-    let elem = ElementData {
-        id: squid_n_core::ids::ElemId(0),
-        kind: ElementKind::Beam,
-        nodes: smallvec![NodeId(0), NodeId(1)],
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [1.0, 0.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    stack.run(&mut model, Box::new(AddMember { elem }));
-    assert_eq!(model.elements.len(), 1);
-    stack.undo(&mut model);
-    assert_eq!(model.elements.len(), 0);
-    stack.redo(&mut model);
-    assert_eq!(model.elements.len(), 1);
-}
-
-#[test]
-fn test_add_section_shape_roundtrip() {
+fn test_section_add_delete_roundtrip() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
-    let shape = squid_n_section::shape::SectionShape::SteelH {
-        height: 300.0,
-        width: 300.0,
-        web_thick: 10.0,
-        flange_thick: 15.0,
-    };
-    let cmd = AddSectionShape {
-        shape,
-        new_id: SectionId(0),
-        name: "H-300x300x10x15".into(),
-        floor: None,
-    };
-    stack.run(&mut model, Box::new(cmd));
+    stack.run(
+        &mut model,
+        Box::new(AddSectionShape {
+            shape: squid_n_section::shape::SectionShape::SteelH {
+                height: 300.0,
+                width: 300.0,
+                web_thick: 10.0,
+                flange_thick: 15.0,
+            },
+            new_id: SectionId(0),
+            name: "H-300x300x10x15".into(),
+            floor: None,
+        }),
+    );
     assert_eq!(model.sections.len(), 1);
     assert_eq!(model.sections[0].id, SectionId(0));
 
@@ -528,6 +445,17 @@ fn test_add_section_shape_roundtrip() {
     stack.redo(&mut model);
     assert_eq!(model.sections.len(), 1);
     assert_eq!(model.sections[0].id, SectionId(0));
+
+    // 直接の削除（`DeleteSection`）→ undo でも ID が復元される。
+    stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
+    assert_eq!(model.sections.len(), 0);
+
+    stack.undo(&mut model);
+    assert_eq!(model.sections.len(), 1);
+    assert_eq!(model.sections[0].id, SectionId(0));
+
+    stack.redo(&mut model);
+    assert_eq!(model.sections.len(), 0);
 }
 
 #[test]
@@ -622,53 +550,6 @@ fn test_duplicate_section_for_member_roundtrip() {
     stack.redo(&mut model);
     assert_eq!(model.sections.len(), 2);
     assert_eq!(model.elements[0].section, Some(SectionId(1)));
-}
-
-#[test]
-fn test_edit_section_shape_invalid_id_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-
-    let shape = squid_n_section::shape::SectionShape::SteelBox {
-        height: 200.0,
-        width: 200.0,
-        thick: 12.0,
-        corner_r: 0.0,
-    };
-    let cmd = EditSectionShape {
-        section: SectionId(99),
-        new_shape: shape,
-    };
-    stack.run(&mut model, Box::new(cmd));
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.sections.is_empty());
-}
-
-#[test]
-fn test_delete_add_section_roundtrip() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-
-    let shape = squid_n_section::shape::SectionShape::SteelH {
-        height: 300.0,
-        width: 300.0,
-        web_thick: 10.0,
-        flange_thick: 15.0,
-    };
-    let sec = shape.to_section(SectionId(0), "H-300".into());
-    model.sections.push(sec);
-
-    let cmd = DeleteSection { id: SectionId(0) };
-    stack.run(&mut model, Box::new(cmd));
-    assert_eq!(model.sections.len(), 0);
-
-    stack.undo(&mut model);
-    assert_eq!(model.sections.len(), 1);
-    assert_eq!(model.sections[0].id, SectionId(0));
-
-    stack.redo(&mut model);
-    assert_eq!(model.sections.len(), 0);
 }
 
 #[test]
@@ -927,14 +808,19 @@ fn test_delete_section_referenced_by_joist() {
     assert!(model.validate().is_ok());
 }
 
+/// 材料追加（`AddMaterial`）は `MaterialId(materials.len())` の材料を末尾へ積み、
+/// 既存材料を保ったまま undo/redo で往復すること（成功経路）。
 #[test]
-fn test_add_delete_material_roundtrip() {
+fn test_add_material_assigns_id_and_roundtrips() {
     let mut model = empty_model();
+    stack_add_material(&mut model, "既存");
+    let before = model.clone();
     let mut stack = UndoStack::new();
-    stack.run(
+
+    assert!(stack.run(
         &mut model,
         Box::new(AddMaterial {
-            name: "SN400B".into(),
+            name: "追加".into(),
             category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
@@ -943,15 +829,27 @@ fn test_add_delete_material_roundtrip() {
             fy: Some(235.0),
             strength_factor: None,
         }),
+    ));
+    assert_eq!(model.materials.len(), 2);
+    assert_eq!(
+        model.materials[1].id,
+        MaterialId(1),
+        "新しい ID は末尾の添字"
     );
-    assert_eq!(model.materials.len(), 1);
-    assert_eq!(model.materials[0].id, MaterialId(0));
-    assert!(model.validate().is_ok());
+    assert_eq!(model.materials[1].name, "追加");
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     stack.undo(&mut model);
-    assert_eq!(model.materials.len(), 0);
+    assert_eq!(model.materials.len(), 1, "undo で追加分だけが消える");
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "undo で追加前の状態へ戻る"
+    );
+
     stack.redo(&mut model);
-    assert_eq!(model.materials.len(), 1);
+    assert_eq!(model.materials.len(), 2);
+    assert_eq!(model.materials[1].id, MaterialId(1));
+    assert_eq!(model.materials[1].name, "追加");
 }
 
 #[test]
@@ -1067,38 +965,14 @@ fn test_set_section_material_roundtrip_for_every_role() {
     }
 }
 
-/// 存在しない断面を指す割当は Noop（モデルを壊さない）。
+/// 床板・壁版への断面割当は往復し、実在しない断面の指定は Noop になる
+/// （`SetSlabSection` と `SetWallPlateSection` は同じ参照検証の規約に従う）。
 #[test]
-fn test_set_section_material_on_missing_section_is_noop() {
-    use crate::{SectionMaterialRole, SetSectionMaterial};
-
-    let mut model = two_member_model();
-    model.sections.push(bare_section(SectionId(0), None));
-    stack_add_material(&mut model, "Fc24");
-    let before = model.clone();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetSectionMaterial {
-            section: SectionId(9),
-            role: SectionMaterialRole::Main,
-            material: Some(MaterialId(0)),
-        }),
-    );
-    assert!(
-        model.eq_ignoring_dofmap(&before),
-        "存在しない断面への割当は無視する"
-    );
-}
-
-/// 床への断面割当は往復し、実在しない断面の指定は Noop になる。
-#[test]
-fn test_set_slab_section_roundtrip() {
-    use crate::{AddSlab, SetSlabSection};
+fn test_surface_section_assignment_roundtrip_and_rejects_dangling() {
+    use crate::{AddSlab, SetSlabSection, SetWallPlateSection};
     use squid_n_core::model::DistributionMethod;
 
-    let mut model = seeded_model(4, 0);
-    model.sections.push(bare_section(SectionId(0), None));
+    let mut model = model_with_enclosed_wall_plate();
     let mut stack = UndoStack::new();
     assert!(stack.run(
         &mut model,
@@ -1110,16 +984,40 @@ fn test_set_slab_section_roundtrip() {
             section: None,
         }),
     ));
-    let slab = squid_n_core::ids::SlabId(0);
+    let sec = model.sections[0].id;
+    let slab = model.slabs[0].id;
+    let wall = model.wall_plates[0].id;
+
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetWallPlateSection {
+            id: wall,
+            section: Some(sec),
+        }),
+    ));
+    assert_eq!(model.wall_plates[0].section, Some(sec));
+    stack.undo(&mut model);
+    assert_eq!(model.wall_plates[0].section, None);
 
     assert!(stack.run(
         &mut model,
         Box::new(SetSlabSection {
             id: slab,
-            section: Some(SectionId(0)),
+            section: Some(sec),
         }),
     ));
-    assert_eq!(model.slabs[0].section(), Some(SectionId(0)));
+    assert_eq!(model.slabs[0].section(), Some(sec));
+    // 割当済みからの解除（None）も往復する。
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetSlabSection {
+            id: slab,
+            section: None,
+        }),
+    ));
+    assert_eq!(model.slabs[0].section(), None, "None で解除する");
+    stack.undo(&mut model);
+    assert_eq!(model.slabs[0].section(), Some(sec), "解除の undo で再割当");
     stack.undo(&mut model);
     assert_eq!(model.slabs[0].section(), None, "undo で未割当へ戻る");
 
@@ -1131,8 +1029,73 @@ fn test_set_slab_section_roundtrip() {
             section: Some(SectionId(9)),
         }),
     ));
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetWallPlateSection {
+            id: wall,
+            section: Some(SectionId(9)),
+        }),
+    ));
     assert_eq!(model.slabs[0].section(), None);
+    assert_eq!(model.wall_plates[0].section, None);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 床板追加（`AddSlab`）は `SlabId(slabs.len())` の床板を末尾へ積み、
+/// 既存床板を保ったまま undo/redo で往復すること（成功経路）。
+#[test]
+fn test_add_slab_assigns_id_and_roundtrips() {
+    use squid_n_core::model::DistributionMethod;
+
+    let mut model = seeded_model(4, 0);
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1)],
+            loads: Vec::new(),
+            method: DistributionMethod::OneWay,
+            usage: None,
+            section: None,
+        }),
+    ));
+    let before = model.clone();
+    assert_eq!(model.slabs[0].id, SlabId(0));
+
+    assert!(stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: None,
+        }),
+    ));
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[1].id, SlabId(1), "新しい ID は末尾の添字");
+    assert_eq!(
+        model.slabs[1].boundary_nodes().unwrap(),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        "境界節点が末尾へ入る"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    stack.undo(&mut model);
+    assert_eq!(model.slabs.len(), 1, "undo で追加分だけが消える");
+    assert_eq!(model.slabs[0].id, SlabId(0));
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "undo で追加前の状態へ戻る"
+    );
+
+    stack.redo(&mut model);
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[1].id, SlabId(1));
+    assert_eq!(
+        model.slabs[1].boundary_nodes().unwrap(),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+    );
 }
 
 /// 床が参照する断面は削除できず、断面の削除で床の参照が繰り上がる。
@@ -1185,12 +1148,13 @@ fn test_slab_section_reference_is_guarded_and_shifted() {
 #[test]
 fn test_commands_reject_dangling_references() {
     use crate::{
-        AddMember, AddMemberLoad, AddNodalLoad, AddSlab, SectionMaterialRole, SetElementSection,
-        SetSectionMaterial,
+        AddIsolator, AddMember, AddMemberLoad, AddNodalLoad, AddSlab, SectionMaterialRole,
+        SetElementSection, SetSectionMaterial,
     };
     use squid_n_core::ids::LoadCaseId;
     use squid_n_core::model::{
-        DistributionMethod, LoadCase, LoadCaseKind, MemberLoad, MemberLoadKind, NodalLoad,
+        DistributionMethod, IsolatorProps, LoadCase, LoadCaseKind, MemberLoad, MemberLoadKind,
+        NodalLoad,
     };
 
     let mut model = two_member_model();
@@ -1247,6 +1211,16 @@ fn test_commands_reject_dangling_references() {
             "末尾でない ID の部材",
             Box::new(AddMember {
                 elem: new_elem(7, smallvec![NodeId(0), NodeId(1)], None),
+            }),
+        ),
+        (
+            "末尾でない ID の免震支承材",
+            Box::new(AddIsolator {
+                elem: ElementData {
+                    kind: ElementKind::Isolator,
+                    ..new_elem(7, smallvec![NodeId(0), NodeId(1)], None)
+                },
+                props: IsolatorProps::default(),
             }),
         ),
         (
@@ -1315,6 +1289,144 @@ fn test_commands_reject_dangling_references() {
     assert!(!stack.can_undo(), "Noop は undo 履歴へ積まない");
 }
 
+/// 対象の実体が存在しないコマンドは Noop（モデルを変えず、undo 履歴にも積まない）。
+#[test]
+fn test_missing_target_is_noop() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{HysteresisModel, LoadCaseKind, StoryLevelKind};
+
+    let mut model = seeded_model(2, 1);
+    model.stories.push(make_story(0, Some(999.0)));
+    model.load_cases.push(squid_n_core::model::LoadCase {
+        kind: Default::default(),
+        id: LoadCaseId(0),
+        name: "LC".into(),
+        nodal: vec![],
+        member: vec![],
+    });
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    let cases: Vec<(&str, Box<dyn crate::EditCommand>)> = vec![
+        (
+            "存在しない節点の座標変更",
+            Box::new(SetNodeCoord {
+                node: NodeId(99),
+                coord: [1.0, 2.0, 3.0],
+            }),
+        ),
+        (
+            "存在しない節点の拘束変更",
+            Box::new(SetNodeRestraint {
+                node: NodeId(99),
+                restraint: Dof6Mask::FIXED,
+            }),
+        ),
+        (
+            "存在しない節点の支点ばね変更",
+            Box::new(SetNodeSupportSpring {
+                node: NodeId(99),
+                spring: None,
+            }),
+        ),
+        (
+            "存在しない断面の形状変更",
+            Box::new(EditSectionShape {
+                section: SectionId(99),
+                new_shape: squid_n_section::shape::SectionShape::SteelBox {
+                    height: 200.0,
+                    width: 200.0,
+                    thick: 12.0,
+                    corner_r: 0.0,
+                },
+            }),
+        ),
+        (
+            "存在しない断面への材料割当",
+            Box::new(SetSectionMaterial {
+                section: SectionId(9),
+                role: crate::SectionMaterialRole::Main,
+                material: None,
+            }),
+        ),
+        (
+            "存在しない階の重量変更",
+            Box::new(SetStoryWeight {
+                story: StoryId(99),
+                weight: Some(1.0),
+            }),
+        ),
+        (
+            "存在しない階の種別変更",
+            Box::new(SetStoryLevelKind {
+                story: StoryId(99),
+                level_kind: StoryLevelKind::Penthouse { k: 0.5 },
+            }),
+        ),
+        (
+            "存在しない荷重ケースの種別変更",
+            Box::new(SetLoadCaseKind {
+                id: LoadCaseId(99),
+                kind: LoadCaseKind::Dead,
+            }),
+        ),
+        (
+            "存在しない床の断面割当",
+            Box::new(SetSlabSection {
+                id: SlabId(99),
+                section: None,
+            }),
+        ),
+        (
+            "存在しない壁版の属性変更",
+            Box::new(SetWallPlateAttrs {
+                id: WallPlateId(0),
+                opening_area: 1.0,
+                opening_weight: 2.0,
+                openings: vec![],
+                loads: vec![],
+                slit: Default::default(),
+            }),
+        ),
+        (
+            "存在しない壁版の断面割当",
+            Box::new(SetWallPlateSection {
+                id: WallPlateId(0),
+                section: None,
+            }),
+        ),
+        (
+            "存在しない部材の履歴則変更",
+            Box::new(SetMemberHysteresis {
+                elem: ElemId(99),
+                rule: HysteresisModel::Takeda,
+            }),
+        ),
+        (
+            "存在しない部材の履歴則変更(時刻歴)",
+            Box::new(SetMemberHysteresisTh {
+                elem: ElemId(99),
+                rule_th: Some(HysteresisModel::Takeda),
+            }),
+        ),
+        (
+            "存在しない部材のダンパー特性変更",
+            Box::new(SetDamperProps {
+                elem: ElemId(99),
+                props: None,
+            }),
+        ),
+    ];
+    for (what, cmd) in cases {
+        assert!(!stack.run(&mut model, cmd), "{what}: 適用されてしまった");
+        assert!(
+            model.eq_ignoring_dofmap(&before),
+            "{what}: モデルが変更されている"
+        );
+    }
+    assert!(!stack.can_undo(), "Noop は undo 履歴へ積まない");
+}
+
 /// テスト用: 名前だけを指定して材料を足す。
 fn stack_add_material(model: &mut squid_n_core::model::Model, name: &str) {
     let id = MaterialId(model.materials.len() as u32);
@@ -1333,38 +1445,9 @@ fn stack_add_material(model: &mut squid_n_core::model::Model, name: &str) {
     });
 }
 
+/// 材料プロパティ変更が往復し、undo で変更前の値（未設定なら None）へ戻ること。
 #[test]
 fn test_set_material_field_roundtrip() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(AddMaterial {
-            name: "Fc21".into(),
-            category: MaterialCategory::Concrete,
-            young: 21500.0,
-            poisson: 0.2,
-            density: 2.3e-9,
-            fc: Some(21.0),
-            fy: None,
-            strength_factor: None,
-        }),
-    );
-    stack.run(
-        &mut model,
-        Box::new(SetMaterialField {
-            id: MaterialId(0),
-            field: MaterialField::Fc,
-            value: Some(24.0),
-        }),
-    );
-    assert_eq!(model.materials[0].fc, Some(24.0));
-    stack.undo(&mut model);
-    assert_eq!(model.materials[0].fc, Some(21.0));
-}
-
-#[test]
-fn test_set_material_strength_factor_roundtrip() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
     stack.run(
@@ -1375,31 +1458,35 @@ fn test_set_material_strength_factor_roundtrip() {
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
-            fc: None,
+            fc: Some(21.0),
             fy: Some(440.0),
             strength_factor: None,
         }),
     );
-    assert_eq!(model.materials[0].strength_factor, None, "既定は自動判定");
-
-    stack.run(
-        &mut model,
-        Box::new(SetMaterialField {
-            id: MaterialId(0),
-            field: MaterialField::StrengthFactor,
-            value: Some(1.2),
-        }),
-    );
-    assert_eq!(model.materials[0].strength_factor, Some(1.2));
-
-    stack.undo(&mut model);
-    assert_eq!(
-        model.materials[0].strength_factor, None,
-        "取り消しで自動判定に戻る"
-    );
-
-    stack.redo(&mut model);
-    assert_eq!(model.materials[0].strength_factor, Some(1.2));
+    let get = |m: &squid_n_core::model::Model, field: MaterialField| match field {
+        MaterialField::Fc => m.materials[0].fc,
+        MaterialField::StrengthFactor => m.materials[0].strength_factor,
+        _ => unreachable!("対象は Fc と StrengthFactor のみ"),
+    };
+    let cases = [
+        (MaterialField::Fc, Some(24.0), Some(21.0)),
+        (MaterialField::StrengthFactor, Some(1.2), None),
+    ];
+    for (field, value, old) in cases {
+        stack.run(
+            &mut model,
+            Box::new(SetMaterialField {
+                id: MaterialId(0),
+                field,
+                value,
+            }),
+        );
+        assert_eq!(get(&model, field), value, "{field:?} を設定する");
+        stack.undo(&mut model);
+        assert_eq!(get(&model, field), old, "{field:?} の undo で戻る");
+        stack.redo(&mut model);
+        assert_eq!(get(&model, field), value, "{field:?} の redo で再設定");
+    }
 }
 
 #[test]
@@ -1440,50 +1527,24 @@ fn test_delete_load_case_referenced_by_combo_is_noop() {
 }
 
 #[test]
-fn test_add_delete_combination_roundtrip() {
-    use squid_n_core::ids::LoadCaseId;
-    use squid_n_core::model::LoadCombination;
-    let mut model = empty_model();
-    model.combinations.push(LoadCombination {
-        name: "既存".into(),
-        terms: vec![(LoadCaseId(0), 1.0)],
-    });
-    let mut stack = UndoStack::new();
-
-    let combo = LoadCombination {
-        name: "1.0DL+1.0LL".into(),
-        terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
-    };
-    stack.run(
-        &mut model,
-        Box::new(AddCombination {
-            combo: combo.clone(),
-        }),
-    );
-    assert_eq!(model.combinations.len(), 2);
-    assert_eq!(model.combinations[1], combo);
-
-    stack.undo(&mut model);
-    assert_eq!(model.combinations.len(), 1);
-
-    stack.redo(&mut model);
-    assert_eq!(model.combinations.len(), 2);
-    assert_eq!(model.combinations[1], combo);
-}
-
-#[test]
 fn test_delete_combination_roundtrip_restores_position() {
     use squid_n_core::ids::LoadCaseId;
     use squid_n_core::model::LoadCombination;
     let mut model = empty_model();
-    for (name, coef) in [("A", 1.0), ("B", 2.0), ("C", 3.0)] {
-        model.combinations.push(LoadCombination {
-            name: name.into(),
-            terms: vec![(LoadCaseId(0), coef)],
-        });
-    }
-    let before = model.clone();
     let mut stack = UndoStack::new();
+    for (name, coef) in [("A", 1.0), ("B", 2.0), ("C", 3.0)] {
+        stack.run(
+            &mut model,
+            Box::new(AddCombination {
+                combo: LoadCombination {
+                    name: name.into(),
+                    terms: vec![(LoadCaseId(0), coef)],
+                },
+            }),
+        );
+    }
+    assert_eq!(model.combinations.len(), 3);
+    let before = model.clone();
 
     // 中間（B）を削除
     stack.run(&mut model, Box::new(DeleteCombination { index: 1 }));
@@ -1502,67 +1563,16 @@ fn test_delete_combination_roundtrip_restores_position() {
     assert_eq!(model.combinations[1].name, "C");
 }
 
+/// 範囲外の添字を指す削除は Noop（モデルを変えず、undo 履歴にも積まない）。
 #[test]
-fn test_delete_combination_out_of_range_is_noop() {
+fn test_delete_out_of_range_is_noop() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
-    stack.run(&mut model, Box::new(DeleteCombination { index: 0 }));
+    assert!(!stack.run(&mut model, Box::new(DeleteCombination { index: 0 })));
+    assert!(!stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) })));
     assert!(model.combinations.is_empty());
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(model.slabs.is_empty());
     assert!(!stack.can_undo());
-    assert!(model.combinations.is_empty());
-}
-
-#[test]
-fn test_add_delete_slab_roundtrip() {
-    use squid_n_core::model::DistributionMethod;
-    let mut model = empty_model();
-    for i in 0..4 {
-        model.nodes.push(Node {
-            id: NodeId(i),
-            coord: [i as f64 * 1000.0, 0.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
-    );
-    assert_eq!(model.slabs.len(), 1);
-    assert_eq!(model.slabs[0].id, SlabId(0));
-    assert!(model.validate().is_ok());
-
-    // 採番の確認：2 枚目は SlabId(1)
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1)],
-            loads: vec![],
-            method: DistributionMethod::OneWay,
-            usage: None,
-            section: None,
-        }),
-    );
-    assert_eq!(model.slabs.len(), 2);
-    assert_eq!(model.slabs[1].id, SlabId(1));
-
-    stack.undo(&mut model);
-    assert_eq!(model.slabs.len(), 1);
-    assert_eq!(model.slabs[0].id, SlabId(0));
-
-    stack.redo(&mut model);
-    assert_eq!(model.slabs.len(), 2);
-    assert_eq!(model.slabs[1].id, SlabId(1));
 }
 
 #[test]
@@ -1616,18 +1626,6 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
     assert_eq!(model.slabs.len(), 2);
     assert_eq!(model.slabs[1].plate.loads[0].kind, "C");
 }
-
-#[test]
-fn test_delete_slab_out_of_range_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) }));
-    assert!(model.slabs.is_empty());
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.slabs.is_empty());
-}
-
 fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
     squid_n_core::model::Story {
         level_kind: Default::default(),
@@ -1694,25 +1692,6 @@ fn test_clear_story_weight_override_keeps_auto_value() {
 
     stack.undo(&mut model);
     assert_eq!(model.stories[0].weight_override, Some(800.0));
-}
-
-#[test]
-fn test_set_story_weight_invalid_id_is_noop() {
-    let mut model = empty_model();
-    model.stories.push(make_story(0, Some(999.0)));
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetStoryWeight {
-            story: StoryId(99),
-            weight: Some(1.0),
-        }),
-    );
-    assert_eq!(model.stories[0].seismic_weight, Some(999.0));
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert_eq!(model.stories[0].seismic_weight, Some(999.0));
 }
 
 /// `ApplyStories` が剛床代表節点(`rep_nodes`/`generated_masters`)込みで適用され、
@@ -1895,47 +1874,6 @@ fn test_delete_leftover_generated_master_roundtrip() {
     stack.redo(&mut model);
     assert_eq!(model.nodes.len(), 2);
     assert!(model.generated_masters.is_empty());
-}
-
-#[test]
-fn test_set_load_case_kind_roundtrip() {
-    use squid_n_core::ids::LoadCaseId;
-    use squid_n_core::model::LoadCaseKind;
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(&mut model, Box::new(AddLoadCase { name: "DL".into() }));
-    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Other);
-
-    stack.run(
-        &mut model,
-        Box::new(SetLoadCaseKind {
-            id: LoadCaseId(0),
-            kind: LoadCaseKind::Dead,
-        }),
-    );
-    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
-
-    stack.undo(&mut model);
-    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Other);
-
-    stack.redo(&mut model);
-    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
-}
-
-#[test]
-fn test_set_load_case_kind_invalid_id_is_noop() {
-    use squid_n_core::ids::LoadCaseId;
-    use squid_n_core::model::LoadCaseKind;
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetLoadCaseKind {
-            id: LoadCaseId(0),
-            kind: LoadCaseKind::Dead,
-        }),
-    );
-    assert!(model.load_cases.is_empty());
 }
 
 /// 1 つの節点に複数の節点荷重を定義でき、追加・変更・削除が添字で行える。
@@ -2208,13 +2146,52 @@ fn test_sync_slab_loads_marks_content_as_auto() {
     assert!(model.load_cases[0].member[0].source.is_auto());
 }
 
+/// 単純な値置換系コマンド（荷重ケース種別・階種別・荷重計算条件・
+/// 複数開口の取り扱い）の往復。
 #[test]
-fn test_set_load_cfg_roundtrip() {
-    use squid_n_core::model::LoadCfg;
+fn test_scalar_setters_roundtrip() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCaseKind, LoadCfg, MultiOpeningMode, StoryLevelKind};
+
     let mut model = empty_model();
-    assert!(model.load_cfg.is_none());
+    model.stories.push(make_story(0, None));
+    model.load_cases.push(squid_n_core::model::LoadCase {
+        kind: Default::default(),
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal: vec![],
+        member: vec![],
+    });
     let mut stack = UndoStack::new();
 
+    stack.run(
+        &mut model,
+        Box::new(SetLoadCaseKind {
+            id: LoadCaseId(0),
+            kind: LoadCaseKind::Dead,
+        }),
+    );
+    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
+    stack.undo(&mut model);
+    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Other);
+    stack.redo(&mut model);
+    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
+
+    stack.run(
+        &mut model,
+        Box::new(SetStoryLevelKind {
+            story: StoryId(0),
+            level_kind: StoryLevelKind::Penthouse { k: 0.5 },
+        }),
+    );
+    assert_eq!(
+        model.stories[0].level_kind,
+        StoryLevelKind::Penthouse { k: 0.5 }
+    );
+    stack.undo(&mut model);
+    assert_eq!(model.stories[0].level_kind, StoryLevelKind::Normal);
+
+    assert!(model.load_cfg.is_none());
     let cfg = LoadCfg {
         steel_weight_factor: 1.05,
         ..Default::default()
@@ -2226,12 +2203,34 @@ fn test_set_load_cfg_roundtrip() {
         }),
     );
     assert_eq!(model.load_cfg, Some(cfg));
-
     stack.undo(&mut model);
     assert!(model.load_cfg.is_none());
-
     stack.redo(&mut model);
     assert_eq!(model.load_cfg.as_ref().unwrap().steel_weight_factor, 1.05);
+
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
+    stack.run(
+        &mut model,
+        Box::new(SetMultiOpeningMode {
+            mode: MultiOpeningMode::Envelope,
+        }),
+    );
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+    stack.undo(&mut model);
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
+    stack.redo(&mut model);
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+
+    // 同じ値への再設定も同値判定で分岐せず、undo では変更前と同じ値へ戻る。
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetMultiOpeningMode {
+            mode: MultiOpeningMode::Envelope,
+        }),
+    ));
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+    stack.undo(&mut model);
+    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
 }
 
 /// 壁版コマンドの下地。柱・梁が囲む構面の 4 節点と、板厚を持つ断面 1 つを備え、
@@ -2338,172 +2337,13 @@ fn test_set_wall_plate_attrs_roundtrip() {
     assert!(!model.wall_plates[0].slit.any());
 }
 
-/// 存在しない壁版への属性編集は Noop（undo 履歴に積まれない）。
+/// 部材履歴則の増分用・時刻歴用スロットがそれぞれ往復し、互いに干渉しないこと。
 #[test]
-fn test_set_wall_plate_attrs_missing_id_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetWallPlateAttrs {
-            id: WallPlateId(0),
-            opening_area: 1.0,
-            opening_weight: 2.0,
-            openings: vec![],
-            loads: vec![],
-            slit: squid_n_core::model::WallSlit {
-                column_face: [true, true],
-                beam_face: [false, false],
-            },
-        }),
-    );
-    assert!(!stack.can_undo());
-}
-
-/// 壁版の断面割当が往復し、実在しない断面は Noop になること
-/// （`SetSlabSection` と同じ参照検証の規約）。
-#[test]
-fn test_set_wall_plate_section_roundtrip_and_rejects_dangling() {
-    let mut model = model_with_enclosed_wall_plate();
-    let mut stack = UndoStack::new();
-    let id = model.wall_plates[0].id;
-    let sec = model.sections[0].id;
-
-    stack.run(
-        &mut model,
-        Box::new(SetWallPlateSection {
-            id,
-            section: Some(sec),
-        }),
-    );
-    assert_eq!(model.wall_plates[0].section, Some(sec));
-    stack.undo(&mut model);
-    assert_eq!(model.wall_plates[0].section, None);
-
-    // 実在しない断面は割り当てない。
-    stack.run(
-        &mut model,
-        Box::new(SetWallPlateSection {
-            id,
-            section: Some(SectionId(999)),
-        }),
-    );
-    assert_eq!(model.wall_plates[0].section, None);
-    assert!(!stack.can_undo());
-}
-
-#[test]
-fn test_set_story_level_kind_roundtrip() {
-    use squid_n_core::model::StoryLevelKind;
-    let mut model = empty_model();
-    model.stories.push(make_story(0, None));
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetStoryLevelKind {
-            story: StoryId(0),
-            level_kind: StoryLevelKind::Penthouse { k: 0.5 },
-        }),
-    );
-    assert_eq!(
-        model.stories[0].level_kind,
-        StoryLevelKind::Penthouse { k: 0.5 }
-    );
-
-    stack.undo(&mut model);
-    assert_eq!(model.stories[0].level_kind, StoryLevelKind::Normal);
-}
-
-#[test]
-fn test_set_multi_opening_mode_roundtrip() {
-    use squid_n_core::model::MultiOpeningMode;
-    let mut model = empty_model();
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetMultiOpeningMode {
-            mode: MultiOpeningMode::Envelope,
-        }),
-    );
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
-
-    stack.run(
-        &mut model,
-        Box::new(SetMultiOpeningMode {
-            mode: MultiOpeningMode::Auto,
-        }),
-    );
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Auto);
-
-    stack.undo(&mut model);
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
-    stack.undo(&mut model);
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
-
-    stack.redo(&mut model);
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
-    stack.redo(&mut model);
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Auto);
-}
-
-/// 同じモードへの再設定でも既存の値置換系コマンドと同様に処理される
-/// （同値判定による分岐なし。undo すれば必ず変更前の値へ戻る）。
-#[test]
-fn test_set_multi_opening_mode_same_value_is_symmetric() {
-    use squid_n_core::model::MultiOpeningMode;
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetMultiOpeningMode {
-            mode: MultiOpeningMode::Equivalent,
-        }),
-    );
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
-
-    stack.undo(&mut model);
-    assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
-}
-
-#[test]
-fn test_set_member_hysteresis_roundtrip() {
+fn test_member_hysteresis_slots_are_independent_and_roundtrip() {
     use squid_n_core::model::HysteresisModel;
-    let mut model = empty_model();
-    model.nodes.push(Node {
-        id: NodeId(0),
-        coord: [0.0; 3],
-        restraint: Dof6Mask::FREE,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    model.nodes.push(Node {
-        id: NodeId(1),
-        coord: [1000.0, 0.0, 0.0],
-        restraint: Dof6Mask::FREE,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    model.elements.push(ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Beam,
-        nodes: smallvec![NodeId(0), NodeId(1)],
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    });
+    let mut model = two_member_model();
     let mut stack = UndoStack::new();
+
     stack.run(
         &mut model,
         Box::new(SetMemberHysteresis {
@@ -2522,36 +2362,9 @@ fn test_set_member_hysteresis_roundtrip() {
         model.member_hysteresis(ElemId(0)),
         Some(HysteresisModel::Takeda)
     );
-
-    // 存在しない部材は Noop。
-    let mut stack2 = UndoStack::new();
-    stack2.run(
-        &mut model,
-        Box::new(SetMemberHysteresis {
-            elem: ElemId(99),
-            rule: HysteresisModel::Standard,
-        }),
-    );
-    assert_eq!(model.member_hysteresis(ElemId(99)), None);
-}
-
-#[test]
-fn test_set_member_hysteresis_th_roundtrip() {
-    use squid_n_core::model::HysteresisModel;
-    let mut model = two_member_model();
-    let mut stack = UndoStack::new();
-
-    // 増分用スロットを Takeda に設定しておき、時刻歴用スロットの操作で
-    // 影響を受けないことを確認する。
-    stack.run(
-        &mut model,
-        Box::new(SetMemberHysteresis {
-            elem: ElemId(0),
-            rule: HysteresisModel::Takeda,
-        }),
-    );
     assert_eq!(model.member_hysteresis_th_raw(ElemId(0)), None);
 
+    // 時刻歴用スロットを設定しても増分用スロットは影響を受けない。
     stack.run(
         &mut model,
         Box::new(SetMemberHysteresisTh {
@@ -2563,7 +2376,6 @@ fn test_set_member_hysteresis_th_roundtrip() {
         model.member_hysteresis_th_raw(ElemId(0)),
         Some(HysteresisModel::KarsanJirsa)
     );
-    // 増分用スロットは影響を受けない。
     assert_eq!(
         model.member_hysteresis(ElemId(0)),
         Some(HysteresisModel::Takeda)
@@ -2581,17 +2393,6 @@ fn test_set_member_hysteresis_th_roundtrip() {
         model.member_hysteresis_th_raw(ElemId(0)),
         Some(HysteresisModel::KarsanJirsa)
     );
-
-    // 存在しない部材は Noop。
-    let mut stack2 = UndoStack::new();
-    stack2.run(
-        &mut model,
-        Box::new(SetMemberHysteresisTh {
-            elem: ElemId(99),
-            rule_th: Some(HysteresisModel::OriginOriented),
-        }),
-    );
-    assert_eq!(model.member_hysteresis_th_raw(ElemId(99)), None);
 }
 
 #[test]
@@ -2671,17 +2472,6 @@ fn test_set_damper_props_roundtrip() {
     assert_eq!(model.damper_props(e), Some(p1));
     stack.undo(&mut model);
     assert_eq!(model.damper_props(e), None);
-
-    // 存在しない部材は Noop。
-    let mut stack2 = UndoStack::new();
-    stack2.run(
-        &mut model,
-        Box::new(SetDamperProps {
-            elem: ElemId(99),
-            props: Some(p1),
-        }),
-    );
-    assert_eq!(model.damper_props(ElemId(99)), None);
 }
 
 #[test]
@@ -2740,40 +2530,6 @@ fn test_add_isolator_creates_element_and_attr_roundtrip() {
             .find(|a| a.elem == new_id)
             .map(|a| a.props),
         Some(props)
-    );
-}
-
-/// `AddIsolator`: `elem.id` が `model.elements.len()`（末尾の次）と一致しない場合は
-/// ID＝配列インデックスの不変条件を壊すため Noop になること。
-#[test]
-fn test_add_isolator_id_mismatch_is_noop() {
-    use squid_n_core::model::{IsolatorKind, IsolatorProps};
-    let mut model = two_member_model();
-    let before = model.clone();
-    let props = IsolatorProps {
-        kind: IsolatorKind::LeadRubber,
-        ..Default::default()
-    };
-    // 末尾の次（あるべき ID）ではなく、既存の 0 番を指定してしまったケース。
-    let elem = ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Isolator,
-        nodes: smallvec![NodeId(0), NodeId(2)],
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [1.0, 0.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let mut stack = UndoStack::new();
-    stack.run(&mut model, Box::new(AddIsolator { elem, props }));
-    assert!(
-        model.eq_ignoring_dofmap(&before),
-        "elem.id が末尾でない AddIsolator は Noop のはず"
     );
 }
 
@@ -3087,13 +2843,17 @@ fn test_damper_def_removal_does_not_affect_assigned_member() {
     assert_eq!(model.damper_props(ElemId(0)), Some(def.props));
 }
 
+/// 部材の付帯情報（ハンチ・継手位置）と S 造検定属性は、どちらも「既存エントリ
+/// の置換なら変更前の値で戻す／新規追加なら削除で戻す」の同一パターン
+/// （`member_detail.rs`・`steel_design.rs` の別実装）。両方まとめて往復させ、
+/// 存在しない部材・エントリへの設定／削除が Noop になることも確認する。
 #[test]
-fn test_set_member_detail_attr_add_replace_and_remove_roundtrip() {
-    use squid_n_core::model::{Haunch, JointKind, MemberDetailAttr, MemberJoint};
-    let mut model = seeded_model(2, 1);
+fn test_member_attr_commands_add_replace_and_remove_roundtrip() {
+    use squid_n_core::model::{Haunch, JointKind, MemberDetailAttr, MemberJoint, SteelDesignAttr};
+    let mut model = seeded_model(3, 2);
     let mut stack = UndoStack::new();
 
-    let attr1 = MemberDetailAttr {
+    let detail1 = MemberDetailAttr {
         elem: ElemId(0),
         haunch_i: Some(Haunch {
             length: 700.0,
@@ -3103,22 +2863,7 @@ fn test_set_member_detail_attr_add_replace_and_remove_roundtrip() {
         haunch_j: None,
         joints: vec![],
     };
-    stack.run(
-        &mut model,
-        Box::new(SetMemberDetailAttr {
-            attr: attr1.clone(),
-        }),
-    );
-    assert_eq!(model.member_detail_attrs, vec![attr1.clone()]);
-
-    stack.undo(&mut model);
-    assert!(model.member_detail_attrs.is_empty());
-
-    stack.redo(&mut model);
-    assert_eq!(model.member_detail_attrs, vec![attr1.clone()]);
-
-    // 既存エントリを置換
-    let attr2 = MemberDetailAttr {
+    let detail2 = MemberDetailAttr {
         elem: ElemId(0),
         haunch_i: None,
         haunch_j: Some(Haunch {
@@ -3131,49 +2876,7 @@ fn test_set_member_detail_attr_add_replace_and_remove_roundtrip() {
             kind: JointKind::Shop,
         }],
     };
-    stack.run(
-        &mut model,
-        Box::new(SetMemberDetailAttr {
-            attr: attr2.clone(),
-        }),
-    );
-    assert_eq!(model.member_detail_attrs, vec![attr2.clone()]);
-
-    stack.undo(&mut model);
-    assert_eq!(model.member_detail_attrs, vec![attr1.clone()]);
-
-    // 削除
-    stack.run(
-        &mut model,
-        Box::new(RemoveMemberDetailAttr { elem: ElemId(0) }),
-    );
-    assert!(model.member_detail_attrs.is_empty());
-
-    stack.undo(&mut model);
-    assert_eq!(model.member_detail_attrs, vec![attr1]);
-}
-
-#[test]
-fn test_remove_member_detail_attr_missing_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(RemoveMemberDetailAttr { elem: ElemId(0) }),
-    );
-    assert!(model.member_detail_attrs.is_empty());
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.member_detail_attrs.is_empty());
-}
-
-#[test]
-fn test_set_steel_design_attr_add_replace_and_remove_roundtrip() {
-    use squid_n_core::model::SteelDesignAttr;
-    let mut model = seeded_model(3, 2);
-    let mut stack = UndoStack::new();
-
-    let attr1 = SteelDesignAttr {
+    let steel1 = SteelDesignAttr {
         elem: ElemId(0),
         joint_flange_loss: 10.0,
         joint_web_loss: 0.0,
@@ -3184,22 +2887,7 @@ fn test_set_steel_design_attr_add_replace_and_remove_roundtrip() {
         lk_z_direct: None,
         c_direct: None,
     };
-    stack.run(
-        &mut model,
-        Box::new(SetSteelDesignAttr {
-            attr: attr1.clone(),
-        }),
-    );
-    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
-
-    stack.undo(&mut model);
-    assert!(model.steel_design_attrs.is_empty());
-
-    stack.redo(&mut model);
-    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
-
-    // 既存エントリを置換（座屈長さの直接入力を追加）。
-    let attr2 = SteelDesignAttr {
+    let steel2 = SteelDesignAttr {
         elem: ElemId(0),
         joint_flange_loss: 0.0,
         joint_web_loss: 0.0,
@@ -3210,47 +2898,96 @@ fn test_set_steel_design_attr_add_replace_and_remove_roundtrip() {
         lk_z_direct: Some(1750.0),
         c_direct: Some(1.5),
     };
+
+    // 付帯情報: 新規追加 → undo で消え、redo で戻る。置換 → undo で旧値へ戻る。
+    stack.run(
+        &mut model,
+        Box::new(SetMemberDetailAttr {
+            attr: detail1.clone(),
+        }),
+    );
+    assert_eq!(model.member_detail_attrs, vec![detail1.clone()]);
+    stack.undo(&mut model);
+    assert!(model.member_detail_attrs.is_empty());
+    stack.redo(&mut model);
+    assert_eq!(model.member_detail_attrs, vec![detail1.clone()]);
+    stack.run(
+        &mut model,
+        Box::new(SetMemberDetailAttr {
+            attr: detail2.clone(),
+        }),
+    );
+    assert_eq!(model.member_detail_attrs, vec![detail2.clone()]);
+    stack.undo(&mut model);
+    assert_eq!(model.member_detail_attrs, vec![detail1.clone()]);
+
+    // 削除 → undo で復元。存在しないエントリ・部材への操作は Noop。
+    stack.run(
+        &mut model,
+        Box::new(RemoveMemberDetailAttr { elem: ElemId(0) }),
+    );
+    assert!(model.member_detail_attrs.is_empty());
+    stack.undo(&mut model);
+    assert_eq!(model.member_detail_attrs, vec![detail1.clone()]);
+    assert!(!stack.run(
+        &mut model,
+        Box::new(RemoveMemberDetailAttr { elem: ElemId(99) })
+    ));
+    let dangling_detail = MemberDetailAttr {
+        elem: ElemId(99),
+        ..detail1
+    };
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetMemberDetailAttr {
+            attr: dangling_detail,
+        })
+    ));
+
+    // S 造検定属性: 同じ往復を別実装（steel_design.rs）で確認する。
     stack.run(
         &mut model,
         Box::new(SetSteelDesignAttr {
-            attr: attr2.clone(),
+            attr: steel1.clone(),
         }),
     );
-    assert_eq!(model.steel_design_attrs, vec![attr2.clone()]);
-
+    assert_eq!(model.steel_design_attrs, vec![steel1.clone()]);
     stack.undo(&mut model);
-    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
+    assert!(model.steel_design_attrs.is_empty());
+    stack.redo(&mut model);
+    assert_eq!(model.steel_design_attrs, vec![steel1.clone()]);
+    stack.run(
+        &mut model,
+        Box::new(SetSteelDesignAttr {
+            attr: steel2.clone(),
+        }),
+    );
+    assert_eq!(model.steel_design_attrs, vec![steel2.clone()]);
+    stack.undo(&mut model);
+    assert_eq!(model.steel_design_attrs, vec![steel1.clone()]);
 
-    // 削除
+    // 削除 → undo で復元。存在しないエントリは Noop。
     stack.run(
         &mut model,
         Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
     );
     assert!(model.steel_design_attrs.is_empty());
-
     stack.undo(&mut model);
-    assert_eq!(model.steel_design_attrs, vec![attr1]);
-}
-
-#[test]
-fn test_remove_steel_design_attr_missing_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
+    assert_eq!(model.steel_design_attrs, vec![steel1]);
+    assert!(!stack.run(
         &mut model,
-        Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
-    );
-    assert!(model.steel_design_attrs.is_empty());
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
-    assert!(!stack.can_undo());
-    assert!(model.steel_design_attrs.is_empty());
+        Box::new(RemoveSteelDesignAttr { elem: ElemId(99) })
+    ));
 }
 
+/// `DeleteMember` は側テーブル属性（履歴則・ダンパー・付帯情報）を
+/// `take_elem_attrs`/`restore_elem_attrs` 経由で退避・復元し、残る部材の参照は
+/// ID 繰り上げに追従すること（付帯情報の復元は `ElemAttrs.detail` の配線）。
 #[test]
 fn test_delete_member_shifts_and_restores_side_table_attrs() {
-    use squid_n_core::model::{DamperProps, HysteresisModel};
+    use squid_n_core::model::{DamperProps, Haunch, HysteresisModel, MemberDetailAttr};
     let mut model = two_member_model();
-    // 部材0に履歴則、部材1にダンパー特性を付与。
+    // 部材0に履歴則・付帯情報、部材1にダンパー特性を付与。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
     let props = DamperProps {
         kd: 90_000.0,
@@ -3259,14 +2996,26 @@ fn test_delete_member_shifts_and_restores_side_table_attrs() {
         ..Default::default()
     };
     model.set_damper_props(ElemId(1), Some(props));
+    let detail = MemberDetailAttr {
+        elem: ElemId(0),
+        haunch_i: Some(Haunch {
+            length: 700.0,
+            depth_increase: 200.0,
+            width_increase: 0.0,
+        }),
+        haunch_j: None,
+        joints: vec![],
+    };
+    model.member_detail_attrs.push(detail.clone());
     let before = model.clone();
 
     let mut stack = UndoStack::new();
     // 部材0を削除 → 部材1が ElemId(0) へ繰り上がり、その側テーブル参照も追従する。
     stack.run(&mut model, Box::new(DeleteMember { id: ElemId(0) }));
     assert_eq!(model.elements.len(), 1);
-    // 削除された部材0の履歴則は消える。
+    // 削除された部材0の履歴則・付帯情報は消える。
     assert_eq!(model.member_hysteresis(ElemId(0)), None);
+    assert!(model.member_detail(ElemId(0)).is_none());
     // 元・部材1のダンパー特性は新 ElemId(0) を指す（参照整合）。
     assert_eq!(model.damper_props(ElemId(0)), Some(props));
     assert!(model.validate().is_ok());
@@ -3279,48 +3028,12 @@ fn test_delete_member_shifts_and_restores_side_table_attrs() {
         Some(HysteresisModel::Takeda)
     );
     assert_eq!(model.damper_props(ElemId(1)), Some(props));
+    assert_eq!(model.member_detail(ElemId(0)), Some(&detail));
 
     // redo で再削除・再整合。
     stack.redo(&mut model);
     assert_eq!(model.damper_props(ElemId(0)), Some(props));
     assert_eq!(model.member_hysteresis(ElemId(0)), None);
-}
-
-/// `DeleteMember` が `member_detail_attrs`（ハンチ・継手位置）も
-/// `take_elem_attrs`/`restore_elem_attrs` 経由で退避・復元すること
-/// （`ElemAttrs.detail` の配線の検証）。
-#[test]
-fn test_delete_member_restores_member_detail_attr() {
-    use squid_n_core::model::{Haunch, MemberDetailAttr};
-    let mut model = two_member_model();
-    // 部材0にハンチ付帯情報を付与。
-    let attr = MemberDetailAttr {
-        elem: ElemId(0),
-        haunch_i: Some(Haunch {
-            length: 700.0,
-            depth_increase: 200.0,
-            width_increase: 0.0,
-        }),
-        haunch_j: None,
-        joints: vec![],
-    };
-    model.member_detail_attrs.push(attr.clone());
-    let before = model.clone();
-
-    let mut stack = UndoStack::new();
-    // 部材0を削除 → 付帯情報も連動して消える。
-    stack.run(&mut model, Box::new(DeleteMember { id: ElemId(0) }));
-    assert_eq!(model.elements.len(), 1);
-    assert!(model.member_detail(ElemId(0)).is_none());
-    assert!(model.validate().is_ok());
-
-    // undo で付帯情報も含め完全復元。
-    stack.undo(&mut model);
-    assert!(model.eq_ignoring_dofmap(&before));
-    assert_eq!(model.member_detail(ElemId(0)), Some(&attr));
-
-    // redo で再削除。
-    stack.redo(&mut model);
     assert!(model.member_detail(ElemId(0)).is_none());
 }
 
@@ -3621,6 +3334,10 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
 #[test]
 fn test_delete_member_cascades_beam_groups_and_restores() {
     let mut model = two_member_model();
+    // ダングリング参照は validate が検出する（削除・繰り上げ漏れの受け皿）。
+    model.beam_groups = vec![vec![ElemId(5)]];
+    assert!(model.validate().is_err());
+
     model.beam_groups = vec![vec![ElemId(0), ElemId(1)]];
     let before = model.clone();
     let mut stack = UndoStack::new();
@@ -3633,14 +3350,6 @@ fn test_delete_member_cascades_beam_groups_and_restores() {
     stack.undo(&mut model);
     assert!(model.eq_ignoring_dofmap(&before));
     assert!(model.validate().is_ok());
-}
-
-/// `Model::validate` が beam_groups のダングリング参照を検出すること。
-#[test]
-fn test_validate_detects_dangling_beam_group() {
-    let mut model = two_member_model();
-    model.beam_groups = vec![vec![ElemId(5)]];
-    assert!(model.validate().is_err());
 }
 
 /// 失敗したコマンドが redo 履歴を消さないこと。従来は失敗（Noop）でも
@@ -3686,10 +3395,11 @@ fn h_shape() -> squid_n_section::shape::SectionShape {
     }
 }
 
-/// 符号＋階が同じ断面は追加できない。符号か階のどちらかが違えば追加できる。
-/// GUI 以外の呼び出し元（MCP など）に対しても不変条件を守るため、コマンド側で拒否する。
+/// 符号＋階が同じ断面は追加できない（形状からの追加・カタログ断面の追加の両経路）。
+/// 符号か階のどちらかが違えば追加できる。GUI 以外の呼び出し元（MCP など）に
+/// 対しても不変条件を守るため、コマンド側で拒否する。
 #[test]
-fn test_add_section_shape_rejects_duplicate_key() {
+fn test_section_add_rejects_duplicate_key() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
     let add = |name: &str, floor: Option<&str>, id: u32| AddSectionShape {
@@ -3716,6 +3426,20 @@ fn test_add_section_shape_rejects_duplicate_key() {
     assert_eq!(model.sections.len(), 3);
     stack.run(&mut model, Box::new(add("C1", None, 3)));
     assert_eq!(model.sections.len(), 3, "階なしどうしの符号重複も拒否する");
+
+    // カタログ断面（表値の数値直入力）も同じキーで重複を拒否する。
+    let sec = h_shape().to_section(SectionId(0), "H-300x150x6.5x9".into());
+    stack.run(
+        &mut model,
+        Box::new(AddCatalogSection {
+            section: sec.clone(),
+        }),
+    );
+    assert_eq!(model.sections.len(), 4);
+    stack.run(&mut model, Box::new(AddCatalogSection { section: sec }));
+    assert_eq!(model.sections.len(), 4, "同じ符号は 2 回追加できない");
+    stack.undo(&mut model);
+    assert_eq!(model.sections.len(), 3);
 }
 
 /// 符号・階の変更も、他の断面と衝突する場合は適用しない。自分自身は衝突判定から外す。
@@ -3805,27 +3529,6 @@ fn test_edit_section_shape_keeps_name_and_floor() {
         model.sections[0].shape,
         Some(squid_n_section::shape::SectionShape::SteelBox { .. })
     ));
-}
-
-/// カタログ断面の追加も符号の重複を拒否する（同じカタログ断面を 2 回追加できない）。
-#[test]
-fn test_add_catalog_section_rejects_duplicate_key() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    let sec = h_shape().to_section(SectionId(0), "H-300x150x6.5x9".into());
-
-    stack.run(
-        &mut model,
-        Box::new(AddCatalogSection {
-            section: sec.clone(),
-        }),
-    );
-    assert_eq!(model.sections.len(), 1);
-    stack.run(&mut model, Box::new(AddCatalogSection { section: sec }));
-    assert_eq!(model.sections.len(), 1, "同じ符号は 2 回追加できない");
-
-    stack.undo(&mut model);
-    assert_eq!(model.sections.len(), 0);
 }
 
 // ---- 階定義の編集（階名・階レベル・追加・削除） ----
@@ -4973,19 +4676,21 @@ fn make_sm(
     }
 }
 
-/// 未割当小梁の追加・削除を確認する（D6）。
+/// 未割当小梁の追加・削除が往復し、同じ端点の重複追加は Noop（D6）。
 #[test]
-fn add_delete_unassigned_joist() {
+fn add_delete_unassigned_joist_roundtrip() {
     use squid_n_core::model::SecondaryMemberKind;
     let mut model = sm_base_model();
     let mut stack = UndoStack::new();
 
-    stack.run(
-        &mut model,
-        Box::new(AddUnassignedJoist {
-            sm: make_sm(0, SecondaryMemberKind::Joist),
-        }),
-    );
+    let sm0 = make_sm(0, SecondaryMemberKind::Joist);
+    stack.run(&mut model, Box::new(AddUnassignedJoist { sm: sm0.clone() }));
+    assert_eq!(model.unassigned_joists.len(), 1);
+
+    // 同じ端点の小梁を未割当へ重ねると Noop。
+    assert!(!stack.run(&mut model, Box::new(AddUnassignedJoist { sm: sm0 })));
+    assert_eq!(model.unassigned_joists.len(), 1);
+
     stack.run(
         &mut model,
         Box::new(AddUnassignedJoist {
@@ -5003,9 +4708,10 @@ fn add_delete_unassigned_joist() {
     assert!(model.validate().is_ok());
 }
 
-/// 床領域小梁リストの全置換と undo。
+/// 床領域小梁リストの全置換。空にすると実体は未割当へ移り（削除しない）、
+/// undo で元へ戻る。種別違い（Post）は Noop。
 #[test]
-fn set_floor_region_secondary_joists_roundtrip() {
+fn set_floor_region_secondary_joists_roundtrip_and_validates() {
     use squid_n_core::model::SecondaryMemberKind;
     let mut model = sm_base_model();
     model.floor_regions.push(FloorRegion::new(
@@ -5014,6 +4720,8 @@ fn set_floor_region_secondary_joists_roundtrip() {
     ));
     let joist = make_sm(0, SecondaryMemberKind::Joist);
     let mut stack = UndoStack::new();
+
+    // 設定: 領域へ入り、undo で戻る。
     stack.run(
         &mut model,
         Box::new(SetFloorRegionSecondaryJoists {
@@ -5021,23 +4729,12 @@ fn set_floor_region_secondary_joists_roundtrip() {
             joists: vec![joist.clone()],
         }),
     );
-    assert_eq!(model.floor_regions[0].secondary_joists, vec![joist]);
+    assert_eq!(model.floor_regions[0].secondary_joists, vec![joist.clone()]);
     stack.undo(&mut model);
     assert!(model.floor_regions[0].secondary_joists.is_empty());
-}
 
-/// 領域リストを空にすると実体は未割当へ移る（削除しない）。
-#[test]
-fn set_floor_region_secondary_joists_empty_moves_to_unassigned() {
-    use squid_n_core::model::SecondaryMemberKind;
-    let mut model = sm_base_model();
-    model.floor_regions.push(FloorRegion::new(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1)],
-    ));
-    let joist = make_sm(0, SecondaryMemberKind::Joist);
+    // 空にすると実体は未割当へ移る（削除しない）。undo で領域へ戻る。
     model.floor_regions[0].secondary_joists.push(joist.clone());
-    let mut stack = UndoStack::new();
     assert!(stack.run(
         &mut model,
         Box::new(SetFloorRegionSecondaryJoists {
@@ -5050,18 +4747,16 @@ fn set_floor_region_secondary_joists_empty_moves_to_unassigned() {
     stack.undo(&mut model);
     assert_eq!(model.floor_regions[0].secondary_joists, vec![joist]);
     assert!(model.unassigned_joists.is_empty());
-}
 
-/// 同じ端点の小梁を未割当へ重ねると Noop。
-#[test]
-fn add_unassigned_joist_rejects_duplicate_endpoints() {
-    use squid_n_core::model::SecondaryMemberKind;
-    let mut model = sm_base_model();
-    let sm = make_sm(0, SecondaryMemberKind::Joist);
-    model.unassigned_joists.push(sm.clone());
-    let mut stack = UndoStack::new();
-    assert!(!stack.run(&mut model, Box::new(AddUnassignedJoist { sm }),));
-    assert_eq!(model.unassigned_joists.len(), 1);
+    // Post を床領域小梁リストへ入れると Noop。
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetFloorRegionSecondaryJoists {
+            region: FloorRegionId(0),
+            joists: vec![make_sm(0, SecondaryMemberKind::Post)],
+        }),
+    ));
+    assert_eq!(model.floor_regions[0].secondary_joists.len(), 1);
 }
 
 /// 壁領域間柱リストの全置換と undo。
@@ -5150,26 +4845,6 @@ fn set_secondary_member_end_support_is_noop_when_ambiguous() {
         }),
     );
     assert!(!applied, "対象が一意でないときは適用しない");
-}
-
-/// Post を床領域小梁リストへ入れると Noop。
-#[test]
-fn set_floor_region_secondary_joists_rejects_post() {
-    use squid_n_core::model::SecondaryMemberKind;
-    let mut model = sm_base_model();
-    model.floor_regions.push(FloorRegion::new(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1)],
-    ));
-    let mut stack = UndoStack::new();
-    assert!(!stack.run(
-        &mut model,
-        Box::new(SetFloorRegionSecondaryJoists {
-            region: FloorRegionId(0),
-            joists: vec![make_sm(0, SecondaryMemberKind::Post)],
-        }),
-    ));
-    assert!(model.floor_regions[0].secondary_joists.is_empty());
 }
 
 /// 床領域内小梁の断面変更。
@@ -5337,7 +5012,7 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
 #[test]
 fn test_add_attached_slab_roundtrip() {
     use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate, SlabShape};
 
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -5364,6 +5039,11 @@ fn test_add_attached_slab_roundtrip() {
     assert!(undo.run(&mut model, Box::new(cmd)));
     assert_eq!(model.slabs.len(), 1);
     assert!(model.slabs[0].is_attached());
+    assert!(model.slabs[0].plate.section.is_none());
+    match &model.slabs[0].shape {
+        SlabShape::Attached { extent, .. } => assert_eq!(*extent, [1500.0, 1500.0]),
+        other => panic!("{other:?}"),
+    }
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     undo.undo(&mut model);
@@ -5404,46 +5084,6 @@ fn test_add_attached_slab_roundtrip() {
     let before = model.slabs.len();
     assert!(!undo.run(&mut model, Box::new(reversed)));
     assert_eq!(model.slabs.len(), before, "逆順の区間は追加されない");
-}
-
-/// 断面未割当、extent 1000,1000 の取り付く床板の追加が往復する。
-#[test]
-fn test_add_attached_slab_sectionless_extent_1000_roundtrip() {
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate, SlabShape};
-
-    let mut model = Model::default();
-    for i in 0..2u32 {
-        model.nodes.push(squid_n_core::model::Node {
-            id: NodeId(i),
-            coord: [i as f64 * 4000.0, 0.0, 0.0],
-            restraint: Default::default(),
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
-    let mut undo = UndoStack::default();
-    assert!(undo.run(
-        &mut model,
-        Box::new(crate::AddAttachedSlab {
-            anchor: RegionAnchor::Line {
-                nodes: [NodeId(0), NodeId(1)],
-                span: [0.0, 1.0],
-                transfer: LoadTransfer::Anchor,
-            },
-            extent: [1000.0, 1000.0],
-            plate: SlabPlate::default(),
-        })
-    ));
-    assert_eq!(model.slabs.len(), 1);
-    assert!(model.slabs[0].plate.section.is_none());
-    match &model.slabs[0].shape {
-        SlabShape::Attached { extent, .. } => assert_eq!(*extent, [1000.0, 1000.0]),
-        other => panic!("{other:?}"),
-    }
-    undo.undo(&mut model);
-    assert!(model.slabs.is_empty());
 }
 
 /// SetAttachedExtent / SetAttachedAnchor の Noop。
@@ -5553,47 +5193,6 @@ fn test_set_attached_extent_and_anchor_noop() {
             })
         ),
         "始端 == 終端（幅0）は Noop"
-    );
-}
-
-/// SetSlabSection は断面未割当の床板に断面を付け、None で断面を外す。
-#[test]
-fn test_set_slab_section_sets_and_clears_section() {
-    use squid_n_core::ids::{SectionId, SlabId};
-    use squid_n_core::model::{Slab, SlabPlate, SlabShape};
-
-    let mut model = seeded_model(4, 0);
-    model.sections.push(bare_section(SectionId(0), None));
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: SlabPlate::default(),
-    });
-    assert!(model.slabs[0].plate.section.is_none());
-    let mut undo = UndoStack::default();
-    assert!(
-        undo.run(
-            &mut model,
-            Box::new(crate::SetSlabSection {
-                id: SlabId(0),
-                section: Some(SectionId(0)),
-            })
-        ),
-        "断面未割当へ断面を付ける"
-    );
-    assert_eq!(model.slabs[0].section(), Some(SectionId(0)));
-    assert!(undo.run(
-        &mut model,
-        Box::new(crate::SetSlabSection {
-            id: SlabId(0),
-            section: None,
-        })
-    ));
-    assert!(
-        model.slabs[0].plate.section.is_none(),
-        "None で断面が外れる"
     );
 }
 
@@ -5767,8 +5366,9 @@ fn test_copy_story_keeps_sectionless_enclosed_slab() {
     );
 }
 
-/// 取り付く壁版（`Line` アンカー）を追加し、undo で消える。
-/// 取付き先が実在しない節点、または壁の取付き先として使わない `Point` は Noop。
+/// 取り付く壁版（`Line` アンカー）と自立壁（`FloorRegion` アンカー）を追加し、
+/// undo で消える。取付き先が実在しない節点、または壁の取付き先として使わない
+/// `Point` は Noop。
 #[test]
 fn test_add_attached_wall_plate_roundtrip() {
     use squid_n_core::ids::NodeId;
@@ -5846,32 +5446,12 @@ fn test_add_attached_wall_plate_roundtrip() {
     };
     assert!(!undo.run(&mut model, Box::new(dangling)));
     assert!(model.wall_plates.is_empty());
-}
 
-/// 取り付く壁版（`FloorRegion` アンカー。自立壁）を追加し、undo で消える。
-/// 所属先の床領域が実在しなければ Noop。
-#[test]
-fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::RegionAnchor;
-
-    let mut model = Model::default();
-    for i in 0..2u32 {
-        model.nodes.push(squid_n_core::model::Node {
-            id: NodeId(i),
-            coord: [i as f64 * 2000.0, 0.0, 3000.0],
-            restraint: Default::default(),
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
-    let mut undo = UndoStack::default();
-
-    // 自立壁が荷重を渡す床領域は保存しないため、床領域が 1 つも無くても作れる
-    // （荷重を流せる床の上に載っているかは幾何の問題で、解析前チェックが見る。
-    // 判定を 2 か所に分けない）。
-    let cmd = crate::AddAttachedWallPlate {
+    // 自立壁（`FloorRegion` アンカー）も同じコマンドで作れる。自立壁が荷重を
+    // 渡す床領域は保存しないため、床領域が 1 つも無くても作れる（荷重を流せる
+    // 床の上に載っているかは幾何の問題で、解析前チェックが見る。判定を 2 か所に
+    // 分けない）。
+    let freestanding = crate::AddAttachedWallPlate {
         anchor: RegionAnchor::FloorRegion {
             nodes: [NodeId(0), NodeId(1)],
         },
@@ -5880,15 +5460,14 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
         opening_area: 0.0,
         opening_weight: 0.0,
     };
-    assert!(undo.run(&mut model, Box::new(cmd)));
-    assert_eq!(model.wall_plates.len(), 1);
+    assert!(undo.run(&mut model, Box::new(freestanding)));
+    assert!(model.wall_plates[0].is_attached());
     assert!(model.validate().is_ok(), "{:?}", model.validate());
-
     undo.undo(&mut model);
     assert!(model.wall_plates.is_empty(), "undo で消える");
 
     // 実在しない節点を指す自立壁は Noop（節点参照は編集層が検証する）。
-    let dangling = crate::AddAttachedWallPlate {
+    let dangling_freestanding = crate::AddAttachedWallPlate {
         anchor: RegionAnchor::FloorRegion {
             nodes: [NodeId(0), NodeId(9)],
         },
@@ -5897,7 +5476,7 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
         opening_area: 0.0,
         opening_weight: 0.0,
     };
-    assert!(!undo.run(&mut model, Box::new(dangling)));
+    assert!(!undo.run(&mut model, Box::new(dangling_freestanding)));
     assert!(model.wall_plates.is_empty());
 }
 

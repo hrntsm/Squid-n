@@ -193,9 +193,12 @@ fn test_ultimate_check_ql_q0_substitution_for_mk785() {
     assert!(beam_mk.qsu > beam.qsu);
 }
 
+/// 算定オプション（軽量コンクリートの低減・付着検定の省略）が機能する。
 #[test]
-fn test_ultimate_check_lightweight_reduces_qsu() {
+fn test_ultimate_check_option_flags() {
     let model = column_and_beam_model();
+
+    // 軽量コンクリートは Qsu・Qbu を 0.9 倍に低減する。
     let std = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default());
     let lw = collect_rc_ultimate_checks(
         &model,
@@ -209,6 +212,20 @@ fn test_ultimate_check_lightweight_reduces_qsu() {
     let col_lw = lw.iter().find(|c| c.elem == ElemId(0)).unwrap();
     assert!((col_lw.qsu - 0.9 * col_std.qsu).abs() < 1e-3);
     assert!((col_lw.qbu - 0.9 * col_std.qbu).abs() < 1e-3);
+
+    // 付着検定を省略すると Qbu=0・付着余裕度は無限大。
+    let no_bond = collect_rc_ultimate_checks(
+        &model,
+        &[],
+        &UltimateShearOptions {
+            include_bond: false,
+            ..Default::default()
+        },
+    );
+    for c in &no_bond {
+        assert_eq!(c.qbu, 0.0);
+        assert!(c.bond_margin.is_infinite());
+    }
 }
 
 #[test]
@@ -220,23 +237,6 @@ fn test_ultimate_check_skips_non_rc() {
     // 柱がスキップされ梁のみ。
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].elem, ElemId(1));
-}
-
-#[test]
-fn test_ultimate_check_include_bond_false() {
-    let model = column_and_beam_model();
-    let checks = collect_rc_ultimate_checks(
-        &model,
-        &[],
-        &UltimateShearOptions {
-            include_bond: false,
-            ..Default::default()
-        },
-    );
-    for c in &checks {
-        assert_eq!(c.qbu, 0.0);
-        assert!(c.bond_margin.is_infinite());
-    }
 }
 
 #[test]
@@ -373,7 +373,8 @@ fn test_ultimate_check_shear_method_ductility() {
     );
 }
 
-/// プッシュオーバー応答からの部材別 Rp・設計用せん断力の直接反映が機能する。
+/// プッシュオーバー応答からの部材別 Rp・設計用せん断力（強軸・2 軸せん断の
+/// 弱軸）の直接反映が機能する。
 #[test]
 fn test_ultimate_check_pushover_demand() {
     let model = column_and_beam_model();
@@ -420,17 +421,13 @@ fn test_ultimate_check_pushover_demand() {
         (col_a.qmu - qm).abs() > 1.0,
         "shear 未指定時は Qmu が応答せん断と一致しないはず（両端ヒンジ略算）"
     );
-}
 
-/// 2 軸せん断で弱軸の設計用せん断需要（プッシュオーバー弱軸応答）を直接反映する。
-#[test]
-fn test_ultimate_check_pushover_weak_shear() {
-    let model = column_and_beam_model();
+    // (4) 2 軸せん断では弱軸の設計用せん断需要（プッシュオーバー弱軸応答）を
+    // 直接反映する。強軸せん断は共通、弱軸せん断需要のみ大小 2 種。
     let opts = UltimateShearOptions {
         biaxial_shear: true,
         ..Default::default()
     };
-    // 強軸せん断は共通、弱軸せん断需要のみ大小 2 種。
     let qm = 200_000.0_f64;
     let small = vec![(
         ElemId(0),

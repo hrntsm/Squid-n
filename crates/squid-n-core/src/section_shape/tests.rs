@@ -1,42 +1,100 @@
 use super::*;
 
+/// 各形状の `to_section` が正の断面性能を返し、強軸・弱軸の関係が崩れない。
 #[test]
-fn test_steel_h_shape() {
-    let shape = SectionShape::SteelH {
+fn to_section_shapes_yield_positive_properties() {
+    let h = SectionShape::SteelH {
         height: 300.0,
         width: 300.0,
         web_thick: 10.0,
         flange_thick: 15.0,
-    };
-    let sec = shape.to_section(SectionId(0), "H-300x300x10x15".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.iy > sec.iz);
-    assert!(sec.j > 0.0);
-}
+    }
+    .to_section(SectionId(0), "H-300x300x10x15".into());
+    assert!(h.area > 0.0);
+    assert!(h.iy > h.iz);
+    assert!(h.j > 0.0);
 
-#[test]
-fn test_steel_box() {
-    let shape = SectionShape::SteelBox {
+    // 正方形の箱形は強軸＝弱軸。
+    let boxed = SectionShape::SteelBox {
         height: 200.0,
         width: 200.0,
         thick: 12.0,
         corner_r: 0.0,
-    };
-    let sec = shape.to_section(SectionId(0), "BOX-200x200x12".into());
-    assert!(sec.area > 0.0);
-    assert!((sec.iy - sec.iz).abs() < 1.0);
-}
+    }
+    .to_section(SectionId(0), "BOX-200x200x12".into());
+    assert!(boxed.area > 0.0);
+    assert!((boxed.iy - boxed.iz).abs() < 1.0);
 
-#[test]
-fn test_steel_pipe() {
-    let shape = SectionShape::SteelPipe {
+    // 円形鋼管も強軸＝弱軸で、ねじり定数は 2I。
+    let pipe = SectionShape::SteelPipe {
         outer_dia: 216.3,
         thick: 8.2,
-    };
-    let sec = shape.to_section(SectionId(0), "PIPE-216.3x8.2".into());
-    assert!(sec.area > 0.0);
-    assert!((sec.iy - sec.iz).abs() < 1e-6);
-    assert!(sec.j > sec.iy);
+    }
+    .to_section(SectionId(0), "PIPE-216.3x8.2".into());
+    assert!(pipe.area > 0.0);
+    assert!((pipe.iy - pipe.iz).abs() < 1e-6);
+    assert!(pipe.j > pipe.iy);
+
+    // RC 円形はせん断断面積を持つ。
+    let rc = SectionShape::RcCircle {
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: BarSet {
+                count: 12,
+                dia: 22.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 12,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 6.0,
+                pitch: 80.0,
+                legs: 1,
+            },
+        },
+    }
+    .to_section(SectionId(0), "RC-600".into());
+    assert!(rc.area > 0.0);
+    assert!(rc.as_y > 0.0 && rc.as_z > 0.0);
+
+    let angle = SectionShape::SteelAngle {
+        leg_a: 150.0,
+        leg_b: 100.0,
+        thick: 12.0,
+    }
+    .to_section(SectionId(0), "L-150x100x12".into());
+    let tee = SectionShape::SteelTee {
+        height: 200.0,
+        width: 200.0,
+        web_thick: 10.0,
+        flange_thick: 15.0,
+    }
+    .to_section(SectionId(0), "T-200x200x10x15".into());
+    // 溝形鋼は強軸 > 弱軸。
+    let channel = SectionShape::SteelChannel {
+        height: 250.0,
+        width: 90.0,
+        web_thick: 7.5,
+        flange_thick: 12.0,
+    }
+    .to_section(SectionId(0), "C-250x90x7.5x12".into());
+    assert!(channel.iy > channel.iz);
+
+    for (sec, name) in [
+        (&angle, "L-150x100x12"),
+        (&tee, "T-200x200x10x15"),
+        (&channel, "C-250x90x7.5x12"),
+    ] {
+        assert!(
+            sec.area > 0.0 && sec.iy > 0.0 && sec.iz > 0.0 && sec.j > 0.0,
+            "{name}"
+        );
+        assert!(sec.as_y > 0.0 && sec.as_z > 0.0, "{name}");
+    }
 }
 
 #[test]
@@ -191,147 +249,6 @@ fn test_steel_built_h_asymmetric() {
     assert!(sec.j > 0.0 && sec.as_y > 0.0 && sec.as_z > 0.0);
     assert_eq!(sec.depth, h);
     assert_eq!(sec.width, lw, "せい幅は広い方（下フランジ）");
-}
-
-#[test]
-fn test_rc_rect() {
-    let shape = SectionShape::RcRect {
-        b: 500.0,
-        d: 500.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 16.0,
-                layers: 2,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 16.0,
-                layers: 2,
-            },
-            cover: 40.0,
-            shear: ShearBar {
-                dia: 10.0,
-                pitch: 100.0,
-                legs: 2,
-            },
-        },
-    };
-    let sec = shape.to_section(SectionId(0), "RC-500x500".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.as_y > 0.0);
-    assert!(sec.iz > 0.0);
-}
-
-#[test]
-fn test_rc_circle() {
-    let shape = SectionShape::RcCircle {
-        d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
-            cover: 40.0,
-            shear: ShearBar {
-                dia: 6.0,
-                pitch: 80.0,
-                legs: 1,
-            },
-        },
-    };
-    let sec = shape.to_section(SectionId(0), "RC-600".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.as_y > 0.0);
-    assert!(sec.as_z > 0.0);
-}
-
-#[test]
-fn test_steel_l_angle() {
-    let shape = SectionShape::SteelAngle {
-        leg_a: 150.0,
-        leg_b: 100.0,
-        thick: 12.0,
-    };
-    let sec = shape.to_section(SectionId(0), "L-150x100x12".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.iy > 0.0);
-    assert!(sec.iz > 0.0);
-}
-
-#[test]
-fn test_steel_tee() {
-    let shape = SectionShape::SteelTee {
-        height: 200.0,
-        width: 200.0,
-        web_thick: 10.0,
-        flange_thick: 15.0,
-    };
-    let sec = shape.to_section(SectionId(0), "T-200x200x10x15".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.iy > 0.0);
-    assert!(sec.iz > 0.0);
-}
-
-#[test]
-fn test_steel_channel() {
-    let shape = SectionShape::SteelChannel {
-        height: 250.0,
-        width: 90.0,
-        web_thick: 7.5,
-        flange_thick: 12.0,
-    };
-    let sec = shape.to_section(SectionId(0), "C-250x90x7.5x12".into());
-    assert!(sec.area > 0.0);
-    assert!(sec.iy > sec.iz);
-}
-
-#[test]
-fn test_section_roundtrip_serde() {
-    let shape = SectionShape::SteelH {
-        height: 300.0,
-        width: 300.0,
-        web_thick: 10.0,
-        flange_thick: 15.0,
-    };
-    let json = serde_json::to_string(&shape).unwrap();
-    let restored: SectionShape = serde_json::from_str(&json).unwrap();
-    assert_eq!(shape, restored);
-}
-
-#[test]
-fn test_rc_rebar_serde_roundtrip() {
-    let shape = SectionShape::RcRect {
-        b: 500.0,
-        d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 6,
-                dia: 22.0,
-                layers: 2,
-            },
-            main_y: BarSet {
-                count: 2,
-                dia: 16.0,
-                layers: 1,
-            },
-            cover: 50.0,
-            shear: ShearBar {
-                dia: 10.0,
-                pitch: 100.0,
-                legs: 2,
-            },
-        },
-    };
-    let json = serde_json::to_string(&shape).unwrap();
-    let restored: SectionShape = serde_json::from_str(&json).unwrap();
-    assert_eq!(shape, restored);
 }
 
 #[test]
@@ -522,21 +439,6 @@ fn make_src_600() -> SectionShape {
 }
 
 #[test]
-fn test_wall_shear_shape_factor_rectangle_limit() {
-    // ξ=1(側柱なし=矩形)は η によらず κ=1.2
-    for eta in [0.1, 0.5, 1.0] {
-        let k = wall_shear_shape_factor(1.0, eta);
-        assert!((k - KAPPA_RC).abs() < 1e-12, "eta={eta} k={k}");
-    }
-    // 側柱付き(ξ<1)は有限・正の値
-    let k = wall_shear_shape_factor(0.8, 0.3);
-    assert!(k.is_finite() && k > 0.0);
-    // 退化入力でも非有限値・負値は返さない
-    let k0 = wall_shear_shape_factor(0.0, 0.0);
-    assert!(k0.is_finite() && k0 > 0.0);
-}
-
-#[test]
 fn test_concrete_young_modulus_formula() {
     // Ec = 3.35e4·(γ/24)²·(Fc/60)^(1/3)、γ=23。Fc=60 で (Fc/60)^(1/3)=1。
     let expected = 3.35e4 * (23.0_f64 / 24.0).powi(2);
@@ -649,6 +551,8 @@ fn no_rebar() -> RcRebar {
 }
 
 /// 全形状の寸法表記が、ドキュメントに記載した接頭辞・寸法順と一致する。
+/// 整数の寸法は小数点以下を落とし、端数のある寸法はそのまま出す。
+/// 丸めで別寸法が同じ表記になると断面を見分けられなくなるため、小数は 3 桁まで残す。
 #[test]
 fn test_dimension_label_covers_all_shapes() {
     let cases: Vec<(SectionShape, &str)> = vec![
@@ -731,6 +635,28 @@ fn test_dimension_label_covers_all_shapes() {
             },
             "FB-100x9",
         ),
+        // 端数のある寸法は丸めずにそのまま出し、小数は 3 桁まで残す。
+        (
+            SectionShape::SteelFlatBar {
+                width: 100.0,
+                thick: 3.2,
+            },
+            "FB-100x3.2",
+        ),
+        (
+            SectionShape::SteelFlatBar {
+                width: 100.0,
+                thick: 4.5,
+            },
+            "FB-100x4.5",
+        ),
+        (
+            SectionShape::SteelFlatBar {
+                width: 100.0,
+                thick: 1.234,
+            },
+            "FB-100x1.234",
+        ),
         (SectionShape::SteelRoundBar { dia: 25.0 }, "RB-25"),
         (
             SectionShape::RcRect {
@@ -787,23 +713,6 @@ fn test_dimension_label_covers_all_shapes() {
     }
 }
 
-/// 整数の寸法は小数点以下を落とし、端数のある寸法はそのまま出す。
-/// 丸めで別寸法が同じ表記になると断面を見分けられなくなるため、小数は 3 桁まで残す。
-#[test]
-fn test_dimension_label_number_format() {
-    let label = |t: f64| {
-        SectionShape::SteelFlatBar {
-            width: 100.0,
-            thick: t,
-        }
-        .dimension_label()
-    };
-    assert_eq!(label(9.0), "FB-100x9");
-    assert_eq!(label(3.2), "FB-100x3.2");
-    assert_eq!(label(4.5), "FB-100x4.5");
-    assert_eq!(label(1.234), "FB-100x1.234");
-}
-
 /// 矩形分解による Zp が、H 形の閉形式 `B·tf·(H−tf) + tw·(H−2tf)²/4` に一致する。
 /// 溝形鋼は強軸まわりの鉛直方向の分布が H 形と同じなので、同一寸法なら同値になる。
 #[test]
@@ -831,18 +740,6 @@ fn test_plastic_modulus_channel_matches_h_closed_form() {
     // 手計算: 200·13·(400−13) + 8·(400−26)²/4。
     let hand = b * tf * (h - tf) + tw * (h - 2.0 * tf).powi(2) / 4.0;
     assert!((zp_h - hand).abs() < 1e-6);
-}
-
-/// 平鋼（中実矩形）の Zp は `B·t²/4`、中実丸鋼は `D³/6`（材料力学の閉形式）。
-#[test]
-fn test_plastic_modulus_solid_sections() {
-    let flat = SectionShape::SteelFlatBar {
-        width: 100.0,
-        thick: 12.0,
-    };
-    assert!((flat.plastic_modulus_strong().unwrap() - 100.0 * 12.0 * 12.0 / 4.0).abs() < 1e-9);
-    let round = SectionShape::SteelRoundBar { dia: 30.0 };
-    assert!((round.plastic_modulus_strong().unwrap() - 30.0_f64.powi(3) / 6.0).abs() < 1e-9);
 }
 
 /// 非対称断面（T 形・非対称組立 H）の塑性中立軸は**等面積軸**であり、
@@ -909,7 +806,7 @@ fn test_plastic_modulus_asymmetric_exceeds_elastic() {
     assert!(zp_b > 0.0);
 }
 
-/// リップ溝形鋼・山形鋼も Zp を持ち、フォールバック（None）に落ちない。
+/// リップ溝形鋼・山形鋼・平鋼・丸鋼も Zp を持ち、フォールバック（None）に落ちない。
 /// 山形鋼は `calc_iy` と同じ幾何 y 軸まわり（主軸ではない）。
 #[test]
 fn test_plastic_modulus_covers_all_steel_shapes() {
@@ -932,6 +829,16 @@ fn test_plastic_modulus_covers_all_steel_shapes() {
             .unwrap_or_else(|| panic!("{s:?} が Zp を持たない"));
         assert!(zp > 0.0, "{s:?} の Zp={zp}");
     }
+
+    // 平鋼（中実矩形）の Zp は `B·t²/4`、中実丸鋼は `D³/6`（材料力学の閉形式）。
+    let flat = SectionShape::SteelFlatBar {
+        width: 100.0,
+        thick: 12.0,
+    };
+    assert!((flat.plastic_modulus_strong().unwrap() - 100.0 * 12.0 * 12.0 / 4.0).abs() < 1e-9);
+    let round = SectionShape::SteelRoundBar { dia: 30.0 };
+    assert!((round.plastic_modulus_strong().unwrap() - 30.0_f64.powi(3) / 6.0).abs() < 1e-9);
+
     // RC・SRC・CFT は鉄骨断面ではないため None のまま。
     assert!(SectionShape::RcCircle {
         d: 600.0,

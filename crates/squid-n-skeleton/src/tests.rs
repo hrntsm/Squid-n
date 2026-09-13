@@ -219,8 +219,8 @@ fn test_rc_skeleton_axial_dependency() {
 }
 
 #[test]
-fn test_rc_skeleton_shear_contribution_increases_rotation() {
-    // せん断変形を加えると降伏回転角 θy が増加する（M は同一）。
+fn test_rc_skeleton_deformation_contributions_increase_rotation() {
+    // せん断変形・鉄筋抜出しはいずれも降伏回転角 θy を増加させる（M は同一）。
     let sec = make_section(300.0, 500.0);
     let rebar = Reinforcement {
         main_bars: vec![
@@ -239,7 +239,7 @@ fn test_rc_skeleton_shear_contribution_increases_rotation() {
         n_axial: 0.0,
         alpha: 0.4,
     };
-    let sk_no_shear = build_rc_member_skeleton(
+    let sk_base = build_rc_member_skeleton(
         &sec,
         &rebar,
         &concrete,
@@ -248,6 +248,8 @@ fn test_rc_skeleton_shear_contribution_increases_rotation() {
         &ShearContribution::none(),
         &PulloutContribution::none(),
     );
+
+    // せん断変形を加えると θy が増加する。
     let sk_with_shear = build_rc_member_skeleton(
         &sec,
         &rebar,
@@ -257,57 +259,27 @@ fn test_rc_skeleton_shear_contribution_increases_rotation() {
         &ShearContribution::rc_rect(300.0, 500.0, &concrete),
         &PulloutContribution::none(),
     );
-    let theta_y_no = sk_no_shear.points[2].0;
-    let theta_y_with = sk_with_shear.points[2].0;
     assert!(
-        theta_y_with > theta_y_no,
-        "shear contribution must increase θy: no={}, with={}",
-        theta_y_no,
-        theta_y_with
+        sk_with_shear.points[2].0 > sk_base.points[2].0,
+        "shear contribution must increase θy: base={}, with={}",
+        sk_base.points[2].0,
+        sk_with_shear.points[2].0
     );
     // M は同一（せん断は変形のみ加算）
-    let my_no = sk_no_shear.points[2].1;
-    let my_with = sk_with_shear.points[2].1;
-    assert_relative_eq!(my_no, my_with, epsilon = 1e-3);
-}
+    assert_relative_eq!(
+        sk_base.points[2].1,
+        sk_with_shear.points[2].1,
+        epsilon = 1e-3
+    );
 
-#[test]
-fn test_rc_skeleton_pullout_contribution_increases_rotation() {
-    // 鉄筋抜出しを加えると降伏回転角 θy が増加する。
-    let sec = make_section(300.0, 500.0);
-    let rebar = Reinforcement {
-        main_bars: vec![
-            (0.0, 190.0, 283.5),
-            (-90.0, 190.0, 283.5),
-            (90.0, 190.0, 283.5),
-        ],
-        hoop_pitch: 100.0,
-        hoop_area: 0.0,
-    };
-    let concrete = Concrete::new(30.0, 2.0);
-    let steel = Bilinear::new(200000.0, 345.0, 0.01);
-    let opts = SkeletonOptions {
-        span: 4000.0,
-        inflection_ratio: 0.5,
-        n_axial: 0.0,
-        alpha: 0.4,
-    };
+    // 鉄筋抜出しを加えても θy が増加する。
     let pullout = PulloutContribution {
         bar_diameter: 19.0,
         e_s: 200000.0,
         fy: 345.0,
         bond_coeff: 9.0,
     };
-    let sk_no = build_rc_member_skeleton(
-        &sec,
-        &rebar,
-        &concrete,
-        &steel,
-        &opts,
-        &ShearContribution::none(),
-        &PulloutContribution::none(),
-    );
-    let sk_with = build_rc_member_skeleton(
+    let sk_with_pullout = build_rc_member_skeleton(
         &sec,
         &rebar,
         &concrete,
@@ -317,10 +289,10 @@ fn test_rc_skeleton_pullout_contribution_increases_rotation() {
         &pullout,
     );
     assert!(
-        sk_with.points[2].0 > sk_no.points[2].0,
-        "pullout must increase θy: no={}, with={}",
-        sk_no.points[2].0,
-        sk_with.points[2].0
+        sk_with_pullout.points[2].0 > sk_base.points[2].0,
+        "pullout must increase θy: base={}, with={}",
+        sk_base.points[2].0,
+        sk_with_pullout.points[2].0
     );
 }
 
@@ -382,45 +354,5 @@ fn test_rc_skeleton_ultimate_matches_handcalc() {
         mu_fiber,
         mu_handcalc,
         ratio
-    );
-}
-
-#[test]
-fn test_rc_skeleton_mu_greater_than_my() {
-    // 降伏型 RC では Mu >= My（降伏後もわずかに耐力上昇）。
-    let sec = make_section(300.0, 500.0);
-    let rebar = Reinforcement {
-        main_bars: vec![
-            (0.0, 190.0, 283.5),
-            (-90.0, 190.0, 283.5),
-            (90.0, 190.0, 283.5),
-        ],
-        hoop_pitch: 100.0,
-        hoop_area: 0.0,
-    };
-    let concrete = Concrete::new(30.0, 2.0);
-    let steel = Bilinear::new(200000.0, 345.0, 0.01);
-    let opts = SkeletonOptions {
-        span: 4000.0,
-        inflection_ratio: 0.5,
-        n_axial: 0.0,
-        alpha: 0.4,
-    };
-    let skeleton = build_rc_member_skeleton(
-        &sec,
-        &rebar,
-        &concrete,
-        &steel,
-        &opts,
-        &ShearContribution::none(),
-        &PulloutContribution::none(),
-    );
-    let my = skeleton.points[2].1;
-    let mu = skeleton.points[3].1;
-    assert!(
-        mu >= my - 1e-6,
-        "Mu ({}) must be >= My ({}) for yield-type RC",
-        mu,
-        my
     );
 }

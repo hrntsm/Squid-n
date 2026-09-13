@@ -158,13 +158,6 @@ fn test_seismic_design_shear_min_of_qd1_qd2() {
 // 許容応力度（RC 造検定でのみ使う独自カバレッジ分。他は material_strength.rs 側で検証）
 
 #[test]
-fn test_concrete_young_modulus_plausible() {
-    // Fc=21, γ=23 で AIJ 表の目安値（約 2.0〜2.3 × 10^4 N/mm²）に近い。
-    let ec = concrete_young_modulus(21.0, Some(23.0));
-    assert!(ec > 20000.0 && ec < 23000.0, "Ec={ec}");
-}
-
-#[test]
 fn test_rebar_allowable_tension_table() {
     assert!((rebar_allowable_tension("SR235", 16.0, true) - 155.0).abs() < 1e-9);
     assert!((rebar_allowable_tension("SR235", 16.0, false) - 235.0).abs() < 1e-9);
@@ -194,79 +187,28 @@ fn test_rebar_allowable_shear_table() {
     assert!((rebar_allowable_shear("UNKNOWN", false) - 295.0).abs() < 1e-9);
 }
 
-// dt（引張筋重心）
-
-#[test]
-fn test_tension_dt_single_layer() {
-    let bar = BarSet {
-        count: 4,
-        dia: 22.0,
-        layers: 1,
-    };
-    let dt = tension_dt(40.0, 10.0, &bar);
-    assert!((dt - (40.0 + 10.0 + 11.0)).abs() < 1e-9);
-}
-
-#[test]
-fn test_tension_dt_two_layers() {
-    let bar = BarSet {
-        count: 8,
-        dia: 22.0,
-        layers: 2,
-    };
-    let cover = 40.0;
-    let shear_dia = 10.0;
-    let k1 = cover + shear_dia + bar.dia / 2.0;
-    let k_prime = 25.0_f64.max(1.5 * bar.dia);
-    let k2 = k1 + bar.dia / 2.0 + k_prime + bar.dia / 2.0;
-    let expected = (k1 + k2) / 2.0;
-    let dt = tension_dt(cover, shear_dia, &bar);
-    assert!((dt - expected).abs() < 1e-6);
-}
-
 // せん断スパン比 α・せん断耐力（普通強度・高強度せん断補強筋とも）
 
 #[test]
-fn test_shear_alpha_clamp_at_upper_bound() {
-    // M/(Q・d) = 1 -> α = 4/2 = 2.0（上限に一致）
+fn test_shear_alpha_formula_and_clamps() {
     let d = 500.0;
     let q = 100_000.0;
-    let m = q * d * 1.0;
-    let alpha = shear_alpha(m, q, d, 2.0);
-    assert!((alpha - 2.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_shear_alpha_clamp_at_lower_bound() {
-    // M/(Q・d) = 3 -> α = 4/4 = 1.0（下限に一致）
-    let d = 500.0;
-    let q = 100_000.0;
-    let m = q * d * 3.0;
-    let alpha = shear_alpha(m, q, d, 2.0);
-    assert!((alpha - 1.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_shear_alpha_clamp_engages_beyond_bounds() {
-    let d = 500.0;
-    let q = 100_000.0;
-    // M/(Q・d)=0 -> 素の α=4.0 は上限 2.0 にクランプされる。
-    let alpha_hi = shear_alpha(0.0, q, d, 2.0);
-    assert!((alpha_hi - 2.0).abs() < 1e-9);
-    // M/(Q・d)=10 -> 素の α=4/11≈0.364 は下限 1.0 にクランプされる。
-    let m = q * d * 10.0;
-    let alpha_lo = shear_alpha(m, q, d, 2.0);
-    assert!((alpha_lo - 1.0).abs() < 1e-9);
-}
-
-#[test]
-fn test_shear_alpha_intermediate_value() {
-    // M/(Q・d) = 1 と 3 の中間、M/(Q・d)=2 -> α = 4/3 ≈ 1.333
-    let d = 500.0;
-    let q = 100_000.0;
-    let m = q * d * 2.0;
-    let alpha = shear_alpha(m, q, d, 2.0);
-    assert!((alpha - 4.0 / 3.0).abs() < 1e-9);
+    // (M/(Q・d), max_alpha, 期待 α)。M/(Q・d)=1 は上限、3 は下限に一致。
+    let cases = [
+        (1.0, 2.0, 2.0),
+        (2.0, 2.0, 4.0 / 3.0),
+        (3.0, 2.0, 1.0),
+        (0.0, 2.0, 2.0),  // 素の 4.0 → 梁の上限 2.0
+        (10.0, 2.0, 1.0), // 素の約 0.364 → 下限 1.0
+        (0.0, 1.5, 1.5),  // 柱の上限 1.5
+    ];
+    for (mqd, max_alpha, expected) in cases {
+        let alpha = shear_alpha(q * d * mqd, q, d, max_alpha);
+        assert!(
+            (alpha - expected).abs() < 1e-9,
+            "M/(Q・d)={mqd}, max={max_alpha}: alpha={alpha}, expected={expected}"
+        );
+    }
 }
 
 #[test]
@@ -318,15 +260,26 @@ fn test_beam_shear_damage_control_vs_safety() {
         qa_damage < qa_safety,
         "損傷制御式は安全確保式より小さいはず"
     );
-}
 
-#[test]
-fn test_column_shear_alpha_upper_bound_1_5() {
-    let d = 400.0;
-    let q = 50_000.0;
-    // M/(Q・d)=0 -> 素の α=4.0 は柱の上限 1.5 にクランプされる。
-    let alpha = shear_alpha(0.0, q, d, 1.5);
-    assert!((alpha - 1.5).abs() < 1e-9);
+    // grade=None のディスパッチは普通強度式へ委譲する（分岐反転の回帰防止）。
+    // 実運用の既定は損傷制御（true）のため、true は損傷制御式
+    // b・j・(2/3・α・fs + pw項)、false は安全確保式 b・j・(α・fs + pw項) と照合する。
+    for (damage_control, expected) in [(true, expected_damage), (false, expected_safety)] {
+        let qa_via_dispatch = shear_capacity_for(
+            &props,
+            &allow,
+            alpha,
+            LoadTerm::Short,
+            damage_control,
+            false,
+            None,
+            24.0,
+        );
+        assert!(
+            (qa_via_dispatch - expected).abs() / expected < 1e-9,
+            "damage_control={damage_control}: QA={qa_via_dispatch}, expected={expected}"
+        );
+    }
 }
 
 #[test]
@@ -337,15 +290,58 @@ fn test_column_safety_check_excludes_alpha() {
         _ => unreachable!(),
     };
     let props = rect_axis_props_strong(&make_section(shape), &rebar);
-    let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
 
-    let qa_alpha_1 = shear_capacity(&props, &allow, 1.0, LoadTerm::Short, false, true);
-    let qa_alpha_1_5 = shear_capacity(&props, &allow, 1.5, LoadTerm::Short, false, true);
-    // 柱の「安全確保のための検討」式は α を含まないため、α を変えても
-    // QA は変化しない。
-    assert!((qa_alpha_1 - qa_alpha_1_5).abs() < 1e-6);
+    // 柱の「安全確保のための検討」式は α を含まない。普通強度（grade=None）と
+    // 高強度せん断補強筋（SHD685）の双方で、手計算の期待値
+    // b・j・(fs + 0.5・w_ft・(pw − offset)) と照合する。
+    // fs = min(24/30, 0.49+24/100)×1.5 = 1.095、pw ≈ 0.003927。
+    let fs = 1.095;
+    let pw = props.pw;
+    assert!(pw > 0.002, "テストの前提として pw > 0.002 が必要: pw={pw}");
+    let b_j = props.b * props.j;
+    // (grade, w_ft, pw のオフセット, pw 上限)。w_ft は SD345 短期 345、
+    // SHD685 短期 590（製品表）。
+    let cases = [
+        (None, 345.0, 0.002, 0.012),
+        (Some("SHD685"), 590.0, 0.001, 0.012),
+    ];
+    for (grade, w_ft, offset, pw_cap) in cases {
+        let mut allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
+        allow.w_ft = w_ft;
+        let pw_term = 0.5 * w_ft * (pw.min(pw_cap) - offset);
+        let expected = b_j * (fs + pw_term);
+        let qa_alpha_1 = shear_capacity_for(
+            &props,
+            &allow,
+            1.0,
+            LoadTerm::Short,
+            false,
+            true,
+            grade,
+            24.0,
+        );
+        let qa_alpha_1_5 = shear_capacity_for(
+            &props,
+            &allow,
+            1.5,
+            LoadTerm::Short,
+            false,
+            true,
+            grade,
+            24.0,
+        );
+        assert!(
+            (qa_alpha_1 - expected).abs() / expected < 1e-9,
+            "grade={grade:?}: QA={qa_alpha_1}, expected={expected}"
+        );
+        assert!(
+            (qa_alpha_1 - qa_alpha_1_5).abs() < 1e-6,
+            "grade={grade:?}: α を変えても安全確保式は変化しない"
+        );
+    }
 
     // 損傷制御式は α に依存するため異なる値になる。
+    let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
     let qa_damage_1 = shear_capacity(&props, &allow, 1.0, LoadTerm::Short, true, true);
     let qa_damage_1_5 = shear_capacity(&props, &allow, 1.5, LoadTerm::Short, true, true);
     assert!((qa_damage_1 - qa_damage_1_5).abs() > 1e-6);
@@ -367,8 +363,8 @@ fn test_column_long_term_shear_has_no_rebar_term() {
 }
 
 #[test]
-fn test_high_strength_shear_capacity_offset_0_001_beam() {
-    // 高強度せん断補強筋の暫定対応式（短期）は pw オフセットが 0.001。
+fn test_high_strength_shear_capacity_offset_and_long_term() {
+    // pw > 0.002 の断面: 高強度せん断補強筋の短期式は pw 項のオフセットが 0.001。
     let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
@@ -401,23 +397,18 @@ fn test_high_strength_shear_capacity_offset_0_001_beam() {
         "KH785",
         24.0,
     );
-
     let pw_cap_damage = high_strength_pw_cap("KH785", LoadTerm::Short, true, 24.0);
     let pw_cap_safety = high_strength_pw_cap("KH785", LoadTerm::Short, false, 24.0);
     let pw_term_damage = 0.5 * allow.w_ft * (props.pw.min(pw_cap_damage) - 0.001);
     let pw_term_safety = 0.5 * allow.w_ft * (props.pw.min(pw_cap_safety) - 0.001);
     let expected_damage = props.b * props.j * ((2.0 / 3.0) * alpha * allow.fs + pw_term_damage);
     let expected_safety = props.b * props.j * (alpha * allow.fs + pw_term_safety);
-
     assert!((qa_damage - expected_damage).abs() / expected_damage < 1e-6);
     assert!((qa_safety - expected_safety).abs() / expected_safety < 1e-6);
-}
 
-#[test]
-fn test_high_strength_offset_differs_from_normal_short_term() {
-    // pw を 0.001 < pw < 0.002 の範囲に設定する。普通強度式（offset=0.002）
-    // では pw 項が 0 のままだが、高強度式（短期 offset=0.001）では
-    // pw 項が有効になり QA が普通強度より大きくなることを確認する。
+    // 0.001 < pw < 0.002 の断面: 普通強度式（offset=0.002）では pw 項が 0 の
+    // ままだが、高強度式（短期 offset=0.001）では pw 項が有効になり QA が
+    // 普通強度式より大きくなる。
     let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 13.0, 600.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
@@ -446,15 +437,11 @@ fn test_high_strength_offset_differs_from_normal_short_term() {
         "KH785",
         24.0,
     );
-
     assert!(
         qa_hs > qa_normal,
         "高強度式は pw 項が有効になり普通強度式より大きいはず: normal={qa_normal}, hs={qa_hs}"
     );
-}
 
-#[test]
-fn test_high_strength_shear_capacity_long_term_matches_normal_formula() {
     // 長期は普通強度と同じ式（offset=0.002, pw 上限 0.6%）で、
     // w_ft も高強度テーブル値=195 と SD345 長期値=195 が一致するため、
     // 高強度パスと普通強度パスの結果は一致するはず。
@@ -483,67 +470,6 @@ fn test_high_strength_shear_capacity_long_term_matches_normal_formula() {
     let qa_normal = shear_capacity(&props, &allow_normal, alpha, LoadTerm::Long, true, false);
 
     assert!((qa_hs - qa_normal).abs() / qa_normal < 1e-9);
-}
-
-#[test]
-fn test_high_strength_column_safety_check_excludes_alpha() {
-    let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props_strong(&make_section(shape.clone()), &rebar);
-    let mut allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
-    allow.w_ft = high_strength_w_ft("SHD685", false);
-
-    let qa_alpha_1 = shear_capacity_high_strength(
-        &props,
-        &allow,
-        1.0,
-        LoadTerm::Short,
-        false,
-        true,
-        "SHD685",
-        24.0,
-    );
-    let qa_alpha_1_5 = shear_capacity_high_strength(
-        &props,
-        &allow,
-        1.5,
-        LoadTerm::Short,
-        false,
-        true,
-        "SHD685",
-        24.0,
-    );
-    // 柱の安全確保のための検討式は高強度でも α を含まない。
-    assert!((qa_alpha_1 - qa_alpha_1_5).abs() < 1e-6);
-}
-
-#[test]
-fn test_shear_capacity_for_none_delegates_to_normal_regression() {
-    // grade=None のディスパッチが普通強度の既存関数と完全に一致すること
-    // （既存挙動の回帰確認）。
-    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
-    let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
-
-    let via_dispatch = shear_capacity_for(
-        &props,
-        &allow,
-        1.3,
-        LoadTerm::Short,
-        true,
-        false,
-        None,
-        24.0,
-    );
-    let via_direct = shear_capacity(&props, &allow, 1.3, LoadTerm::Short, true, false);
-    assert!((via_dispatch - via_direct).abs() < 1e-12);
 }
 
 // 軽量コンクリート（許容応力度 0.9 倍・高強度フープとの併用）

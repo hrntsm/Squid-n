@@ -56,11 +56,13 @@ fn test_mn_interaction_steel_rect() {
 }
 
 #[test]
-fn test_plastic_moment_outside_range() {
+fn test_outside_axial_range_returns_none() {
     let fibers = steel_rect_fibers(100.0, 200.0, 235.0, 20);
     let npl = 100.0 * 200.0 * 235.0;
     assert!(plastic_moment_at_n(&fibers, 1.0, 0.0, npl * 1.01).is_none());
     assert!(plastic_moment_at_n(&fibers, 1.0, 0.0, -npl * 1.01).is_none());
+    assert!(m_phi_curve(&fibers, 1.0, 0.0, npl * 1.01, 20).is_none());
+    assert!(m_phi_curve(&fibers, 1.0, 0.0, -npl * 1.01, 20).is_none());
 }
 
 fn sample_rc_shape() -> SectionShape {
@@ -117,54 +119,54 @@ fn test_rc_moment_increases_with_moderate_compression() {
 }
 
 #[test]
-fn test_build_surface_grid_shape_and_poles() {
+fn test_simple_spring_surface_linear_interaction_and_poles() {
     let fibers = steel_rect_fibers(100.0, 200.0, 235.0, 40);
+    let npl = 100.0 * 200.0 * 235.0;
+
     let surf = build_surface(&fibers, YieldModelKind::MultiFiber, 16, 32);
     assert_eq!(surf.grid.len(), 17);
     assert!(surf.grid.iter().all(|row| row.len() == 32));
     // 極（α=0/π）は純引張/純圧縮で一定
-    let npl = 100.0 * 200.0 * 235.0;
     for p in &surf.grid[0] {
         assert_relative_eq!(p[0], npl, max_relative = 1e-9);
     }
     for p in &surf.grid[16] {
         assert_relative_eq!(p[0], -npl, max_relative = 1e-9);
     }
-    // 全点が有限値
     assert!(surf
         .grid
         .iter()
         .flatten()
         .all(|p| p.iter().all(|v| v.is_finite())));
-}
 
-#[test]
-fn test_simple_spring_surface_linear_interaction() {
-    let fibers = steel_rect_fibers(100.0, 200.0, 235.0, 100);
-    let surf = build_simple_spring_surface(&fibers, 16, 32);
-    let npl = 100.0 * 200.0 * 235.0;
+    let simp = build_simple_spring_surface(&fibers, 16, 32);
     // 極は軸耐力に一致
-    for p in &surf.grid[0] {
+    for p in &simp.grid[0] {
         assert_relative_eq!(p[0], npl, max_relative = 1e-6);
     }
-    for p in &surf.grid[16] {
+    for p in &simp.grid[16] {
         assert_relative_eq!(p[0], -npl, max_relative = 1e-6);
     }
+    assert!(simp
+        .grid
+        .iter()
+        .flatten()
+        .all(|p| p.iter().all(|v| v.is_finite())));
     // 全格子点が |N|/N許容 + √((My/Mp_y)² + (Mz/Mp_z)²) = 1 を満たす
-    for p in surf.grid.iter().flatten() {
+    for p in simp.grid.iter().flatten() {
         let n_ref = if p[0] >= 0.0 {
-            surf.n_tens
+            simp.n_tens
         } else {
-            surf.n_comp.abs()
+            simp.n_comp.abs()
         };
         let f =
-            p[0].abs() / n_ref + ((p[1] / surf.mp_y).powi(2) + (p[2] / surf.mp_z).powi(2)).sqrt();
+            p[0].abs() / n_ref + ((p[1] / simp.mp_y).powi(2) + (p[2] / simp.mp_z).powi(2)).sqrt();
         assert_relative_eq!(f, 1.0, max_relative = 1e-9);
     }
     // 赤道（α=π/2、i=8）は N=0 の全塑性モーメント楕円: β=0 で My = Mp_y
-    let equator = &surf.grid[8];
+    let equator = &simp.grid[8];
     assert_relative_eq!(equator[0][0], 0.0, epsilon = npl * 1e-12);
-    assert_relative_eq!(equator[0][1], surf.mp_y, max_relative = 1e-9);
+    assert_relative_eq!(equator[0][1], simp.mp_y, max_relative = 1e-9);
 }
 
 #[test]
@@ -177,25 +179,6 @@ fn test_slice_at_n_symmetric() {
     assert_relative_eq!(pts[0][0], mp_y, max_relative = 1e-2);
     // 対称性: β と β+π で符号反転
     assert_relative_eq!(pts[0][0], -pts[8][0], max_relative = 1e-9);
-}
-
-#[test]
-fn test_multispring_is_coarser_than_fiber() {
-    let strength = StrengthParams::default();
-    let shape = sample_rc_shape();
-    let ms = plastic_fibers(&shape, &strength, YieldModelKind::MultiSpring);
-    let fib = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
-    assert!(
-        ms.len() < fib.len() / 10,
-        "MS ({}) must be much coarser than fiber ({})",
-        ms.len(),
-        fib.len()
-    );
-    // 軸耐力は離散化によらず一致する（面積保存）
-    let (nc_ms, nt_ms) = axial_capacity(&ms);
-    let (nc_f, nt_f) = axial_capacity(&fib);
-    assert_relative_eq!(nc_ms, nc_f, max_relative = 1e-9);
-    assert_relative_eq!(nt_ms, nt_f, max_relative = 1e-9);
 }
 
 #[test]
@@ -267,14 +250,6 @@ fn test_m_phi_with_axial_force_reduces_plateau() {
 }
 
 #[test]
-fn test_m_phi_outside_axial_range() {
-    let fibers = steel_rect_fibers(100.0, 200.0, 235.0, 20);
-    let npl = 100.0 * 200.0 * 235.0;
-    assert!(m_phi_curve(&fibers, 1.0, 0.0, npl * 1.01, 20).is_none());
-    assert!(m_phi_curve(&fibers, 1.0, 0.0, -npl * 1.01, 20).is_none());
-}
-
-#[test]
 fn test_m_theta_elastic_slope_and_plastic_rotation() {
     // 弾性域: θ = M·L/(6EI₀)。塑性域: θp = Lp·(φ - M/EI₀) が加算される。
     let fibers = steel_rect_fibers(100.0, 200.0, 235.0, 200);
@@ -322,6 +297,17 @@ fn test_m_phi_multispring_is_piecewise() {
     let shape = sample_rc_shape();
     let ms = plastic_fibers(&shape, &strength, YieldModelKind::MultiSpring);
     let fib = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+    assert!(
+        ms.len() < fib.len() / 10,
+        "MS ({}) must be much coarser than fiber ({})",
+        ms.len(),
+        fib.len()
+    );
+    // 軸耐力は離散化によらず一致する（面積保存）
+    let (nc_ms, nt_ms) = axial_capacity(&ms);
+    let (nc_f, nt_f) = axial_capacity(&fib);
+    assert_relative_eq!(nc_ms, nc_f, max_relative = 1e-9);
+    assert_relative_eq!(nt_ms, nt_f, max_relative = 1e-9);
     let c_ms = m_phi_curve(&ms, 1.0, 0.0, 0.0, 60).unwrap();
     let c_f = m_phi_curve(&fib, 1.0, 0.0, 0.0, 60).unwrap();
     assert_relative_eq!(c_ms.ei0, c_f.ei0, max_relative = 5e-2);

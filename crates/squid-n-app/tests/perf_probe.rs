@@ -1,7 +1,7 @@
-//! AD-HOC PERF PROBE (untracked/new file, not part of the normal test suite's
-//! intent) -- measures where wall-clock time goes inside
-//! `App::generate_stories_action` (crates/squid-n-app/src/app/actions.rs,
-//! ~line 845) on synthetic large regular-frame models.
+//! AD-HOC PERF PROBE -- measures where wall-clock time goes inside
+//! `App::generate_stories_action` (crates/squid-n-app/src/app/actions/mod.rs,
+//! ~line 255) on synthetic large regular-frame models. Kept for manual runs;
+//! the test is `#[ignore]`d and not part of the normal test suite.
 //!
 //! `generate_stories_action` has 5 stages:
 //!   1. sync_gravity_load_cases_action
@@ -34,10 +34,10 @@
 //! Run (release, single-threaded so wall time is not muddied by test
 //! parallelism; timings are printed via --nocapture):
 //!
-//!   cargo test --release -p squid-n-app --test perf_probe -- --nocapture --test-threads=1
+//!   cargo test --release -p squid-n-app --test perf_probe -- --ignored --nocapture --test-threads=1
 //!
-//! This file is new/untracked -- no tracked source file was modified to
-//! create it (tests/ is auto-discovered by Cargo, no Cargo.toml edit needed).
+//! Tracked in the repository; tests/ is auto-discovered by Cargo, so no
+//! Cargo.toml entry is needed.
 
 use std::time::Instant;
 
@@ -462,42 +462,5 @@ fn perf_probe_generate_stories_action() {
     run_case("E wide      ", 15, 15, 10, true);
     run_case("F wide+tall ", 15, 15, 20, true);
     // No-slab variant at the largest size, to isolate the slab-processing cost.
-    run_case("G large,noSlab", 10, 10, 20, false);
-}
-
-/// Same as above but only the two smallest cases -- used to calibrate how long
-/// a single case takes before committing to the full sweep (see task notes).
-#[test]
-#[ignore = "perf probe calibration subset -- run explicitly with --release --ignored"]
-fn perf_probe_calibration_small() {
-    run_case("A small     ", 5, 5, 5, true);
-    run_case("B medium-w  ", 10, 10, 5, true);
-}
-
-// Individual per-case tests so each size can be run (and timed-out) in
-// isolation -- avoids one slow case starving the whole sweep of output.
-#[test]
-#[ignore = "perf probe, individual case"]
-fn perf_case_c_10x10x10() {
-    run_case("C medium-h  ", 10, 10, 10, true);
-}
-#[test]
-#[ignore = "perf probe, individual case"]
-fn perf_case_d_10x10x20() {
-    run_case("D large     ", 10, 10, 20, true);
-}
-#[test]
-#[ignore = "perf probe, individual case"]
-fn perf_case_e_15x15x10() {
-    run_case("E wide      ", 15, 15, 10, true);
-}
-#[test]
-#[ignore = "perf probe, individual case"]
-fn perf_case_f_15x15x20() {
-    run_case("F wide+tall ", 15, 15, 20, true);
-}
-#[test]
-#[ignore = "perf probe, individual case"]
-fn perf_case_g_10x10x20_noslab() {
     run_case("G large,noSlab", 10, 10, 20, false);
 }
