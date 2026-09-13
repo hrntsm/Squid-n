@@ -427,6 +427,7 @@ mod tests {
             ],
             elements: vec![beam(0, 0, 1)],
             unassigned_joists: vec![SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(2), NodeId(2)],
                 section: Some(SectionId(0)),

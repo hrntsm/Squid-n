@@ -382,6 +382,34 @@ fn test_linear_static_axial_cantilever() {
     }
 }
 
+#[test]
+fn axial_distributed_gravity_recovers_full_base_compression() {
+    let mut model = make_axial_cantilever();
+    model.nodes[1].coord = [0.0, 0.0, 1000.0];
+    model.elements[0].local_axis.ref_vector = [1.0, 0.0, 0.0];
+    model.load_cases[0].nodal.clear();
+    model.load_cases[0].member = vec![MemberLoad::manual(
+        ElemId(0),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 1000.0,
+            w1: 2.0,
+            w2: 2.0,
+        },
+    )];
+    let result = linear_static_once(&model, LoadCaseId(1)).unwrap();
+    // 上端自由の柱は、各断面より上の全重量を圧縮軸力として負担する。
+    for (xi, values) in &result.member_forces[0].1.at {
+        let expected = -2000.0 * (1.0 - xi);
+        assert!(
+            (values[0] - expected).abs() < 1e-6,
+            "xi={xi}: N={}, expected={expected}",
+            values[0]
+        );
+    }
+}
+
 /// X 軸上の片持ち梁に「グローバル Y 方向」の先端荷重をかける。
 /// 参照ベクトル [0,0,1] では local y = global Z（鉛直上）、local z = global −Y と
 /// なるので、水平（Y 方向）たわみは弱軸＝断面 **iz** で決まる（iy=強軸ではない）。
@@ -1625,15 +1653,12 @@ fn test_no_long_axial_column_zeros_column_force() {
     );
 }
 
-/// 検証3: フラグが既定（false）のとき、`apply_long_axial_cut` はモデルを複製せずそのまま返すこと。
 #[test]
-fn test_apply_long_axial_cut_noop_when_flags_false() {
+fn test_long_axial_factor_defaults_to_one() {
     let model = braced_frame(squid_n_core::model::LoadCaseKind::Dead);
-    let cow = apply_long_axial_cut(&model, squid_n_core::model::LoadCaseKind::Dead);
-    assert!(
-        matches!(cow, Cow::Borrowed(_)),
-        "既定 stress_cfg では複製が起きない（従来どおりの経路を通る）はず"
-    );
+    for elem in &model.elements {
+        assert_eq!(long_axial_factor(&model, elem, LoadCaseId(1)), 1.0);
+    }
 }
 
 /// 検証3b: フラグが既定（false）のとき、既定値では通しで解けること。
@@ -1681,9 +1706,7 @@ fn test_axial_cut_not_applied_to_short_term_case() {
     );
 }
 
-/// 検証5: SRC 等の合成断面（`Section.shape` あり）の柱でも軸力カットが効く
-/// （複製断面で `shape` を外すため、`beam.rs` の `a_stiff` が `shape` 由来の
-/// 値へ再計算されず、縮小した `area` が使われる）。
+/// SRC柱の軸剛性を低減しても、曲げ・せん断・ねじり剛性と質量は保持する。
 #[test]
 fn test_axial_cut_applies_to_composite_src_column() {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
@@ -1718,6 +1741,36 @@ fn test_axial_cut_applies_to_composite_src_column() {
     });
     model.materials[0].fc = Some(24.0);
     model.materials[0].young = 2.27e4;
+
+    let elem = &model.elements[0];
+    let normal = build_behavior_with_axial_factor(elem, &model, 1.0);
+    let reduced = build_behavior_with_axial_factor(elem, &model, AXIAL_DISABLE_FACTOR);
+    let ctx = Ctx { model: &model };
+    let normal_k = normal.tangent_stiffness(&ctx);
+    let reduced_k = reduced.tangent_stiffness(&ctx);
+    for row in 0..12 {
+        for col in 0..12 {
+            let factor = if [2, 8].contains(&row) && [2, 8].contains(&col) {
+                AXIAL_DISABLE_FACTOR
+            } else {
+                1.0
+            };
+            let expected = normal_k.get(row, col) * factor;
+            assert!(
+                (reduced_k.get(row, col) - expected).abs() <= expected.abs().max(1.0) * 1e-12,
+                "剛性成分 ({row}, {col})"
+            );
+        }
+    }
+    for mass in [
+        squid_n_element::behavior::MassOption::Lumped,
+        squid_n_element::behavior::MassOption::Consistent,
+    ] {
+        assert_eq!(
+            normal.mass_matrix(mass).data,
+            reduced.mass_matrix(mass).data
+        );
+    }
 
     let base = linear_static_once(&model, LoadCaseId(1)).unwrap();
     let base_col = axial_force(&base, ElemId(0)).abs();

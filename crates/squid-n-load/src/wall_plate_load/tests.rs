@@ -40,6 +40,7 @@ fn beam(id: u32, a: u32, b: u32) -> ElementData {
 
 fn plate(id: u32, boundary: [u32; 4]) -> WallPlate {
     WallPlate {
+        self_weight_shares: vec![1.0, 0.0, 0.0, 0.0],
         id: WallPlateId(id),
         shape: WallPlateShape::Enclosed {
             boundary: boundary.into_iter().map(NodeId).collect(),
@@ -102,12 +103,16 @@ fn full_weight() -> f64 {
 fn split_by_post() -> Model {
     let mut m = bay();
     m.wall_plates = vec![plate(0, [0, 4, 5, 3]), plate(1, [4, 1, 2, 5])];
+    for p in &mut m.wall_plates {
+        p.self_weight_shares = vec![0.0, 0.5, 0.0, 0.5];
+    }
     m.wall_regions = vec![WallRegion {
         id: WallRegionId(0),
         name: String::new(),
         boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         wall_plate_ids: vec![WallPlateId(0), WallPlateId(1)],
         posts: vec![SecondaryMember {
+            gravity_end_shares: Some([0.5, 0.5]),
             kind: SecondaryMemberKind::Post,
             nodes: [NodeId(4), NodeId(5)],
             section: Some(SectionId(1)),
@@ -234,52 +239,14 @@ fn 間柱で分割された壁は左右の鉛直辺へ半分ずつ配る() {
     );
 }
 
-/// 柱際にスリットを入れると、その鉛直辺は自重を受けない。
-///
-/// 分割壁は左右の鉛直辺（柱と間柱）へ半分ずつ配るのが既定だが、片側を切ると
-/// 支持する鉛直辺が 1 つになり、規則は「もっとも低い水平な辺へ全量」へ移る。
 #[test]
-fn 柱際スリットのある鉛直辺は自重を受けない() {
+fn 指定した辺がスリットで切れていれば別の辺へ振り替えない() {
     let mut m = split_by_post();
-    // 左の壁版（節点 0-4-5-3）の柱側（節点 0 から立ち上がる辺）を切る。
-    let faces = m.wall_plates[0].column_face_nodes(&m).expect("下辺 2 節点");
+    let faces = m.wall_plates[0].column_face_nodes(&m).unwrap();
     let k = usize::from(faces[0] != NodeId(0));
     m.wall_plates[0].slit.column_face[k] = true;
-
-    let out = distribute_enclosed_wall_plates(&m);
-    // 間柱は右の壁版からのぶんだけを受ける（左の壁版は鉛直辺が 1 つになり、
-    // 下の大梁へ全量が回るため）。
-    let post_total: f64 = out
-        .posts
-        .get(&(NodeId(4), NodeId(5)))
-        .map(|p| {
-            p.member_loads
-                .iter()
-                .map(|l| match *l {
-                    MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
-                    MemberLoadKind::Point { p, .. } => p,
-                })
-                .sum()
-        })
-        .unwrap_or(0.0);
-    assert!(
-        (post_total - full_weight() / 4.0).abs() / full_weight() < 1e-9,
-        "間柱が受けるのは右の壁版の半分だけ: {post_total}"
-    );
-
-    // 総和は保存する（切れた辺へ配らないだけで、重量は失わない）。
-    let primary_total: f64 = out
-        .primary
-        .iter()
-        .map(|bl| match bl.shape {
-            LoadShape::Uniform { w } => w * edge_len(&m, bl),
-            _ => panic!("等分布のみ"),
-        })
-        .sum();
-    assert!(
-        (post_total + primary_total - full_weight()).abs() / full_weight() < 1e-9,
-        "総和保存: {post_total} + {primary_total}"
-    );
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
 }
 
 /// 下辺の梁際にスリットを入れると、自重は上の梁へ回る。
@@ -288,7 +255,7 @@ fn 柱際スリットのある鉛直辺は自重を受けない() {
 /// その辺が切れていれば次に低い（＝上の）辺が受ける。三方スリットの垂れ壁型に
 /// あたる形である。
 #[test]
-fn 下辺の梁際スリットは自重を上の梁へ回す() {
+fn 上辺を支持先に指定した壁版は上の梁へ全量を配る() {
     let mut m = bay();
     // 間柱を置かず、鉛直辺に支持を持たない壁版にする（下の梁が全量を受ける形）。
     m.wall_plates.push(plate(0, [0, 1, 2, 3]));
@@ -313,6 +280,7 @@ fn 下辺の梁際スリットは自重を上の梁へ回す() {
 
     // 下辺を切ると、上辺（z=3000）が受ける。
     m.wall_plates[0].slit.beam_face = [true, false];
+    m.wall_plates[0].self_weight_shares = vec![0.0, 0.0, 1.0, 0.0];
     let top = distribute_enclosed_wall_plates(&m);
     let LoadTarget::Span { nodes, .. } = top.primary.first().expect("上の梁が受ける").target
     else {
@@ -369,35 +337,21 @@ fn 鉛直辺に支持が無い壁版は下の梁が全量を受ける() {
     assert!((total - expect).abs() / expect < 1e-9, "総和保存: {total}");
 }
 
-/// 地震用重量の集計は、荷重の分配と同じ辺の割り当てを共有する。
-/// 矩形の壁版が左右の鉛直辺で受ける場合、上下 2 節点ずつへ 1/4 ずつとなり、
-/// 壁エレメントの頂点等分配と一致する。
 #[test]
-fn 地震用重量は辺の両端へ半分ずつ配り総和を保存する() {
-    let m = split_by_post();
-    let mut node_weight = vec![0.0; m.nodes.len()];
-    accumulate_enclosed_wall_seismic_weight(&m, &mut node_weight);
-
-    let sum: f64 = node_weight.iter().sum();
-    assert!(
-        (sum - full_weight()).abs() / full_weight() < 1e-9,
-        "総和保存: {sum}"
-    );
-    // 間柱の上下端は壁全体の 1/4 ずつ、柱側の 4 節点は 1/8 ずつ。
-    for n in [4, 5] {
-        assert!(
-            (node_weight[n] - full_weight() / 4.0).abs() / full_weight() < 1e-9,
-            "間柱端 {n}: {}",
-            node_weight[n]
-        );
-    }
-    for n in [0, 1, 2, 3] {
-        assert!(
-            (node_weight[n] - full_weight() / 8.0).abs() / full_weight() < 1e-9,
-            "柱側 {n}: {}",
-            node_weight[n]
-        );
-    }
+fn 地震用重量は間柱の端部負担率に従い主架構へ伝える() {
+    let mut m = split_by_post();
+    m.wall_regions[0].posts[0].gravity_end_shares = Some([1.0, 0.0]);
+    let post_weight =
+        crate::floor::joist_self_weight_udl(&m, &m.wall_regions[0].posts[0]).unwrap() * 3000.0;
+    let mut weight = vec![0.0; m.nodes.len()];
+    accumulate_wall_and_secondary_seismic_weight(&m, &mut weight).unwrap();
+    assert!((weight.iter().sum::<f64>() - full_weight() - post_weight).abs() < 1e-6);
+    assert_eq!(weight[4], 0.0);
+    assert_eq!(weight[5], 0.0);
+    let bottom = weight[0] + weight[1];
+    let top = weight[2] + weight[3];
+    assert!((bottom - (full_weight() * 0.75 + post_weight)).abs() < 1e-6);
+    assert!((top - full_weight() * 0.25).abs() < 1e-6);
 }
 
 /// 柱の材軸に並走する間柱は、柱の荷重を奪わない（主架構を優先する）。
@@ -409,6 +363,7 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
     let mut m = split_by_post();
     // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
     m.wall_regions[0].posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(3)],
         section: Some(SectionId(1)),
@@ -462,4 +417,92 @@ fn 行き先の無い壁版は配らずに診断へ回す() {
 #[test]
 fn 行き先のある壁版は診断に出ない() {
     assert!(wall_plates_without_load_path(&split_by_post()).is_empty());
+}
+
+#[test]
+fn 部分支持しかない壁版は荷重の行き先なしとして診断する() {
+    let mut m = bay();
+    m.elements = vec![beam(0, 0, 4)];
+    m.wall_plates = vec![plate(0, [0, 1, 2, 3])];
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(distribute_enclosed_wall_plates(&m).primary.is_empty());
+}
+
+#[test]
+fn 分割した支持部材が全長を覆えば壁版の全重量を配る() {
+    let mut m = bay();
+    m.elements = vec![beam(0, 0, 4), beam(1, 1, 4)];
+    m.wall_plates = vec![plate(0, [0, 1, 2, 3])];
+    assert!(wall_plates_without_load_path(&m).is_empty());
+    let out = distribute_enclosed_wall_plates(&m);
+    assert_eq!(out.primary.len(), 1);
+    let LoadShape::Uniform { w } = out.primary[0].shape else {
+        panic!("等分布荷重");
+    };
+    assert!((w * edge_len(&m, &out.primary[0]) - full_weight()).abs() < 1e-6);
+}
+
+#[test]
+fn 支持部材の重複区間で隙間を埋め合わせない() {
+    let mut m = bay();
+    m.nodes.push(node(6, 3000.0, 0.0));
+    m.elements = vec![beam(0, 0, 4), beam(1, 0, 4), beam(2, 6, 1)];
+    m.wall_plates = vec![plate(0, [0, 1, 2, 3])];
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+}
+
+#[test]
+fn 支持梁が重複する壁版は重量を二重計上せず診断する() {
+    let mut m = bay();
+    m.elements = vec![beam(0, 0, 1), beam(1, 0, 4)];
+    m.wall_plates = vec![plate(0, [0, 1, 2, 3])];
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(distribute_enclosed_wall_plates(&m).primary.is_empty());
+    let mut weight = vec![10.0; m.nodes.len()];
+    let before = weight.clone();
+    assert!(accumulate_wall_and_secondary_seismic_weight(&m, &mut weight).is_err());
+    assert_eq!(weight, before);
+}
+
+#[test]
+fn 未指定や不正な負担率は全量を配らず診断する() {
+    for shares in [
+        vec![],
+        vec![1.0],
+        vec![0.0; 4],
+        vec![0.4, 0.0, 0.4, 0.0],
+        vec![1.1, 0.0, -0.1, 0.0],
+        vec![f64::NAN, 0.0, 0.0, 0.0],
+        vec![f64::INFINITY, 0.0, 0.0, 0.0],
+    ] {
+        let mut m = split_by_post();
+        m.wall_plates[0].self_weight_shares = shares;
+        assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+        assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+    }
+}
+
+#[test]
+fn 左右に柱があっても指定した上下梁だけに負担率どおり配る() {
+    let mut m = bay();
+    let mut p = plate(0, [0, 1, 2, 3]);
+    p.self_weight_shares = vec![0.75, 0.0, 0.25, 0.0];
+    m.wall_plates.push(p);
+    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].nodes, [NodeId(0), NodeId(1)]);
+    assert_eq!(out[1].nodes, [NodeId(2), NodeId(3)]);
+    assert!((out[0].total - full_weight() * 0.75).abs() < 1e-6);
+    assert!((out[1].total - full_weight() * 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn 上下がスリットでも明示した鉛直支持辺があれば配分する() {
+    let mut m = split_by_post();
+    for p in &mut m.wall_plates {
+        p.slit.beam_face = [true, true];
+    }
+    assert!(wall_plates_without_load_path(&m).is_empty());
+    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    assert_eq!(out.len(), 2);
 }

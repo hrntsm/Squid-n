@@ -5,7 +5,7 @@
 
 use crate::behavior::{Ctx, LocalMat, LocalVec};
 use crate::frame::beam::BeamElement;
-use crate::linalg::invert_small;
+use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 
 /// 解放する局所曲げ面（回転自由度）。
@@ -14,17 +14,15 @@ use smallvec::SmallVec;
 ///   曲げ面は局所 x-z 面（たわみ方向 = 局所 z 軸）。
 /// - `LocalZ`: 局所 z 軸回りの回転（rz, 要素ローカル自由度 5・11）を解放。
 ///   曲げ面は局所 x-y 面（たわみ方向 = 局所 y 軸）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReleaseAxis {
     LocalY,
     LocalZ,
+    /// 柱の局所 y・z 成分で表した解放回転軸の単位ベクトル。
+    LocalDirection([f64; 2]),
 }
 
-/// 面内方向のみ両端ピンとした側柱（耐震壁の側柱）。
-///
-/// 内部に通常の柱と同じ `BeamElement` を持ち、剛性計算時に指定曲げ面の両端回転
-/// 自由度を静的縮約で消去した 12×12 を用いる。軸・ねじり・面外曲げは `inner` と
-/// 変わらない。
+/// 壁面内曲げに対応する両端回転を静縮約した側柱。
 pub struct InPlaneReleasedColumn {
     pub(super) inner: BeamElement,
     release_axis: ReleaseAxis,
@@ -38,66 +36,22 @@ impl InPlaneReleasedColumn {
         }
     }
 
-    /// 解放対象の局所自由度（両端の回転自由度2個）。
-    fn release_dofs(&self) -> [usize; 2] {
-        match self.release_axis {
-            ReleaseAxis::LocalY => [4, 10],
-            ReleaseAxis::LocalZ => [5, 11],
-        }
-    }
-
-    /// `inner.local_stiffness()` から解放曲げ面の両端回転自由度を静的縮約した局所 12×12。
-    ///
-    /// K* = Kaa − Kab·Kbb⁻¹·Kba（a: 残す10自由度、b: 解放する2自由度）。
-    /// 縮約後の b 自由度の行・列は 0（その回転自由度に剛性を持たない＝ピン）。
+    /// 壁法線を回転軸とする両端回転を内部自由度として静縮約する。
     fn released_local_stiffness(&self) -> LocalMat {
-        let k = self.inner.local_stiffness();
-        let b = self.release_dofs();
-        let n = k.n;
-
-        let kbb = vec![
-            k.get(b[0], b[0]),
-            k.get(b[0], b[1]),
-            k.get(b[1], b[0]),
-            k.get(b[1], b[1]),
-        ];
-        let Some(kbb_inv) = invert_small(&kbb, 2) else {
-            let mut out = LocalMat::zeros(n);
-            for i in 0..n {
-                if b.contains(&i) {
-                    continue;
-                }
-                for j in 0..n {
-                    if b.contains(&j) {
-                        continue;
-                    }
-                    out.set(i, j, k.get(i, j));
-                }
-            }
-            return out;
+        let [ny, nz] = match self.release_axis {
+            ReleaseAxis::LocalY => [1.0, 0.0],
+            ReleaseAxis::LocalZ => [0.0, 1.0],
+            ReleaseAxis::LocalDirection(n) => n,
         };
-
-        let mut out = LocalMat::zeros(n);
-        for i in 0..n {
-            if b.contains(&i) {
-                continue;
-            }
-            let kai = [k.get(i, b[0]), k.get(i, b[1])];
-            for j in 0..n {
-                if b.contains(&j) {
-                    continue;
-                }
-                let kbj = [k.get(b[0], j), k.get(b[1], j)];
-                let mut corr = 0.0;
-                for p in 0..2 {
-                    for q in 0..2 {
-                        corr += kai[p] * kbb_inv[p * 2 + q] * kbj[q];
-                    }
-                }
-                out.set(i, j, k.get(i, j) - corr);
-            }
-        }
-        out
+        let frame = LocalFrame {
+            rot: [[1.0, 0.0, 0.0], [0.0, ny, nz], [0.0, -nz, ny]],
+        };
+        let inverse = LocalFrame {
+            rot: std::array::from_fn(|i| std::array::from_fn(|j| frame.rot[j][i])),
+        };
+        let k = inverse.to_global(&self.inner.local_stiffness());
+        let condensed = crate::frame::prismatic::condense_end_releases(&k, &[(4, 0.0), (10, 0.0)]);
+        frame.to_global(&condensed)
     }
 
     /// 縮約後の局所剛性を用いた断面力の復元。

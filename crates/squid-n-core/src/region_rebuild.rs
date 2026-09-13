@@ -572,6 +572,7 @@ mod tests {
 
     fn joist(id: u32, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,

@@ -366,6 +366,7 @@ fn wall_bay_model() -> Model {
     // （`apply_auto_panel_zones` が仕口パネルを 12〜15 番へ先に生成する経路）を
     // 経た後の解析時点では、壁要素の ID は 12 ではなく 16 になる。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
@@ -390,6 +391,7 @@ fn wall_bay_model() -> Model {
     // どのフィクスチャも `loads` を持たないと、仕上げ・増打ちを自重へ算入する
     // 経路が壊れても代表スカラが動かず、静かに落ちる。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(1),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -486,6 +488,108 @@ fn test_wall_frame_mismatch_appears_in_gui_diagnostics() {
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn undefined_side_column_shape_is_an_input_error() {
+    let mut app = wall_bay_app();
+    app.core.model.sections[3].shape = None;
+    app.run_diagnostics();
+    assert!(app
+        .core
+        .scoped
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("側柱") && d.message.contains("断面形状が未定義")));
+}
+
+#[test]
+fn wall_analysis_preserves_side_column_shapes_with_long_axial_cut() {
+    let mut app = wall_bay_app();
+    app.core.model.stress_cfg.no_long_axial_column = true;
+    app.run_preparation();
+    app.run_static_all();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.results.is_some());
+    assert!(app.core.model.sections[3].shape.is_some());
+}
+
+#[test]
+fn circular_side_column_shear_section_runs_analysis() {
+    let mut app = wall_bay_app();
+    let rebar = app.core.model.sections[3]
+        .shape
+        .as_ref()
+        .unwrap()
+        .rebar()
+        .unwrap()
+        .clone();
+    app.core.model.sections[3].shape = Some(SectionShape::RcCircle { d: 600.0, rebar });
+    app.run_preparation();
+    app.run_static_all();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.results.is_some());
+}
+
+#[test]
+fn rotated_src_and_cft_side_columns_run_linear_analysis() {
+    for cft in [false, true] {
+        let mut app = wall_bay_app();
+        let rebar = app.core.model.sections[3]
+            .shape
+            .as_ref()
+            .unwrap()
+            .rebar()
+            .unwrap()
+            .clone();
+        let shape = if cft {
+            SectionShape::CftBox {
+                height: 700.0,
+                width: 500.0,
+                thick: 20.0,
+            }
+        } else {
+            SectionShape::SrcRect {
+                b: 500.0,
+                d: 700.0,
+                rebar,
+                steel_height: 400.0,
+                steel_width: 250.0,
+                steel_web_thick: 12.0,
+                steel_flange_thick: 20.0,
+            }
+        };
+        app.core.model.sections[3].shape = Some(shape);
+        app.core.model.sections[3].steel_material = Some(MaterialId(0));
+        if cft {
+            let mut material = app.core.model.materials[0].clone();
+            material.id = MaterialId(app.core.model.materials.len() as u32);
+            material.fc = Some(30.0);
+            app.core.model.sections[3].material = Some(material.id);
+            app.core.model.materials.push(material);
+        }
+        for e in &mut app.core.model.elements {
+            if e.section == Some(SectionId(3)) {
+                e.local_axis.ref_vector = [0.8, 0.6, 0.0];
+            }
+        }
+        app.run_preparation();
+        app.run_static_all();
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "CFT={cft}: {:?}",
+            app.core.scoped.last_error
+        );
+        assert!(app.core.scoped.results.is_some());
+    }
 }
 
 /// `App::run_design_check` が壁展開モデルを見ていることの回帰テスト（申し送り

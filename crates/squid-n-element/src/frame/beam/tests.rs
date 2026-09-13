@@ -2336,6 +2336,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         finish_intensity: 0.0,
     });
     model.wall_plates.push(squid_n_core::model::WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: squid_n_core::model::WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -2497,6 +2498,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         finish_intensity: 0.0,
     });
     model.wall_plates.push(squid_n_core::model::WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: squid_n_core::model::WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -2700,6 +2702,7 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             finish_intensity: 0.0,
         });
         model.wall_plates.push(squid_n_core::model::WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: squid_n_core::model::WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -3776,6 +3779,7 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
         ],
         materials: vec![mat],
         wall_plates: vec![squid_n_core::model::WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: squid_n_core::model::WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(1)],

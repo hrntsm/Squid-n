@@ -164,6 +164,7 @@ mod tests {
             shear_weak: 5_000.0,
             rp: 0.01,
             horizontal_force: 0.0,
+            wall_shear_signed: None,
         }];
         let mut ql = HashMap::new();
         ql.insert(ElemId(3), 8_000.0);

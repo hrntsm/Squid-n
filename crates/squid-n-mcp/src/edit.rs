@@ -38,6 +38,11 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
         .and_then(|v| v.as_str())
         .ok_or("command が必要です")?;
     match command {
+        "SetPostGravityEndShares" => Ok(Box::new(squid_n_edit::SetPostGravityEndShares {
+            nodes: serde_json::from_value(value.get("nodes").ok_or("nodes が必要です")?.clone())
+                .map_err(|e| format!("nodes の解析に失敗: {e}"))?,
+            shares: parse_optional_f64_pair(value.get("shares"), "shares")?,
+        })),
         "AddEnclosedWallPlate" => {
             let boundary = parse_node_ids(value.get("boundary").ok_or("boundary が必要です")?)?;
             if boundary.len() != 4 {
@@ -90,6 +95,11 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                     .map_err(|e| format!("loads の解析に失敗: {e}"))?,
             };
             Ok(Box::new(SetWallPlateAttrs {
+                self_weight_shares: match value.get("self_weight_shares") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(v) => serde_json::from_value(v.clone())
+                        .map_err(|e| format!("self_weight_shares の解析に失敗: {e}"))?,
+                },
                 id: parse_wall_plate_id(value.get("id").ok_or("id が必要です")?)?,
                 opening_area: parse_f64(value.get("opening_area"), "opening_area")?.unwrap_or(0.0),
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
@@ -281,7 +291,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
         }
         other => Err(format!(
             "未対応の command: {other}（壁版: AddEnclosedWallPlate, AddAttachedWallPlate, \
-             DeleteWallPlate, SetWallPlateSection, SetWallPlateAttrs, \
+             DeleteWallPlate, SetWallPlateSection, SetWallPlateAttrs, SetPostGravityEndShares, \
              SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
              床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \

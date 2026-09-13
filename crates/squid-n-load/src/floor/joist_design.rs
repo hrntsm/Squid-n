@@ -863,6 +863,7 @@ mod tests {
         );
         region.slab_ids = vec![SlabId(0), SlabId(1)];
         region.secondary_joists = vec![SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(4), NodeId(5)],
             section: None,
@@ -1116,6 +1117,7 @@ mod tests {
         model.floor_regions[0]
             .secondary_joists
             .push(SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(6), NodeId(7)],
                 section: None,
@@ -1235,6 +1237,7 @@ mod tests {
         model.floor_regions[0]
             .secondary_joists
             .push(SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(8), NodeId(9)],
                 section: None,
@@ -1327,6 +1330,7 @@ mod tests {
             support_spring: None,
         });
         model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(10), NodeId(11)],
             section: None,

@@ -40,29 +40,46 @@ use squid_n_core::model::ForceRegime;
 /// [`build_nonlinear_behavior`] だけが行う。
 /// 耐震壁の側柱（[`crate::wall::side_column::InPlaneReleasedColumn`]）は
 /// 線形・非線形の双方で用いる。
+/// 壁のせん断断面が不正・未対応ならpanicする。呼び出し前に入力診断を行うこと。
 pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehavior> {
+    build_behavior_with_axial_factor(data, model, 1.0)
+}
+
+/// Beam・Brace の軸剛性だけに正の有限な係数を乗じる。他種別の係数は1に限る。
+/// 形状・質量・曲げ・せん断剛性は保持する。
+pub fn build_behavior_with_axial_factor(
+    data: &ElementData,
+    model: &Model,
+    axial_factor: f64,
+) -> Box<dyn ElementBehavior> {
+    assert!(axial_factor.is_finite() && axial_factor > 0.0);
+    assert!(
+        matches!(data.kind, ElementKind::Beam | ElementKind::Brace { .. }) || axial_factor == 1.0
+    );
     match data.kind {
         ElementKind::Beam => {
+            let mut elem = crate::frame::beam::BeamElement::new(data, model);
+            elem.a *= axial_factor;
             if let Some(axis) = crate::wall::side_column::wall_side_column_release(data, model) {
-                let elem = crate::frame::beam::BeamElement::new(data, model);
                 return Box::new(crate::wall::side_column::InPlaneReleasedColumn::new(
                     elem, axis,
                 ));
             }
             if let Some(ends) = crate::frame::panel_offset::resolve(data, model) {
-                let elem = crate::frame::beam::BeamElement::new(data, model);
                 return Box::new(crate::frame::panel_offset::PanelOffsetMember::new(
                     Box::new(elem),
                     ends,
                 ));
             }
-            Box::new(crate::frame::beam::BeamElement::new(data, model))
+            Box::new(elem)
         }
         ElementKind::PanelZone => Box::new(crate::springs::panel::PanelZone::new(data, model)),
         ElementKind::Shell => Box::new(crate::shell::ShellElement::new(data, model)),
         ElementKind::MultiSpring => Box::new(crate::frame::beam::BeamElement::new(data, model)),
         ElementKind::Fiber => Box::new(crate::frame::beam::BeamElement::new(data, model)),
         ElementKind::Wall => {
+            crate::wall::shear_section::wall_shear_rigidity(data, model)
+                .unwrap_or_else(|reason| panic!("壁 ID {}: {reason}", data.id.0));
             let stiffness_scale = if crate::wall::misc_wall::wall_is_seismic(data, model) {
                 1.0
             } else {
@@ -87,7 +104,11 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
                 }
             }
         }
-        ElementKind::Brace { .. } => Box::new(crate::frame::truss::TrussElement::new(data, model)),
+        ElementKind::Brace { .. } => {
+            let mut elem = crate::frame::truss::TrussElement::new(data, model);
+            elem.a *= axial_factor;
+            Box::new(elem)
+        }
         ElementKind::NodalSpring => {
             Box::new(crate::springs::spring::NodalSpringElement::new(data, model))
         }
@@ -195,8 +216,9 @@ pub fn build_nonlinear_behavior(
         )),
         ElementKind::Brace { .. } => Box::new(crate::frame::truss::TrussElement::new(data, model)),
         ElementKind::Wall => {
-            let qu = crate::wall::wall_element::WallElement::shear_capacity_of(data, model);
-            if qu <= 0.0 {
+            let qu =
+                crate::wall::wall_element::WallElement::directional_shear_capacity_of(data, model);
+            if qu.iter().any(|q| *q <= 0.0) {
                 return build_behavior(data, model);
             }
             let stiffness_scale = if crate::wall::misc_wall::wall_is_seismic(data, model) {

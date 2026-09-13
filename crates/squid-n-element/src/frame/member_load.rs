@@ -278,7 +278,7 @@ pub fn fixed_internal_local(
     let sz_i = res_i(&comps_z);
 
     let mut f = [0.0; 6];
-    f[0] = ff[0] * (1.0 - xi) + ff[6] * xi;
+    f[0] = -ff[0] - res_i(&comps_x);
     if transfer == SpanLoadTransfer::StaticallyEquivalent {
         return f;
     }
@@ -305,6 +305,58 @@ mod tests {
 
     fn horiz_frame() -> LocalFrame {
         LocalFrame::from_nodes([0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    }
+
+    #[test]
+    fn axial_fixed_internal_satisfies_section_equilibrium() {
+        let frame = horiz_frame();
+        let l = 1000.0;
+        for transfer in [
+            SpanLoadTransfer::Consistent,
+            SpanLoadTransfer::StaticallyEquivalent,
+        ] {
+            for (kind, qi, samples) in [
+                (
+                    MemberLoadKind::Distributed {
+                        a: 0.0,
+                        b: l,
+                        w1: 2.0,
+                        w2: 2.0,
+                    },
+                    1000.0,
+                    vec![(0.0, 0.0), (0.25, 500.0), (0.5, 1000.0), (1.0, 2000.0)],
+                ),
+                (
+                    MemberLoadKind::Distributed {
+                        a: 0.0,
+                        b: l,
+                        w1: 0.0,
+                        w2: 6.0,
+                    },
+                    1000.0,
+                    vec![(0.0, 0.0), (0.25, 187.5), (0.5, 750.0), (1.0, 3000.0)],
+                ),
+                (
+                    MemberLoadKind::Point {
+                        a: 250.0,
+                        p: 2000.0,
+                    },
+                    1500.0,
+                    vec![(0.0, 0.0), (0.2, 0.0), (0.3, 2000.0), (1.0, 2000.0)],
+                ),
+            ] {
+                let loads = [MemberLoad::manual(ElemId(0), [1.0, 0.0, 0.0], kind)];
+                for (xi, resultant) in samples {
+                    // 左側切断片の釣合い: N = 等価節点力Qi - 切断位置までの外力合計。
+                    let expected = qi - resultant;
+                    let actual = fixed_internal_local(&loads, &frame, l, xi, transfer)[0];
+                    assert!(
+                        (actual - expected).abs() < 1e-9,
+                        "xi={xi}: N={actual}, expected={expected}"
+                    );
+                }
+            }
+        }
     }
 
     fn udl(w: f64, l: f64) -> MemberLoad {

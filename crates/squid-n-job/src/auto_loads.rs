@@ -770,6 +770,7 @@ mod tests {
         });
         // 辺0（節点0-1、大梁として実在）に全長載るパラペット（立ち上がり500mm）。
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -877,6 +878,7 @@ mod tests {
             steel_material: None,
         });
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -995,6 +997,7 @@ mod tests {
             });
         }
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
@@ -1637,12 +1640,14 @@ mod cascade_tests {
         region.slab_ids = vec![SlabId(0), SlabId(1)];
         region.secondary_joists = vec![
             SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(4), NodeId(5)],
                 section: Some(SectionId(0)),
                 name: "A".into(),
             },
             SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(6), NodeId(7)],
                 section: Some(SectionId(0)),

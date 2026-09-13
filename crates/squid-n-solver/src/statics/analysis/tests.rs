@@ -1403,6 +1403,7 @@ fn test_model_issues_warns_unassigned_joist() {
         support_spring: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(n), NodeId(n + 1)],
         section: Some(SectionId(0)),
@@ -1535,11 +1536,12 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed { boundary },
         section: Some(SectionId(0)),
         opening_area: 0.0,
-        opening_weight: 0.0,
+        opening_weight: 1000.0,
         openings: Vec::new(),
         loads: vec![],
         slit: WallSlit {
@@ -1551,17 +1553,16 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     let issues = model_issues(&model);
     let hit = issues
         .iter()
-        .find(|i| i.message.contains("上下の梁際がともに切れた壁版"));
+        .find(|i| i.message.contains("自重の行き先が決まらない壁版"));
     let hit = hit.expect("エラーが出る");
     assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
 
-    // 片側だけなら出ない（三方スリットは正常な入力）。
     model.wall_plates[0].slit.beam_face = [true, false];
     assert!(
-        !model_issues(&model)
+        model_issues(&model)
             .iter()
-            .any(|i| i.message.contains("上下の梁際がともに切れた壁版")),
-        "三方スリットはエラーにしない"
+            .any(|i| i.message.contains("自重の行き先が決まらない壁版")),
+        "支持先を指定しない限りエラーを解消しない"
     );
 }
 
@@ -1597,6 +1598,7 @@ fn test_model_issues_warns_ignored_slit_on_non_quad_plate() {
     }
     // 境界 5 節点（上辺が中間節点で分割されている）。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![
@@ -1660,6 +1662,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         });
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![
@@ -1678,6 +1681,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(1),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)],
@@ -1690,6 +1694,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(2),
         shape: WallPlateShape::Attached {
             anchor: squid_n_core::model::RegionAnchor::Line {
@@ -1707,6 +1712,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(3),
         shape: WallPlateShape::Attached {
             anchor: squid_n_core::model::RegionAnchor::Line {
@@ -1779,6 +1785,7 @@ fn self_standing_wall_off_the_floor_is_an_error() {
         });
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(model.wall_plates.len() as u32),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::FloorRegion {

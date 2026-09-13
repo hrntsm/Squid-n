@@ -1,55 +1,4 @@
-//! 解析要素にならない壁版（`WallPlateShape::Enclosed`）の自重の分配。
-//!
-//! 壁エレメントになるのは壁領域全体を覆う 4 節点で、かつ断面が割り当たった壁版だけ
-//! である（[`squid_n_core::model::Model::wall_plate_becomes_element`]）。それ以外の
-//! 囲まれた壁版（間柱で分割された壁版・腰壁・垂れ壁・5 節点以上の壁領域内の壁版・
-//! 断面未割当の壁版）は**荷重だけを持つ壁版**であり、その自重を境界の辺へ配るのが
-//! 本モジュールである。
-//! 取り付く壁版（`WallPlateShape::Attached`）は [`crate::wall_attached`] が受け持つ。
-//!
-//! # 一方向版として配る
-//!
-//! 床板の面荷重は**版に直交**して作用するため、版の曲げで支持辺へ流れ、45 度の
-//! 降伏線に基づく三角形・台形分配に力学的根拠がある。**壁版の自重は版の面内**
-//! （真下向き）に作用するので、版の曲げは関与せず、荷重は壁版が何に留め付けられて
-//! いるかで流れる。床の分配則を鉛直面へ機械的に移植する根拠はないため、壁版は
-//! 一方向版として扱う。
-//!
-//! - 支持部材のある**鉛直な辺**がちょうど 2 つあるなら、自重を**その 2 辺へ半分ずつ**
-//!   配る（ALC 横張りのように鉛直材が受ける形）。
-//! - そうでなければ、支持部材のある水平な辺のうち**もっとも低いもの**へ全量を配る
-//!   （縦張り・腰壁の形）。
-//!
-//! 「この間柱がこの壁を受ける」ことは、**利用者が壁版を間柱の位置で分割する**ことで
-//! 表明する。床側で「床板の境界辺が小梁の材軸に載っているならその小梁が受ける」と
-//! しているのと同じ規約であり、受け手を指す参照フィールドは持たない。
-//!
-//! # 誤りうる向き
-//!
-//! 鉛直辺に支持部材があり、かつ実際は下の梁で受けている壁（ALC 縦張りで、間柱は
-//! 面外拘束のためだけに入っている場合など）を鉛直材受けとみなすと、鉛直材の負担を
-//! 過大に見る。間柱・柱にとっては安全側である。
-//!
-//! **一方、下の梁はその重量を受けないため、梁の曲げを過小に見る（危険側）。**
-//! 間柱が受け持ったぶんは反力が中間集中荷重として下の梁へ載るが、柱が受け持った
-//! ぶんは梁を通らない。これは壁エレメントの自重を四隅へ配る既存の扱いと同じ性質で
-//! （柱・梁が囲む壁の重量が梁のスパン内へ載ることはない）、本モジュールが新しく
-//! 持ち込んだものではない。梁が全量を受ける形にしたい壁は、取り付く壁版
-//! （[`crate::wall_attached`]）としてその梁を取付き線に指定する。
-//!
-//! # 荷重の行き先が無い壁版は配らない
-//!
-//! 境界のどの辺にも支持部材（柱・大梁・間柱）が無い壁版は、何も配らずに
-//! [`wall_plates_without_load_path`] が診断へ回す（解析前チェックのエラー）。行き先の
-//! 無い荷重を節点荷重として残すと、非構造節点への節点荷重は `DofMap::build` が無視する
-//! ため、荷重タブには見えるのに解析からは消える（申し送り §3.4 F10。自立壁について
-//! §5.28 で採ったのと同じ扱い）。
-//!
-//! # 間柱が受けたぶんの行き先
-//!
-//! 間柱は解析要素ではないため、受け持った荷重は二次部材の反力の逐次伝達
-//! （[`crate::cascade`]）が単純梁の両端反力へ変えて主架構へ運ぶ。鉛直な間柱の
-//! 両端配分は**既定で上下端へ 1/2 ずつ**である（`cascade` のモジュール doc）。
+//! 要素にならない囲まれた壁版の自重を、明示された境界辺の負担率で分配する。
 
 use std::collections::HashMap;
 
@@ -146,9 +95,20 @@ impl<'a> SupportIndex<'a> {
     /// いるのだから、そこで終端する。10 mm 以内に並走する間柱が主架構の荷重を奪わない
     /// ようにするためでもある（逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え）。
     fn of(&self, p0: [f64; 3], p1: [f64; 3]) -> Option<EdgeSupport> {
-        if !crate::secondary::beams_along_segment_with(&self.beams, p0, p1, MEMBER_AXIS_TOL_MM)
-            .is_empty()
-        {
+        let coverage =
+            crate::secondary::beams_along_segment_with(&self.beams, p0, p1, MEMBER_AXIS_TOL_MM);
+        let length_mm = squid_n_core::geom::vec3::dist(p0, p1);
+        let mut covered_end_mm: f64 = 0.0;
+        for part in &coverage {
+            if part.seg[0] < covered_end_mm - 1e-9 {
+                return None;
+            }
+            if part.seg[0] > covered_end_mm + MEMBER_AXIS_TOL_MM {
+                break;
+            }
+            covered_end_mm = covered_end_mm.max(part.seg[1]);
+        }
+        if !coverage.is_empty() && covered_end_mm >= length_mm - MEMBER_AXIS_TOL_MM {
             return Some(EdgeSupport::Primary);
         }
         self.posts
@@ -255,60 +215,32 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
         return Vec::new();
     };
 
+    if !plate.has_valid_self_weight_shares() {
+        return Vec::new();
+    }
     let n = boundary.len();
     let slit_edge = slit_edge_flags(model, plate, boundary, &coords);
-    let mut vertical: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
-    let mut horizontal: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if slit_edge[i] {
+    let mut shares = Vec::new();
+    for (i, &ratio) in plate.self_weight_shares.iter().enumerate() {
+        if ratio == 0.0 {
             continue;
         }
-        let (a, b) = (coords[i], coords[(i + 1) % n]);
-        if is_vertical(a, b) {
-            match index.of(a, b) {
-                Some(EdgeSupport::Post(key)) => vertical.push((i, Some(key))),
-                Some(EdgeSupport::Primary) => vertical.push((i, None)),
-                None => {}
-            }
-        } else if is_horizontal(a, b) {
-            horizontal.push(i);
+        if slit_edge[i] {
+            return Vec::new();
         }
+        let Some(support) = index.of(coords[i], coords[(i + 1) % n]) else {
+            return Vec::new();
+        };
+        shares.push(WallEdgeShare {
+            nodes: [boundary[i], boundary[(i + 1) % n]],
+            total: total * ratio,
+            post: match support {
+                EdgeSupport::Primary => None,
+                EdgeSupport::Post(key) => Some(key),
+            },
+        });
     }
-
-    let edge_nodes = |i: usize| [boundary[i], boundary[(i + 1) % n]];
-
-    if vertical.len() == 2 {
-        return vertical
-            .into_iter()
-            .map(|(i, post)| WallEdgeShare {
-                nodes: edge_nodes(i),
-                total: total / 2.0,
-                post,
-            })
-            .collect();
-    }
-
-    let mut supported: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
-    for &i in &horizontal {
-        let (a, b) = (coords[i], coords[(i + 1) % n]);
-        match index.of(a, b) {
-            Some(EdgeSupport::Post(key)) => supported.push((i, Some(key))),
-            Some(EdgeSupport::Primary) => supported.push((i, None)),
-            None => {}
-        }
-    }
-    let Some(&(bottom, post)) = supported.iter().min_by(|(i, _), (j, _)| {
-        let zi = (coords[*i][2] + coords[(*i + 1) % n][2]) / 2.0;
-        let zj = (coords[*j][2] + coords[(*j + 1) % n][2]) / 2.0;
-        zi.total_cmp(&zj)
-    }) else {
-        return Vec::new();
-    };
-    vec![WallEdgeShare {
-        nodes: edge_nodes(bottom),
-        total,
-        post,
-    }]
+    shares
 }
 
 /// 要素にならない全壁版の自重を分配する。
@@ -402,34 +334,75 @@ fn push_primary_share(model: &Model, loads: &mut Vec<BeamLoad>, share: &WallEdge
     });
 }
 
-/// 要素にならない壁版の自重を、地震用重量の節点重量へ集計する。
-///
-/// 辺への配分は [`edge_shares_with`] と共有し、辺が受け持ったぶんを
-/// その辺の両端節点へ 1/2 ずつ載せる。矩形の壁版が左右の鉛直辺で受ける場合、
-/// 上下 2 節点ずつへ 1/4 ずつとなり、壁エレメントの頂点等分配と一致する
-/// （壁の重量を階高の中央で上下階の節点に分配する扱い）。
-pub fn accumulate_enclosed_wall_seismic_weight(model: &Model, node_weight: &mut [f64]) {
+/// 壁版と二次部材の自重を支持先へ伝え、地震用節点重量 [N] に加算する。
+/// 未指定・支持欠落・循環があれば加算前にエラーを返す。
+pub fn accumulate_wall_and_secondary_seismic_weight(
+    model: &Model,
+    node_weight: &mut [f64],
+) -> Result<(), String> {
+    if !wall_plates_without_load_path(model).is_empty() {
+        return Err("壁版の自重支持辺が未指定・不正、または支持先へ荷重を伝えられません".into());
+    }
+    let transfer = crate::cascade::solve(model, |_| 0.0, true);
+    if !transfer.invalid_end_shares.is_empty()
+        || !transfer.unresolved.is_empty()
+        || !transfer.cyclic.is_empty()
+    {
+        return Err("二次部材の端部負担率または支持先が不正で、自重を伝えられません".into());
+    }
     let index = SupportIndex::new(model);
     for plate in &model.wall_plates {
-        for share in edge_shares_with(&index, plate) {
-            for node in share.nodes {
-                if let Some(slot) = node_weight.get_mut(node.index()) {
-                    *slot += share.total / 2.0;
-                }
+        for share in edge_shares_with(&index, plate)
+            .into_iter()
+            .filter(|s| s.post.is_none())
+        {
+            let a = model.nodes[share.nodes[0].index()].coord;
+            let b = model.nodes[share.nodes[1].index()].coord;
+            let length_mm = squid_n_core::geom::vec3::dist(a, b);
+            let w = share.total / length_mm;
+            for part in
+                crate::secondary::beams_along_segment_with(&index.beams, a, b, MEMBER_AXIS_TOL_MM)
+            {
+                let Some(elem) = model.elements.iter().find(|e| e.id == part.elem) else {
+                    continue;
+                };
+                let load = MemberLoadKind::Distributed {
+                    a: part.elem_pos[0].min(part.elem_pos[1]),
+                    b: part.elem_pos[0].max(part.elem_pos[1]),
+                    w1: w,
+                    w2: w,
+                };
+                let (ri, rj) = crate::floor::simple_reactions(&load, model.member_length(elem));
+                node_weight[elem.nodes[0].index()] += ri;
+                node_weight[elem.nodes[1].index()] += rj;
             }
         }
     }
+    let nodal = transfer
+        .primary_node_loads()
+        .into_iter()
+        .map(|(node, weight)| {
+            squid_n_core::model::NodalLoad::manual(node, [0.0, 0.0, -weight, 0.0, 0.0, 0.0])
+        })
+        .collect();
+    let (nodal, member) =
+        crate::secondary::resolve_nodal_to_primary(model, nodal, MEMBER_AXIS_TOL_MM);
+    for load in nodal {
+        node_weight[load.node.index()] -= load.values[2];
+    }
+    for load in member {
+        let Some(elem) = model.elements.iter().find(|e| e.id == load.elem) else {
+            continue;
+        };
+        let (ri, rj) = crate::floor::simple_reactions(&load.kind, model.member_length(elem));
+        node_weight[elem.nodes[0].index()] += ri * -load.dir[2];
+        node_weight[elem.nodes[1].index()] += rj * -load.dir[2];
+    }
+    Ok(())
 }
 
-/// 自重の行き先が決まらない壁版（解析前チェックのエラー対象）。
-///
-/// 解析要素にならない囲まれた壁版のうち、自重を持つ（断面・材料が割り当てられている）
-/// のに境界のどの辺にも支持部材が無いものを返す。境界が斜めの辺だけでできている壁版や、
-/// 下に大梁も間柱も無い宙に浮いた壁版が該当する。
-///
-/// **黙って落とさずエラーにする。** 行き先の無い荷重を節点荷重として残すと、非構造節点
-/// への節点荷重は `DofMap::build` が無視するため、荷重タブには見えるのに解析からは
-/// 消える（申し送り §3.4 F10。自立壁について §5.28 で採ったのと同じ扱い）。
+/// 自重を持つ非要素の囲まれた壁版のうち、指定した支持辺へ伝達できないものを返す。
+/// 負担率の不備・スリット・支持欠落・主架構の支持区間重複を解析前エラーの対象とする。
 pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
     let index = SupportIndex::new(model);
     model

@@ -227,6 +227,8 @@ pub struct PushoverMemberResponse {
     /// 両端最大絶対値）。告示の βu（耐力壁・筋かいの水平耐力の和を保有水平耐力で
     /// 除した数値）の分子を、耐力壁・筋かい部材について集計するために用いる。
     pub horizontal_force: f64,
+    /// 壁下辺a→bを正とする壁の面内せん断力 [N]。壁以外はNone。
+    pub wall_shear_signed: Option<f64>,
 }
 
 /// ヒンジ詳細図用の部材応答履歴（1 部材分）。結果サイズを抑えるため、ヒンジまたは

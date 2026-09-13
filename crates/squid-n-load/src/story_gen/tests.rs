@@ -237,12 +237,17 @@ fn test_base_master_ignores_non_structural_slaves() {
         support_spring: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
 
+    let mut base_beam = model.elements[0].clone();
+    base_beam.id = ElemId(model.elements.len() as u32);
+    base_beam.nodes = [NodeId(0), NodeId(1)].into_iter().collect();
+    model.elements.push(base_beam);
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert!(
         gen_slaves(&gen, StoryId(0)).contains(&free_id),
@@ -590,7 +595,7 @@ fn test_master_mass_lumped_only_keeps_density_self_weight() {
     );
 }
 
-/// 二次部材（小梁）1 本のみを持つ 1 層モデル（主架構要素なし）。
+/// 両端を柱で支持した二次部材（小梁）1本を持つ1層モデル。
 /// 二次部材の自重は解析の質量行列（部材密度質量）に算入されないことの確認用。
 fn secondary_joist_model() -> Model {
     let mut model = Model::default();
@@ -652,11 +657,18 @@ fn secondary_joist_model() -> Model {
         fy: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),
         name: "G1".into(),
     });
+    for top in [1, 2] {
+        let mut column = two_story_model().elements[0].clone();
+        column.id = ElemId(model.elements.len() as u32);
+        column.nodes = [NodeId(0), NodeId(top)].into_iter().collect();
+        model.elements.push(column);
+    }
     model
 }
 
@@ -1166,6 +1178,7 @@ fn wall_model() -> Model {
     // それが属する壁領域（`WallRegion`）を直接構築する。`enumerate_self_weight`
     // が内部で壁展開モデルを組み立て、そこから `ElementKind::Wall` を生成する。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -1339,17 +1352,22 @@ fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
     model.elements.push(line(3, 2, 0, 1)); // 下梁
     model.elements.push(line(4, 2, 2, 3)); // 上梁
 
-    let gen = generate_stories(&model, None).unwrap();
-    let (l, h) = (4000.0_f64, 3000.0_f64);
-    let factor = ((l - 2.0 * 250.0) / l) * ((h - 2.0 * 350.0) / h);
-    let w_total = 2.4e-9 * 150.0 * (l * h * factor) * GRAVITY_MM_S2;
-    let expected = w_total / 2.0; // 上端2節点分のみ階重量に算入
-    assert!(
-        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
-        "got={}, expected={}",
-        gen.stories[1].seismic_weight.unwrap(),
-        expected
-    );
+    for order in [[0, 1, 2, 3], [0, 3, 2, 1], [0, 3, 1, 2], [2, 0, 3, 1]] {
+        let boundary: Vec<_> = order.into_iter().map(NodeId).collect();
+        model.wall_regions[0].boundary = boundary.clone();
+        model.wall_plates[0].shape = WallPlateShape::Enclosed { boundary };
+        let gen = generate_stories(&model, None).unwrap();
+        let (l, h) = (4000.0_f64, 3000.0_f64);
+        let factor = ((l - 2.0 * 250.0) / l) * ((h - 2.0 * 350.0) / h);
+        let w_total = 2.4e-9 * 150.0 * (l * h * factor) * GRAVITY_MM_S2;
+        let expected = w_total / 2.0; // 上端2節点分のみ階重量に算入
+        assert!(
+            (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
+            "got={}, expected={}",
+            gen.stories[1].seismic_weight.unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -1455,6 +1473,7 @@ fn test_density_seismic_weight_includes_attached_wall_plate() {
         steel_material: None,
     });
     let plate = WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -1654,6 +1673,7 @@ fn single_column_with_attached_wall(transfer: LoadTransfer) -> (Model, f64) {
         });
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {

@@ -7,7 +7,7 @@
 //!
 //! 交点は常にピン受け・架けとする（剛接十字は扱わない）。受け側・架け側は幾何で決まる。
 //! 反力の分配則は支点まわりのモーメントつり合いによる。鉛直な間柱はつり合いが退化する
-//! ため両端へ 1/2 ずつとする（仮定。§3.4 F8 の残課題）。
+//! ため、利用者が指定した端部負担率で配分する。未指定の場合は解析前エラーとなる。
 
 use std::collections::{HashMap, HashSet};
 
@@ -68,6 +68,8 @@ pub struct TransferredMember {
 /// 逐次伝達の結果。
 #[derive(Clone, Debug, Default)]
 pub struct SecondaryTransfer {
+    /// 鉛直材の端部負担率が未指定または不正な二次部材。
+    pub invalid_end_shares: Vec<SecondaryKey>,
     /// 二次部材ごとの結果。
     pub members: HashMap<SecondaryKey, TransferredMember>,
     /// 端部の行き先が決まらなかった二次部材（どの主架構にも二次部材にも載らない）。
@@ -286,22 +288,13 @@ fn segments_cross(p: &Axis, q: &Axis) -> bool {
     dist3(cp, cq) <= tol
 }
 
-/// 荷重 1 件が両端へ渡す**鉛直反力**（モジュールドキュメント「反力の分配則」参照）。
-///
-/// `horizontal` が真（部材が水平投影を持つ）なら単純梁の反力がそのまま鉛直反力になる。
-/// 偽（鉛直材）ならモーメントのつり合いが退化して不静定になるため、両端へ 1/2 ずつとする。
-///
-/// **成分へ分けて混ぜてはならない。** 「材軸方向成分を 1/2 ずつ、直交成分を単純梁反力」と
-/// して `|u_z|` で線形に混ぜると、総和は保存するが配分が誤る。水平投影 4000・鉛直 3000 の
-/// 傾斜材に材軸上 1/5 の位置で集中荷重を載せた例では、厳密解 0.8W に対して 0.62W となり、
-/// **載荷側の反力を 22.5% 過小評価する**（受け側の部材にとって危険側）。
-fn reactions_of(load: &MemberLoadKind, span: f64, horizontal: bool) -> (f64, f64) {
+/// 荷重 1 件の両端反力 [N]。鉛直材は指定した負担率、その他は単純梁の釣合いを使う。
+fn reactions_of(load: &MemberLoadKind, span: f64, end_shares: Option<[f64; 2]>) -> (f64, f64) {
     let (r_i, r_j) = simple_reactions(load, span);
-    if horizontal {
-        return (r_i, r_j);
+    match end_shares {
+        Some(r) => ((r_i + r_j) * r[0], (r_i + r_j) * r[1]),
+        None => (r_i, r_j),
     }
-    let half = (r_i + r_j) / 2.0;
-    (half, half)
 }
 
 /// 二次部材の反力の逐次伝達を解く。
@@ -325,11 +318,40 @@ pub fn solve(
     let connected = crate::secondary::node_connected_flags(model);
     let beams = crate::secondary::beam_span_candidates(model);
 
+    let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
+        .joists()
+        .chain(model.posts())
+        .map(|sm| (span_node_key(sm.nodes[0], sm.nodes[1]), sm))
+        .collect();
+
+    let mut invalid_end_shares = Vec::new();
+    let mut end_shares_by_key = HashMap::new();
+    for ax in &axes {
+        let horizontal_mm = (ax.b[0] - ax.a[0]).hypot(ax.b[1] - ax.a[1]);
+        if horizontal_mm <= MEMBER_AXIS_TOL_MM {
+            if let Some(shares) = by_key
+                .get(&ax.key)
+                .and_then(|sm| sm.valid_gravity_end_shares())
+            {
+                end_shares_by_key.insert(ax.key, shares);
+            } else {
+                invalid_end_shares.push(ax.key);
+            }
+        }
+    }
     let mut supports: HashMap<SecondaryKey, [SupportAt; 2]> = HashMap::new();
     for ax in &axes {
         let s0 = support_of(ax.key, ax.nodes[0], ax.a, &axes, &connected, &beams);
         let s1 = support_of(ax.key, ax.nodes[1], ax.b, &axes, &connected, &beams);
-        supports.insert(ax.key, [s0, s1]);
+        let mut ends = [s0, s1];
+        if let Some(r) = end_shares_by_key.get(&ax.key) {
+            for k in 0..2 {
+                if r[k] == 0.0 {
+                    ends[k] = SupportAt::Unresolved;
+                }
+            }
+        }
+        supports.insert(ax.key, ends);
     }
 
     let (distribution, leftover_region_loads) = secondary_joist_distribution_split(model, w_of);
@@ -338,12 +360,6 @@ pub fn solve(
     } else {
         HashMap::new()
     };
-
-    let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
-        .joists()
-        .chain(model.posts())
-        .map(|sm| (span_node_key(sm.nodes[0], sm.nodes[1]), sm))
-        .collect();
 
     let mut ready: HashMap<SecondaryKey, (bool, Option<SlabId>)> = HashMap::new();
     let mut base: HashMap<SecondaryKey, Vec<MemberLoadKind>> = HashMap::new();
@@ -395,16 +411,15 @@ pub fn solve(
 
     for key in &order {
         let Some(ax) = index.get(key) else { continue };
+        if invalid_end_shares.contains(key) {
+            continue;
+        }
         let mut loads = base.remove(key).unwrap_or_default();
         loads.extend(extra.remove(key).unwrap_or_default());
 
-        let horizontal = {
-            let (dx, dy) = (ax.b[0] - ax.a[0], ax.b[1] - ax.a[1]);
-            (dx * dx + dy * dy).sqrt() > MEMBER_AXIS_TOL_MM
-        };
         let mut r = [0.0_f64; 2];
         for l in &loads {
-            let (ri, rj) = reactions_of(l, ax.len, horizontal);
+            let (ri, rj) = reactions_of(l, ax.len, end_shares_by_key.get(key).copied());
             r[0] += ri;
             r[1] += rj;
         }
@@ -448,7 +463,9 @@ pub fn solve(
         .collect();
     unresolved.sort();
 
+    invalid_end_shares.sort();
     SecondaryTransfer {
+        invalid_end_shares,
         members,
         unresolved,
         cyclic,

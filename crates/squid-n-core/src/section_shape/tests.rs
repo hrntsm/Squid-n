@@ -522,21 +522,6 @@ fn make_src_600() -> SectionShape {
 }
 
 #[test]
-fn test_wall_shear_shape_factor_rectangle_limit() {
-    // ξ=1(側柱なし=矩形)は η によらず κ=1.2
-    for eta in [0.1, 0.5, 1.0] {
-        let k = wall_shear_shape_factor(1.0, eta);
-        assert!((k - KAPPA_RC).abs() < 1e-12, "eta={eta} k={k}");
-    }
-    // 側柱付き(ξ<1)は有限・正の値
-    let k = wall_shear_shape_factor(0.8, 0.3);
-    assert!(k.is_finite() && k > 0.0);
-    // 退化入力でも非有限値・負値は返さない
-    let k0 = wall_shear_shape_factor(0.0, 0.0);
-    assert!(k0.is_finite() && k0 > 0.0);
-}
-
-#[test]
 fn test_concrete_young_modulus_formula() {
     // Ec = 3.35e4·(γ/24)²·(Fc/60)^(1/3)、γ=23。Fc=60 で (Fc/60)^(1/3)=1。
     let expected = 3.35e4 * (23.0_f64 / 24.0).powi(2);

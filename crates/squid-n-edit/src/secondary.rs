@@ -451,3 +451,35 @@ impl EditCommand for SetWallRegionPostSection {
         "壁領域間柱断面変更"
     }
 }
+/// 間柱の端部負担率を変更する。端点と負担率は同じ並びで指定する。
+pub struct SetPostGravityEndShares {
+    pub nodes: [NodeId; 2],
+    pub shares: Option<[f64; 2]>,
+}
+
+impl EditCommand for SetPostGravityEndShares {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let posts = model
+            .wall_regions
+            .iter_mut()
+            .flat_map(|r| r.posts.iter_mut())
+            .chain(model.unassigned_posts.iter_mut());
+        for post in posts {
+            let reversed = post.nodes == [self.nodes[1], self.nodes[0]];
+            if post.nodes != self.nodes && !reversed {
+                continue;
+            }
+            let shares = self.shares.map(|r| if reversed { [r[1], r[0]] } else { r });
+            let old = std::mem::replace(&mut post.gravity_end_shares, shares);
+            return Box::new(Self {
+                nodes: post.nodes,
+                shares: old,
+            });
+        }
+        Box::new(Noop)
+    }
+
+    fn label(&self) -> &str {
+        "間柱端部負担率変更"
+    }
+}

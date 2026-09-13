@@ -199,10 +199,12 @@ impl App {
                     src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
                     if wall_has_src_boundary_column(elem, model) {
-                        let qu =
-                            squid_n_element::wall::wall_element::WallElement::shear_capacity_of(
-                                elem, model,
-                            );
+                        let capacities = squid_n_element::wall::wall_element::WallElement::directional_shear_capacity_of(elem, model);
+                        let qu = resp_by_elem
+                            .get(&elem.id)
+                            .and_then(|r| r.wall_shear_signed)
+                            .map(|q| capacities[usize::from(q < 0.0)])
+                            .unwrap_or(0.0);
                         let Some(resp) = resp_by_elem.get(&elem.id) else {
                             continue;
                         };
@@ -237,10 +239,12 @@ impl App {
                         ) else {
                             continue;
                         };
-                        let qu =
-                            squid_n_element::wall::wall_element::WallElement::shear_capacity_of(
-                                elem, model,
-                            );
+                        let capacities = squid_n_element::wall::wall_element::WallElement::directional_shear_capacity_of(elem, model);
+                        let qu = resp_by_elem
+                            .get(&elem.id)
+                            .and_then(|r| r.wall_shear_signed)
+                            .map(|q| capacities[usize::from(q < 0.0)])
+                            .unwrap_or(0.0);
                         let brittle = rc_wall_shear_brittle(resp.horizontal_force, qu);
                         let wall_structure = self.core.wall_structure;
                         rc_wall_type(tau_over_fc, wall_structure, brittle)

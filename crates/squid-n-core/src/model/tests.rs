@@ -130,6 +130,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
             name: String::new(),
             boundary: vec![],
             secondary_joists: vec![SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Post,
                 nodes: [NodeId(0), NodeId(1)],
                 section: None,
@@ -163,6 +164,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
 #[test]
 fn test_validate_rejects_duplicate_joist_endpoints() {
     let sm = SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: None,
@@ -217,6 +219,7 @@ fn test_validate_rejects_joist_in_wall_region_posts() {
             boundary: vec![],
             wall_plate_ids: vec![],
             posts: vec![SecondaryMember {
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(0), NodeId(1)],
                 section: None,
@@ -1355,6 +1358,7 @@ fn test_validate_dangling_wall_plate_boundary() {
             support_spring: None,
         }],
         wall_plates: vec![WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             // 存在しない節点 5 を境界に含む（陳腐化した参照）。
             shape: WallPlateShape::Enclosed {
@@ -1392,6 +1396,7 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
     let mk = |id: u32, boundary: Vec<NodeId>| WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(id),
         shape: WallPlateShape::Enclosed { boundary },
         section: None,
@@ -1427,6 +1432,7 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
         });
     }
     let mk = |span: [f64; 2]| WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -1468,6 +1474,7 @@ fn test_validate_self_standing_wall_checks_only_node_refs() {
         });
     }
     let mk = |nodes: [NodeId; 2]| WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::FloorRegion { nodes },
@@ -1536,6 +1543,7 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
         });
     }
     model.wall_plates = vec![WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],

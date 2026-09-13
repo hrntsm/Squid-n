@@ -1510,6 +1510,7 @@ mod node_reference_tests {
         // 1: 床領域の境界。2: 床領域が持つ二次部材小梁（`secondary_joists`）。
         let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
         region.secondary_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(2), NodeId(2)],
             section: None,
@@ -1545,6 +1546,7 @@ mod node_reference_tests {
 
         // 6: 壁版（Enclosed）。7: 壁版（Attached／Line）。
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(6)],
@@ -1557,6 +1559,7 @@ mod node_reference_tests {
             slit: Default::default(),
         });
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(1),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -1576,6 +1579,7 @@ mod node_reference_tests {
 
         // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
         model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(8)],
             section: None,
@@ -1593,6 +1597,7 @@ mod node_reference_tests {
 
         // 10: 壁版（Attached／FloorRegion。自立壁）。
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(2),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {

@@ -141,7 +141,12 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
         let WallPlateShape::Enclosed { boundary } = &plate.shape else {
             continue;
         };
-        if let Some(attached) = try_convert_wall_attached(model, boundary, &beams) {
+        if let Some(attached) = plate
+            .self_weight_shares
+            .is_empty()
+            .then(|| try_convert_wall_attached(model, boundary, &beams))
+            .flatten()
+        {
             discarded_by_conversion.extend(boundary.iter().copied());
             converted.push((pi, attached));
             report.wall_plates_converted_to_attached += 1;
@@ -398,6 +403,7 @@ mod tests {
         rebuild_wall_regions(&mut model);
         model.wall_regions[0].name = "西面耐震壁".into();
         model.unassigned_posts.push(crate::model::SecondaryMember {
+            gravity_end_shares: None,
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(0), NodeId(3)],
             section: None,
@@ -461,6 +467,7 @@ mod tests {
         model.nodes.push(node(4, 2000.0, 0.0, 0.0));
         model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
         model.unassigned_posts.push(crate::model::SecondaryMember {
+            gravity_end_shares: None,
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(4), NodeId(5)],
             section: None,
@@ -479,6 +486,7 @@ mod tests {
     fn test_rebuild_assigns_enclosed_wall_plate_to_matching_region() {
         let mut model = one_bay_wall_model();
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: crate::model::WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -509,6 +517,7 @@ mod tests {
         model.nodes.push(node(6, 4000.0, 3000.0, 3000.0));
         model.nodes.push(node(7, 0.0, 3000.0, 3000.0));
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: crate::model::WallPlateShape::Enclosed {
                 boundary: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
@@ -538,6 +547,7 @@ mod tests {
         model.nodes.push(node(4, 0.0, 0.0, 4500.0));
         model.nodes.push(node(5, 4000.0, 0.0, 4500.0));
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 // 下辺 3→2 は頂部梁（beam(2, 3, 2)）と同じ節点対・向き。
@@ -550,6 +560,15 @@ mod tests {
             loads: vec![],
             slit: Default::default(),
         });
+        let mut explicit = model.clone();
+        explicit.wall_plates[0].self_weight_shares = vec![1.0, 0.0, 0.0, 0.0];
+        let explicit_report = rebuild_wall_regions(&mut explicit);
+        assert_eq!(explicit_report.wall_plates_converted_to_attached, 0);
+        assert!(!explicit.wall_plates[0].is_attached());
+        assert_eq!(
+            explicit.wall_plates[0].self_weight_shares,
+            vec![1.0, 0.0, 0.0, 0.0]
+        );
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_assigned, 0);
         assert_eq!(report.wall_plates_converted_to_attached, 1);
@@ -600,6 +619,7 @@ mod tests {
         model.nodes.push(node(5, 1500.0, 0.0, 5200.0));
         model.nodes.push(node(6, 4000.0, 0.0, 4500.0));
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],
@@ -644,6 +664,7 @@ mod tests {
 
         // パラペット: 下辺 5->4 が頂部梁と一致、自由端は 1,0（Z=4500）。
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(5), NodeId(4), NodeId(1), NodeId(0)],
@@ -692,6 +713,7 @@ mod tests {
         model.nodes.push(node(4, 0.0, 0.0, -1200.0));
         model.nodes.push(node(5, 4000.0, 0.0, -1200.0));
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
@@ -726,6 +748,7 @@ mod tests {
         // 頂部梁と同じ高さだが、構面から Y 方向へ折れた頂点。
         model.nodes.push(node(6, 2000.0, 800.0, 3000.0));
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed {
                 boundary: vec![NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],

@@ -175,6 +175,7 @@ fn wall_post_model() -> Model {
     // Y=0 面の壁を、間柱（節点 8-9）の位置で 2 枚へ分割する。
     for (id, boundary) in [(0u32, [0u32, 8, 9, 4]), (1, [8, 1, 5, 9])] {
         model.wall_plates.push(WallPlate {
+            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
             id: WallPlateId(id),
             shape: WallPlateShape::Enclosed {
                 boundary: boundary.into_iter().map(NodeId).collect(),
@@ -188,6 +189,7 @@ fn wall_post_model() -> Model {
         });
     }
     model.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(8), NodeId(9)],
         section: Some(SectionId(3)),
@@ -520,4 +522,43 @@ fn test_wall_weight_reaches_column_axial_force() {
         "柱脚軸力が壁自重に反応していない（増分 {diff}・壁自重 {}）",
         wall_weight()
     );
+}
+#[test]
+fn 明示負担率で密度直接集計とdl集計の階重量が一致する() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCase, LoadCaseKind, MassMethod};
+    use squid_n_load::story_gen::generate_stories_with_opts;
+
+    for bottom_ratio in [0.0, 0.25, 1.0] {
+        let mut model = wall_post_model();
+        for region in &mut model.wall_regions {
+            for post in &mut region.posts {
+                post.gravity_end_shares = Some([bottom_ratio, 1.0 - bottom_ratio]);
+            }
+        }
+        let direct = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+        let dl = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&model)
+            .cases
+            .into_iter()
+            .find(|lc| lc.kind == LoadCaseKind::Dead)
+            .unwrap();
+        let id = LoadCaseId(0);
+        model.load_cases = vec![LoadCase {
+            id,
+            name: "DL".into(),
+            kind: dl.kind,
+            nodal: dl.nodal,
+            member: dl.member,
+        }];
+        let from_dl =
+            generate_stories_with_opts(&model, &[id], false, MassMethod::LumpedOnly).unwrap();
+        for (a, b) in direct.stories.iter().zip(&from_dl.stories) {
+            assert!(
+                (a.seismic_weight.unwrap_or(0.0) - b.seismic_weight.unwrap_or(0.0)).abs() < 1e-6,
+                "下端負担率 {bottom_ratio}: 直接集計 {:?} / DL {:?}",
+                a.seismic_weight,
+                b.seismic_weight
+            );
+        }
+    }
 }

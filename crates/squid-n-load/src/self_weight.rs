@@ -78,7 +78,6 @@ pub fn self_weight_case_content(
                     node_force[i] += w;
                 }
             }
-            SelfWeightItem::SecondaryLine { .. } => {}
         }
     }
 
@@ -251,7 +250,6 @@ mod tests {
             .map(|item| match item {
                 crate::story_gen::SelfWeightItem::Line { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
-                crate::story_gen::SelfWeightItem::SecondaryLine { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
                     shares.iter().map(|(_, w)| w).sum()
                 }

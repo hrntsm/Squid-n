@@ -50,6 +50,7 @@ fn beam(id: u32, i: u32, j: u32) -> ElementData {
 
 fn joist(a: u32, b: u32, name: &str) -> SecondaryMember {
     SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
@@ -188,12 +189,9 @@ fn joist_on_joist_cascades_to_primary() {
     assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
 }
 
-/// 鉛直な間柱は水平投影が 0 なので、自重は両端へ 1/2 ずつ渡る（従来の扱いを保つ）。
-///
-/// 水平投影が 0 だと鉛直反力のモーメントのつり合いが退化し、荷重は軸力として流れる。
-/// 両端への配分は不静定になるため仮定が要る（申し送り §3.4 F8 の残課題）。
+/// 間柱自重の端部負担率・総量保存・逆向き・未指定の診断を検証する。
 #[test]
-fn vertical_post_splits_load_in_half() {
+fn vertical_post_uses_explicit_end_shares() {
     let mut m = base_model();
     for (i, c) in [
         [0.0, 0.0, 0.0],
@@ -211,6 +209,7 @@ fn vertical_post_splits_load_in_half() {
     m.elements.push(beam(0, 0, 1)); // 下の梁
     m.elements.push(beam(1, 2, 3)); // 上の梁
     m.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -223,6 +222,38 @@ fn vertical_post_splits_load_in_half() {
     let half = w_self() * 3000.0 / 2.0;
     for r in p.reactions {
         assert!((r - half).abs() / half < 1e-9, "反力 {r} != {half}");
+    }
+    for (ratios, expected) in [
+        ([1.0, 0.0], [2.0 * half, 0.0]),
+        ([0.25, 0.75], [0.5 * half, 1.5 * half]),
+        ([0.0, 1.0], [0.0, 2.0 * half]),
+    ] {
+        m.unassigned_posts[0].gravity_end_shares = Some(ratios);
+        let t = solved(&m);
+        let p = &t.members[&key];
+        for (actual, expected) in p.reactions.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert!(
+            (t.primary_node_loads().iter().map(|(_, w)| w).sum::<f64>() - 2.0 * half).abs() < 1e-6
+        );
+    }
+    m.unassigned_posts[0].nodes.reverse();
+    m.unassigned_posts[0].gravity_end_shares = Some([0.0, 1.0]);
+    let t = solved(&m);
+    assert_eq!(t.primary_node_loads().len(), 1);
+    assert_eq!(t.primary_node_loads()[0].0, NodeId(4));
+
+    for ratios in [
+        None,
+        Some([0.0, 0.0]),
+        Some([-0.5, 1.5]),
+        Some([f64::NAN, 1.0]),
+    ] {
+        m.unassigned_posts[0].gravity_end_shares = ratios;
+        let t = solved(&m);
+        assert_eq!(t.invalid_end_shares, vec![key]);
+        assert!(t.primary_node_loads().is_empty());
     }
 }
 
@@ -271,12 +302,16 @@ fn inclined_joist_reactions_match_simple_beam() {
     // 材軸上 1/5 の位置に集中荷重を足すと、鉛直反力は 4:1 に分かれる
     // （水平てこでのモーメントつり合い。混ぜると 0.62:0.38 になってしまう）。
     let p = 1000.0_f64;
-    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, true);
+    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, None);
     assert!((ri - 0.8 * p).abs() < 1e-9, "R_i={ri}");
     assert!((rj - 0.2 * p).abs() < 1e-9, "R_j={rj}");
 
     // 鉛直材（水平投影 0）だけが不静定で、両端 1/2 ずつになる。
-    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, false);
+    let (ri, rj) = super::reactions_of(
+        &MemberLoadKind::Point { a: 1000.0, p },
+        5000.0,
+        Some([0.5, 0.5]),
+    );
     assert!((ri - 0.5 * p).abs() < 1e-9 && (rj - 0.5 * p).abs() < 1e-9);
 }
 
@@ -368,6 +403,7 @@ fn floating_joist_without_load_is_not_reported() {
     m.nodes.push(node(0, 0.0, 0.0, 0.0));
     m.nodes.push(node(1, 4000.0, 0.0, 0.0));
     m.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: None,

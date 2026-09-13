@@ -528,6 +528,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
     // 柱・梁で囲まれた4節点壁（節点 0-1-3-2）を壁版として構築する
     // （`test_wall_quantity_with_opening` の直接 `ElementData` 構築と同じ幾何）。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
@@ -580,6 +581,7 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
     model.sections.push(sec);
     // 頂部の大梁（節点2-3）に載るパラペット（立ち上がり高さ1000mm、全長）。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {

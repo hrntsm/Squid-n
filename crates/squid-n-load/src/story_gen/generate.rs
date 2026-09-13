@@ -221,7 +221,7 @@ pub fn generate_stories_with_opts(
                     target[i] += w;
                 }
             }
-            SelfWeightItem::Damper { .. } | SelfWeightItem::SecondaryLine { .. } => {}
+            SelfWeightItem::Damper { .. } => {}
         };
 
     let mut node_self_weight = vec![0.0f64; model.nodes.len()];
@@ -236,10 +236,6 @@ pub fn generate_stories_with_opts(
                     node_weight[*ni] += total / 2.0;
                     node_weight[*nj] += total / 2.0;
                 }
-                SelfWeightItem::SecondaryLine { ni, nj, total } => {
-                    node_weight[*ni] += total / 2.0;
-                    node_weight[*nj] += total / 2.0;
-                }
                 SelfWeightItem::Line { .. } | SelfWeightItem::Panel { .. } => {
                     distribute_line_panel(&mut node_weight, item, false);
                 }
@@ -247,7 +243,10 @@ pub fn generate_stories_with_opts(
         }
 
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);
-        crate::wall_plate_load::accumulate_enclosed_wall_seismic_weight(model, &mut node_weight);
+        crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight(
+            model,
+            &mut node_weight,
+        )?;
     }
 
     let elem_idx_by_id: std::collections::HashMap<squid_n_core::ids::ElemId, usize> = model
