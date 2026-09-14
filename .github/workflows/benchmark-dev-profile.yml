@@ -18,40 +18,32 @@ jobs:
         with:
           components: clippy
 
-      - name: 現行設定を計測
+      - name: 計測ヘルパーを定義
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-
+          @'
           function Measure-Cargo([string]$Name, [scriptblock]$Command) {
             $elapsed = (Measure-Command { & $Command }).TotalSeconds
             Set-Content -Path "$env:RUNNER_TEMP/$Name.txt" -Value $elapsed
           }
+          '@ | Set-Content "$env:RUNNER_TEMP/measure.ps1"
 
-          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/squid-current-clippy"
+      - name: 現行プロファイルを計測
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:RUNNER_TEMP/measure.ps1"
+
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/current-clippy"
           Measure-Cargo 'current-clippy-cold' {
             cargo clippy --workspace --all-targets --locked -- -D warnings
-            if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
-          }
-          (Get-Item 'crates/squid-n-core/src/lib.rs').LastWriteTime = Get-Date
-          Measure-Cargo 'current-clippy-incremental' {
-            cargo clippy --workspace --all-targets --locked -- -D warnings
-            if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
           }
 
-          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/squid-current-test"
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/current-test"
           Measure-Cargo 'current-test-cold' {
             cargo test --workspace --no-run --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test --no-run failed" }
-          }
-          Measure-Cargo 'current-test-run' {
-            cargo test --workspace --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test failed" }
-          }
-          (Get-Item 'crates/squid-n-core/src/lib.rs').LastWriteTime = Get-Date
-          Measure-Cargo 'current-test-incremental' {
-            cargo test --workspace --no-run --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test --no-run failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo test --no-run failed' }
           }
 
       - name: 高速化案へ切り替え
@@ -70,72 +62,106 @@ jobs:
           [profile.dev]
           opt-level = 1
 
-          # 開発中の全依存クレート最適化を避け、数値計算の主要依存だけ最適化する。
+          # 数値計算の主要依存だけ最適化し、開発時の依存クレート再コンパイルを抑える。
           [profile.dev.package.faer]
           opt-level = 3
           '@
           if (-not $text.Contains($old)) { throw 'profile.dev block not found' }
           Set-Content -Path $path -Value $text.Replace($old, $new) -NoNewline
 
-      - name: 高速化案を計測
+      - name: 高速化案のworkspace全体を計測
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          . "$env:RUNNER_TEMP/measure.ps1"
 
-          function Measure-Cargo([string]$Name, [scriptblock]$Command) {
-            $elapsed = (Measure-Command { & $Command }).TotalSeconds
-            Set-Content -Path "$env:RUNNER_TEMP/$Name.txt" -Value $elapsed
-          }
-
-          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/squid-candidate-clippy"
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/candidate-clippy-workspace"
           Measure-Cargo 'candidate-clippy-cold' {
             cargo clippy --workspace --all-targets --locked -- -D warnings
-            if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
           }
-          (Get-Item 'crates/squid-n-core/src/lib.rs').LastWriteTime = Get-Date
-          Measure-Cargo 'candidate-clippy-incremental' {
+          (Get-Item 'crates/squid-n-app/src/lib.rs').LastWriteTime = Get-Date
+          Measure-Cargo 'candidate-clippy-workspace-incremental' {
             cargo clippy --workspace --all-targets --locked -- -D warnings
-            if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
           }
 
-          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/squid-candidate-test"
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/candidate-test-workspace"
           Measure-Cargo 'candidate-test-cold' {
             cargo test --workspace --no-run --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test --no-run failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo test --no-run failed' }
           }
-          Measure-Cargo 'candidate-test-run' {
-            cargo test --workspace --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test failed" }
-          }
-          (Get-Item 'crates/squid-n-core/src/lib.rs').LastWriteTime = Get-Date
-          Measure-Cargo 'candidate-test-incremental' {
+          (Get-Item 'crates/squid-n-app/src/lib.rs').LastWriteTime = Get-Date
+          Measure-Cargo 'candidate-test-workspace-incremental' {
             cargo test --workspace --no-run --locked
-            if ($LASTEXITCODE -ne 0) { throw "cargo test --no-run failed" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo test --no-run failed' }
+          }
+
+      - name: 高速化案の変更クレート限定を計測
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:RUNNER_TEMP/measure.ps1"
+
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/candidate-clippy-package"
+          Measure-Cargo 'candidate-clippy-package-cold' {
+            cargo clippy -p squid-n-app --all-targets --locked -- -D warnings
+            if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
+          }
+          (Get-Item 'crates/squid-n-app/src/lib.rs').LastWriteTime = Get-Date
+          Measure-Cargo 'candidate-clippy-package-incremental' {
+            cargo clippy -p squid-n-app --all-targets --locked -- -D warnings
+            if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
+          }
+
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP/candidate-test-package"
+          Measure-Cargo 'candidate-test-package-cold' {
+            cargo test -p squid-n-app --no-run --locked
+            if ($LASTEXITCODE -ne 0) { throw 'cargo test --no-run failed' }
+          }
+          (Get-Item 'crates/squid-n-app/src/lib.rs').LastWriteTime = Get-Date
+          Measure-Cargo 'candidate-test-package-incremental' {
+            cargo test -p squid-n-app --no-run --locked
+            if ($LASTEXITCODE -ne 0) { throw 'cargo test --no-run failed' }
           }
 
       - name: 結果を表示
         shell: pwsh
         run: |
-          $rows = @(
-            @('Clippy cold', 'current-clippy-cold.txt', 'candidate-clippy-cold.txt'),
-            @('Clippy incremental (core touch)', 'current-clippy-incremental.txt', 'candidate-clippy-incremental.txt'),
-            @('test compile cold (--no-run)', 'current-test-cold.txt', 'candidate-test-cold.txt'),
-            @('test run (compiled)', 'current-test-run.txt', 'candidate-test-run.txt'),
-            @('test incremental compile (core touch)', 'current-test-incremental.txt', 'candidate-test-incremental.txt')
-          )
+          function Read-Time([string]$Name) {
+            return [double](Get-Content "$env:RUNNER_TEMP/$Name.txt")
+          }
+          function Improvement([double]$Before, [double]$After) {
+            if ($Before -eq 0) { return 0 }
+            return ($Before - $After) / $Before * 100
+          }
+
+          $currentClippy = Read-Time 'current-clippy-cold'
+          $candidateClippy = Read-Time 'candidate-clippy-cold'
+          $currentTest = Read-Time 'current-test-cold'
+          $candidateTest = Read-Time 'candidate-test-cold'
+          $wsClippyInc = Read-Time 'candidate-clippy-workspace-incremental'
+          $pkgClippyInc = Read-Time 'candidate-clippy-package-incremental'
+          $wsTestInc = Read-Time 'candidate-test-workspace-incremental'
+          $pkgTestInc = Read-Time 'candidate-test-package-incremental'
 
           $lines = @(
-            '## Windows 開発プロファイル速度比較',
+            '## Windows 開発速度比較',
             '',
-            '| 項目 | 現行 (s) | 高速化案 (s) | 改善率 |',
-            '|---|---:|---:|---:|'
+            '### dev profile',
+            '',
+            '| 項目 | 現行: 全依存 opt=3 | 候補: faerのみ opt=3 | 改善率 |',
+            '|---|---:|---:|---:|',
+            "| Clippy cold (workspace) | $($currentClippy.ToString('F2')) s | $($candidateClippy.ToString('F2')) s | $((Improvement $currentClippy $candidateClippy).ToString('+0.0;-0.0;0.0'))% |",
+            "| test compile cold (workspace) | $($currentTest.ToString('F2')) s | $($candidateTest.ToString('F2')) s | $((Improvement $currentTest $candidateTest).ToString('+0.0;-0.0;0.0'))% |",
+            '',
+            '### 編集後のincremental',
+            '',
+            '| 項目 | workspace全体 | squid-n-app限定 | 改善率 |',
+            '|---|---:|---:|---:|',
+            "| Clippy | $($wsClippyInc.ToString('F2')) s | $($pkgClippyInc.ToString('F2')) s | $((Improvement $wsClippyInc $pkgClippyInc).ToString('+0.0;-0.0;0.0'))% |",
+            "| test compile | $($wsTestInc.ToString('F2')) s | $($pkgTestInc.ToString('F2')) s | $((Improvement $wsTestInc $pkgTestInc).ToString('+0.0;-0.0;0.0'))% |"
           )
-          foreach ($row in $rows) {
-            $current = [double](Get-Content "$env:RUNNER_TEMP/$($row[1])")
-            $candidate = [double](Get-Content "$env:RUNNER_TEMP/$($row[2])")
-            $improvement = if ($current -eq 0) { 0 } else { ($current - $candidate) / $current * 100 }
-            $lines += "| $($row[0]) | $($current.ToString('F2')) | $($candidate.ToString('F2')) | $($improvement.ToString('+0.0;-0.0;0.0'))% |"
-          }
 
           $summary = ($lines -join "`n") + "`n"
           Write-Host $summary
