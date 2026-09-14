@@ -47,6 +47,23 @@ cargo run -p squid-n-mcp --features mcp
 
 ## テスト
 
+### 開発ループ（編集中）と PR 前の使い分け
+
+編集中は変更したクレートだけを検証します。小さな修正のたびに workspace
+全体を回す必要はありません。
+
+```bash
+# 変更クレートのみ
+cargo test -p <changed-crate>
+
+# GUI / MCP 領域を変更したときだけ feature 付きで確認する
+cargo test -p squid-n-app --features gui
+cargo test -p squid-n-mcp --features mcp
+```
+
+PR 前には下記の全テスト（workspace 全体＋非デフォルト feature）を実行します。
+CI（`.github/workflows/ci.yml`）も同じ範囲を検証します。
+
 ```bash
 # 全テスト実行
 cargo test --workspace
@@ -103,10 +120,21 @@ cargo test -p squid-n-app --test wall_model
 **コミット前には必ず確認してください。** CI と同条件で実行します
 （`--all-targets` がないとテストコードが clippy の対象外になります）。
 
+編集中は変更クレートだけに絞ると反復が速くなります。GUI / MCP 領域の
+変更時は feature 付きも同様に `-p` で確認します。
+
+```bash
+cargo clippy -p <changed-crate> --all-targets --locked -- -D warnings
+```
+
+PR 前のフル検証は以下です。GUI / MCP の feature 付き検証は、同じ依存グラフを
+何度も構築しないよう 2 クレートまとめて 1 回の呼び出しにしています
+（`squid-n-app/gui` のような `クレート名/機能名` 形式で指定する）。
+default 構成の検証は別に維持するため、`--all-features` にはまとめません。
+
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy -p squid-n-app --all-targets --features gui --locked -- -D warnings
-cargo clippy -p squid-n-mcp --all-targets --features mcp --locked -- -D warnings
+cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -117,12 +145,12 @@ cargo fmt --all -- --check
 `cfg(feature = "gui")` 配下のコード（GUI のビュー・テーブル・3D 表示のほぼ全体）が
 コンパイルすらされません。フラグ付きでしか現れないビルドエラー・警告があります。
 
-テストも同様に、フラグ付きの実行が必要です。
+テストも同様に、フラグ付きの実行が必要です。PR 前のフル検証では GUI / MCP を
+まとめて 1 回の呼び出しにしています（静的解析の節を参照）。
 
 ```bash
 cargo test --workspace --locked
-cargo test -p squid-n-app --features gui
-cargo test -p squid-n-mcp --features mcp
+cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
 ```
 
 ### ツールチェインのバージョンを合わせる
@@ -195,8 +223,8 @@ mdbook build
 PR を作成すると以下が自動実行されます（`.github/workflows/ci.yml`）。
 ローカルで上記の静的解析・テストを通しておくと手戻りが減ります。
 
-- テスト（`cargo test --workspace`）
-- Clippy 静的解析
+- テスト（default 構成の `cargo test --workspace` と、GUI / MCP feature 付きをまとめた呼び出し）
+- Clippy 静的解析（同上: default 全体と feature 付きをまとめた呼び出し）
 - フォーマットチェック
 - 脆弱性確認（cargo audit）
 - 依存性チェック（cargo-deny）
@@ -248,12 +276,10 @@ docs: 計算根拠の説明を追加する
 
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy -p squid-n-app --all-targets --features gui --locked -- -D warnings
-cargo clippy -p squid-n-mcp --all-targets --features mcp --locked -- -D warnings
+cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings
 cargo fmt --all -- --check
 cargo test --workspace --locked
-cargo test -p squid-n-app --features gui
-cargo test -p squid-n-mcp --features mcp
+cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
 cargo run -p xtask -- check-deps
 mdbook build
 ```
