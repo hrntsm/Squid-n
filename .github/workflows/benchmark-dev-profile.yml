@@ -1,0 +1,115 @@
+name: 開発プロファイル速度比較
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  benchmark:
+    name: Clippy / test コンパイル速度比較
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 現行設定を計測
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/squid-current-clippy"
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/current-clippy-cold.txt" \
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+          touch crates/squid-n-core/src/lib.rs
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/current-clippy-incremental.txt" \
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/squid-current-test"
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/current-test-cold.txt" \
+            cargo test --workspace --no-run --locked
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/current-test-run.txt" \
+            cargo test --workspace --locked
+          touch crates/squid-n-core/src/lib.rs
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/current-test-incremental.txt" \
+            cargo test --workspace --no-run --locked
+
+      - name: 高速化案へ切り替え
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          old = '''[profile.dev]
+          opt-level = 1
+
+          [profile.dev.package."*"]
+          opt-level = 3
+          '''
+          new = '''[profile.dev]
+          opt-level = 1
+
+          # 開発中の全依存クレート最適化を避け、数値計算の主要依存だけ最適化する。
+          [profile.dev.package.faer]
+          opt-level = 3
+          '''
+          if old not in text:
+              raise SystemExit("profile.dev block not found")
+          path.write_text(text.replace(old, new))
+
+      - name: 高速化案を計測
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/squid-candidate-clippy"
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/candidate-clippy-cold.txt" \
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+          touch crates/squid-n-core/src/lib.rs
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/candidate-clippy-incremental.txt" \
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/squid-candidate-test"
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/candidate-test-cold.txt" \
+            cargo test --workspace --no-run --locked
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/candidate-test-run.txt" \
+            cargo test --workspace --locked
+          touch crates/squid-n-core/src/lib.rs
+          /usr/bin/time -f '%e' -o "$RUNNER_TEMP/candidate-test-incremental.txt" \
+            cargo test --workspace --no-run --locked
+
+      - name: 結果を表示
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          rows = [
+              ("Clippy cold", "current-clippy-cold.txt", "candidate-clippy-cold.txt"),
+              ("Clippy incremental (core touch)", "current-clippy-incremental.txt", "candidate-clippy-incremental.txt"),
+              ("test compile cold (--no-run)", "current-test-cold.txt", "candidate-test-cold.txt"),
+              ("test run (compiled)", "current-test-run.txt", "candidate-test-run.txt"),
+              ("test incremental compile (core touch)", "current-test-incremental.txt", "candidate-test-incremental.txt"),
+          ]
+
+          lines = [
+              "## 開発プロファイル速度比較",
+              "",
+              "| 項目 | 現行 (s) | 高速化案 (s) | 改善率 |",
+              "|---|---:|---:|---:|",
+          ]
+          for label, current_file, candidate_file in rows:
+              current = float((root / current_file).read_text().strip())
+              candidate = float((root / candidate_file).read_text().strip())
+              improvement = (current - candidate) / current * 100 if current else 0.0
+              lines.append(f"| {label} | {current:.2f} | {candidate:.2f} | {improvement:+.1f}% |")
+
+          summary = "\n".join(lines) + "\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary)
+          PY
