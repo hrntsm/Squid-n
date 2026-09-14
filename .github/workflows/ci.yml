@@ -23,17 +23,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: テスト実行
-        run: cargo test --workspace
-      # mcp は非デフォルト feature のため --workspace では検証されない。
-      # 過去に rmcp API 追従漏れでコンパイル不能のまま放置された経緯があり
-      # （dev_docs/v_and_v/p8_review.md）、ここで明示的にビルド・テストして再発を防ぐ。
-      - name: MCP featureテスト実行
-        run: cargo test -p squid-n-mcp --features mcp
-      # gui は非デフォルト feature のため --workspace では検証されない。
-      # GUI コードのコンパイル漏れ（網羅的 match 等）の検知に加え、gui ゲート内の
-      # ユニットテスト（viewer のカメラ計算等）も実行する（build は test に含まれる）。
-      - name: GUI featureテスト実行
-        run: cargo test -p squid-n-app --features gui
+        run: cargo test --workspace --locked
+      # gui / mcp は非デフォルト feature のため --workspace だけでは検証されない。
+      # 2 クレートを 1 回の cargo 呼び出しで検証し、依存解決・ビルドの重複を減らす。
+      # default 構成の検証は上で残し、feature 無効時専用の cfg(not(feature = ...)) も保護する。
+      - name: 非デフォルトfeatureテスト実行
+        run: >-
+          cargo test
+          -p squid-n-app
+          -p squid-n-mcp
+          --features squid-n-app/gui,squid-n-mcp/mcp
+          --locked
 
   clippy:
     name: Clippy静的解析
@@ -46,14 +46,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy実行
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # 非デフォルト feature の mcp（bin ターゲット含む）も静的解析の対象にする。
-      - name: Clippy実行（MCP feature）
-        run: cargo clippy -p squid-n-mcp --all-targets --features mcp --locked -- -D warnings
-      # 非デフォルト feature の gui（eframe 経由の GUI コード）も静的解析の対象にする。
-      # 過去に squid-n-app の GUI コードが網羅的 match 漏れでコンパイル不能のまま
-      # 放置された経緯があり（mn_view.rs）、ここで明示的に検証して再発を防ぐ。
-      - name: Clippy実行（GUI feature）
-        run: cargo clippy -p squid-n-app --all-targets --features gui --locked -- -D warnings
+      # 非デフォルト feature 付きの 2 クレートも 1 回の cargo 呼び出しで解析する。
+      # GUI / MCP の feature 固有コードを維持しつつ、個別実行による重複を減らす。
+      - name: Clippy実行（非デフォルトfeature）
+        run: >-
+          cargo clippy
+          -p squid-n-app
+          -p squid-n-mcp
+          --all-targets
+          --features squid-n-app/gui,squid-n-mcp/mcp
+          --locked
+          -- -D warnings
 
   fmt:
     name: フォーマットチェック
