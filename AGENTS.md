@@ -58,12 +58,12 @@ Rustで作成する日本の建築構造計算一貫プログラム。
 
 ## コミット前に必須
 
-- 編集中は変更クレートのみ検証する（`cargo clippy -p <changed-crate>` /
+- 編集中：変更クレートのみ検証する（`cargo clippy -p <changed-crate>` /
   `cargo test -p <changed-crate>`。GUI / MCP 領域の変更時のみ feature 付きも確認）。
-  workspace 全体と非デフォルト feature のフル検証は PR 前に行う。
-  具体的なコマンドは CONTRIBUTING.md「静的解析」「テスト」に従う。
-- **静的解析（clippy / fmt）を CI と同条件で実行する**。特に `--all-targets` を省略しないこと
-  （省略するとテストコードが clippy の対象外になる）。コマンドは CONTRIBUTING.md「静的解析」を参照。
+- PR 前：workspace 全体と非デフォルト feature のフル検証を行う。静的解析
+  （clippy / fmt）は CI と同条件で実行する。特に `--all-targets` を省略しないこと
+  （省略するとテストコードが clippy の対象外になる）。
+  具体的なコマンドは CONTRIBUTING.md「静的解析」「テスト」に従う（正本はそちら）。
 - 変更に対応するドキュメントを更新する。どの情報をどこへ書くかは
   [dev_docs/README.md](dev_docs/README.md) の「ドキュメント配置ルール」に従う。
 

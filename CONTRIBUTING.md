@@ -63,10 +63,15 @@ cargo test -p squid-n-mcp --features mcp
 
 PR 前には下記の全テスト（workspace 全体＋非デフォルト feature）を実行します。
 CI（`.github/workflows/ci.yml`）も同じ範囲を検証します。
+テスト系コマンドの正本はこの節です。
 
 ```bash
-# 全テスト実行
-cargo test --workspace
+# 全テスト実行（default 構成）
+cargo test --workspace --locked
+
+# GUI / MCP の非デフォルト feature（2 クレートまとめて 1 回の呼び出し。
+# `クレート名/機能名` 形式で指定する。default 構成は上の実行で別に検証する）
+cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
 
 # 決定性テスト（100回ビット一致確認を含む）
 cargo test --workspace deterministic
@@ -140,18 +145,13 @@ cargo fmt --all -- --check
 
 `cargo fmt --all` で自動整形できます。
 
-**フラグ付きの 2 行を省略しないでください。** `gui`・`mcp` は既定で無効な
+**フラグ付きの検証を省略しないでください。** `gui`・`mcp` は既定で無効な
 フィーチャフラグのため、1 行目のワークスペース全体の実行だけでは
 `cfg(feature = "gui")` 配下のコード（GUI のビュー・テーブル・3D 表示のほぼ全体）が
 コンパイルすらされません。フラグ付きでしか現れないビルドエラー・警告があります。
 
-テストも同様に、フラグ付きの実行が必要です。PR 前のフル検証では GUI / MCP を
-まとめて 1 回の呼び出しにしています（静的解析の節を参照）。
-
-```bash
-cargo test --workspace --locked
-cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
-```
+テストも同様に、フラグ付きの実行が必要です。テスト系のフル検証コマンドは
+「テスト」節を正本とします。
 
 ### ツールチェインのバージョンを合わせる
 
@@ -272,15 +272,11 @@ docs: 計算根拠の説明を追加する
 
 ### 検証
 
-変更内容に応じて、必要な検証を行ってください。通常は以下を使用します。
+変更内容に応じて、必要な検証を行ってください。通常は「静的解析」「テスト」節の
+フル検証コマンドに加え、以下を使用します。コマンドの正本は各節に置き、
+ここでは再掲しません。
 
 ```bash
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings
-cargo fmt --all -- --check
-cargo test --workspace --locked
-cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
-cargo run -p xtask -- check-deps
 mdbook build
 ```
 
