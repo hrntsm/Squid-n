@@ -116,9 +116,17 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     report.unmatched_old_regions = matched_old.iter().filter(|m| !**m).count();
 
     let beams = horizontal_girders(model);
+    let plate_boundaries: Vec<Option<Vec<NodeId>>> = model
+        .wall_plates
+        .iter()
+        .map(|plate| plate.boundary_nodes(model))
+        .collect();
     let mut owner: Vec<Option<usize>> = vec![None; model.wall_plates.len()];
     for (pi, plate) in model.wall_plates.iter().enumerate() {
-        let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+        if !matches!(plate.shape, WallPlateShape::Enclosed) {
+            continue;
+        }
+        let Some(boundary) = &plate_boundaries[pi] else {
             continue;
         };
         if let Some((ri, _)) = scan
@@ -138,7 +146,11 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
         if owner[pi].is_some() {
             continue;
         }
-        let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+        if !matches!(plate.shape, WallPlateShape::Enclosed) {
+            continue;
+        }
+        let Some(boundary) = &plate_boundaries[pi] else {
+            report.unassigned_wall_plates += 1;
             continue;
         };
         if let Some(attached) = try_convert_wall_attached(model, boundary, &beams) {
@@ -150,7 +162,13 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
         }
     }
     for (pi, shape) in converted {
+        let plate_id = model.wall_plates[pi].id;
         model.wall_plates[pi].shape = shape;
+        for region in &mut model.wall_assignment_regions.regions {
+            if region.assignment == crate::model::PlateAssignment::Plate(plate_id) {
+                region.assignment = crate::model::PlateAssignment::Unset;
+            }
+        }
     }
     for (pi, ri) in owner.into_iter().enumerate() {
         if let Some(ri) = ri {
@@ -168,6 +186,16 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     report.deleted_nodes = delete_unref_nodes(model, &discarded_by_conversion);
 
     report
+}
+
+/// 境界節点が取り付く壁版（パラペット・腰壁・垂れ壁）へ変換できるとき、その形を返す。
+/// ST-Bridge 取り込みが、どの割当領域にも一致しない壁を扱うために使う。
+pub fn wall_attached_shape_from_boundary(
+    model: &Model,
+    boundary: &[NodeId],
+) -> Option<WallPlateShape> {
+    let beams = horizontal_girders(model);
+    try_convert_wall_attached(model, boundary, &beams)
 }
 
 /// 柱・梁で囲まれた壁版の境界のうち、**水平な辺（両端の Z が一致する辺）**が
@@ -295,13 +323,7 @@ fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
     }
     let mut unassigned = 0;
     for sm in posts {
-        let nodes = sm.nodes;
-        let Some(a) = model.nodes.get(nodes[0].index()).map(|n| n.coord) else {
-            model.unassigned_posts.push(sm);
-            unassigned += 1;
-            continue;
-        };
-        let Some(b) = model.nodes.get(nodes[1].index()).map(|n| n.coord) else {
+        let Some((a, b)) = model.secondary_member_end_points(&sm) else {
             model.unassigned_posts.push(sm);
             unassigned += 1;
             continue;
@@ -363,6 +385,24 @@ mod tests {
         }
     }
 
+    /// 境界節点で囲まれた壁版を割当領域へ割り当てる（テスト用）。
+    fn push_enclosed(model: &mut Model, boundary: &[u32]) {
+        let nodes: Vec<NodeId> = boundary.iter().map(|i| NodeId(*i)).collect();
+        model.add_enclosed_wall_plate_from_nodes(
+            &nodes,
+            WallPlate {
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: None,
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: vec![],
+                loads: vec![],
+                slit: Default::default(),
+            },
+        );
+    }
+
     /// 柱 2 本・梁 2 本（頂部・柱脚）で閉じた矩形（4m×3m、Y=0 面）を持つ最小モデル。
     fn one_bay_wall_model() -> Model {
         let mut model = Model::default();
@@ -398,9 +438,12 @@ mod tests {
         rebuild_wall_regions(&mut model);
         model.wall_regions[0].name = "西面耐震壁".into();
         model.unassigned_posts.push(crate::model::SecondaryMember {
-            end_support: Default::default(),
+            id: crate::ids::SecondaryMemberId(0),
             kind: crate::model::SecondaryMemberKind::Post,
-            nodes: [NodeId(0), NodeId(3)],
+            ends: crate::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 3000.0],
+            ]),
             section: None,
             name: "P1".into(),
         });
@@ -462,9 +505,12 @@ mod tests {
         model.nodes.push(node(4, 2000.0, 0.0, 0.0));
         model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
         model.unassigned_posts.push(crate::model::SecondaryMember {
-            end_support: Default::default(),
+            id: crate::ids::SecondaryMemberId(0),
             kind: crate::model::SecondaryMemberKind::Post,
-            nodes: [NodeId(4), NodeId(5)],
+            ends: crate::model::SecondaryMemberEnds::Detached([
+                [2000.0, 0.0, 0.0],
+                [2000.0, 0.0, 3000.0],
+            ]),
             section: None,
             name: "内部間柱".into(),
         });
@@ -474,60 +520,20 @@ mod tests {
         assert_eq!(report.unassigned_posts, 0);
         assert_eq!(model.wall_regions.len(), 1);
         assert_eq!(model.wall_regions[0].posts.len(), 1);
-        assert_eq!(model.wall_regions[0].posts[0].nodes, [NodeId(4), NodeId(5)]);
+        assert_eq!(
+            model.wall_regions[0].posts[0].id,
+            crate::ids::SecondaryMemberId(0)
+        );
     }
 
     #[test]
     fn test_rebuild_assigns_enclosed_wall_plate_to_matching_region() {
         let mut model = one_bay_wall_model();
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: crate::model::WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
+        push_enclosed(&mut model, &[0, 1, 2, 3]);
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_assigned, 1);
         assert_eq!(report.unassigned_wall_plates, 0);
         assert_eq!(model.wall_regions[0].wall_plate_ids, vec![WallPlateId(0)]);
-        assert!(model.validate().is_ok(), "{:?}", model.validate());
-    }
-
-    /// 壁版の境界が実在の構面（柱・梁の閉路）と対応せず、かつどの辺も大梁に
-    /// 全長覆われていない（＝取り付く壁版へも変換できない）場合、どの壁領域にも
-    /// 収まらず「帰属なし」のまま残る（削除しない）。
-    #[test]
-    fn test_rebuild_reports_unassigned_wall_plate_off_any_plane() {
-        let mut model = one_bay_wall_model();
-        // Y=3000（実在しない構面）に浮いた壁版。
-        model.nodes.push(node(4, 0.0, 3000.0, 0.0));
-        model.nodes.push(node(5, 4000.0, 3000.0, 0.0));
-        model.nodes.push(node(6, 4000.0, 3000.0, 3000.0));
-        model.nodes.push(node(7, 0.0, 3000.0, 3000.0));
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: crate::model::WallPlateShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_assigned, 0);
-        assert_eq!(report.unassigned_wall_plates, 1);
-        assert!(model.wall_regions[0].wall_plate_ids.is_empty());
-        // 壁版そのものは畳まれず残る。
-        assert_eq!(model.wall_plates.len(), 1);
         assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
@@ -539,27 +545,14 @@ mod tests {
         let mut model = one_bay_wall_model();
         model.nodes.push(node(4, 0.0, 0.0, 4500.0));
         model.nodes.push(node(5, 4000.0, 0.0, 4500.0));
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                // 下辺 3→2 は頂部梁（beam(2, 3, 2)）と同じ節点対・向き。
-                boundary: vec![NodeId(3), NodeId(2), NodeId(5), NodeId(4)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_assigned, 0);
-        assert_eq!(report.wall_plates_converted_to_attached, 1);
-        assert_eq!(report.unassigned_wall_plates, 0);
+        // 下辺 3→2 は頂部梁（beam(2, 3, 2)）と同じ節点対・向き。
+        let shape = wall_attached_shape_from_boundary(
+            &model,
+            &[NodeId(3), NodeId(2), NodeId(5), NodeId(4)],
+        )
+        .expect("取り付く壁版へ変換できる");
 
-        let plate = &model.wall_plates[0];
-        assert!(plate.is_attached());
-        match &plate.shape {
+        match shape {
             WallPlateShape::Attached {
                 anchor:
                     RegionAnchor::Line {
@@ -569,8 +562,8 @@ mod tests {
                     },
                 extent,
             } => {
-                assert_eq!(*span, [0.0, 1.0]);
-                assert_eq!(*transfer, LoadTransfer::Anchor);
+                assert_eq!(span, [0.0, 1.0]);
+                assert_eq!(transfer, LoadTransfer::Anchor);
                 let a = model.nodes[nodes[0].index()].coord;
                 let b = model.nodes[nodes[1].index()].coord;
                 assert!((a[2] - 3000.0).abs() < 1e-6, "取付き線は頂部梁の高さ");
@@ -581,16 +574,6 @@ mod tests {
             }
             other => panic!("Line の Attached ではない: {other:?}"),
         }
-        // パラペット先端（Z=4500）の節点は参照 0 になり削除される（D21）。
-        assert!(
-            !model
-                .nodes
-                .iter()
-                .any(|n| (n.coord[2] - 4500.0).abs() < 1e-6),
-            "先端節点は削除されるはず"
-        );
-        assert!(report.deleted_nodes >= 2);
-        assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
     /// T 字取り付き（5 節点以上）の壁版は、水平な辺が複数覆われていても
@@ -601,89 +584,14 @@ mod tests {
         model.nodes.push(node(4, 0.0, 0.0, 4500.0));
         model.nodes.push(node(5, 1500.0, 0.0, 5200.0));
         model.nodes.push(node(6, 4000.0, 0.0, 4500.0));
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_converted_to_attached, 0);
-        assert_eq!(report.unassigned_wall_plates, 1);
-        assert!(matches!(
-            model.wall_plates[0].shape,
-            WallPlateShape::Enclosed { .. }
-        ));
-    }
-
-    /// 敵対的レビューで発覚した回帰: パラペット変換で境界が縮み、D21 により
-    /// 低インデックスの節点（パラペットの自由端）が削除・圧縮されると、
-    /// 既存の（別の）壁領域の境界がその圧縮に追随せず、ダングリング参照へ
-    /// 壊れることがあった（`Model::visit_node_ids` が `wall_regions` を
-    /// 走査していなかったため）。パラペットの自由端より高いインデックスの節点を
-    /// 持つ壁領域を用意し、変換後も壁領域の境界座標が元の4隅と一致することを固定する。
-    #[test]
-    fn test_wall_region_boundary_survives_node_compaction_from_attached_conversion() {
-        let mut model = Model::default();
-        // 低インデックス: パラペットの自由端（変換後に参照 0 になり削除される節点）。
-        model.nodes.push(node(0, 0.0, 0.0, 4500.0));
-        model.nodes.push(node(1, 4000.0, 0.0, 4500.0));
-        // 高インデックス: 実在の柱・梁の区画の4隅。
-        model.nodes.push(node(2, 0.0, 0.0, 0.0));
-        model.nodes.push(node(3, 4000.0, 0.0, 0.0));
-        model.nodes.push(node(4, 4000.0, 0.0, 3000.0));
-        model.nodes.push(node(5, 0.0, 0.0, 3000.0));
-        model.elements.push(beam(0, 2, 5)); // 柱（左）
-        model.elements.push(beam(1, 3, 4)); // 柱（右）
-        model.elements.push(beam(2, 5, 4)); // 頂部梁
-        model.elements.push(beam(3, 2, 3)); // 柱脚間の梁
-
-        // パラペット: 下辺 5->4 が頂部梁と一致、自由端は 1,0（Z=4500）。
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(5), NodeId(4), NodeId(1), NodeId(0)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-
-        let before: Vec<[f64; 3]> = vec![
-            model.nodes[2].coord,
-            model.nodes[3].coord,
-            model.nodes[4].coord,
-            model.nodes[5].coord,
-        ];
-
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_converted_to_attached, 1);
-        assert!(report.deleted_nodes >= 1, "自由端の節点が削除されるはず");
-
-        assert_eq!(model.wall_regions.len(), 1);
-        let after: Vec<[f64; 3]> = model.wall_regions[0]
-            .boundary
-            .iter()
-            .map(|n| model.nodes[n.index()].coord)
-            .collect();
-        for c in &before {
-            assert!(
-                after
-                    .iter()
-                    .any(|a| (0..3).all(|k| (a[k] - c[k]).abs() < 1e-6)),
-                "壁領域の境界座標が節点圧縮の前後で保たれていない（{c:?} が {after:?} にない）"
-            );
-        }
-        assert!(model.validate().is_ok(), "{:?}", model.validate());
+        assert!(
+            wall_attached_shape_from_boundary(
+                &model,
+                &[NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],
+            )
+            .is_none(),
+            "自由端が 3 点の輪郭は変換しない"
+        );
     }
 
     /// 柱脚梁の下へ垂れる壁版は、上辺が大梁に載り、張り出し量が負の取り付く壁版へ
@@ -693,21 +601,12 @@ mod tests {
         let mut model = one_bay_wall_model();
         model.nodes.push(node(4, 0.0, 0.0, -1200.0));
         model.nodes.push(node(5, 4000.0, 0.0, -1200.0));
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_converted_to_attached, 1);
-        match &model.wall_plates[0].shape {
+        let shape = wall_attached_shape_from_boundary(
+            &model,
+            &[NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+        )
+        .expect("取り付く壁版へ変換できる");
+        match shape {
             WallPlateShape::Attached { extent, .. } => {
                 let e = extent.expect("取付き線に取り付く壁版は高さを明示する");
                 assert!((e[0] + 1200.0).abs() < 1e-6, "{extent:?}");
@@ -715,7 +614,6 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
     /// 梁レベルに折れ曲がった頂点（取付き辺上ではない）を持つ輪郭は、自由端が
@@ -727,24 +625,13 @@ mod tests {
         model.nodes.push(node(5, 4000.0, 0.0, 4500.0));
         // 頂部梁と同じ高さだが、構面から Y 方向へ折れた頂点。
         model.nodes.push(node(6, 2000.0, 800.0, 3000.0));
-        model.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![],
-            loads: vec![],
-            slit: Default::default(),
-        });
-        let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.wall_plates_converted_to_attached, 0);
-        assert_eq!(report.unassigned_wall_plates, 1);
-        assert!(matches!(
-            model.wall_plates[0].shape,
-            WallPlateShape::Enclosed { .. }
-        ));
+        assert!(
+            wall_attached_shape_from_boundary(
+                &model,
+                &[NodeId(3), NodeId(2), NodeId(6), NodeId(5), NodeId(4)],
+            )
+            .is_none(),
+            "折れた頂点は自由端に数え、変換しない"
+        );
     }
 }

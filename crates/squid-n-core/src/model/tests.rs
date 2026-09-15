@@ -2,6 +2,17 @@ use super::*;
 use crate::dof::Dof6Mask;
 use crate::model::MaterialCategory;
 
+/// 形状を持たない二次部材（生座標は原点）。ID・種別の検証用。
+fn test_secondary(kind: SecondaryMemberKind, id: u32, name: &str) -> SecondaryMember {
+    SecondaryMember {
+        id: SecondaryMemberId(id),
+        kind,
+        ends: SecondaryMemberEnds::Detached([[0.0; 3]; 2]),
+        section: None,
+        name: name.into(),
+    }
+}
+
 fn make_grid_model(n: usize) -> Model {
     let nodes: Vec<Node> = (0..n)
         .map(|i| Node {
@@ -129,13 +140,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
             id: FloorRegionId(0),
             name: String::new(),
             boundary: vec![],
-            secondary_joists: vec![SecondaryMember {
-                end_support: Default::default(),
-                kind: SecondaryMemberKind::Post,
-                nodes: [NodeId(0), NodeId(1)],
-                section: None,
-                name: "P0".to_string(),
-            }],
+            secondary_joists: vec![test_secondary(SecondaryMemberKind::Post, 0, "P0")],
             slab_ids: vec![],
         }],
         nodes: vec![
@@ -163,13 +168,7 @@ fn test_validate_rejects_post_in_floor_region_secondary_joists() {
 
 #[test]
 fn test_validate_rejects_duplicate_joist_endpoints() {
-    let sm = SecondaryMember {
-        end_support: Default::default(),
-        kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), NodeId(1)],
-        section: None,
-        name: "J".into(),
-    };
+    let sm = test_secondary(SecondaryMemberKind::Joist, 0, "J");
     let model = Model {
         floor_regions: vec![
             FloorRegion {
@@ -218,13 +217,7 @@ fn test_validate_rejects_joist_in_wall_region_posts() {
             name: String::new(),
             boundary: vec![],
             wall_plate_ids: vec![],
-            posts: vec![SecondaryMember {
-                end_support: Default::default(),
-                kind: SecondaryMemberKind::Joist,
-                nodes: [NodeId(0), NodeId(1)],
-                section: None,
-                name: "J0".to_string(),
-            }],
+            posts: vec![test_secondary(SecondaryMemberKind::Joist, 0, "J0")],
         }],
         nodes: vec![
             Node {
@@ -1270,15 +1263,18 @@ fn test_validate_duplicate_floor_region_boundary() {
     );
 }
 
-/// 同じ境界を持つ大梁または小梁で囲まれた床板が 2 つあると弾く（1 閉領域 1 床板の不変条件）。
+/// 同じ境界を持つ床板割当領域が 2 つあると弾く（1 閉領域 1 床板の不変条件）。
 #[test]
-fn test_validate_duplicate_enclosed_slab_boundary() {
+fn test_validate_duplicate_floor_assignment_region_boundary() {
     use crate::model::{Slab, SlabShape};
     let mut model = Model::default();
-    for i in 0..4u32 {
+    for (i, (x, y)) in [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)]
+        .into_iter()
+        .enumerate()
+    {
         model.nodes.push(Node {
-            id: NodeId(i),
-            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            id: NodeId(i as u32),
+            coord: [x, y, 0.0],
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
@@ -1286,19 +1282,77 @@ fn test_validate_duplicate_enclosed_slab_boundary() {
         });
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-    let mk = |id: u32, boundary: Vec<NodeId>| Slab {
-        id: SlabId(id),
-        shape: SlabShape::Enclosed { boundary },
-        plate: SlabPlate::default(),
-    };
-    model.slabs.push(mk(0, boundary.clone()));
+    model.add_enclosed_slab_from_nodes(&boundary, SlabPlate::default());
     assert!(model.validate().is_ok());
-    // 同じ閉領域を指す 2 枚目。荷重が二重に分配されるため弾く。
-    model.slabs.push(mk(1, boundary));
+    // 同じ境界を指す 2 つ目の割当領域。荷重が二重に分配されるため弾く。
+    let duplicate = model.floor_assignment_regions.regions[0].boundary.clone();
+    model
+        .floor_assignment_regions
+        .regions
+        .push(crate::model::FloorPlateAssignmentRegion {
+            id: crate::model::FloorPlateAssignmentRegionId(99),
+            boundary: duplicate,
+            assignment: crate::model::PlateAssignment::Plate(SlabId(1)),
+        });
+    model.slabs.push(Slab {
+        id: SlabId(1),
+        shape: SlabShape::Enclosed,
+        plate: SlabPlate::default(),
+    });
     assert!(
         model.validate().is_err(),
-        "同じ境界の床板が 2 つある状態は検出されるはず"
+        "同じ境界の割当領域が 2 つある状態は検出されるはず"
     );
+}
+
+/// 同じ境界の割当領域が「版なし」でも、囲まれた床板の追加はその領域を再利用し、
+/// 境界が重複する新しい領域を作らない。
+#[test]
+fn test_add_enclosed_slab_reuses_no_plate_region() {
+    use crate::model::{PlateAssignment, SlabPlate, SlabShape};
+    let mut model = Model::default();
+    for (i, (x, y)) in [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [x, y, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let first = model.add_enclosed_slab_from_nodes(&boundary, SlabPlate::default());
+    assert_eq!(model.floor_assignment_regions.regions.len(), 1);
+    // 一度床板を取り除くと割当領域は未設定へ戻る。これを「版なし」にする。
+    model.retain_slabs(|slab| slab.id != first);
+    assert!(model.slabs.is_empty());
+    let region = model.floor_assignment_regions.regions[0].id;
+    model
+        .floor_assignment_regions
+        .get_mut(region)
+        .expect("割当領域")
+        .assignment = PlateAssignment::NoPlate;
+
+    let slab = model.add_enclosed_slab_from_nodes(&boundary, SlabPlate::default());
+    assert_eq!(model.slabs.len(), 1);
+    assert!(
+        model.floor_assignment_regions.regions.len() == 1,
+        "領域を増やさない"
+    );
+    assert_eq!(
+        model
+            .floor_assignment_regions
+            .get(region)
+            .unwrap()
+            .assignment,
+        PlateAssignment::Plate(slab)
+    );
+    assert!(matches!(model.slabs[0].shape, SlabShape::Enclosed));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
 /// 取付き線の区間 `span` は 0.0〜1.0 の範囲で始端 < 終端の場合だけ通る。
@@ -1346,7 +1400,7 @@ fn test_validate_checks_anchor_span_bounds() {
 }
 
 #[test]
-fn test_validate_dangling_wall_plate_boundary() {
+fn test_validate_enclosed_wall_plate_requires_assignment_region() {
     use crate::model::{WallPlate, WallPlateShape};
     let model = Model {
         nodes: vec![Node {
@@ -1359,10 +1413,8 @@ fn test_validate_dangling_wall_plate_boundary() {
         }],
         wall_plates: vec![WallPlate {
             id: WallPlateId(0),
-            // 存在しない節点 5 を境界に含む（陳腐化した参照）。
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(5)],
-            },
+            // 割当領域が無い＝境界を解決できない（陳腐化した状態）。
+            shape: WallPlateShape::Enclosed,
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -1374,7 +1426,7 @@ fn test_validate_dangling_wall_plate_boundary() {
     };
     assert!(
         model.validate().is_err(),
-        "存在しない節点を参照する壁版の境界は検出されるはず"
+        "割当領域に割り当てられていない囲まれた壁版は検出されるはず"
     );
 }
 
@@ -1394,9 +1446,9 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         });
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-    let mk = |id: u32, boundary: Vec<NodeId>| WallPlate {
-        id: WallPlateId(id),
-        shape: WallPlateShape::Enclosed { boundary },
+    let empty = WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed,
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -1404,10 +1456,10 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         loads: vec![],
         slit: Default::default(),
     };
-    model.wall_plates.push(mk(0, boundary.clone()));
-    assert!(model.validate().is_ok());
+    model.add_enclosed_wall_plate_from_nodes(&boundary, empty.clone());
+    assert!(model.validate().is_ok(), "{:?}", model.validate().err());
     // 同じ閉領域を指す 2 枚目。
-    model.wall_plates.push(mk(1, boundary));
+    model.add_enclosed_wall_plate_from_nodes(&boundary, empty);
     assert!(
         model.validate().is_err(),
         "同じ境界の壁版が 2 つある状態は検出されるはず"
@@ -1538,18 +1590,19 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
             support_spring: None,
         });
     }
-    model.wall_plates = vec![WallPlate {
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![],
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: None,
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: vec![],
-        loads: vec![],
-        slit: Default::default(),
-    }];
+    );
     model.wall_regions = vec![
         WallRegion {
             wall_plate_ids: vec![WallPlateId(0)],
@@ -1603,19 +1656,16 @@ fn infer_free_end_for_cantilever_joist() {
         spring: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        id: SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(2), NodeId(3)],
+        ends: SecondaryMemberEnds::Detached([[3000.0, 0.0, 0.0], [3000.0, 3000.0, 0.0]]),
         section: None,
         name: "CA".into(),
-        end_support: Default::default(),
     });
 
-    let inferred = model.infer_secondary_end_supports();
-    assert_eq!(inferred.len(), 1);
-    assert_eq!(
-        model.unassigned_joists[0].end_support,
-        [EndSupport::Supported, EndSupport::Free]
-    );
+    let report = model.anchorize_secondary_members();
+    assert_eq!(report.inferred_free_ends.len(), 1);
+    assert!(model.unassigned_joists[0].is_cantilever());
 }
 
 /// 先端リブは片持ち小梁の自由端に載る。リブの端は Supported のまま、
@@ -1657,21 +1707,11 @@ fn infer_free_end_for_tip_rib_on_cantilevers() {
         plastic_zone: None,
         spring: None,
     });
-    for (nodes, name) in [
-        ([NodeId(2), NodeId(3)], "CA"),
-        ([NodeId(4), NodeId(5)], "CB"),
-        ([NodeId(3), NodeId(5)], "RIB"),
-    ] {
-        model.unassigned_joists.push(SecondaryMember {
-            kind: SecondaryMemberKind::Joist,
-            nodes,
-            section: None,
-            name: name.into(),
-            end_support: Default::default(),
-        });
+    for (nodes, name) in [([2u32, 3u32], "CA"), ([4, 5], "CB"), ([3, 5], "RIB")] {
+        push_joist(&mut model, nodes, name);
     }
 
-    let inferred = model.infer_secondary_end_supports();
+    let report = model.anchorize_secondary_members();
     let by_name = |name: &str| {
         model
             .unassigned_joists
@@ -1679,19 +1719,14 @@ fn infer_free_end_for_tip_rib_on_cantilevers() {
             .find(|sm| sm.name == name)
             .expect("小梁")
     };
-    assert_eq!(inferred.len(), 2, "片持ち 2 本の先端だけが Free");
     assert_eq!(
-        by_name("CA").end_support,
-        [EndSupport::Supported, EndSupport::Free]
+        report.inferred_free_ends.len(),
+        2,
+        "片持ち 2 本の先端だけが Free"
     );
-    assert_eq!(
-        by_name("CB").end_support,
-        [EndSupport::Supported, EndSupport::Free]
-    );
-    assert_eq!(
-        by_name("RIB").end_support,
-        [EndSupport::Supported, EndSupport::Supported]
-    );
+    assert!(by_name("CA").is_cantilever());
+    assert!(by_name("CB").is_cantilever());
+    assert!(!by_name("RIB").is_cantilever());
 }
 
 fn two_node_model(coords: &[[f64; 3]]) -> Model {
@@ -1727,12 +1762,15 @@ fn push_beam(model: &mut Model, id: u32, i: u32, j: u32) {
 }
 
 fn push_joist(model: &mut Model, nodes: [u32; 2], name: &str) {
+    let coord = |i: u32| model.node(NodeId(i)).map(|n| n.coord).unwrap_or([0.0; 3]);
+    let (a, b) = (coord(nodes[0]), coord(nodes[1]));
+    let id = model.alloc_secondary_member_id();
     model.unassigned_joists.push(SecondaryMember {
+        id,
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(nodes[0]), NodeId(nodes[1])],
+        ends: SecondaryMemberEnds::Detached([a, b]),
         section: None,
         name: name.into(),
-        end_support: Default::default(),
     });
 }
 
@@ -1752,10 +1790,14 @@ fn infer_does_not_free_collinear_spliced_joists() {
     push_joist(&mut model, [1, 4], "A");
     push_joist(&mut model, [4, 2], "B");
 
-    let inferred = model.infer_secondary_end_supports();
-    assert!(inferred.is_empty(), "継ぎ目は自由端にしない: {inferred:?}");
+    let report = model.anchorize_secondary_members();
+    assert!(
+        report.inferred_free_ends.is_empty(),
+        "継ぎ目は自由端にしない: {:?}",
+        report.inferred_free_ends
+    );
     for sm in &model.unassigned_joists {
-        assert_eq!(sm.end_support, [EndSupport::Supported; 2]);
+        assert!(sm.is_detached(), "継ぎ目側はアンカーへ解決できない");
     }
 }
 
@@ -1774,10 +1816,11 @@ fn infer_treats_small_offset_splice_as_continuous() {
     push_joist(&mut model, [1, 4], "A");
     push_joist(&mut model, [4, 2], "B");
 
-    let inferred = model.infer_secondary_end_supports();
+    let report = model.anchorize_secondary_members();
     assert!(
-        inferred.is_empty(),
-        "許容内の折れは自由端にしない: {inferred:?}"
+        report.inferred_free_ends.is_empty(),
+        "許容内の折れは自由端にしない: {:?}",
+        report.inferred_free_ends
     );
 }
 
@@ -1795,7 +1838,7 @@ fn infer_frees_cantilever_tip_with_oblique_rib() {
     push_joist(&mut model, [2, 3], "CA");
     push_joist(&mut model, [3, 4], "RIB");
 
-    let inferred = model.infer_secondary_end_supports();
+    let report = model.anchorize_secondary_members();
     let by_name = |name: &str| {
         model
             .unassigned_joists
@@ -1803,15 +1846,14 @@ fn infer_frees_cantilever_tip_with_oblique_rib() {
             .find(|sm| sm.name == name)
             .expect("小梁")
     };
-    assert_eq!(inferred.len(), 2, "両者の先端が Free: {inferred:?}");
     assert_eq!(
-        by_name("CA").end_support,
-        [EndSupport::Supported, EndSupport::Free]
+        report.inferred_free_ends.len(),
+        2,
+        "両者の先端が Free: {:?}",
+        report.inferred_free_ends
     );
-    assert_eq!(
-        by_name("RIB").end_support,
-        [EndSupport::Supported, EndSupport::Free]
-    );
+    assert!(by_name("CA").is_cantilever());
+    assert!(by_name("RIB").is_detached());
 }
 
 /// どの部材にも載らない小梁（浮き）は自由端にしない（両端自由を作らない）。
@@ -1820,12 +1862,13 @@ fn infer_does_not_free_floating_joist() {
     let mut model = two_node_model(&[[0.0, 0.0, 0.0], [3000.0, 0.0, 0.0]]);
     push_joist(&mut model, [0, 1], "FL");
 
-    let inferred = model.infer_secondary_end_supports();
-    assert!(inferred.is_empty(), "{inferred:?}");
-    assert_eq!(
-        model.unassigned_joists[0].end_support,
-        [EndSupport::Supported; 2]
+    let report = model.anchorize_secondary_members();
+    assert!(
+        report.inferred_free_ends.is_empty(),
+        "{:?}",
+        report.inferred_free_ends
     );
+    assert!(model.unassigned_joists[0].is_detached());
 }
 
 /// 片持ちの間柱（基端が大梁、上端が自由）も自由端として推定する。
@@ -1834,17 +1877,14 @@ fn infer_free_end_for_cantilever_post() {
     let mut model = two_node_model(&[[0.0, 0.0, 0.0], [6000.0, 0.0, 0.0], [0.0, 0.0, 3000.0]]);
     push_beam(&mut model, 0, 0, 1);
     model.unassigned_posts.push(SecondaryMember {
+        id: SecondaryMemberId(0),
         kind: SecondaryMemberKind::Post,
-        nodes: [NodeId(0), NodeId(2)],
+        ends: SecondaryMemberEnds::Detached([[0.0, 0.0, 0.0], [0.0, 0.0, 3000.0]]),
         section: None,
         name: "P".into(),
-        end_support: Default::default(),
     });
 
-    let inferred = model.infer_secondary_end_supports();
-    assert_eq!(inferred.len(), 1);
-    assert_eq!(
-        model.unassigned_posts[0].end_support,
-        [EndSupport::Supported, EndSupport::Free]
-    );
+    let report = model.anchorize_secondary_members();
+    assert_eq!(report.inferred_free_ends.len(), 1);
+    assert!(model.unassigned_posts[0].is_cantilever());
 }

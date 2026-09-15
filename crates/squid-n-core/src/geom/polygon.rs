@@ -59,6 +59,35 @@ pub fn area(pts: &[[f64; 2]]) -> f64 {
     signed_area(pts).abs()
 }
 
+/// 2 つの単純多角形の共通部分の面積 \[mm²\]。
+///
+/// 凸に限らず凹多角形・穴や自己交差を含む入力も扱い、頂点が 3 個未満または
+/// 交差が無ければ 0 を返す。重なり合う床板と割当領域の交差面積の算定に使う。
+pub fn intersection_area(subject: &[[f64; 2]], clip: &[[f64; 2]]) -> f64 {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::core::overlay_rule::OverlayRule;
+    use i_overlay::float::single::SingleFloatOverlay;
+
+    if subject.len() < 3 || clip.len() < 3 {
+        return 0.0;
+    }
+    let subject: Vec<[f64; 2]> = subject.to_vec();
+    let clip: Vec<[f64; 2]> = clip.to_vec();
+    let shapes = subject.overlay(&clip, OverlayRule::Intersect, FillRule::NonZero);
+    let mut total = 0.0;
+    for shape in &shapes {
+        for (i, contour) in shape.iter().enumerate() {
+            let a = area(contour);
+            if i == 0 {
+                total += a;
+            } else {
+                total -= a;
+            }
+        }
+    }
+    total.max(0.0)
+}
+
 /// 3 次元の頂点を全体 XY 平面へ投影した多角形の面積 \[mm²\]。
 ///
 /// 床は水平面内にあるという前提で、床板の面積と荷重分配が見る面積をそろえる。
@@ -286,6 +315,54 @@ mod tests {
         ];
         assert_eq!(area_xy(&pts), 0.0);
         assert!((area_3d(&pts) - 1_000_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn intersection_area_of_identical_rectangles_is_their_area() {
+        let a = ccw_square(1000.0);
+        assert!((intersection_area(&a, &a) - 1_000_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn intersection_area_handles_partial_overlap_and_disjoint() {
+        let a = [[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0]];
+        let half = [
+            [500.0, 0.0],
+            [1500.0, 0.0],
+            [1500.0, 1000.0],
+            [500.0, 1000.0],
+        ];
+        assert!((intersection_area(&a, &half) - 500_000.0).abs() < 1e-6);
+        let far = [
+            [2000.0, 0.0],
+            [3000.0, 0.0],
+            [3000.0, 1000.0],
+            [2000.0, 1000.0],
+        ];
+        assert_eq!(intersection_area(&a, &far), 0.0);
+    }
+
+    /// 座標が同じで頂点番号だけが違う（別節点の）境界でも交差面積は変わらない。
+    #[test]
+    fn intersection_area_is_independent_of_vertex_identity() {
+        let a = [[0.0, 0.0], [4000.0, 0.0], [4000.0, 3000.0], [0.0, 3000.0]];
+        let b = [[0.0, 0.0], [0.0, 3000.0], [4000.0, 3000.0], [4000.0, 0.0]];
+        assert!((intersection_area(&a, &b) - 12_000_000.0).abs() < 1e-6);
+    }
+
+    /// 凹多角形（L 形）と矩形の交差は、はみ出した部分を除いた面積になる。
+    #[test]
+    fn intersection_area_clips_concave_subject() {
+        let l = [
+            [0.0, 0.0],
+            [200.0, 0.0],
+            [200.0, 100.0],
+            [100.0, 100.0],
+            [100.0, 200.0],
+            [0.0, 200.0],
+        ];
+        let right = [[100.0, 0.0], [300.0, 0.0], [300.0, 300.0], [100.0, 300.0]];
+        assert!((intersection_area(&l, &right) - 10_000.0).abs() < 1e-6);
     }
 
     #[test]

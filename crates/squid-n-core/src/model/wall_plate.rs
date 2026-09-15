@@ -31,11 +31,13 @@
 use super::*;
 
 /// 壁版の形。[`super::SlabShape`] と同型（囲まれた領域 / 主架構・床領域に取り付く領域）。
+///
+/// 囲まれた壁版の境界は壁版自身に持たず、[`Model::wall_plate_assignment_region`] が
+/// 返す壁版割当領域から解決する（[`WallPlate::boundary_nodes`] 等）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WallPlateShape {
-    /// 柱・梁が囲む鉛直構面内の領域。境界は [`super::WallRegion`] の境界そのもの、
-    /// または間柱で分割した場合はそのサブ境界（節点列。反時計回り、始点は繰り返さない）。
-    Enclosed { boundary: Vec<NodeId> },
+    /// 柱・梁・間柱が囲む鉛直構面内の領域（境界は壁版割当領域が保持する）。
+    Enclosed,
     /// 主架構・床領域に取り付く領域（パラペット・腰壁・垂れ壁・自立壁）。
     ///
     /// [`RegionAnchor::Line`] の場合、`extent` は「立ち上がり高さ」
@@ -54,7 +56,7 @@ pub enum WallPlateShape {
     ///
     /// `None` を許すのは [`RegionAnchor::FloorRegion`]（自立壁）だけである。
     /// 囲む柱梁があるなら壁の高さは幾何から決まるので、全高の壁は
-    /// [`WallPlateShape::Enclosed`]（境界＝壁領域の節点列）で表す。線アンカーで
+    /// [`WallPlateShape::Enclosed`]（境界＝壁版割当領域の境界）で表す。線アンカーで
     /// `None` を許すと、`squid_n_element::wall::misc_wall` が階高分の腰壁せいを取付き先の
     /// 梁 1 本へ丸ごと算入し（反対側の梁が無い扱いになる）、梁の剛性を過大に、
     /// 変形を過小に見る危険側の評価になる。`Model::validate` が弾く。
@@ -156,14 +158,15 @@ impl WallPlate {
     }
 
     /// 柱・梁で囲まれた壁版（`Enclosed`）の境界が、壁エレメントを組み立てられる形か。
-    /// 境界がちょうど4節点のときだけ `true`。
+    /// 割当領域から解決した境界がちょうど4節点のときだけ `true`。
     ///
     /// 5節点以上や3節点以下は要素を生成しない。壁エレメントは下辺2節点・
     /// 上辺2節点を前提とした剛体変換の定式化であり、任意の多角形へ一般化する
     /// ことは定式化そのものを崩すため行わない。
     /// 取り付く壁版（`Attached`）は境界を持たないため常に `false`。
-    pub fn has_quad_boundary(&self) -> bool {
-        matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
+    pub fn has_quad_boundary(&self, model: &Model) -> bool {
+        self.boundary_nodes(model)
+            .is_some_and(|boundary| boundary.len() == 4)
     }
 
     /// 柱際スリット [`WallSlit::column_face`] の添字に対応する境界節点。
@@ -178,7 +181,7 @@ impl WallPlate {
     ///
     /// 境界が 4 節点でない壁版・取り付く壁版・節点を引けない壁版は `None`。
     pub fn column_face_nodes(&self, model: &Model) -> Option<[NodeId; 2]> {
-        let boundary = self.boundary_nodes()?;
+        let boundary = self.boundary_nodes(model)?;
         if boundary.len() != 4 {
             return None;
         }
@@ -194,19 +197,32 @@ impl WallPlate {
     }
 
     /// 境界の節点列。**柱・梁が囲む壁版のみ**（取り付く壁版は自由端に節点を
-    /// 持たないため `None`）。
-    pub fn boundary_nodes(&self) -> Option<&[NodeId]> {
-        match &self.shape {
-            WallPlateShape::Enclosed { boundary } => Some(boundary),
+    /// 持たないため `None`）。囲まれた壁版は[`Model::wall_plate_assignment_region`] が
+    /// 返す割当領域から解決する。
+    pub fn boundary_nodes(&self, model: &Model) -> Option<Vec<NodeId>> {
+        match self.shape {
+            WallPlateShape::Enclosed => {
+                let region = model.wall_plate_assignment_region(self.id)?;
+                model.wall_assignment_region_nodes(region.id)
+            }
             WallPlateShape::Attached { .. } => None,
         }
     }
 
     /// 境界多角形の座標列 [mm]（4 点）。取り付く壁版は取付き先と張り出し量
-    /// （鉛直上向きの高さ）から算出する。節点が引けない、または壁の取付き先として
-    /// 使わない組み合わせ（`RegionAnchor::Point`）の場合は `None`。
+    /// （鉛直上向きの高さ）から算出する。囲まれた壁版は割当領域の支持部材材軸から
+    /// 解決する。節点が引けない、または壁の取付き先として使わない組み合わせ
+    /// （`RegionAnchor::Point`）の場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
-        self.boundary_coords_with(model, |n| model.nodes.get(n.index()).map(|n| n.coord))
+        match self.shape {
+            WallPlateShape::Enclosed => {
+                let region = model.wall_plate_assignment_region(self.id)?;
+                model.assignment_region_boundary_coords(&region.boundary)
+            }
+            WallPlateShape::Attached { .. } => {
+                self.boundary_coords_with(model, |n| model.nodes.get(n.index()).map(|n| n.coord))
+            }
+        }
     }
 
     /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
@@ -225,8 +241,9 @@ impl WallPlate {
         coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
     ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
-            WallPlateShape::Enclosed { boundary } => {
-                boundary.iter().map(|n| coord_of(*n)).collect()
+            WallPlateShape::Enclosed => {
+                let nodes = self.boundary_nodes(model)?;
+                nodes.iter().map(|n| coord_of(*n)).collect()
             }
             WallPlateShape::Attached { anchor, .. } => {
                 let extent = model.wall_plate_extent(self)?;
@@ -279,7 +296,7 @@ impl WallPlate {
     /// 座標が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         match &self.shape {
-            WallPlateShape::Enclosed { .. } => self
+            WallPlateShape::Enclosed => self
                 .boundary_coords(model)
                 .map(|pts| crate::geom::polygon::area_3d(&pts))
                 .unwrap_or(0.0),
@@ -326,6 +343,93 @@ impl Model {
         }
     }
 
+    /// 境界節点で囲まれた壁版を 1 枚追加し、境界辺を支持部材とする壁版割当領域へ
+    /// 割り当てる。渡した `plate` の `id` と `shape` は無視し、`Enclosed` とする。
+    ///
+    /// 境界辺ごとに、既存の 2 節点梁または既存の二次部材を支持部材として使い、
+    /// どちらも無ければ 2 節点梁を追加する。テスト・フィクスチャで支持部材を
+    /// 明示せずに囲まれた壁版を作るための補助。
+    pub fn add_enclosed_wall_plate_from_nodes(
+        &mut self,
+        boundary: &[NodeId],
+        plate: WallPlate,
+    ) -> WallPlateId {
+        assert!(boundary.len() >= 3, "境界は 3 節点以上");
+        let mut support_boundary = Vec::with_capacity(boundary.len());
+        for i in 0..boundary.len() {
+            let a = boundary[i];
+            let b = boundary[(i + 1) % boundary.len()];
+            let support = self.resolve_boundary_support(a, b);
+            let span = match self.support_member_nodes(support) {
+                Some([n0, n1]) if n0 == b && n1 == a => [1.0, 0.0],
+                _ => [0.0, 1.0],
+            };
+            support_boundary.push(SupportBoundary { support, span });
+        }
+        let plate_id = WallPlateId(self.wall_plates.len() as u32);
+        self.wall_plates.push(WallPlate {
+            id: plate_id,
+            shape: WallPlateShape::Enclosed,
+            section: plate.section,
+            opening_area: plate.opening_area,
+            opening_weight: plate.opening_weight,
+            openings: plate.openings,
+            loads: plate.loads,
+            slit: plate.slit,
+        });
+        let region_id = WallPlateAssignmentRegionId(self.wall_assignment_regions.next_free_id());
+        self.wall_assignment_regions
+            .regions
+            .push(WallPlateAssignmentRegion {
+                id: region_id,
+                boundary: support_boundary,
+                assignment: PlateAssignment::Plate(plate_id),
+            });
+        plate_id
+    }
+
+    /// 境界節点に一致する未設定の壁版割当領域へ壁版を割り当てる。一致が無ければ `None`。
+    /// 間柱などで分割済みの割当領域へ壁版を作るテスト・フィクスチャ用の補助。
+    pub fn assign_enclosed_wall_plate_to_matching_region(
+        &mut self,
+        boundary: &[NodeId],
+        plate: WallPlate,
+    ) -> Option<WallPlateId> {
+        let mut key: Vec<u32> = boundary.iter().map(|n| n.0).collect();
+        key.sort_unstable();
+        let region_id = self
+            .wall_assignment_regions
+            .regions
+            .iter()
+            .find(|region| {
+                region.assignment.is_unset()
+                    && self
+                        .wall_assignment_region_nodes(region.id)
+                        .is_some_and(|nodes| {
+                            let mut k: Vec<u32> = nodes.iter().map(|n| n.0).collect();
+                            k.sort_unstable();
+                            k == key
+                        })
+            })
+            .map(|region| region.id)?;
+        let plate_id = WallPlateId(self.wall_plates.len() as u32);
+        self.wall_plates.push(WallPlate {
+            id: plate_id,
+            shape: WallPlateShape::Enclosed,
+            section: plate.section,
+            opening_area: plate.opening_area,
+            opening_weight: plate.opening_weight,
+            openings: plate.openings,
+            loads: plate.loads,
+            slit: plate.slit,
+        });
+        self.wall_assignment_regions
+            .get_mut(region_id)
+            .expect("直前に確保した割当領域")
+            .assignment = PlateAssignment::Plate(plate_id);
+        Some(plate_id)
+    }
+
     /// 壁版が**壁領域全体を覆う 4 節点の壁版**か。
     ///
     /// 壁エレメント（`squid_n_load::wall_expand`）を生成できるのはこの形の壁版だけ
@@ -344,7 +448,7 @@ impl Model {
     /// （`squid_n_load::wall_plate_load`）・フレーム内雑壁の剛性算入
     /// （`squid_n_element`）が同じ答えを見る必要があるためである。
     pub fn wall_plate_covers_region(&self, plate: &WallPlate) -> bool {
-        let Some(boundary) = plate.boundary_nodes() else {
+        let Some(boundary) = plate.boundary_nodes(self) else {
             return false;
         };
         if boundary.len() != 4 {
@@ -642,7 +746,7 @@ fn segment_intersection_t(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, SlabId, WallPlateId};
+    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, WallPlateId};
 
     fn model_with_nodes(pts: &[[f64; 3]]) -> Model {
         let mut m = Model::default();
@@ -659,29 +763,36 @@ mod tests {
         m
     }
 
-    /// `boundary_coords_with` は渡した座標をそのまま使う。変形図・モード形が
-    /// 変形後の節点座標で壁版を描くための入口であり、モデルの元座標へ落ちない
-    /// ことを固定する（落ちると壁版だけが変形前の位置に取り残される）。
-    #[test]
-    fn test_boundary_coords_with_uses_supplied_coords() {
-        let m = model_with_nodes(&[
-            [0.0, 0.0, 0.0],
-            [4000.0, 0.0, 0.0],
-            [4000.0, 0.0, 3000.0],
-            [0.0, 0.0, 3000.0],
-        ]);
-        let p = WallPlate {
+    /// 囲まれた壁版の仕様のみを持つ雛形（境界は割当領域が持つ）。
+    fn enclosed_plate() -> WallPlate {
+        WallPlate {
             id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
+            shape: WallPlateShape::Enclosed,
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
             loads: vec![],
             slit: WallSlit::default(),
-        };
+        }
+    }
+
+    /// `boundary_coords_with` は渡した座標をそのまま使う。変形図・モード形が
+    /// 変形後の節点座標で壁版を描くための入口であり、モデルの元座標へ落ちない
+    /// ことを固定する（落ちると壁版だけが変形前の位置に取り残される）。
+    #[test]
+    fn test_boundary_coords_with_uses_supplied_coords() {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let plate_id = m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        let p = m.wall_plate(plate_id).expect("壁版");
         // 全節点を +100 mm ずらした「変形後」の座標を渡す。
         let moved: Vec<[f64; 3]> = m
             .nodes
@@ -730,18 +841,7 @@ mod tests {
             [0.0, 0.0, 3000.0],
         ]);
         let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-        m.wall_plates.push(WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: boundary.clone(),
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: WallSlit::default(),
-        });
+        m.add_enclosed_wall_plate_from_nodes(&boundary, enclosed_plate());
         m.wall_regions.push(crate::model::WallRegion {
             id: crate::ids::WallRegionId(0),
             name: String::new(),
@@ -760,24 +860,17 @@ mod tests {
 
     #[test]
     fn test_enclosed_boundary_coords_and_area() {
-        let m = model_with_nodes(&[
+        let mut m = model_with_nodes(&[
             [0.0, 0.0, 0.0],
             [4000.0, 0.0, 0.0],
             [4000.0, 0.0, 3000.0],
             [0.0, 0.0, 3000.0],
         ]);
-        let p = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: WallSlit::default(),
-        };
+        let plate_id = m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        let p = m.wall_plate(plate_id).expect("壁版");
         let coords = p.boundary_coords(&m).expect("境界座標");
         assert_eq!(coords.len(), 4);
         assert!((p.area(&m) - 4000.0 * 3000.0).abs() < 1e-6);
@@ -788,10 +881,46 @@ mod tests {
     /// （Q6=C。壁エレメントの定式化を崩す一般化は行わない）。
     #[test]
     fn test_has_quad_boundary() {
-        let quad = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+            [2000.0, 0.0, 3000.0],
+        ]);
+        let quad = m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        assert!(m.wall_plate(quad).unwrap().has_quad_boundary(&m));
+
+        let pentagon = m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(4), NodeId(3)],
+            enclosed_plate(),
+        );
+        assert!(
+            !m.wall_plate(pentagon).unwrap().has_quad_boundary(&m),
+            "5節点は false"
+        );
+
+        let triangle = m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2)],
+            enclosed_plate(),
+        );
+        assert!(
+            !m.wall_plate(triangle).unwrap().has_quad_boundary(&m),
+            "3節点は false"
+        );
+
+        let attached = WallPlate {
+            id: WallPlateId(99),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: Some([900.0, 900.0]),
             },
             section: None,
             opening_area: 0.0,
@@ -800,31 +929,8 @@ mod tests {
             loads: vec![],
             slit: WallSlit::default(),
         };
-        assert!(quad.has_quad_boundary());
-
-        let mut pentagon = quad.clone();
-        pentagon.shape = WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
-        };
-        assert!(!pentagon.has_quad_boundary(), "5節点は false");
-
-        let mut triangle = quad.clone();
-        triangle.shape = WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
-        };
-        assert!(!triangle.has_quad_boundary(), "3節点は false");
-
-        let mut attached = quad.clone();
-        attached.shape = WallPlateShape::Attached {
-            anchor: RegionAnchor::Line {
-                nodes: [NodeId(0), NodeId(1)],
-                span: [0.0, 1.0],
-                transfer: LoadTransfer::Anchor,
-            },
-            extent: Some([900.0, 900.0]),
-        };
         assert!(
-            !attached.has_quad_boundary(),
+            !attached.has_quad_boundary(&m),
             "Attached は境界を持たないため false"
         );
     }
@@ -940,59 +1046,48 @@ mod tests {
     /// 返すと、入力された仕上げの重さが黙って落ちる。
     #[test]
     fn test_self_weight_without_section_counts_only_finish() {
-        let m = model_with_nodes(&[
+        let mut m = model_with_nodes(&[
             [0.0, 0.0, 0.0],
             [4000.0, 0.0, 0.0],
             [4000.0, 0.0, 3000.0],
             [0.0, 0.0, 3000.0],
         ]);
-        let mut p = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: None,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: WallSlit::default(),
-        };
-        assert_eq!(m.wall_plate_self_weight(&p, &m), Some(0.0));
+        m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        let p = &m.wall_plates[0];
+        assert_eq!(m.wall_plate_self_weight(p, &m), Some(0.0));
 
-        p.loads.push(AreaLoad {
+        m.wall_plates[0].loads.push(AreaLoad {
             kind: "増打ち".into(),
             value: 1.0e-3,
         });
-        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        let p = &m.wall_plates[0];
+        let w = m.wall_plate_self_weight(p, &m).expect("自重が求まる");
         assert!((w - 1.0e-3 * 4000.0 * 3000.0).abs() < 1e-6, "{w}");
     }
 
     /// 仕上げ・増打ちも躯体と同じ正味面積（開口控除後）に乗る。
     #[test]
     fn test_finish_load_deducts_opening_area() {
-        let m = model_with_nodes(&[
+        let mut m = model_with_nodes(&[
             [0.0, 0.0, 0.0],
             [4000.0, 0.0, 0.0],
             [4000.0, 0.0, 3000.0],
             [0.0, 0.0, 3000.0],
         ]);
-        let p = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: None,
-            opening_area: 2.0e6,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![AreaLoad {
-                kind: "仕上げ".into(),
-                value: 1.0e-3,
-            }],
-            slit: WallSlit::default(),
-        };
-        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        m.wall_plates[0].opening_area = 2.0e6;
+        m.wall_plates[0].loads.push(AreaLoad {
+            kind: "仕上げ".into(),
+            value: 1.0e-3,
+        });
+        let p = &m.wall_plates[0];
+        let w = m.wall_plate_self_weight(p, &m).expect("自重が求まる");
         assert!((w - 1.0e-3 * (4000.0 * 3000.0 - 2.0e6)).abs() < 1e-6, "{w}");
     }
 
@@ -1078,26 +1173,21 @@ mod tests {
             shear_rebar_material: None,
             steel_material: None,
         });
-        let p = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: vec![WallOpening {
-                width: 900.0,
-                height: 1200.0,
-                offset: Some([1550.0, 0.0]),
-            }],
-            loads: vec![],
-            slit: WallSlit::default(),
-        };
+        m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        m.wall_plates[0].section = Some(SectionId(0));
+        m.wall_plates[0].openings = vec![WallOpening {
+            width: 900.0,
+            height: 1200.0,
+            offset: Some([1550.0, 0.0]),
+        }];
+        let p = &m.wall_plates[0];
         let gross_area = 4000.0 * 3000.0;
         let opening_area = 900.0 * 1200.0;
         let expected = 150.0 * 2.4e-9 * (gross_area - opening_area) * crate::units::GRAVITY_MM_S2;
-        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        let w = m.wall_plate_self_weight(p, &m).expect("自重が求まる");
         assert!(
             (w - expected).abs() / expected < 1e-9,
             "自重 {w}（期待値 {expected}）"
@@ -1153,9 +1243,7 @@ mod tests {
     fn test_total_opening_area_falls_back_to_opening_area_field() {
         let p = WallPlate {
             id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
+            shape: WallPlateShape::Enclosed,
             section: None,
             opening_area: 999.0,
             opening_weight: 0.0,
@@ -1169,23 +1257,18 @@ mod tests {
     /// 開口部（サッシ等）の重量は、開口面積控除後の自重に加算する。
     #[test]
     fn test_self_weight_adds_opening_weight() {
-        let m = model_with_wall_section();
-        let p = WallPlate {
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 1234.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: WallSlit::default(),
-        };
+        let mut m = model_with_wall_section();
+        m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            enclosed_plate(),
+        );
+        m.wall_plates[0].section = Some(SectionId(0));
+        m.wall_plates[0].opening_weight = 1234.0;
+        let p = &m.wall_plates[0];
         let gross_area = 4000.0 * 3000.0;
         let base = 150.0 * 2.4e-9 * gross_area * crate::units::GRAVITY_MM_S2;
         let expected = base + 1234.0;
-        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        let w = m.wall_plate_self_weight(p, &m).expect("自重が求まる");
         assert!(
             (w - expected).abs() / expected < 1e-9,
             "自重 {w}（期待値 {expected}）"
@@ -1212,13 +1295,9 @@ mod tests {
         .enumerate()
         {
             let mut r = FloorRegion::new(FloorRegionId(ri as u32), b.clone());
-            r.slab_ids.push(SlabId(ri as u32));
+            let slab_id = m.add_enclosed_slab_from_nodes(&b, SlabPlate::default());
+            r.slab_ids.push(slab_id);
             m.floor_regions.push(r);
-            m.slabs.push(Slab {
-                id: SlabId(ri as u32),
-                shape: SlabShape::Enclosed { boundary: b },
-                plate: SlabPlate::default(),
-            });
         }
         m
     }
@@ -1395,9 +1474,7 @@ mod tests {
         let m = model_two_regions();
         let p = WallPlate {
             id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)],
-            },
+            shape: WallPlateShape::Enclosed,
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -1427,13 +1504,9 @@ mod tests {
             NodeId(5),
         ];
         let mut r = FloorRegion::new(FloorRegionId(0), b.clone());
-        r.slab_ids.push(SlabId(0));
+        let slab_id = m.add_enclosed_slab_from_nodes(&b, SlabPlate::default());
+        r.slab_ids.push(slab_id);
         m.floor_regions.push(r);
-        m.slabs.push(Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed { boundary: b },
-            plate: SlabPlate::default(),
-        });
         m
     }
 
