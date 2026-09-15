@@ -1667,6 +1667,89 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     );
 }
 
+/// 壁領域を覆い断面あり＝解析要素になる壁版でも、上下の梁際をともに切れば
+/// 「上下の梁際がともに切れた壁版」のエラーとする。
+///
+/// 要素経路の自重は切った梁際の節点へも乗り得るため、そのまま解析には使えない。
+/// `wall_plates_without_load_path` は解析要素を対象外にするので、この止めは解析前チェックだけが担う。
+#[test]
+fn test_model_issues_errors_on_both_beam_face_slit_on_element_plate() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::{WallPlateId, WallRegionId};
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallRegion, WallSlit};
+
+    let mut model = make_cantilever_model();
+    // 壁の自重が正になるよう、断面へ板厚を、材料へ密度を与える。
+    model.sections[0].thickness = Some(200.0);
+    model.materials[0].density = 2.4e-9;
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[1000.0, 0.0, 3000.0], [0.0, 0.0, 3000.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 柱際の鉛直辺（境界 [0,1,n,n+1] の辺 1・辺 3）を柱で支持する。
+    for (i, ends) in [[NodeId(0), NodeId(n + 1)], [NodeId(1), NodeId(n)]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut column = model.elements[0].clone();
+        column.id = ElemId(1 + i as u32);
+        column.nodes = smallvec::smallvec![ends[0], ends[1]];
+        column.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        model.elements.push(column);
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
+    let plate_id = model.add_enclosed_wall_plate_from_nodes(
+        &boundary,
+        WallPlate {
+            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: WallSlit {
+                column_face: [false, false],
+                beam_face: [true, true],
+            },
+        },
+    );
+    // 壁領域全体を覆わせて、解析要素になる壁版にする（断面は割当済み）。
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: boundary.clone(),
+        wall_plate_ids: vec![plate_id],
+        posts: Vec::new(),
+    });
+    assert!(
+        model.wall_plate_becomes_element(&model.wall_plates[0]),
+        "解析要素になる壁版であることを前提にする"
+    );
+    assert!(
+        squid_n_load::wall_plate_load::wall_plates_without_load_path(&model).is_empty(),
+        "解析要素の壁版は行き先判定の対象外であり、この止めは解析前チェックだけが担う"
+    );
+
+    let issues = model_issues(&model);
+    let hit = issues
+        .iter()
+        .find(|i| i.message.contains("上下の梁際がともに切れた壁版"))
+        .expect("要素壁版でもエラーが出る");
+    assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
+}
+
 /// スリットが効かない壁版（境界が 4 節点でない）は、エラーではなく警告で知らせる。
 ///
 /// 指定は無視されるので自重の伝達先は失われない。エラーで止めると、効かない入力の
