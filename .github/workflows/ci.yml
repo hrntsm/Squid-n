@@ -25,14 +25,17 @@ jobs:
       - name: テスト実行
         run: cargo test --workspace --locked
       # mcp / gui は非デフォルト feature のため --workspace では検証されない。
+      # squid-n-io の results（Parquet 結果 I/O）も parquet feature 配下にあり、
+      # -p 指定なしでは保証されないため合わせる（workspace 解決では mcp 経由で
+      # 有効化されるが、明示指定で io 単体の検証も保証する）。
       # 過去に rmcp API 追従漏れでコンパイル不能のまま放置された経緯があり
       # （dev_docs/v_and_v/p8_review.md）、ここで明示的にビルド・テストして再発を防ぐ。
       # GUI コードのコンパイル漏れ（網羅的 match 等）の検知に加え、gui ゲート内の
       # ユニットテスト（viewer のカメラ計算等）も実行する（build は test に含まれる）。
-      # 2 クレートを同一 Cargo 呼び出し（クレート名/機能名形式）にまとめ、
+      # 3 クレートを同一 Cargo 呼び出し（クレート名/機能名形式）にまとめ、
       # 同じ依存グラフの重複構築を避ける。default 構成は上の実行で別に検証する。
-      - name: featureテスト実行（MCP/GUI）
-        run: cargo test -p squid-n-mcp -p squid-n-app --features squid-n-mcp/mcp,squid-n-app/gui --locked
+      - name: featureテスト実行（MCP/GUI/Parquet）
+        run: cargo test -p squid-n-mcp -p squid-n-app -p squid-n-io --features squid-n-mcp/mcp,squid-n-app/gui,squid-n-io/parquet --locked
 
   clippy:
     name: Clippy静的解析
@@ -46,12 +49,13 @@ jobs:
       - name: Clippy実行
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # 非デフォルト feature の mcp（bin ターゲット含む）と gui（eframe 経由の
-      # GUI コード）も静的解析の対象にする。過去に GUI コードが網羅的 match 漏れで
+      # GUI コード）に加え、squid-n-io の results（Parquet 結果 I/O）も静的解析の
+      # 対象にする。過去に GUI コードが網羅的 match 漏れで
       # コンパイル不能のまま放置された経緯があり（mn_view.rs）、ここで明示的に
-      # 検証して再発を防ぐ。2 クレートを同一 Cargo 呼び出し（クレート名/機能名形式）に
+      # 検証して再発を防ぐ。3 クレートを同一 Cargo 呼び出し（クレート名/機能名形式）に
       # まとめ、同じ依存グラフの重複構築を避ける。default 構成は上の実行で別に検証する。
-      - name: Clippy実行（MCP/GUI feature）
-        run: cargo clippy -p squid-n-mcp -p squid-n-app --all-targets --features squid-n-mcp/mcp,squid-n-app/gui --locked -- -D warnings
+      - name: Clippy実行（MCP/GUI/Parquet feature）
+        run: cargo clippy -p squid-n-mcp -p squid-n-app -p squid-n-io --all-targets --features squid-n-mcp/mcp,squid-n-app/gui,squid-n-io/parquet --locked -- -D warnings
 
   fmt:
     name: フォーマットチェック

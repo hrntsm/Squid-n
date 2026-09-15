@@ -1,6 +1,7 @@
 pub mod checkpoint;
 pub mod manifest;
 pub mod migrate;
+#[cfg(feature = "parquet")]
 pub mod results;
 pub mod scz;
 pub mod stbridge;
