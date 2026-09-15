@@ -4,6 +4,10 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 
+[features]
+default = []
+parquet = ["dep:arrow", "dep:parquet"]
+
 [dependencies]
 serde      = { workspace = true }
 serde_json = { workspace = true }
@@ -12,8 +16,8 @@ zip        = { workspace = true }
 sha2       = { workspace = true }
 bincode    = { workspace = true }
 thiserror  = { workspace = true }
-arrow      = { workspace = true }
-parquet    = { workspace = true }
+arrow      = { workspace = true, optional = true }
+parquet    = { workspace = true, optional = true }
 quick-xml  = { workspace = true }
 smallvec   = { workspace = true }
 encoding_rs = { workspace = true }

@@ -29,6 +29,7 @@ cargo build --workspace --release
 |--------|-------------|------|
 | `gui` | squid-n-app | GUI（egui/eframe） |
 | `mcp` | squid-n-mcp | MCP サーバ |
+| `parquet` | squid-n-io | 結果 I/O（Arrow / Parquet）。squid-n-mcp は常に有効化して利用し、squid-n-app の通常開発では無効のまま軽量に保つ |
 | `p7` | squid-n-design-jp | 二次設計（Ds、偏心率、保有耐力、パネルせん断）。既定で有効 |
 
 非デフォルトの機能フラグは `--workspace` ビルドでは検証されないため、
@@ -64,6 +65,9 @@ cargo test -p <changed-crate>
 # GUI / MCP 領域を変更したときだけ feature 付きで確認する
 cargo test -p squid-n-app --features gui
 cargo test -p squid-n-mcp --features mcp
+
+# squid-n-io の結果 I/O（parquet feature 配下）を変更したときだけ feature 付きで確認する
+cargo test -p squid-n-io --features parquet
 ```
 
 PR 前のフル検証は以下です（テスト系コマンドの正本はこの節）。
@@ -73,9 +77,15 @@ PR 前のフル検証は以下です（テスト系コマンドの正本はこ�
 # 全テスト実行（default 構成）
 cargo test --workspace --locked
 
-# GUI / MCP の非デフォルト feature（2 クレートまとめて 1 回の呼び出し。
+# GUI / MCP / Parquet の非デフォルト feature（3 クレートまとめて 1 回の呼び出し。
 # `クレート名/機能名` 形式で指定する。default 構成は上の実行で別に検証する）
-cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
+cargo test -p squid-n-app -p squid-n-mcp -p squid-n-io --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked
+
+# Parquet 無効構成の独立検証。squid-n-mcp が squid-n-io/parquet を常時有効化しているため、
+# --workspace では feature 統一により squid-n-io の default（parquet 無効）構成が
+# 独立には検証されない。以下で直接保証する
+cargo test -p squid-n-io --locked
+cargo check -p squid-n-app --features squid-n-app/gui --locked
 ```
 
 特定のテストだけ再実行したいときは、名前で絞り込めます。
@@ -138,18 +148,18 @@ cargo test -p squid-n-app --test wall_model
 （`--all-targets` がないとテストコードが clippy の対象外になります）。
 
 ```bash
-# 編集中：変更クレートのみ（GUI / MCP 領域の変更時は feature 付きも同様に -p で確認する）
+# 編集中：変更クレートのみ（GUI / MCP / Parquet 領域の変更時は feature 付きも同様に -p で確認する）
 cargo clippy -p <changed-crate> --all-targets --locked -- -D warnings
 ```
 
 ```bash
 # PR 前のフル検証（clippy / fmt 系の正本はこの節）。
-# GUI / MCP の feature 付き検証は、同じ依存グラフを
-# 何度も構築しないよう 2 クレートまとめて 1 回の呼び出しにしている
+# GUI / MCP / Parquet の feature 付き検証は、同じ依存グラフを
+# 何度も構築しないよう 3 クレートまとめて 1 回の呼び出しにしている
 # （`squid-n-app/gui` のような `クレート名/機能名` 形式で指定する）。
 # default 構成の検証は別に維持するため、`--all-features` にはまとめない。
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings
+cargo clippy -p squid-n-app -p squid-n-mcp -p squid-n-io --all-targets --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -159,6 +169,9 @@ cargo fmt --all -- --check
 フィーチャフラグのため、1 行目のワークスペース全体の実行だけでは
 `cfg(feature = "gui")` 配下のコード（GUI のビュー・テーブル・3D 表示のほぼ全体）が
 コンパイルすらされません。フラグ付きでしか現れないビルドエラー・警告があります。
+`squid-n-io` の `results`（Parquet 結果 I/O）も `parquet` feature 配下のため、
+`-p squid-n-io` 単体では既定で検証されません（workspace 解決では mcp 経由で
+有効化されますが、明示指定で io 単体の検証も保証します）。
 
 テストも同様に、フラグ付きの実行が必要です。テスト系のフル検証コマンドは
 「テスト」節を正本とします。
