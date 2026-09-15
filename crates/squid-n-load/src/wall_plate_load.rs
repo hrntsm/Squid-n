@@ -371,8 +371,9 @@ pub fn accumulate_wall_and_secondary_seismic_weight(
     Ok(())
 }
 
-/// 自重を持つ非要素の囲まれた壁版のうち、指定した支持辺へ伝達できないものを返す。
-/// 負担率の不備・スリット・支持欠落・主架構の支持区間重複を解析前エラーの対象とする。
+/// 自重を持つ非要素の囲まれた壁版のうち、指定した支持辺へ伝達できないものを返す。負担率の
+/// 不備・支持欠落（区間重複含む）・正の負担率の辺がスリットで切れている場合のみを判定する。
+/// 上下の梁際をともに切った納まりの可否はここでは判定せず、解析前チェックが入力方針として扱う。
 pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
     let index = SupportIndex::new(model);
     model
