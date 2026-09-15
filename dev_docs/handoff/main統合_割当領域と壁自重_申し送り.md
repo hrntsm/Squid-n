@@ -26,10 +26,12 @@ main が ADR 0018（`0018-explicit-gravity-supports`）と ADR 0019
   `SecondaryMember` に残した（`end_support` は本作業で廃止済みのため採用しない）。
   `SetPostGravityEndShares` は端点対ではなく安定 ID（`member`）で対象を指定する形へ適応した。
   縦材は `gravity_end_shares` が未指定・不正だと逐次伝達の対象から外れる（main の挙動）。
-- **壁版の `self_weight_shares`**: `edge_shares_with` は main の明示負担率を優先し、
-  未指定（`has_valid_self_weight_shares` が偽）のときは従来の幾何分配
-  （鉛直支持辺が 2 辺ある場合は等分、無ければ最も低い支持辺 1 辺へ全量）へフォールバックする
-  統合とした。
+- **壁版の `self_weight_shares`**: main の ADR 0018 を正とし、`edge_shares_with` は明示負担率
+  （`has_valid_self_weight_shares` が真）の辺へだけ配る。未指定・不正値のときは幾何から推定せず
+  `wall_plates_without_load_path` の解析前エラーとし、別の辺へ振り替えない。当初の統合で入れた
+  幾何フォールバック（鉛直支持辺が 2 辺ある場合は等分、無ければ最も低い支持辺 1 辺へ全量）は
+  下梁で受ける壁の梁応力を過小評価しうる危険側のため削除した（`has_valid_self_weight_shares` の
+  `&Model` 化は、境界を壁版割当領域から解決する本作業の型変更として維持する）。
 - **ST-Bridge 取り込み**は割当領域で `StbSlab` を分割・按分し、未帰属面積があれば取り込み全体を
   失敗させる本作業の挙動を正とした。main の旧テストは支持部材の無い面に版を置いていたため、
   その面を囲む大梁をテストへ追加して成立させた。
@@ -50,8 +52,19 @@ main が ADR 0018（`0018-explicit-gravity-supports`）と ADR 0019
 `cargo test -p squid-n-mcp --features mcp`、clippy 3 本（`-D warnings`）、
 `cargo run -p xtask --locked -- check-deps`、`mdbook build` はすべて成功。
 
+## ADR 0018 との整合の是正（2026-09-15）
+
+当初の統合で入れた幾何フォールバックは main の ADR 0018 に反する危険側の挙動だったため、
+明示負担率必須・未指定／不正は入力エラー・振り替えなしの契約へ戻した。
+
+- `edge_shares_with` の `geometric_edge_shares` 呼び出しを削除し、未指定・不正・指定辺の
+  支持欠落では空を返す（`wall_plates_without_load_path` が解析前エラーにする）。
+- `squid-n-load` の回帰テストを追加・復元した。明示負担率どおりの配分、負担率の未指定・
+  不正値・支持区間重複での診断、指定辺がスリットで切れた場合に振り替えないこと、
+  鉛直支持辺があっても幾何フォールバックしないこと、間柱の端部負担率どおりの配分と
+  未指定・不正時の逐次伝達除外を固定する。
+- `wall_post_model` の壁版へ割当領域境界の辺順に負担率を明示した。
+
 ## 残課題
 
-- main の `self_weight_shares` を使った壁自重分配の回帰テストは、本作業版テストへ置き換えた範囲では
-  薄い。明示負担率の分布と、未指定時の幾何フォールバックを固定するテストを追加する。
-- 統合で置き換えた main 側テストのうち、`Enclosed { boundary }` 前提のものは本作業 API へ未移植。
+- なし（ADR 0018 の契約へ整合済み）。
