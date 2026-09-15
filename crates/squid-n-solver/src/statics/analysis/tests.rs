@@ -1587,10 +1587,10 @@ fn test_model_issues_warns_floating_plate() {
     );
 }
 
-/// 上下の梁際をともに切った壁版はエラーで止める。
+/// 上下の梁際をともに切った壁版は、柱際が健全でもエラーで止める。
 ///
-/// 柱際の鉛直辺は壁の重量を受けないため、上下とも縁が切れていると自重の伝達先が
-/// 無くなる。実際に作らない納まりなので、入力の誤りとして扱う。
+/// 上下の梁際をともに切った納まりは実際に想定しないため、切れていない鉛直支持辺へ
+/// 負担率を明示しても、支持先の指定によらず入力の誤りとして一律に止める。
 #[test]
 fn test_model_issues_errors_on_both_beam_face_slit() {
     use super::precheck::{model_issues, IssueSeverity};
@@ -1598,6 +1598,9 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     use squid_n_core::model::{WallPlate, WallPlateShape, WallSlit};
 
     let mut model = make_cantilever_model();
+    // 壁の自重が正になるよう、断面へ板厚を、材料へ密度を与える。
+    model.sections[0].thickness = Some(200.0);
+    model.materials[0].density = 2.4e-9;
     let n = model.nodes.len() as u32;
     for (i, c) in [[1000.0, 0.0, 3000.0], [0.0, 0.0, 3000.0]]
         .into_iter()
@@ -1612,11 +1615,23 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
             support_spring: None,
         });
     }
+    // 柱際の鉛直辺（境界 [0,1,n,n+1] の辺 1・辺 3）を柱で支持する。
+    for (i, ends) in [[NodeId(0), NodeId(n + 1)], [NodeId(1), NodeId(n)]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut column = model.elements[0].clone();
+        column.id = ElemId(1 + i as u32);
+        column.nodes = smallvec::smallvec![ends[0], ends[1]];
+        column.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        model.elements.push(column);
+    }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
     model.add_enclosed_wall_plate_from_nodes(
         &boundary,
         WallPlate {
-            self_weight_shares: Vec::new(),
+            // 切れていない鉛直支持辺（辺 1・辺 3）へ負担率を明示する。
+            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: Some(SectionId(0)),
@@ -1625,10 +1640,15 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
             openings: Vec::new(),
             loads: vec![],
             slit: WallSlit {
-                column_face: [true, true],
+                column_face: [false, false],
                 beam_face: [true, true],
             },
         },
+    );
+
+    assert!(
+        squid_n_load::wall_plate_load::wall_plates_without_load_path(&model).is_empty(),
+        "鉛直支持辺へ負担率を明示しているため、自重の行き先はある"
     );
 
     let issues = model_issues(&model);

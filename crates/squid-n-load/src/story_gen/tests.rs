@@ -1712,8 +1712,8 @@ fn test_wall_opening_deduction_clamped_non_negative() {
 
 #[test]
 fn test_column_face_slit_does_not_change_self_weight_destination() {
-    // §壁自重: 柱際スリットは自重の行き先を変えない。柱際の鉛直辺は壁の重量を
-    // 受けないためである。行き先を変えるのは梁際のスリットだけ。
+    // §壁自重: 柱際スリットは要素壁の自重の行き先を変えない。行き先を変えるのは
+    // 梁際のスリットだけである。
     let base = generate_stories(&wall_model(), None).unwrap().stories[1]
         .seismic_weight
         .unwrap();

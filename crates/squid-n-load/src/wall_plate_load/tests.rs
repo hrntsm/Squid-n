@@ -137,8 +137,6 @@ fn split_by_post() -> Model {
         plate(1),
     )
     .expect("上流側の割当領域");
-    // 左の壁版は柱際（辺 3）と間柱際（辺 1）、右の壁版は柱際（辺 1）と間柱際（辺 3）へ
-    // それぞれ半分ずつ配る。
     // 左の壁版（境界 0-4-5-3）は柱際（辺 3）と間柱際（辺 1）、右の壁版
     // （境界 1-2-5-4）は柱際（辺 0）と間柱際（辺 2）へそれぞれ半分ずつ配る。
     // 負担率は割当領域が返す境界の並び順に対応する。
@@ -293,6 +291,21 @@ fn 指定した辺がスリットで切れていれば別の辺へ振り替え�
     assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
 }
 
+/// 負担率を指定した梁際の辺がスリットで切れていると、その壁版は自重を伝えられない。
+///
+/// 切れた辺を避けて別の辺へ振り替えることはしない（ADR 0018）。柱際の
+/// `指定した辺がスリットで切れていれば別の辺へ振り替えない` と同じ扱いを梁際でも固定する。
+#[test]
+fn 梁際スリットで切れた辺に負担率を指定すると振り替えない() {
+    let mut m = bay();
+    // 下辺（辺 0）のみ梁際スリットで切る。残る辺 2 は切れていないが、そこへは振り替えない。
+    add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
+    m.wall_plates[0].slit.beam_face = [true, false];
+
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+}
+
 /// 明示した負担率どおりの辺へ配る。左右に柱があっても、指定した辺だけが受ける。
 #[test]
 fn 指定した辺の負担率どおりに壁自重を配る() {
@@ -306,16 +319,46 @@ fn 指定した辺の負担率どおりに壁自重を配る() {
     assert!((out[1].total - full_weight() * 0.25).abs() < 1e-6);
 }
 
-/// 上下の梁際がスリットでも、明示した鉛直支持辺へ配分する。
+/// 負担率を明示すれば、下辺のみ梁際スリットの非要素壁版は切れていない上辺の梁へ自重を配る。
+///
+/// `beam_face` の添字は 0 が下辺・1 が上辺に対応し、負担率の辺の並び（境界の順）と
+/// 同じであることを、非要素壁版の `edge_shares_with` で固定する。
 #[test]
-fn 上下がスリットでも明示した鉛直支持辺があれば配分する() {
-    let mut m = split_by_post();
-    for p in &mut m.wall_plates {
-        p.slit.beam_face = [true, true];
-    }
-    assert!(wall_plates_without_load_path(&m).is_empty());
+fn 負担率を明示すれば下辺のみ梁際スリットの非要素壁版は切れていない上辺の梁へ自重を配る() {
+    let mut m = bay();
+    add_plate(&mut m, 0, [0, 1, 2, 3], [0.0, 0.0, 1.0, 0.0]);
+    m.wall_plates[0].slit.beam_face = [true, false];
+
     let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
-    assert_eq!(out.len(), 2);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].nodes, [NodeId(2), NodeId(3)]);
+    assert!(out[0].post.is_none(), "上辺は大梁が受ける");
+    assert!(
+        (out[0].total - full_weight()).abs() / full_weight() < 1e-9,
+        "全量が切れていない上辺へ渡る: {}",
+        out[0].total
+    );
+}
+
+/// 負担率を明示すれば、上辺のみ梁際スリットの非要素壁版は切れていない下辺の梁へ自重を配る。
+///
+/// 上記の下辺のみ梁際スリットのテストと対にし、`beam_face` の添字 0 が下辺・1 が上辺に
+/// 対応することを両方向から固定する（添字の取り違えを検出する）。
+#[test]
+fn 負担率を明示すれば上辺のみ梁際スリットの非要素壁版は切れていない下辺の梁へ自重を配る() {
+    let mut m = bay();
+    add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
+    m.wall_plates[0].slit.beam_face = [false, true];
+
+    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].nodes, [NodeId(0), NodeId(1)]);
+    assert!(out[0].post.is_none(), "下辺は大梁が受ける");
+    assert!(
+        (out[0].total - full_weight()).abs() / full_weight() < 1e-9,
+        "全量が切れていない下辺へ渡る: {}",
+        out[0].total
+    );
 }
 
 /// 自重を持つ壁版は、負担率の未指定・不正値を解析前エラーとし、幾何から配らない。

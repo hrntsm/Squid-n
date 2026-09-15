@@ -490,7 +490,7 @@ fn test_slit_expresses_three_side_and_full() {
     assert!(three_side.any());
     assert!(!three_side.both_beam_faces());
 
-    // 完全スリット。上下とも切れているため自重の伝達先が無く、エラーになる。
+    // 完全スリット。上下の梁際をともに切った納まりは想定しないため、解析前チェックがエラーにする。
     let full = WallSlit {
         column_face: [true, true],
         beam_face: [true, true],
