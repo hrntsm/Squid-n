@@ -67,6 +67,7 @@ cargo test -p squid-n-mcp --features mcp
 ```
 
 PR 前のフル検証は以下です（テスト系コマンドの正本はこの節）。
+決定性テスト（ビット一致確認）は通常テストとして含まれます。
 
 ```bash
 # 全テスト実行（default 構成）
@@ -75,8 +76,12 @@ cargo test --workspace --locked
 # GUI / MCP の非デフォルト feature（2 クレートまとめて 1 回の呼び出し。
 # `クレート名/機能名` 形式で指定する。default 構成は上の実行で別に検証する）
 cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked
+```
 
-# 決定性テスト（100回ビット一致確認を含む）
+特定のテストだけ再実行したいときは、名前で絞り込めます。
+
+```bash
+# 決定性テストだけを実行する例
 cargo test --workspace deterministic
 ```
 
