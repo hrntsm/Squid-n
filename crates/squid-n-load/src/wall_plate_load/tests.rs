@@ -52,10 +52,12 @@ fn plate(id: u32) -> WallPlate {
     }
 }
 
-/// 4 節点境界の囲まれた壁版を、境界支持部材を伴って追加する。
-fn add_plate(m: &mut Model, id: u32, boundary: [u32; 4]) {
+/// 4 節点境界の囲まれた壁版を、境界支持部材と明示負担率を伴って追加する。
+fn add_plate(m: &mut Model, id: u32, boundary: [u32; 4], shares: [f64; 4]) {
     let nodes: Vec<NodeId> = boundary.into_iter().map(NodeId).collect();
-    m.add_enclosed_wall_plate_from_nodes(&nodes, plate(id));
+    let mut p = plate(id);
+    p.self_weight_shares = shares.to_vec();
+    m.add_enclosed_wall_plate_from_nodes(&nodes, p);
 }
 
 /// 4m×3m の 1 構面。左右に柱、上下に大梁、中央 x=2000 に間柱 1 本。
@@ -135,6 +137,18 @@ fn split_by_post() -> Model {
         plate(1),
     )
     .expect("上流側の割当領域");
+    // 左の壁版は柱際（辺 3）と間柱際（辺 1）、右の壁版は柱際（辺 1）と間柱際（辺 3）へ
+    // それぞれ半分ずつ配る。
+    // 左の壁版（境界 0-4-5-3）は柱際（辺 3）と間柱際（辺 1）、右の壁版
+    // （境界 1-2-5-4）は柱際（辺 0）と間柱際（辺 2）へそれぞれ半分ずつ配る。
+    // 負担率は割当領域が返す境界の並び順に対応する。
+    for p in &mut m.wall_plates {
+        p.self_weight_shares = if p.id.0 == 0 {
+            vec![0.0, 0.5, 0.0, 0.5]
+        } else {
+            vec![0.5, 0.0, 0.5, 0.0]
+        };
+    }
     // 割当領域の境界は安定 ID で間柱を参照するため、間柱は未割当から壁領域へ移す
     // （重複させない。二重計上を防ぐ）。
     let post = m.unassigned_posts.pop().expect("間柱");
@@ -152,7 +166,7 @@ fn split_by_post() -> Model {
 #[test]
 fn 領域を覆う壁版は分配の対象外() {
     let mut m = bay();
-    add_plate(&mut m, 0, [0, 1, 2, 3]);
+    add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
     m.wall_regions = vec![WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -175,7 +189,7 @@ fn 領域を覆っても断面が無ければ分配の対象になる() {
     use squid_n_core::model::AreaLoad;
 
     let mut m = bay();
-    add_plate(&mut m, 0, [0, 1, 2, 3]);
+    add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
     m.wall_plates[0].section = None;
     m.wall_plates[0].loads = vec![AreaLoad {
         kind: "増打ち".into(),
@@ -264,95 +278,77 @@ fn 間柱で分割された壁は左右の鉛直辺へ半分ずつ配る() {
     );
 }
 
-/// 柱際にスリットを入れると、その鉛直辺は自重を受けない。
+/// 負担率を指定した辺がスリットで切れていると、その壁版は自重を伝えられない。
 ///
-/// 分割壁は左右の鉛直辺（柱と間柱）へ半分ずつ配るのが既定だが、片側を切ると
-/// 支持する鉛直辺が 1 つになり、規則は「もっとも低い水平な辺へ全量」へ移る。
+/// 切れた辺を避けて別の辺へ振り替えることはしない（ADR 0018）。
 #[test]
-fn 柱際スリットのある鉛直辺は自重を受けない() {
+fn 指定した辺がスリットで切れていれば別の辺へ振り替えない() {
     let mut m = split_by_post();
-    // 左の壁版（節点 0-4-5-3）の柱側（節点 0 から立ち上がる辺）を切る。
+    // 左の壁版（節点 0-4-5-3）の柱側（節点 0 から立ち上がる辺 3）を切る。
     let faces = m.wall_plates[0].column_face_nodes(&m).expect("下辺 2 節点");
     let k = usize::from(faces[0] != NodeId(0));
     m.wall_plates[0].slit.column_face[k] = true;
 
-    let out = distribute_enclosed_wall_plates(&m);
-    // 間柱は右の壁版からのぶんだけを受ける（左の壁版は鉛直辺が 1 つになり、
-    // 下の大梁へ全量が回るため）。
-    let post_total: f64 = out
-        .posts
-        .get(&squid_n_core::ids::SecondaryMemberId(0))
-        .map(|p| {
-            p.member_loads
-                .iter()
-                .map(|l| match *l {
-                    MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
-                    MemberLoadKind::Point { p, .. } => p,
-                })
-                .sum()
-        })
-        .unwrap_or(0.0);
-    assert!(
-        (post_total - full_weight() / 4.0).abs() / full_weight() < 1e-9,
-        "間柱が受けるのは右の壁版の半分だけ: {post_total}"
-    );
-
-    // 総和は保存する（切れた辺へ配らないだけで、重量は失わない）。
-    let primary_total: f64 = out
-        .primary
-        .iter()
-        .map(|bl| match bl.shape {
-            LoadShape::Uniform { w } => w * edge_len(&m, bl),
-            _ => panic!("等分布のみ"),
-        })
-        .sum();
-    assert!(
-        (post_total + primary_total - full_weight()).abs() / full_weight() < 1e-9,
-        "総和保存: {post_total} + {primary_total}"
-    );
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
 }
 
-/// 下辺の梁際にスリットを入れると、自重は上の梁へ回る。
-///
-/// 鉛直辺に支持部材が無い壁版は既定で「もっとも低い水平な辺」が全量を受けるが、
-/// その辺が切れていれば次に低い（＝上の）辺が受ける。三方スリットの垂れ壁型に
-/// あたる形である。
+/// 明示した負担率どおりの辺へ配る。左右に柱があっても、指定した辺だけが受ける。
 #[test]
-fn 下辺の梁際スリットは自重を上の梁へ回す() {
+fn 指定した辺の負担率どおりに壁自重を配る() {
     let mut m = bay();
-    // 間柱を置かず、鉛直辺に支持を持たない壁版にする（下の梁が全量を受ける形）。
-    add_plate(&mut m, 0, [0, 1, 2, 3]);
-    m.wall_regions.push(WallRegion {
-        id: WallRegionId(0),
-        name: String::new(),
-        // 壁領域の境界を壁版と別にして、覆っていない扱いにする。
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
-        wall_plate_ids: vec![WallPlateId(0)],
-        posts: Vec::new(),
-    });
-    // 柱際を切って鉛直辺の支持を外し、水平な辺で受ける形にする。
-    m.wall_plates[0].slit.column_face = [true, true];
+    add_plate(&mut m, 0, [0, 1, 2, 3], [0.75, 0.0, 0.25, 0.0]);
+    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].nodes, [NodeId(0), NodeId(1)]);
+    assert_eq!(out[1].nodes, [NodeId(2), NodeId(3)]);
+    assert!((out[0].total - full_weight() * 0.75).abs() < 1e-6);
+    assert!((out[1].total - full_weight() * 0.25).abs() < 1e-6);
+}
 
-    let bottom = distribute_enclosed_wall_plates(&m);
-    let bottom_edge = bottom.primary.first().expect("下の梁が全量を受ける").target;
-    let LoadTarget::Span { nodes, .. } = bottom_edge else {
-        panic!("Span")
-    };
-    let z_bottom = m.nodes[nodes[0].index()].coord[2];
-    assert!(z_bottom.abs() < 1e-9, "既定では下辺（z=0）が受ける");
+/// 上下の梁際がスリットでも、明示した鉛直支持辺へ配分する。
+#[test]
+fn 上下がスリットでも明示した鉛直支持辺があれば配分する() {
+    let mut m = split_by_post();
+    for p in &mut m.wall_plates {
+        p.slit.beam_face = [true, true];
+    }
+    assert!(wall_plates_without_load_path(&m).is_empty());
+    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    assert_eq!(out.len(), 2);
+}
 
-    // 下辺を切ると、上辺（z=3000）が受ける。
-    m.wall_plates[0].slit.beam_face = [true, false];
-    let top = distribute_enclosed_wall_plates(&m);
-    let LoadTarget::Span { nodes, .. } = top.primary.first().expect("上の梁が受ける").target
-    else {
-        panic!("Span")
-    };
-    let z_top = m.nodes[nodes[0].index()].coord[2];
-    assert!(
-        (z_top - 3000.0).abs() < 1e-9,
-        "下辺が切れれば上辺が受ける: {z_top}"
-    );
+/// 自重を持つ壁版は、負担率の未指定・不正値を解析前エラーとし、幾何から配らない。
+///
+/// 鉛直支持辺がそろった壁版でも分配しないことで、幾何フォールバックが無いことを
+/// 固定する（フォールバックがあれば辺が返る）。
+#[test]
+fn 未指定や不正な負担率は配らず診断する() {
+    for shares in [
+        vec![],
+        vec![1.0],
+        vec![0.0; 4],
+        vec![0.4, 0.0, 0.4, 0.0],
+        vec![1.1, 0.0, -0.1, 0.0],
+        vec![f64::NAN, 0.0, 0.0, 0.0],
+        vec![f64::INFINITY, 0.0, 0.0, 0.0],
+    ] {
+        let mut m = split_by_post();
+        m.wall_plates[0].self_weight_shares = shares;
+        assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+        assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+    }
+}
+
+/// 指定した辺を全長で支持できない壁版は、自重の行き先なしとして診断する。
+#[test]
+fn 支持区間が重複する壁版は配らず診断する() {
+    let mut m = bay();
+    add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
+    // 下辺を全長で覆う大梁に重ねて、半分だけ覆う大梁を足す（支持区間が重複する）。
+    m.elements.push(beam(4, 0, 4));
+    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
+    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
 }
 
 fn edge_len(model: &Model, bl: &BeamLoad) -> f64 {

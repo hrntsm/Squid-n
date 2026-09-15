@@ -270,12 +270,12 @@ fn joist_anchored_to_girder_midspan_becomes_point_load() {
     }
 }
 
-/// 鉛直な間柱は水平投影が 0 なので、自重は両端へ 1/2 ずつ渡る（従来の扱いを保つ）。
+/// 鉛直な間柱は、利用者が明示した端部負担率で自重を両端へ配る。
 ///
-/// 水平投影が 0 だと鉛直反力のモーメントのつり合いが退化し、荷重は軸力として流れる。
-/// 両端への配分は不静定になるため仮定が要る（申し送り §3.4 F8 の残課題）。
+/// 水平投影が 0 だと鉛直反力のモーメントのつり合いが退化するため、幾何から等分は
+/// せず、未指定・不正値は逐次伝達の対象から外して解析前チェックがエラーにする（ADR 0018）。
 #[test]
-fn vertical_post_splits_load_in_half() {
+fn vertical_post_splits_load_by_explicit_shares() {
     let mut m = base_model();
     for (i, c) in [
         [0.0, 0.0, 0.0],
@@ -304,12 +304,48 @@ fn vertical_post_splits_load_in_half() {
         name: "P1".into(),
     });
 
-    let t = solved(&mut m);
     let key = squid_n_core::ids::SecondaryMemberId(4);
-    let p = t.members.get(&key).expect("間柱");
     let half = w_self() * 3000.0 / 2.0;
+    let t = solved(&mut m);
+    let p = t.members.get(&key).expect("間柱");
     for r in p.reactions {
         assert!((r - half).abs() / half < 1e-9, "反力 {r} != {half}");
+    }
+
+    // 明示した負担率どおりに配る（幾何の等分には戻らない）。
+    for (ratios, expected) in [
+        ([1.0, 0.0], [2.0 * half, 0.0]),
+        ([0.25, 0.75], [0.5 * half, 1.5 * half]),
+        ([0.0, 1.0], [0.0, 2.0 * half]),
+    ] {
+        m.unassigned_posts[0].gravity_end_shares = Some(ratios);
+        let t = solved(&mut m);
+        let p = t.members.get(&key).expect("間柱");
+        for (actual, expected) in p.reactions.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "反力 {actual} != {expected}"
+            );
+        }
+    }
+
+    // 未指定・不正値は逐次伝達の対象から外れ、自重を主架構へ渡さない（解析前エラー）。
+    for ratios in [
+        None,
+        Some([0.0, 0.0]),
+        Some([-0.5, 1.5]),
+        Some([f64::NAN, 1.0]),
+    ] {
+        m.unassigned_posts[0].gravity_end_shares = ratios;
+        let t = solved(&mut m);
+        assert_eq!(t.invalid_end_shares, vec![key]);
+        assert!(
+            !t.members.contains_key(&key),
+            "不正な端部負担率の間柱は逐次伝達の対象から外れる"
+        );
+        let (nodal, member) = t.primary_loads(&m);
+        assert!(nodal.is_empty(), "節点荷重を渡さない: {nodal:?}");
+        assert!(member.is_empty(), "中間集中荷重を渡さない: {member:?}");
     }
 }
 

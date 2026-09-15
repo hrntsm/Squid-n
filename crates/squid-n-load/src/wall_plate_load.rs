@@ -195,7 +195,7 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
     };
 
     if !plate.has_valid_self_weight_shares(model) {
-        return geometric_edge_shares(index, plate, total, &boundary, &coords);
+        return Vec::new();
     }
     let n = boundary.len();
     let slit_edge = slit_edge_flags(model, plate, &boundary, &coords);
@@ -220,74 +220,6 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
         });
     }
     shares
-}
-
-/// 明示負担率が無い囲まれた壁版の自重を、境界辺の支持関係から配る。
-///
-/// 鉛直な支持辺が 2 辺ある場合は 2 辺へ等分し、無ければ水平な支持辺のうち
-/// 最も低い 1 辺へ全量を載せる。
-fn geometric_edge_shares(
-    index: &SupportIndex,
-    plate: &WallPlate,
-    total: f64,
-    boundary: &[NodeId],
-    coords: &[[f64; 3]],
-) -> Vec<WallEdgeShare> {
-    let model = index.model;
-    let n = boundary.len();
-    let slit_edge = slit_edge_flags(model, plate, boundary, coords);
-    let mut vertical: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
-    let mut horizontal: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if slit_edge[i] {
-            continue;
-        }
-        let (a, b) = (coords[i], coords[(i + 1) % n]);
-        if is_vertical(a, b) {
-            match index.of(a, b) {
-                Some(EdgeSupport::Post(key)) => vertical.push((i, Some(key))),
-                Some(EdgeSupport::Primary) => vertical.push((i, None)),
-                None => {}
-            }
-        } else if is_horizontal(a, b) {
-            horizontal.push(i);
-        }
-    }
-
-    let edge_nodes = |i: usize| [boundary[i], boundary[(i + 1) % n]];
-
-    if vertical.len() == 2 {
-        return vertical
-            .into_iter()
-            .map(|(i, post)| WallEdgeShare {
-                nodes: edge_nodes(i),
-                total: total / 2.0,
-                post,
-            })
-            .collect();
-    }
-
-    let mut supported: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
-    for &i in &horizontal {
-        let (a, b) = (coords[i], coords[(i + 1) % n]);
-        match index.of(a, b) {
-            Some(EdgeSupport::Post(key)) => supported.push((i, Some(key))),
-            Some(EdgeSupport::Primary) => supported.push((i, None)),
-            None => {}
-        }
-    }
-    let Some(&(bottom, post)) = supported.iter().min_by(|(i, _), (j, _)| {
-        let zi = (coords[*i][2] + coords[(*i + 1) % n][2]) / 2.0;
-        let zj = (coords[*j][2] + coords[(*j + 1) % n][2]) / 2.0;
-        zi.total_cmp(&zj)
-    }) else {
-        return Vec::new();
-    };
-    vec![WallEdgeShare {
-        nodes: edge_nodes(bottom),
-        total,
-        post,
-    }]
 }
 
 /// 要素にならない全壁版の自重を分配する。

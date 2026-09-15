@@ -214,6 +214,13 @@ fn wall_post_model() -> Model {
             )
             .expect("割当領域");
     }
+    for p in &mut model.wall_plates {
+        p.self_weight_shares = if p.id.0 == 0 {
+            vec![0.0, 0.5, 0.0, 0.5]
+        } else {
+            vec![0.5, 0.0, 0.5, 0.0]
+        };
+    }
     let report = rebuild_wall_regions(&mut model);
     assert_eq!(report.regions, 4, "1 スパンの 4 鉛直構面が検出される");
     assert_eq!(
