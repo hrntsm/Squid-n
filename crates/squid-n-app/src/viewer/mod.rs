@@ -26,6 +26,22 @@ mod playback;
 mod scene;
 mod support;
 
+/// 二次部材の両端に一致するモデル節点の添字。対応する節点が無ければ `None`。
+pub(crate) fn secondary_end_node_indices(
+    model: &squid_n_core::model::Model,
+    sm: &squid_n_core::model::SecondaryMember,
+) -> Option<[usize; 2]> {
+    let (a, b) = model.secondary_member_end_points(sm)?;
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let find = |p: [f64; 3]| {
+        model
+            .nodes
+            .iter()
+            .position(|n| squid_n_core::geom::vec3::dist(n.coord, p) <= tol)
+    };
+    Some([find(a)?, find(b)?])
+}
+
 /// ビューアの表示モード。
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum ViewMode {
@@ -446,10 +462,11 @@ use deform::{
     bbox_diagonal, deform_display_scale, display_disp, frame_bbox, model_bbox, model_bbox_size,
     time_history_deform_scale, BeamDeflection, DEFORM_CURVE_SEGMENTS,
 };
-use pick::pick_nearest_member;
+use pick::{pick_assignment_region, pick_nearest_member};
 use scene::{
-    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs, draw_wall_plates,
-    draws_as_line, element_draw_shape, DrawShape,
+    draw_anchor_marker, draw_assignment_regions, draw_axis_gadget, draw_grid_and_axes,
+    draw_mode_rest_ghost, draw_slabs, draw_wall_plates, draw_work_scope, draws_as_line,
+    element_draw_shape, DrawShape,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use support::{
@@ -590,6 +607,25 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let scale = fit * (cam.zoom / 3.0);
     let proj = Projector::new(center3, &cam, scale, center);
 
+    let region_pick_floor = app.ui.scoped.slab_draw_mode;
+    let region_pick_wall = app.ui.scoped.wall_draw_mode;
+    let region_hover = if (region_pick_floor || region_pick_wall) && cube_hover.is_none() {
+        response.hover_pos().and_then(|p| {
+            pick_assignment_region(
+                &app.core.model,
+                &proj,
+                p,
+                region_pick_floor,
+                region_pick_wall,
+            )
+        })
+    } else {
+        None
+    };
+    if region_hover.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
     match (&frame, app.ui.scoped.frame_target) {
         (Some(f), Some(t)) => {
             frame_view::draw_frame_grid(&painter, &app.core.model, f, t, (bmin, bmax), &proj)
@@ -715,6 +751,30 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
+    if region_pick_floor || region_pick_wall {
+        draw_assignment_regions(
+            &painter,
+            app,
+            &proj,
+            region_pick_floor,
+            region_pick_wall,
+            region_hover,
+        );
+    }
+
+    if app.ui.scoped.joist_place_mode || app.ui.scoped.post_place_mode {
+        draw_work_scope(
+            &painter,
+            app,
+            &proj,
+            app.ui.scoped.joist_place_mode,
+            app.ui.scoped.post_place_mode,
+        );
+        if let Some(first) = app.ui.scoped.member_place_first {
+            draw_anchor_marker(&painter, app, &proj, first);
+        }
+    }
+
     let mut solids_skipped = 0usize;
     if app.ui.view.show_sections && !lumped_only {
         solids_skipped = solid::draw_section_solids(
@@ -755,10 +815,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             let node_id = app.core.model.nodes[i].id;
             let is_first =
                 app.ui.scoped.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
-            let is_wall_pick = app.ui.scoped.wall_draw_nodes.contains(&node_id);
-            let is_slab_pick = app.ui.scoped.slab_draw_nodes.contains(&node_id);
             let is_selected = app.ui.scoped.selection.nodes.contains(&node_id);
-            let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
+            let (radius, color) = if is_first {
                 (5.0, theme::PARETO_RED)
             } else if is_selected {
                 (5.0, theme::HILITE_PURPLE)
@@ -842,8 +900,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 egui::Stroke::new(1.5_f32, theme::SECONDARY_AMBER)
             };
             for sm in app.core.model.joists().chain(app.core.model.posts()) {
-                let n0 = sm.nodes[0].index();
-                let n1 = sm.nodes[1].index();
+                let Some([n0, n1]) = secondary_end_node_indices(&app.core.model, sm) else {
+                    continue;
+                };
                 if !filter.shows_node(n0) || !filter.shows_node(n1) {
                     continue;
                 }
@@ -1413,19 +1472,20 @@ mod wall_expanded_view_model_tests {
             shear_rebar_material: None,
             steel_material: None,
         });
-        model.wall_plates.push(WallPlate {
-            self_weight_shares: Vec::new(),
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
             },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
+        );
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -1436,10 +1496,15 @@ mod wall_expanded_view_model_tests {
 
         let view = wall_expanded_view_model(&model);
         assert!(matches!(view, std::borrow::Cow::Owned(_)));
-        assert_eq!(view.elements.len(), 1);
-        assert_eq!(view.elements[0].kind, ElementKind::Wall);
+        assert_eq!(
+            view.elements
+                .iter()
+                .filter(|e| e.kind == ElementKind::Wall)
+                .count(),
+            1
+        );
         // 入力の正（`model`）は変更されない（D5。壁の解析要素はモデルに残さない）。
-        assert!(model.elements.is_empty());
+        assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));
     }
 
     /// 展開された耐震壁の材軸端点は上下辺中点（壁柱）になる。
@@ -1474,19 +1539,20 @@ mod wall_expanded_view_model_tests {
             shear_rebar_material: None,
             steel_material: None,
         });
-        model.wall_plates.push(WallPlate {
-            self_weight_shares: Vec::new(),
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
             },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
+        );
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -1495,7 +1561,11 @@ mod wall_expanded_view_model_tests {
             posts: Vec::new(),
         });
         let view = wall_expanded_view_model(&model);
-        let wall = &view.elements[0];
+        let wall = view
+            .elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Wall)
+            .expect("壁エレメント");
         let axis = member_axis_endpoints(wall, view.as_ref()).expect("axis");
         assert!((axis.p_i[2] - 0.0).abs() < 1e-6);
         assert!((axis.p_j[2] - 3000.0).abs() < 1e-6);

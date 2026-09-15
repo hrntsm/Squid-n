@@ -312,9 +312,7 @@ impl App {
         self.ui.scoped.beam_draw_mode = false;
         self.ui.scoped.beam_draw_first = None;
         self.ui.scoped.wall_draw_mode = false;
-        self.ui.scoped.wall_draw_nodes.clear();
         self.ui.scoped.slab_draw_mode = false;
-        self.ui.scoped.slab_draw_nodes.clear();
 
         self.ui.scoped.nav.focus_load_case = Some(editor.lc);
         self.ui.scoped.load_editor = Some(editor);

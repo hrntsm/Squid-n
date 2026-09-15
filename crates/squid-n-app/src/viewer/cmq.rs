@@ -54,8 +54,18 @@ fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementDat
         return false;
     }
     let (n0, n1) = (elem.nodes[0], elem.nodes[1]);
+    let (Some(c0), Some(c1)) = (
+        model.nodes.get(n0.index()).map(|n| n.coord),
+        model.nodes.get(n1.index()).map(|n| n.coord),
+    ) else {
+        return true;
+    };
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let near = |p: [f64; 3], q: [f64; 3]| squid_n_core::geom::vec3::dist(p, q) <= tol;
     let is_materialized_joist = model.joists().any(|sm| {
-        (sm.nodes[0] == n0 && sm.nodes[1] == n1) || (sm.nodes[0] == n1 && sm.nodes[1] == n0)
+        model
+            .secondary_member_end_points(sm)
+            .is_some_and(|(a, b)| (near(a, c0) && near(b, c1)) || (near(a, c1) && near(b, c0)))
     });
     !is_materialized_joist
 }

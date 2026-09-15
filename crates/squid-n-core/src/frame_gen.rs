@@ -28,8 +28,9 @@ use crate::ids::{FloorRegionId, SectionId, SlabId};
 use crate::material_grade::{material_presets, MaterialPreset};
 use crate::model::{
     default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource, ElementData,
-    ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Material, Model, Node, Section,
-    Slab, SlabPlate, SlabShape, SlabUsage, Story,
+    ElementKind, EndCondition, FloorPlateAssignmentRegions, FloorRegion, ForceRegime, LocalAxis,
+    Material, Model, Node, PlateAssignment, Section, Slab, SlabPlate, SlabShape, SlabUsage, Story,
+    SupportBoundary, SupportMemberId,
 };
 
 /// 同一の格子線とみなす座標差 [mm]（[`crate::axis_gen::AXIS_TOL_MM`] と同値）。
@@ -315,7 +316,7 @@ impl FrameSpec {
         let per_level = self.x_spans.len() * ny + self.y_spans.len() * nx;
         let girders = per_level * if self.with_girders { n_level } else { 1 };
         let slabs = if self.with_slabs {
-            self.x_spans.len() * self.y_spans.len() * n_level
+            self.x_spans.len() * self.y_spans.len() * if self.with_girders { n_level } else { 1 }
         } else {
             0
         };
@@ -362,6 +363,8 @@ pub struct FrameGenResult {
     pub materials: Vec<Material>,
     /// 床領域（大梁の 1 スパン区画。格子状の 1 マスにつき 1 つずつ）。
     pub floor_regions: Vec<FloorRegion>,
+    /// 床板割当領域（格子の 1 マスにつき 1 つ。対応する床板を割当済み）。
+    pub floor_assignment_regions: FloorPlateAssignmentRegions,
     /// 床板（`with_slabs` のときだけ、床領域 1 つにつき 1 枚）。
     pub slabs: Vec<Slab>,
 }
@@ -533,6 +536,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
     let mut materials = Vec::new();
     let mut floor_regions = Vec::new();
     let mut slabs = Vec::new();
+    let mut assignment_entries: Vec<(Vec<SupportBoundary>, PlateAssignment<SlabId>)> = Vec::new();
     if spec.with_slabs && nx >= 2 && ny >= 2 {
         let sec_id = SectionId(0);
         let mat_id = MaterialId(0);
@@ -558,6 +562,15 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         .to_section(sec_id, SLAB_SECTION_NAME.to_string());
         section.material = Some(mat_id);
         sections.push(section);
+        let mut girders: std::collections::HashMap<(u32, u32), (ElemId, bool)> =
+            std::collections::HashMap::new();
+        for e in &elements {
+            if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+                continue;
+            }
+            let (a, b) = (e.nodes[0].0, e.nodes[1].0);
+            girders.insert((a.min(b), a.max(b)), (e.id, a < b));
+        }
         for iz in 0..nz {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
@@ -567,19 +580,38 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
                         nid(ix + 1, iy + 1, iz),
                         nid(ix, iy + 1, iz),
                     ];
+                    let mut support_boundary = Vec::with_capacity(4);
+                    for k in 0..4 {
+                        let a = boundary[k].0;
+                        let b = boundary[(k + 1) % 4].0;
+                        let Some(&(elem, forward)) = girders.get(&(a.min(b), a.max(b))) else {
+                            support_boundary.clear();
+                            break;
+                        };
+                        support_boundary.push(SupportBoundary {
+                            support: SupportMemberId::Primary(elem),
+                            span: if forward == (a < b) {
+                                [0.0, 1.0]
+                            } else {
+                                [1.0, 0.0]
+                            },
+                        });
+                    }
+                    if support_boundary.is_empty() {
+                        continue;
+                    }
                     let region_id = FloorRegionId(floor_regions.len() as u32);
                     let slab_id = SlabId(slabs.len() as u32);
                     slabs.push(Slab {
                         id: slab_id,
-                        shape: SlabShape::Enclosed {
-                            boundary: boundary.clone(),
-                        },
+                        shape: SlabShape::Enclosed,
                         plate: SlabPlate {
                             section: Some(sec_id),
                             usage: spec.slab_usage,
                             ..Default::default()
                         },
                     });
+                    assignment_entries.push((support_boundary, PlateAssignment::Plate(slab_id)));
                     let mut region = FloorRegion::new(region_id, boundary);
                     region.slab_ids.push(slab_id);
                     floor_regions.push(region);
@@ -596,6 +628,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         sections,
         materials,
         floor_regions,
+        floor_assignment_regions: FloorPlateAssignmentRegions::from_assigned(assignment_entries),
         slabs,
     })
 }
@@ -614,6 +647,7 @@ pub fn frame_model(spec: &FrameSpec) -> Result<Model, String> {
         sections: gen.sections,
         materials: gen.materials,
         floor_regions: gen.floor_regions,
+        floor_assignment_regions: gen.floor_assignment_regions,
         slabs: gen.slabs,
         ..Model::with_default_load_cases()
     })

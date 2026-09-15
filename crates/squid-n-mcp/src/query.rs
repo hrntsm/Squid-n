@@ -87,9 +87,14 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
             .iter()
             .map(|p| {
                 let shape = match &p.shape {
-                    squid_n_core::model::WallPlateShape::Enclosed { boundary } => json!({
+                    squid_n_core::model::WallPlateShape::Enclosed => json!({
                         "kind": "Enclosed",
-                        "boundary": boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
+                        "boundary": p
+                            .boundary_nodes(model)
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|n| n.0)
+                            .collect::<Vec<_>>(),
                     }),
                     squid_n_core::model::WallPlateShape::Attached { anchor, extent } => json!({
                         "kind": "Attached",
@@ -119,10 +124,18 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
             .iter()
             .map(|s| {
                 let shape = match &s.shape {
-                    squid_n_core::model::SlabShape::Enclosed { boundary } => json!({
-                        "kind": "Enclosed",
-                        "boundary": boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
-                    }),
+                    squid_n_core::model::SlabShape::Enclosed => {
+                        let boundary: Vec<u32> = s
+                            .boundary_nodes(model)
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|n| n.0)
+                            .collect();
+                        json!({
+                            "kind": "Enclosed",
+                            "boundary": boundary,
+                        })
+                    }
                     squid_n_core::model::SlabShape::Attached { anchor, extent } => json!({
                         "kind": "Attached",
                         "anchor": anchor,
@@ -165,6 +178,24 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "posts": r.posts,
                 })
             })
+            .collect(),
+        "floor_assignment_region" | "floor_assignment_regions" => {
+            serde_json::to_value(&model.floor_assignment_regions.regions)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+        }
+        "wall_assignment_region" | "wall_assignment_regions" => {
+            serde_json::to_value(&model.wall_assignment_regions.regions)
+                .ok()
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+        }
+        "secondary_member_end" | "secondary_member_ends" => model
+            .joists()
+            .chain(model.posts())
+            .filter(|sm| !sm.is_detached())
+            .map(|sm| serde_json::to_value(sm).unwrap_or(json!(null)))
             .collect(),
         "unassigned_joist" | "unassigned_joists" => serde_json::to_value(&model.unassigned_joists)
             .ok()

@@ -222,6 +222,26 @@ pub fn build_report_csv(app: &App) -> String {
 
     out.push_str(&build_quantity_csv(model));
 
+    {
+        let (floors, walls) = model.unset_plate_assignment_regions();
+        if !floors.is_empty() || !walls.is_empty() {
+            let list = |ids: &[u32]| {
+                ids.iter()
+                    .map(|id| format!("R{id}"))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            };
+            let floors_list: Vec<u32> = floors.iter().map(|id| id.0).collect();
+            let walls_list: Vec<u32> = walls.iter().map(|id| id.0).collect();
+            out.push_str("\n[未設定の割当領域]\n");
+            out.push_str(&format!("床板 未設定件数,{}\n", floors.len()));
+            out.push_str(&format!("床板 対象ID,{}\n", list(&floors_list)));
+            out.push_str(&format!("壁版 未設定件数,{}\n", walls.len()));
+            out.push_str(&format!("壁版 対象ID,{}\n", list(&walls_list)));
+            out.push_str("備考,未設定の領域は床荷重・躯体自重と壁の剛性が解析に入らず応力・変形を過小評価し得ます\n");
+        }
+    }
+
     let Some(results) = &app.core.scoped.results else {
         out.push_str("\n(解析結果なし)\n");
         return out;
@@ -870,6 +890,55 @@ mod tests {
         assert!(csv.contains("パネルゾーン"), "{csv}");
         // 数量積算セクションも常時含まれる。
         assert!(csv.contains("[数量積算 部位別]"));
+    }
+
+    /// 未設定の割当領域があるとき、CSV レポートに件数と対象 ID を記載する。
+    #[test]
+    fn test_report_csv_records_unset_assignment_regions() {
+        use squid_n_core::ids::{ElemId, NodeId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+        };
+        let mut app = App::default();
+        let mut model = Model::default();
+        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(Node {
+                id: NodeId(i as u32),
+                coord: [x, y, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.elements.push(ElementData {
+                id: ElemId(i as u32),
+                kind: ElementKind::Beam,
+                nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+                section: None,
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            });
+        }
+        model.rebuild_floor_assignment_regions();
+        app.core.model = model;
+        let csv = build_report_csv(&app);
+        assert!(csv.contains("[未設定の割当領域]"), "{csv}");
+        assert!(csv.contains("床板 未設定件数,1"), "{csv}");
+        assert!(csv.contains("床板 対象ID,R0"), "{csv}");
     }
 
     #[test]

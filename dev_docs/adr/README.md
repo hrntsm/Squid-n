@@ -25,6 +25,7 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0017](0017-attached-slab-support-edges.md) | accepted | 取り付く床板の荷重は、全長を覆う支持部材の辺へ最近接負担面積で分配する |
 | [0018](0018-explicit-gravity-supports.md) | accepted | 壁自重の支持辺と鉛直二次部材の端部負担率を明示する |
 | [0019](0019-material-wall-section-and-directional-strength.md) | accepted | 壁の材料別実断面と正負別せん断耐力を採用する |
+| [0020](0020-assign-plates-to-member-bounded-regions.md) | accepted | 囲まれた床板・壁版は支持部材で分割された領域へ割り当てる |
 
 ## 規約
 

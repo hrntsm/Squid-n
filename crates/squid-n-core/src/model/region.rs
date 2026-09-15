@@ -81,15 +81,31 @@ impl Model {
         })
     }
 
-    /// 二次部材（端点対で識別）が属する床領域。どこにも属さなければ `None`。
-    pub fn floor_region_of_joist(&self, nodes: [NodeId; 2]) -> Option<&FloorRegion> {
-        let key = |a: NodeId, b: NodeId| (a.0.min(b.0), a.0.max(b.0));
-        let want = key(nodes[0], nodes[1]);
-        self.floor_regions.iter().find(|r| {
-            r.secondary_joists
-                .iter()
-                .any(|j| key(j.nodes[0], j.nodes[1]) == want)
-        })
+    /// 二次部材（安定 ID）が属する床領域。どこにも属さなければ `None`。
+    pub fn floor_region_of_joist(&self, id: SecondaryMemberId) -> Option<&FloorRegion> {
+        self.floor_regions
+            .iter()
+            .find(|r| r.secondary_joists.iter().any(|j| j.id == id))
+    }
+
+    /// 床領域の境界多角形の内側（境界を除く）に点 `p` [mm] があるか。
+    /// 境界座標やレベルが引けない場合は `false`。
+    pub fn floor_region_contains_point(&self, id: FloorRegionId, p: [f64; 3]) -> bool {
+        let Some(region) = self.floor_regions.iter().find(|r| r.id == id) else {
+            return false;
+        };
+        let Some(coords) = region.boundary_coords(self) else {
+            return false;
+        };
+        if coords.len() < 3 {
+            return false;
+        }
+        let z = coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64;
+        if (p[2] - z).abs() > crate::geom::LEVEL_TOL_MM {
+            return false;
+        }
+        let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
+        crate::geom::polygon::contains_excluding_boundary(&poly, [p[0], p[1]])
     }
 }
 

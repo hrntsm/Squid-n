@@ -27,10 +27,13 @@
 
 use squid_n_app::app::App;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, WallPlateId};
+use squid_n_core::ids::{
+    ElemId, LoadCaseId, MaterialId, NodeId, SecondaryMemberId, SectionId, WallPlateId,
+};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    Model, Node, RigidZone, SecondaryMember, SecondaryMemberKind, WallPlate, WallPlateShape,
+    Model, Node, RigidZone, SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds,
+    SecondaryMemberKind, SupportMemberId, WallPlate, WallPlateShape,
 };
 use squid_n_core::section_shape::SectionShape;
 use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
@@ -172,31 +175,52 @@ fn wall_post_model() -> Model {
             .push(beam(8 + k as u32, *i, *j, 1, [0.0, 0.0, 1.0]));
     }
 
-    // Y=0 面の壁を、間柱（節点 8-9）の位置で 2 枚へ分割する。
-    for (id, boundary) in [(0u32, [0u32, 8, 9, 4]), (1, [8, 1, 5, 9])] {
-        model.wall_plates.push(WallPlate {
-            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
-            id: WallPlateId(id),
-            shape: WallPlateShape::Enclosed {
-                boundary: boundary.into_iter().map(NodeId).collect(),
-            },
-            section: Some(SectionId(2)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
-    }
+    // 間柱（節点 8-9）を安定 ID ＋取付き位置で表し、Y=0 面の壁版割当領域を
+    // 間柱で 2 枚へ分割する。
     model.unassigned_posts.push(SecondaryMember {
+        id: SecondaryMemberId(0),
         gravity_end_shares: Some([0.5, 0.5]),
-        end_support: Default::default(),
         kind: SecondaryMemberKind::Post,
-        nodes: [NodeId(8), NodeId(9)],
+        ends: SecondaryMemberEnds::Supported([
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(8)),
+                position: 0.5,
+            },
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(4)),
+                position: 0.5,
+            },
+        ]),
         section: Some(SectionId(3)),
         name: "P1".into(),
     });
-
+    model.rebuild_wall_assignment_regions();
+    for (id, boundary) in [(0u32, [0u32, 8, 9, 4]), (1, [8, 1, 5, 9])] {
+        let nodes: Vec<NodeId> = boundary.into_iter().map(NodeId).collect();
+        model
+            .assign_enclosed_wall_plate_to_matching_region(
+                &nodes,
+                WallPlate {
+                    self_weight_shares: Vec::new(),
+                    id: WallPlateId(id),
+                    shape: WallPlateShape::Enclosed,
+                    section: Some(SectionId(2)),
+                    opening_area: 0.0,
+                    opening_weight: 0.0,
+                    openings: Vec::new(),
+                    loads: vec![],
+                    slit: Default::default(),
+                },
+            )
+            .expect("割当領域");
+    }
+    for p in &mut model.wall_plates {
+        p.self_weight_shares = if p.id.0 == 0 {
+            vec![0.0, 0.5, 0.0, 0.5]
+        } else {
+            vec![0.5, 0.0, 0.5, 0.0]
+        };
+    }
     let report = rebuild_wall_regions(&mut model);
     assert_eq!(report.regions, 4, "1 スパンの 4 鉛直構面が検出される");
     assert_eq!(
@@ -269,7 +293,7 @@ fn test_wall_weight_is_split_between_columns_and_post() {
 
     let post = out
         .posts
-        .get(&(NodeId(8), NodeId(9)))
+        .get(&SecondaryMemberId(0))
         .expect("間柱が壁版から荷重を受ける");
     let post_total: f64 = post
         .member_loads
@@ -344,7 +368,7 @@ fn test_wall_weight_reaches_dl_load_case() {
     let dl_total = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
-            app.core.model.wall_plates.clear();
+            app.core.model.retain_wall_plates(|_| false);
             for r in &mut app.core.model.wall_regions {
                 r.wall_plate_ids.clear();
             }
@@ -454,7 +478,7 @@ fn test_wall_weight_reaches_column_axial_force() {
     let base_axial = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
-            app.core.model.wall_plates.clear();
+            app.core.model.retain_wall_plates(|_| false);
             for r in &mut app.core.model.wall_regions {
                 r.wall_plate_ids.clear();
             }

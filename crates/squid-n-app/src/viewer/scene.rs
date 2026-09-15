@@ -6,7 +6,8 @@ use crate::app::App;
 use crate::theme;
 
 use super::{
-    camera::q_rotate, support::draw_arrow, CameraState, DiagramPlane, FrameFilter, Projector,
+    camera::q_rotate, pick::RegionPick, support::draw_arrow, CameraState, DiagramPlane,
+    FrameFilter, Projector,
 };
 
 pub(super) fn diagram_offset_dir(
@@ -158,10 +159,12 @@ pub(super) fn draw_slabs(
     coords3: &[[f64; 3]],
 ) {
     for slab in &app.core.model.slabs {
-        if !slab_visible_on_frame(slab, filter) {
+        if !slab_visible_on_frame(&app.core.model, slab, filter) {
             continue;
         }
-        let Some(coords) = slab.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
+        let Some(coords) =
+            slab.boundary_coords_with(&app.core.model, |n| coords3.get(n.index()).copied())
+        else {
             continue;
         };
         draw_load_plate_polygon(painter, &coords, proj, theme::BEST_YELLOW, true);
@@ -191,7 +194,7 @@ pub(super) fn draw_wall_plates(
         if app.core.model.wall_plate_becomes_element(plate) {
             continue;
         }
-        if !wall_plate_visible_on_frame(plate, filter) {
+        if !wall_plate_visible_on_frame(&app.core.model, plate, filter) {
             continue;
         }
         let Some(coords) =
@@ -206,6 +209,156 @@ pub(super) fn draw_wall_plates(
             theme::DATA_BLUE,
             plate_fill_is_valid(&app.core.model, plate),
         );
+    }
+}
+
+/// 割当領域の状態に対応する色。
+///
+/// 未設定＝警告色（版が無く荷重・剛性を過小評価し得る）、版なし＝灰色（明示的な
+/// 選択）、版あり＝緑（割当済み）。
+fn assignment_color<Id: Copy>(state: squid_n_core::model::PlateAssignment<Id>) -> egui::Color32 {
+    if state.is_unset() {
+        theme::ERROR_RED
+    } else if state.is_no_plate() {
+        theme::GRAY_600
+    } else {
+        theme::GOOD_GREEN
+    }
+}
+
+/// 割当領域 1 枚の多角形を描く。ホバー中は太い輪郭で強調する。
+fn draw_assignment_region_polygon(
+    painter: &egui::Painter,
+    proj: &Projector,
+    coords: &[[f64; 3]],
+    color: egui::Color32,
+    hovered: bool,
+) {
+    let poly: Vec<egui::Pos2> = coords.iter().map(|&c| proj.project(c)).collect();
+    if poly.len() < 3 {
+        return;
+    }
+    let fill_alpha = if hovered { 90 } else { 45 };
+    painter.add(egui::Shape::convex_polygon(
+        poly.clone(),
+        theme::translucent(color, fill_alpha),
+        egui::Stroke::NONE,
+    ));
+    let mut closed = poly;
+    closed.push(closed[0]);
+    let width = if hovered { 4.0_f32 } else { 2.0_f32 };
+    painter.add(egui::Shape::line(closed, egui::Stroke::new(width, color)));
+}
+
+/// 3D ビューに床板・壁版の割当領域を描く（割当のクリック選択とホバー強調）。
+///
+/// `coords3` は使わず、割当領域の境界を支持部材の材軸から解決したモデル座標を
+/// 投影する。描く種別は作成モードに合わせて呼び分ける。
+pub(super) fn draw_assignment_regions(
+    painter: &egui::Painter,
+    app: &App,
+    proj: &Projector,
+    floor: bool,
+    wall: bool,
+    hover: Option<RegionPick>,
+) {
+    let model = &app.core.model;
+    if floor {
+        for region in &model.floor_assignment_regions.regions {
+            let Some(coords) = model.floor_assignment_region_coords(region.id) else {
+                continue;
+            };
+            draw_assignment_region_polygon(
+                painter,
+                proj,
+                &coords,
+                assignment_color(region.assignment),
+                hover == Some(RegionPick::Floor(region.id)),
+            );
+        }
+    }
+    if wall {
+        for region in &model.wall_assignment_regions.regions {
+            let Some(coords) = model.wall_assignment_region_coords(region.id) else {
+                continue;
+            };
+            draw_assignment_region_polygon(
+                painter,
+                proj,
+                &coords,
+                assignment_color(region.assignment),
+                hover == Some(RegionPick::Wall(region.id)),
+            );
+        }
+    }
+}
+
+/// 3D ビューに作業範囲（親の床領域・壁領域）を強調表示する。
+pub(super) fn draw_work_scope(
+    painter: &egui::Painter,
+    app: &App,
+    proj: &Projector,
+    include_floor: bool,
+    include_wall: bool,
+) {
+    use crate::app::WorkScope;
+    let model = &app.core.model;
+    let scope = app.ui.scoped.work_scope;
+    if include_floor {
+        for region in &model.floor_regions {
+            let Some(coords) = region.boundary_coords(model) else {
+                continue;
+            };
+            let selected = scope == Some(WorkScope::Floor(region.id));
+            draw_work_scope_polygon(painter, proj, &coords, selected);
+        }
+    }
+    if include_wall {
+        for region in &model.wall_regions {
+            let Some(coords) = region.boundary_coords(model) else {
+                continue;
+            };
+            let selected = scope == Some(WorkScope::Wall(region.id));
+            draw_work_scope_polygon(painter, proj, &coords, selected);
+        }
+    }
+}
+
+/// 作業範囲 1 枚の多角形。選択中は太い輪郭と濃い塗りで強調する。
+fn draw_work_scope_polygon(
+    painter: &egui::Painter,
+    proj: &Projector,
+    coords: &[[f64; 3]],
+    selected: bool,
+) {
+    let poly: Vec<egui::Pos2> = coords.iter().map(|&c| proj.project(c)).collect();
+    if poly.len() < 3 {
+        return;
+    }
+    let color = theme::WARN_TEXT;
+    let fill_alpha = if selected { 70 } else { 20 };
+    painter.add(egui::Shape::convex_polygon(
+        poly.clone(),
+        theme::translucent(color, fill_alpha),
+        egui::Stroke::NONE,
+    ));
+    let mut closed = poly;
+    closed.push(closed[0]);
+    let width = if selected { 4.0_f32 } else { 1.5_f32 };
+    painter.add(egui::Shape::line(closed, egui::Stroke::new(width, color)));
+}
+
+/// 配置モードで 1 点目に選んだ支持部材アンカーを丸印で示す。
+pub(super) fn draw_anchor_marker(
+    painter: &egui::Painter,
+    app: &App,
+    proj: &Projector,
+    anchor: squid_n_core::model::SecondaryMemberAnchor,
+) {
+    if let Some(p) = app.core.model.anchor_point(anchor) {
+        let screen = proj.project(p);
+        painter.circle_stroke(screen, 6.0, egui::Stroke::new(2.5_f32, theme::WARN_TEXT));
+        painter.circle_filled(screen, 2.5_f32, theme::WARN_TEXT);
     }
 }
 
@@ -225,20 +378,21 @@ pub(super) fn plate_fill_is_valid(
         WallPlateShape::Attached { .. } => model
             .wall_plate_extent(plate)
             .is_some_and(|e| e[0] * e[1] >= 0.0),
-        WallPlateShape::Enclosed { .. } => true,
+        WallPlateShape::Enclosed => true,
     }
 }
 
 /// 壁版が現在の構面表示に含まれるか（[`slab_visible_on_frame`] の壁版版）。
 pub(super) fn wall_plate_visible_on_frame(
+    model: &squid_n_core::Model,
     plate: &squid_n_core::model::WallPlate,
     filter: FrameFilter,
 ) -> bool {
     use squid_n_core::model::{RegionAnchor, WallPlateShape};
     match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => {
-            boundary.iter().all(|n| filter.shows_node(n.index()))
-        }
+        WallPlateShape::Enclosed => plate
+            .boundary_nodes(model)
+            .is_some_and(|boundary| boundary.iter().all(|n| filter.shows_node(n.index()))),
         WallPlateShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::FloorRegion { nodes, .. } => {
@@ -249,10 +403,16 @@ pub(super) fn wall_plate_visible_on_frame(
     }
 }
 
-fn slab_visible_on_frame(slab: &squid_n_core::model::Slab, filter: FrameFilter) -> bool {
+fn slab_visible_on_frame(
+    model: &squid_n_core::model::Model,
+    slab: &squid_n_core::model::Slab,
+    filter: FrameFilter,
+) -> bool {
     use squid_n_core::model::{RegionAnchor, SlabShape};
     match &slab.shape {
-        SlabShape::Enclosed { boundary } => boundary.iter().all(|n| filter.shows_node(n.index())),
+        SlabShape::Enclosed => slab
+            .boundary_nodes(model)
+            .is_some_and(|b| b.iter().all(|n| filter.shows_node(n.index()))),
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::Point(n) => filter.shows_node(n.index()),
@@ -336,8 +496,9 @@ pub(super) fn draw_mode_rest_ghost(
             theme::translucent(theme::SECONDARY_AMBER, LINE_A),
         );
         for sm in app.core.model.joists().chain(app.core.model.posts()) {
-            let n0 = sm.nodes[0].index();
-            let n1 = sm.nodes[1].index();
+            let Some([n0, n1]) = super::secondary_end_node_indices(&app.core.model, sm) else {
+                continue;
+            };
             if !filter.shows_node(n0) || !filter.shows_node(n1) {
                 continue;
             }
@@ -351,76 +512,6 @@ pub(super) fn draw_mode_rest_ghost(
             }
         }
     }
-}
-
-pub(super) fn order_wall_nodes(
-    model: &squid_n_core::model::Model,
-    node_ids: &[squid_n_core::ids::NodeId],
-) -> Vec<squid_n_core::ids::NodeId> {
-    let coords: Vec<[f64; 3]> = node_ids
-        .iter()
-        .map(|id| model.node(*id).map(|n| n.coord).unwrap_or([0.0; 3]))
-        .collect();
-    if coords.len() < 3 {
-        return node_ids.to_vec();
-    }
-
-    let n = coords.len() as f64;
-    let centroid = [
-        coords.iter().map(|c| c[0]).sum::<f64>() / n,
-        coords.iter().map(|c| c[1]).sum::<f64>() / n,
-        coords.iter().map(|c| c[2]).sum::<f64>() / n,
-    ];
-
-    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: [f64; 3], b: [f64; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-
-    let u = {
-        let d = sub(coords[1], coords[0]);
-        let len = norm(d);
-        if len < 1e-9 {
-            [1.0, 0.0, 0.0]
-        } else {
-            [d[0] / len, d[1] / len, d[2] / len]
-        }
-    };
-    let mut normal = [0.0; 3];
-    for c in coords.iter().skip(2) {
-        let cand = cross(sub(coords[1], coords[0]), sub(*c, coords[0]));
-        if norm(cand) > 1e-9 {
-            normal = cand;
-            break;
-        }
-    }
-    let v = {
-        let cand = cross(normal, u);
-        let len = norm(cand);
-        if len < 1e-9 {
-            return node_ids.to_vec();
-        }
-        [cand[0] / len, cand[1] / len, cand[2] / len]
-    };
-
-    let mut indexed: Vec<(usize, f64)> = coords
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let r = sub(*c, centroid);
-            let pu = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
-            let pv = r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
-            (i, pv.atan2(pu))
-        })
-        .collect();
-    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    indexed.into_iter().map(|(i, _)| node_ids[i]).collect()
 }
 
 pub(super) fn draw_grid_and_axes(painter: &egui::Painter, rect: egui::Rect, projector: &Projector) {
@@ -557,11 +648,11 @@ mod tests {
     use super::*;
     use squid_n_core::model::ElementKind;
 
-    fn enclosed_plate(boundary: Vec<squid_n_core::ids::NodeId>) -> squid_n_core::model::WallPlate {
+    fn enclosed_plate() -> squid_n_core::model::WallPlate {
         squid_n_core::model::WallPlate {
             self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
-            shape: squid_n_core::model::WallPlateShape::Enclosed { boundary },
+            shape: squid_n_core::model::WallPlateShape::Enclosed,
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -569,6 +660,26 @@ mod tests {
             loads: vec![],
             slit: Default::default(),
         }
+    }
+
+    /// 境界節点で囲まれた壁版と割当領域を持つモデル。
+    fn model_with_enclosed(
+        boundary: &[squid_n_core::ids::NodeId],
+    ) -> (squid_n_core::Model, squid_n_core::ids::WallPlateId) {
+        let count = boundary.iter().map(|n| n.0 + 1).max().unwrap_or(0);
+        let mut model = squid_n_core::Model::default();
+        for i in 0..count {
+            model.nodes.push(squid_n_core::model::Node {
+                id: squid_n_core::ids::NodeId(i),
+                coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        let id = model.add_enclosed_wall_plate_from_nodes(boundary, enclosed_plate());
+        (model, id)
     }
 
     /// 立ち上がり高さが両端で符号反転する取り付く壁版は、塗らずに輪郭だけ描く。
@@ -581,7 +692,7 @@ mod tests {
         use squid_n_core::ids::NodeId;
         use squid_n_core::model::{RegionAnchor, WallPlateShape};
         let model = squid_n_core::Model::default();
-        let mut plate = enclosed_plate(Vec::new());
+        let mut plate = enclosed_plate();
         let mut with_extent = |extent: [f64; 2]| {
             plate.shape = WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -599,10 +710,7 @@ mod tests {
         assert!(!with_extent([900.0, -900.0]), "符号が反転する壁は塗らない");
 
         // 囲まれた壁版は境界そのものなので、この理由では塗りを止めない。
-        assert!(plate_fill_is_valid(
-            &model,
-            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)])
-        ));
+        assert!(plate_fill_is_valid(&model, &enclosed_plate()));
     }
 
     /// 構面表示中は、境界節点がすべてその構面にある壁版だけを描く。
@@ -618,12 +726,16 @@ mod tests {
             node_on: Some(&on),
         };
         // 節点 3 が構面外。
+        let (model, id) = model_with_enclosed(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)]);
         assert!(!wall_plate_visible_on_frame(
-            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]),
+            &model,
+            model.wall_plate(id).unwrap(),
             filter
         ));
+        let (model3, id3) = model_with_enclosed(&[NodeId(0), NodeId(1), NodeId(2)]);
         assert!(wall_plate_visible_on_frame(
-            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2)]),
+            &model3,
+            model3.wall_plate(id3).unwrap(),
             filter
         ));
         // 構面表示していないときはすべて描く。
@@ -632,7 +744,8 @@ mod tests {
             node_on: None,
         };
         assert!(wall_plate_visible_on_frame(
-            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]),
+            &model,
+            model.wall_plate(id).unwrap(),
             all
         ));
     }
@@ -648,7 +761,8 @@ mod tests {
             elem_on: None,
             node_on: Some(&on),
         };
-        let mut plate = enclosed_plate(Vec::new());
+        let mut plate = enclosed_plate();
+        let empty = squid_n_core::Model::default();
         plate.shape = WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
@@ -657,7 +771,7 @@ mod tests {
             },
             extent: Some([900.0, 900.0]),
         };
-        assert!(wall_plate_visible_on_frame(&plate, filter));
+        assert!(wall_plate_visible_on_frame(&empty, &plate, filter));
 
         plate.shape = WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -667,13 +781,13 @@ mod tests {
             },
             extent: Some([900.0, 900.0]),
         };
-        assert!(!wall_plate_visible_on_frame(&plate, filter));
+        assert!(!wall_plate_visible_on_frame(&empty, &plate, filter));
 
         plate.shape = WallPlateShape::Attached {
             anchor: RegionAnchor::Point(NodeId(0)),
             extent: Some([900.0, 900.0]),
         };
-        assert!(!wall_plate_visible_on_frame(&plate, filter));
+        assert!(!wall_plate_visible_on_frame(&empty, &plate, filter));
     }
 
     #[test]

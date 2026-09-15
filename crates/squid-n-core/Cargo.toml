@@ -8,6 +8,7 @@ license = "MIT"
 serde     = { workspace = true }
 smallvec  = { workspace = true }
 thiserror = { workspace = true }
+i_overlay = { workspace = true }
 
 [dev-dependencies]
 approx      = { workspace = true }

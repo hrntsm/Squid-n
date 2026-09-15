@@ -139,8 +139,10 @@ impl App {
                 .clicked()
             {
                 if let Some(t) = target {
-                    self.start_static_target_job(t);
-                    if self.core.scoped.last_error.is_none() {
+                    self.request_analysis(PendingAnalysis::StaticTarget(t));
+                    if self.core.scoped.last_error.is_none()
+                        && self.core.scoped.pending_unset_analysis.is_none()
+                    {
                         self.ui.view.active_tab = Tab::Results;
                         self.ui.view.results_view = ResultsView::Spatial;
                     }
@@ -156,8 +158,10 @@ impl App {
                 )
                 .clicked()
             {
-                self.start_static_all_job();
-                if self.core.scoped.last_error.is_none() {
+                self.request_analysis(PendingAnalysis::StaticAll);
+                if self.core.scoped.last_error.is_none()
+                    && self.core.scoped.pending_unset_analysis.is_none()
+                {
                     self.ui.view.active_tab = Tab::Results;
                     self.ui.view.results_view = ResultsView::Spatial;
                 }
@@ -233,7 +237,7 @@ impl App {
                 .add_enabled(!running, egui::Button::new("▶ 実行"))
                 .clicked()
             {
-                self.start_eigen_job(self.core.analysis_cfg.n_modes);
+                self.request_analysis(PendingAnalysis::Eigen(self.core.analysis_cfg.n_modes));
             }
         });
         ui.colored_label(
@@ -358,7 +362,7 @@ impl App {
                 .add_enabled(!running, egui::Button::new("▶ 実行"))
                 .clicked()
             {
-                self.start_pushover_job();
+                self.request_analysis(PendingAnalysis::Pushover);
             }
             if self
                 .core
@@ -554,7 +558,7 @@ impl App {
                 .clicked()
             {
                 let wave = Self::sample_wave(&self.core.analysis_cfg);
-                self.start_time_history_job(wave);
+                self.request_analysis(PendingAnalysis::TimeHistory(Box::new(wave)));
             }
             if ui
                 .add_enabled(!running, egui::Button::new("📂 波形CSVを開いて実行…"))
@@ -637,7 +641,7 @@ impl App {
         let Some(wave) = self.ground_motion_or_report(&cfg, &content) else {
             return;
         };
-        self.start_time_history_job(wave);
+        self.request_analysis(PendingAnalysis::TimeHistory(Box::new(wave)));
     }
 
     /// 右ドック「質点系」パネル。
@@ -826,7 +830,7 @@ impl App {
                 .add_enabled(!running, egui::Button::new("▶ 固有値を実行"))
                 .clicked()
             {
-                self.start_lumped_mass_eigen_job();
+                self.request_analysis(PendingAnalysis::LumpedMassEigen);
             }
             if ui
                 .add_enabled(!running, egui::Button::new("▶ サンプル波で時刻歴"))

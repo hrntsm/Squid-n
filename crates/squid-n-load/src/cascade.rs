@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
-use squid_n_core::ids::NodeId;
+use squid_n_core::ids::{NodeId, SecondaryMemberId};
 use squid_n_core::model::{
     EndSupport, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
 };
@@ -21,16 +21,16 @@ use squid_n_core::model::{
 use squid_n_core::ids::SlabId;
 
 use crate::floor::{
-    joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
-    secondary_joist_distribution_split, simple_reactions, span_node_key, BeamLoad,
+    joist_distribution_is_ready, joist_self_weight_udl, secondary_joist_distribution_split,
+    simple_reactions, BeamLoad, Cmq, LoadShape, LoadTarget,
 };
 use crate::secondary::project_on_segment;
 
-/// 二次部材 1 本の識別キー（両端節点の順不同対）。
+/// 二次部材 1 本の識別キー（安定 ID）。
 ///
-/// 二次部材はグローバル ID を持たない（実体は床領域・壁領域または未割当リスト）ため、
-/// 端点の節点対で識別する（`Model::validate` が種別＋端点の重複を拒否する）。
-pub type SecondaryKey = (NodeId, NodeId);
+/// 二次部材はモデル節点を持たないため、安定 [`SecondaryMemberId`] で識別する
+/// （`Model::validate` が ID の重複を拒否する）。
+pub type SecondaryKey = SecondaryMemberId;
 
 /// 二次部材の端部が載る先。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,9 +38,9 @@ pub enum SupportAt {
     /// 主架構（要素が接続する節点、または大梁のスパン上）。逐次伝達の終端。
     Primary,
     /// 別の二次部材の内部。逐次伝達を 1 段進める。`a` は受け側の材軸上の位置 [mm]
-    /// （受け側の `nodes[0]` からの距離）。
+    /// （受け側の材軸始端からの距離）。
     Secondary { key: SecondaryKey, a: f64 },
-    /// 自由端（`EndSupport::Free`）。荷重はこの端から出ていかない。
+    /// 自由端（片持ちの自由端）。荷重はこの端から出ていかない。
     Free,
     /// どこにも載っていない。荷重の行き先がない（診断のエラー対象）。
     Unresolved,
@@ -49,16 +49,18 @@ pub enum SupportAt {
 /// 逐次伝達を解いた二次部材 1 本。
 #[derive(Clone, Debug)]
 pub struct TransferredMember {
-    /// 両端節点（`SecondaryMember::nodes` と同じ順）。
-    pub nodes: [NodeId; 2],
+    /// 二次部材の安定 ID。
+    pub member: SecondaryMemberId,
+    /// 両端座標 [mm]（端番号順。片持ちは支持端 0・自由端 1）。
+    pub end_points: [[f64; 3]; 2],
     /// 支持間距離 [mm]。
     pub span: f64,
-    /// この部材が受け持つ全荷重（材軸局所。`nodes[0]` を原点とする）。
+    /// この部材が受け持つ全荷重（材軸局所。端 0 を原点とする）。
     /// 床分配の辺荷重・自重・架け側から渡された集中荷重の重ね合わせ。
     pub member_loads: Vec<MemberLoadKind>,
-    /// 両端反力 [N]（下向きの荷重に対して正）。`nodes` と同じ並び。
+    /// 両端反力 [N]（下向きの荷重に対して正）。`end_points` と同じ並び。
     pub reactions: [f64; 2],
-    /// 各端の支持相手。`nodes` と同じ並び。
+    /// 各端の支持相手。`end_points` と同じ並び。
     pub supports: [SupportAt; 2],
     /// 床分配が断面検定に足りているか（期待床板が揃い、載荷長さがスパンの半分以上。
     /// `crate::floor::joist_distribution_is_ready`）。分配を持たない二次部材
@@ -86,50 +88,109 @@ pub struct SecondaryTransfer {
 }
 
 impl SecondaryTransfer {
-    /// 主架構へ渡す荷重（`(節点, 下向き荷重 [N])`）。
+    /// 主架構へ渡す荷重（節点荷重と、大梁材軸へ載せる中間集中荷重）を返す。
     ///
-    /// 終端（[`SupportAt::Primary`]）の端部だけを返す。呼び出し側は節点荷重として
-    /// 積み、[`crate::secondary::resolve_nodal_to_primary`] で大梁の中間集中荷重へ
-    /// 変換する（節点が大梁のスパン途中にあるため）。
-    pub fn primary_node_loads(&self) -> Vec<(NodeId, f64)> {
-        let mut out = Vec::new();
+    /// 終端（[`SupportAt::Primary`]）の端部だけを返す。端部座標に一致するモデル節点が
+    /// あれば節点荷重として積む（[`crate::secondary::resolve_nodal_to_primary`] が
+    /// 必要に応じて大梁の中間集中荷重へ変換する）。一致する節点が無い場合は、
+    /// 端部が載る大梁を特定して、その材軸位置への中間集中荷重（[`LoadShape::Point`]、
+    /// 支持大梁の全長 `t = [0, 1]`）として返す。ここで捨てると、大梁の材軸中間へ
+    /// アンカーした二次部材の反力が失われ、応力・変形を過小評価する（危険側）。
+    pub fn primary_loads(&self, model: &Model) -> (Vec<(NodeId, f64)>, Vec<BeamLoad>) {
+        let candidates = crate::secondary::beam_span_candidates(model);
+        let mut nodal = Vec::new();
+        let mut member = Vec::new();
         for m in self.members.values() {
             for k in 0..2 {
-                if m.supports[k] == SupportAt::Primary && m.reactions[k].abs() > 1e-9 {
-                    out.push((m.nodes[k], m.reactions[k]));
+                if m.supports[k] != SupportAt::Primary || m.reactions[k].abs() <= 1e-9 {
+                    continue;
                 }
+                if let Some(node) = model
+                    .nodes
+                    .iter()
+                    .find(|n| points_equal(n.coord, m.end_points[k]))
+                    .map(|n| n.id)
+                {
+                    nodal.push((node, m.reactions[k]));
+                    continue;
+                }
+                let Some((elem, a)) = crate::secondary::best_span_position(
+                    &candidates,
+                    m.end_points[k],
+                    MEMBER_AXIS_TOL_MM,
+                ) else {
+                    continue;
+                };
+                let Some(e) = model.element(elem) else {
+                    continue;
+                };
+                if e.nodes.len() != 2 {
+                    continue;
+                }
+                member.push(BeamLoad {
+                    elem,
+                    target: LoadTarget::Span {
+                        nodes: [e.nodes[0], e.nodes[1]],
+                        t: [0.0, 1.0],
+                    },
+                    shape: LoadShape::Point {
+                        p: m.reactions[k],
+                        x: a,
+                    },
+                    cmq: Cmq {
+                        c_i: 0.0,
+                        c_j: 0.0,
+                        q_i: m.reactions[k],
+                        q_j: 0.0,
+                    },
+                });
             }
         }
-        out.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then(a.1.total_cmp(&b.1)));
-        out
+        nodal.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then(a.1.total_cmp(&b.1)));
+        member.sort_by(|a, b| {
+            a.elem
+                .0
+                .cmp(&b.elem.0)
+                .then(a.cmq.q_i.total_cmp(&b.cmq.q_i))
+        });
+        (nodal, member)
     }
+}
+
+/// 端点座標が一致するか（[`MEMBER_AXIS_TOL_MM`] 以内）。
+fn points_equal(a: [f64; 3], b: [f64; 3]) -> bool {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= MEMBER_AXIS_TOL_MM * MEMBER_AXIS_TOL_MM
 }
 
 /// 二次部材の幾何（逐次伝達の作業用）。
 struct Axis {
     key: SecondaryKey,
-    nodes: [NodeId; 2],
     a: [f64; 3],
     b: [f64; 3],
     len: f64,
     end_support: [EndSupport; 2],
 }
 
-fn coord(model: &Model, id: NodeId) -> Option<[f64; 3]> {
-    model.nodes.get(id.index()).map(|n| n.coord)
+/// 端部支持条件を返す（片持ちの自由端は常に端番号 1）。
+fn end_support_of(sm: &SecondaryMember) -> [EndSupport; 2] {
+    if sm.is_cantilever() {
+        [EndSupport::Supported, EndSupport::Free]
+    } else {
+        [EndSupport::Supported; 2]
+    }
 }
 
 /// 逐次伝達の対象となる二次部材の材軸を集める。
 ///
-/// 実部材化済み（両端を持つ実 `Beam` がある）・退化（両端が同一・長さ 0）・
-/// 節点が引けないものは対象外（解析要素として直接扱われる、または荷重を持てない）。
+/// 実部材化済み（両端を持つ実 `Beam` がある）・退化（長さ 0）・材軸が引けないものは
+/// 対象外（解析要素として直接扱われる、または荷重を持てない）。
 fn axes(model: &Model) -> Vec<Axis> {
     let mut out: Vec<Axis> = model
         .secondary_joist_axes()
         .into_iter()
         .map(|ax| Axis {
-            key: span_node_key(ax.nodes[0], ax.nodes[1]),
-            nodes: ax.nodes,
+            key: ax.member,
             a: ax.a,
             b: ax.b,
             len: ax.len,
@@ -137,11 +198,10 @@ fn axes(model: &Model) -> Vec<Axis> {
         })
         .collect();
     for sm in model.posts() {
-        let (n0, n1) = (sm.nodes[0], sm.nodes[1]);
-        if n0 == n1 || model.secondary_member_materialized(sm) {
+        if model.secondary_member_materialized(sm) {
             continue;
         }
-        let (Some(a), Some(b)) = (coord(model, n0), coord(model, n1)) else {
+        let Some((a, b)) = model.secondary_member_end_points(sm) else {
             continue;
         };
         let len = dist3(a, b);
@@ -149,18 +209,17 @@ fn axes(model: &Model) -> Vec<Axis> {
             continue;
         }
         out.push(Axis {
-            key: span_node_key(n0, n1),
-            nodes: [n0, n1],
+            key: sm.id,
             a,
             b,
             len,
-            end_support: sm.end_support,
+            end_support: end_support_of(sm),
         });
     }
     out
 }
 
-/// 端部 `node`（座標 `p`）の支持相手を幾何から決める。
+/// 端部（座標 `p`）の支持相手を幾何から決める。
 ///
 /// **主架構を優先する。** 端部が要素の接続する節点、または大梁のスパン上にあるなら、
 /// その大梁が直接支持しているのだから、そこで終端する。10 mm 以内に並走する二次部材が
@@ -169,24 +228,28 @@ fn axes(model: &Model) -> Vec<Axis> {
 /// 主架構へ届かないときだけ、別の二次部材の**内部**に載っているかを見る。載っていれば
 /// その二次部材が受け側である（§3.4 F4）。端点どうしが一致するだけの取り付き
 /// （L 字・端部で集まる形）は、どちらも相手を支持しないため受け側にしない。
-/// ただし相手の端が自由端（`EndSupport::Free`）の場合は、その自由端が受け側になる
+/// ただし相手の端が自由端（片持ちの自由端）の場合は、その自由端が受け側になる
 /// （片持ち小梁の先端に載る先端リブなど）。
 ///
 /// `self_end_is_free` が真なら、この端は自由端であり支持を探さない。
 /// どちらでもなければ行き先無しとする。
 fn support_of(
     self_key: SecondaryKey,
-    node: NodeId,
     p: [f64; 3],
     self_end_is_free: bool,
     axes: &[Axis],
     connected: &[bool],
     beams: &[crate::secondary::BeamSpanCandidate],
+    model: &Model,
 ) -> SupportAt {
     if self_end_is_free {
         return SupportAt::Free;
     }
-    if connected.get(node.index()).copied().unwrap_or(false)
+    let connected_at_p = model
+        .nodes
+        .iter()
+        .any(|n| points_equal(n.coord, p) && connected.get(n.id.index()).copied().unwrap_or(false));
+    if connected_at_p
         || crate::secondary::best_span_position(beams, p, MEMBER_AXIS_TOL_MM).is_some()
     {
         return SupportAt::Primary;
@@ -196,8 +259,8 @@ fn support_of(
         if other.key == self_key {
             continue;
         }
-        if other.nodes.contains(&node) {
-            let end = if other.nodes[0] == node { 0 } else { 1 };
+        if points_equal(other.a, p) || points_equal(other.b, p) {
+            let end = if points_equal(other.a, p) { 0 } else { 1 };
             if other.end_support[end] == EndSupport::Free {
                 let a = if end == 0 { 0.0 } else { other.len };
                 return SupportAt::Secondary { key: other.key, a };
@@ -234,7 +297,10 @@ fn crossings(axes: &[Axis]) -> Vec<(SecondaryKey, SecondaryKey)> {
     let mut out = Vec::new();
     for (i, p) in axes.iter().enumerate() {
         for q in axes.iter().skip(i + 1) {
-            if p.nodes.iter().any(|n| q.nodes.contains(n)) {
+            if [p.a, p.b]
+                .iter()
+                .any(|np| points_equal(*np, q.a) || points_equal(*np, q.b))
+            {
                 continue;
             }
             let touches = [
@@ -320,7 +386,7 @@ pub fn solve(
     let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
         .joists()
         .chain(model.posts())
-        .map(|sm| (span_node_key(sm.nodes[0], sm.nodes[1]), sm))
+        .map(|sm| (sm.id, sm))
         .collect();
 
     let mut invalid_end_shares = Vec::new();
@@ -342,21 +408,21 @@ pub fn solve(
     for ax in &axes {
         let s0 = support_of(
             ax.key,
-            ax.nodes[0],
             ax.a,
             ax.end_support[0] == EndSupport::Free,
             &axes,
             &connected,
             &beams,
+            model,
         );
         let s1 = support_of(
             ax.key,
-            ax.nodes[1],
             ax.b,
             ax.end_support[1] == EndSupport::Free,
             &axes,
             &connected,
             &beams,
+            model,
         );
         let mut ends = [s0, s1];
         if let Some(r) = end_shares_by_key.get(&ax.key) {
@@ -381,12 +447,7 @@ pub fn solve(
     for ax in &axes {
         let mut loads = Vec::new();
         if let Some(entry) = distribution.get(&ax.key) {
-            loads.extend(orient_member_loads(
-                &entry.member_loads,
-                ax.len,
-                entry.span_nodes,
-                (ax.nodes[0], ax.nodes[1]),
-            ));
+            loads.extend(entry.member_loads.iter().cloned());
             ready.insert(
                 ax.key,
                 (
@@ -396,12 +457,7 @@ pub fn solve(
             );
         }
         if let Some(wall) = wall_loads.get(&ax.key) {
-            loads.extend(orient_member_loads(
-                &wall.member_loads,
-                ax.len,
-                (wall.span_nodes[0], wall.span_nodes[1]),
-                (ax.nodes[0], ax.nodes[1]),
-            ));
+            loads.extend(wall.member_loads.iter().cloned());
         }
         if include_self_weight {
             if let Some(sm) = by_key.get(&ax.key) {
@@ -469,7 +525,8 @@ pub fn solve(
         members.insert(
             *key,
             TransferredMember {
-                nodes: ax.nodes,
+                member: *key,
+                end_points: [ax.a, ax.b],
                 span: ax.len,
                 member_loads: loads,
                 reactions: r,
@@ -485,7 +542,7 @@ pub fn solve(
         .filter(|m| {
             (0..2).any(|k| m.supports[k] == SupportAt::Unresolved && m.reactions[k].abs() > 1e-9)
         })
-        .map(|m| span_node_key(m.nodes[0], m.nodes[1]))
+        .map(|m| m.member)
         .collect();
     unresolved.sort();
 
@@ -510,10 +567,7 @@ pub fn secondary_crossings(model: &Model) -> Vec<(SecondaryKey, SecondaryKey)> {
 
 /// キーから二次部材の実体を引く。
 fn secondary_of(model: &Model, key: SecondaryKey) -> Option<&SecondaryMember> {
-    model
-        .joists()
-        .chain(model.posts())
-        .find(|sm| span_node_key(sm.nodes[0], sm.nodes[1]) == key)
+    model.secondary_member(key)
 }
 
 /// 逐次伝達の順序（架け側 → 受け側）と、循環に含まれる二次部材を返す。

@@ -110,6 +110,27 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.colored_label(crate::theme::GOOD_GREEN, "✅ 整合性チェック: 問題なし");
     }
 
+    if prep.has_unset_regions() {
+        let list = |ids: &[u32]| {
+            ids.iter()
+                .map(|id| format!("R{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let floors: Vec<u32> = prep.unset_floor_regions.iter().map(|id| id.0).collect();
+        let walls: Vec<u32> = prep.unset_wall_regions.iter().map(|id| id.0).collect();
+        ui.colored_label(
+            crate::theme::WARN_TEXT,
+            format!(
+                "⚠ 未設定の割当領域: 床板 {} 件 [{}] / 壁版 {} 件 [{}]（荷重・剛性を過小評価し得ます）",
+                prep.unset_floor_regions.len(),
+                list(&floors),
+                prep.unset_wall_regions.len(),
+                list(&walls),
+            ),
+        );
+    }
+
     let view = &mut app.ui.view.prep_view.view;
     ui.horizontal(|ui| {
         for (v, label) in [

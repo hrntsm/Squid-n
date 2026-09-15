@@ -31,6 +31,7 @@ rmcp        = { version = "1", features = ["server", "macros", "transport-io"] }
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 schemars    = "0.8"
 bincode     = "1"
+i_overlay   = "8"
 anyhow      = "1"
 toml        = "0.8"
 quick-xml   = "0.41"

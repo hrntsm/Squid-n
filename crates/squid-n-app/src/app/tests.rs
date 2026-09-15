@@ -151,37 +151,73 @@ fn test_load_model_resets_model_bound_ui_state() {
         squid_n_core::ids::NodeId(3),
     ));
     app.ui.scoped.wall_draw_mode = true;
-    app.ui
-        .scoped
-        .wall_draw_nodes
-        .push(squid_n_core::ids::NodeId(1));
-    app.ui
-        .scoped
-        .slab_draw_nodes
-        .push(squid_n_core::ids::NodeId(2));
-    app.ui.scoped.mn_view.section_idx = 7;
-    app.ui.scoped.load_editor = Some(crate::load_editor::LoadEditor::new_nodal(
-        squid_n_core::ids::LoadCaseId(3),
-        Some(squid_n_core::ids::NodeId(9)),
+    app.ui.scoped.slab_draw_mode = true;
+    app.ui.scoped.region_assign_dialog = Some(crate::app::RegionAssignTarget::Floor(
+        squid_n_core::ids::FloorPlateAssignmentRegionId(0),
     ));
-    app.ui.scoped.view_mode_idx = 4;
-    app.ui.scoped.pending_duplicate_node_coord = Some([1.0, 2.0, 3.0]);
-    app.ui.scoped.node_draft = ["100".into(), "200".into(), "300".into()];
-
     app.load_model(crate::sample::portal_frame());
-
     assert!(!app.ui.scoped.beam_draw_mode);
     assert!(app.ui.scoped.beam_draw_first.is_none());
     assert!(!app.ui.scoped.wall_draw_mode);
-    assert!(app.ui.scoped.wall_draw_nodes.is_empty());
-    assert!(app.ui.scoped.slab_draw_nodes.is_empty());
-    assert_eq!(app.ui.scoped.mn_view.section_idx, 0);
-    assert!(app.ui.scoped.load_editor.is_none());
-    assert_eq!(app.ui.scoped.view_mode_idx, 0);
-    assert!(app.ui.scoped.pending_duplicate_node_coord.is_none());
-    assert_eq!(
-        app.ui.scoped.node_draft,
-        ["0".to_string(), "0".to_string(), "0".to_string()]
+    assert!(!app.ui.scoped.slab_draw_mode);
+    assert!(app.ui.scoped.region_assign_dialog.is_none());
+}
+
+/// 未設定の割当領域が残る間は、GUI の解析入口が計算を開始せず確認待ちになる。
+#[cfg(feature = "gui")]
+#[test]
+fn test_request_analysis_waits_for_unset_region_confirmation() {
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+    let mut app = App::default();
+    let mut model = squid_n_core::Model::default();
+    for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [x, y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.elements.push(ElementData {
+            id: ElemId(i as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    app.core.model = model;
+    app.request_analysis(crate::app::PendingAnalysis::StaticAll);
+    assert!(
+        app.core.scoped.pending_unset_analysis.is_some(),
+        "未設定があるので確認待ち"
+    );
+    assert!(app.core.scoped.job.is_none(), "確認前に計算を開始しない");
+
+    app.resume_pending_analysis();
+    assert!(app.core.scoped.pending_unset_analysis.is_none());
+    assert!(
+        app.core.scoped.unset_regions_ack.is_some(),
+        "続行時に確認済みの対象集合を記録する"
     );
 }
 
@@ -3046,13 +3082,14 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         mk_beam(2, 2, 3),
         mk_beam(3, 3, 0),
     ];
-    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-    let slab = Slab {
-        id: squid_n_core::ids::SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: boundary.clone(),
-        },
-        plate: SlabPlate {
+    let mut model = squid_n_core::model::Model {
+        nodes,
+        elements,
+        ..Default::default()
+    };
+    let slab_id = model.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -3062,9 +3099,12 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
         },
-    };
-    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-    region.slab_ids.push(squid_n_core::ids::SlabId(0));
+    );
+    let mut region = FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    );
+    region.slab_ids.push(slab_id);
     // 小梁の分配 Span 検定は「床面が 1 枚の剛体で面内力を剛床が処理している」ことを
     // 前提にするため、床領域の境界節点を覆う剛床を置く（`floor_design_checks`）。
     let diaphragm = squid_n_core::model::Constraint::RigidDiaphragm {
@@ -3074,14 +3114,9 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         weight: None,
         ci_override: None,
     };
-    squid_n_core::model::Model {
-        nodes,
-        elements,
-        floor_regions: vec![region],
-        slabs: vec![slab],
-        constraints: vec![diaphragm],
-        ..Default::default()
-    }
+    model.floor_regions.push(region);
+    model.constraints.push(diaphragm);
+    model
 }
 
 /// スラブ荷重が `sync_gravity_load_cases_action` で
@@ -3323,9 +3358,12 @@ fn test_floor_design_skips_materialized_joist() {
         .secondary_joists
         .push(SecondaryMember {
             gravity_end_shares: None,
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(4), NodeId(5)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [2000.0, 0.0, 0.0],
+                [2000.0, 4000.0, 0.0],
+            ]),
             section: Some(SectionId(0)),
             name: "SB1".to_string(),
         });
@@ -3400,34 +3438,35 @@ fn test_floor_design_checks_secondary_member_joist() {
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
     let plate = model.slabs[0].plate.clone();
-    model.slabs = vec![
-        Slab {
-            id: squid_n_core::ids::SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-            },
-            plate: plate.clone(),
-        },
-        Slab {
-            id: squid_n_core::ids::SlabId(1),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
-            },
-            plate,
-        },
-    ];
-    model.floor_regions[0].slab_ids =
-        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+    model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
             gravity_end_shares: None,
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(4), NodeId(5)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [2000.0, 0.0, 0.0],
+                [2000.0, 4000.0, 0.0],
+            ]),
             section: Some(SectionId(0)),
             name: "J1".into(),
         });
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
     model.validate().expect("validate");
     let app = App {
         core: AppCore {
@@ -3443,7 +3482,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     assert!(matches!(
         target,
         crate::app::JoistCheckTarget::SecondaryJoist {
-            nodes: [NodeId(4), NodeId(5)]
+            member: squid_n_core::ids::SecondaryMemberId(0)
         }
     ));
     assert!(
@@ -3458,9 +3497,7 @@ fn test_floor_design_checks_secondary_member_joist() {
 #[test]
 fn test_floor_design_checks_cantilever_joist() {
     use squid_n_core::ids::SectionId;
-    use squid_n_core::model::{
-        EndSupport, SecondaryMember, SecondaryMemberKind, Section, SlabUsage,
-    };
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
     model.slabs[0].plate.usage = Some(SlabUsage::Office);
@@ -3495,32 +3532,36 @@ fn test_floor_design_checks_cantilever_joist() {
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
     let plate = model.slabs[0].plate.clone();
-    model.slabs = vec![
-        Slab {
-            id: squid_n_core::ids::SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-            },
-            plate: plate.clone(),
-        },
-        Slab {
-            id: squid_n_core::ids::SlabId(1),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
-            },
-            plate,
-        },
-    ];
-    model.floor_regions[0].slab_ids =
-        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+    model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
-        end_support: [EndSupport::Supported, EndSupport::Free],
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(4), NodeId(5)],
+        ends: squid_n_core::model::SecondaryMemberEnds::Cantilever {
+            support: squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [0.0, 4000.0],
+        },
         section: Some(SectionId(0)),
         name: "J1".into(),
     });
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
     model.validate().expect("validate");
     let app = App {
         core: AppCore {
@@ -3542,7 +3583,10 @@ fn test_floor_design_checks_cantilever_joist() {
 
     // 非片持ちの未割当小梁は検定対象外（表に「未」として残る）。
     let mut model2 = app.core.model.clone();
-    model2.unassigned_joists[0].end_support = Default::default();
+    model2.unassigned_joists[0].ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        [2000.0, 0.0, 0.0],
+        [2000.0, 4000.0, 0.0],
+    ]);
     let app2 = App {
         core: AppCore {
             model: model2,
@@ -3579,34 +3623,35 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
         story: None,
         support_spring: None,
     });
-    model.slabs = vec![
-        squid_n_core::model::Slab {
-            id: squid_n_core::ids::SlabId(0),
-            shape: squid_n_core::model::SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-            },
-            plate: plate.clone(),
-        },
-        squid_n_core::model::Slab {
-            id: squid_n_core::ids::SlabId(1),
-            shape: squid_n_core::model::SlabShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
-            },
-            plate,
-        },
-    ];
-    model.floor_regions[0].slab_ids =
-        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+    model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
     model.floor_regions[0]
         .secondary_joists
         .push(SecondaryMember {
             gravity_end_shares: None,
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(4), NodeId(5)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [2000.0, 0.0, 0.0],
+                [2000.0, 4000.0, 0.0],
+            ]),
             section: None,
             name: "J-no-sec".into(),
         });
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
     model.validate().expect("validate");
     let app = App {
         core: AppCore {
@@ -3629,7 +3674,8 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
 fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     use squid_n_core::ids::{FloorRegionId, SectionId, SlabId};
     use squid_n_core::model::{
-        FloorRegion, Node, SecondaryMember, SecondaryMemberKind, Section, SlabUsage,
+        ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
+        SecondaryMember, SecondaryMemberKind, Section, SlabUsage,
     };
 
     const Z_UPPER: f64 = 4000.0;
@@ -3676,34 +3722,55 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     model.nodes.push(mk_node(8, 2000.0, 0.0, Z_UPPER));
     model.nodes.push(mk_node(9, 2000.0, 4000.0, Z_UPPER));
     model.slabs = vec![model.slabs[0].clone()];
-    model.slabs.push(Slab {
-        id: SlabId(1),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(4), NodeId(8), NodeId(9), NodeId(7)],
-        },
-        plate: plate.clone(),
-    });
-    model.slabs.push(Slab {
-        id: SlabId(2),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(8), NodeId(5), NodeId(6), NodeId(9)],
-        },
-        plate,
-    });
+    for (a, b) in [(4u32, 5u32), (5, 6), (6, 7), (7, 4)] {
+        model.elements.push(ElementData {
+            id: ElemId(model.elements.len() as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    let joist = SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            model.nodes[8].coord,
+            model.nodes[9].coord,
+        ]),
+        section: Some(SectionId(0)),
+        name: "J1".into(),
+    };
+    model.unassigned_joists.push(joist.clone());
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(8), NodeId(9), NodeId(7)],
+            plate.clone(),
+        )
+        .expect("上階左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(8), NodeId(5), NodeId(6), NodeId(9)],
+            plate,
+        )
+        .expect("上階右半分");
+    model.unassigned_joists.clear();
     model.floor_regions.push({
         let mut r = FloorRegion::new(
             FloorRegionId(1),
             vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
         );
-        r.slab_ids = vec![SlabId(1), SlabId(2)];
-        r.secondary_joists.push(SecondaryMember {
-            gravity_end_shares: None,
-            end_support: Default::default(),
-            kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(8), NodeId(9)],
-            section: Some(SectionId(0)),
-            name: "J1".into(),
-        });
+        r.slab_ids = vec![first, second];
+        r.secondary_joists.push(joist);
         r
     });
     // 上階床領域にも剛床を置く（小梁の分配 Span 検定の前提）。
@@ -3742,8 +3809,11 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
 /// 境界辺に載る小梁の負担幅は「両隣の半分ずつの和」＝2 枚の幅の平均である。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
-    use squid_n_core::ids::{FloorRegionId, SectionId, SlabId};
-    use squid_n_core::model::{FloorRegion, Node, SecondaryMember, SecondaryMemberKind, Section};
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
+        SecondaryMember, SecondaryMemberKind, Section,
+    };
 
     let mut model = make_square_slab_test_model();
     model.sections.push(Section {
@@ -3780,36 +3850,57 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
     model.nodes.push(mk(6, 6000.0, 0.0));
     model.nodes.push(mk(7, 6000.0, 4000.0));
     let plate = model.slabs[0].plate.clone();
-    model.slabs = vec![
-        Slab {
-            id: squid_n_core::ids::SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+    model.slabs.clear();
+    model.elements.clear();
+    for (a, b) in [(0u32, 6u32), (6, 7), (7, 3), (3, 0)] {
+        model.elements.push(ElementData {
+            id: ElemId(model.elements.len() as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
             },
-            plate: plate.clone(),
-        },
-        Slab {
-            id: squid_n_core::ids::SlabId(1),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(4), NodeId(6), NodeId(7), NodeId(5)],
-            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    let joist = SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            model.nodes[4].coord,
+            model.nodes[5].coord,
+        ]),
+        section: Some(SectionId(0)),
+        name: "J1".into(),
+    };
+    model.unassigned_joists.push(joist.clone());
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左帯");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(6), NodeId(7), NodeId(5)],
             plate,
-        },
-    ];
+        )
+        .expect("右帯");
+    model.unassigned_joists.clear();
     model.floor_regions = vec![{
         let mut r = FloorRegion::new(
             FloorRegionId(0),
             vec![NodeId(0), NodeId(6), NodeId(7), NodeId(3)],
         );
-        r.slab_ids = vec![SlabId(0), SlabId(1)];
-        r.secondary_joists.push(SecondaryMember {
-            gravity_end_shares: None,
-            end_support: Default::default(),
-            kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(0)),
-            name: "J1".into(),
-        });
+        r.slab_ids = vec![first, second];
+        r.secondary_joists.push(joist);
         r
     }];
     // 床領域の境界を変えたので、剛床のスレーブも新しい境界節点へ揃える。
@@ -3839,6 +3930,88 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
     );
 }
 
+/// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
+#[test]
+fn test_floor_design_checks_secondary_joist_on_slab_edge() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
+
+    let mut model = make_square_slab_test_model();
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    // 床板境界（x=2000）を 2 枚に分割し、その共有辺に小梁を載せる。
+    model.nodes.push(mk_mid(4, 2000.0, 0.0));
+    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    let plate = model.slabs[0].plate.clone();
+    model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
+    model.floor_regions[0]
+        .secondary_joists
+        .push(SecondaryMember {
+            gravity_end_shares: None,
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [2000.0, 0.0, 0.0],
+                [2000.0, 4000.0, 0.0],
+            ]),
+            section: Some(SectionId(0)),
+            name: "J-edge".into(),
+        });
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
+    model.validate().expect("validate");
+    let app = App {
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "床板境界上の二次部材小梁が1件設計される");
+}
+
 /// スラブ設計のスパンは一方向指定に一致する
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]
@@ -3854,36 +4027,35 @@ fn test_slab_design_span_respects_one_way() {
         story: None,
         support_spring: None,
     };
-    let base_slab = |one_way: Option<OneWayDir>| Slab {
-        id: squid_n_core::ids::SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: SlabPlate {
-            // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
-            section: Some(squid_n_core::ids::SectionId(0)),
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: 0.005,
-            }],
-            usage: None,
-            method: DistributionMethod::OneWay,
-            one_way,
-        },
-    };
-    let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
-        nodes: vec![
-            mk_node(0, 0.0, 0.0),
-            mk_node(1, 6000.0, 0.0),
-            mk_node(2, 6000.0, 3000.0),
-            mk_node(3, 0.0, 3000.0),
-        ],
-        sections: vec![
-            squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
-                .to_section(squid_n_core::ids::SectionId(0), "S15".into()),
-        ],
-        slabs: vec![base_slab(one_way)],
-        ..Default::default()
+    let mk_model = |one_way: Option<OneWayDir>| -> squid_n_core::model::Model {
+        let mut m = squid_n_core::model::Model {
+            nodes: vec![
+                mk_node(0, 0.0, 0.0),
+                mk_node(1, 6000.0, 0.0),
+                mk_node(2, 6000.0, 3000.0),
+                mk_node(3, 0.0, 3000.0),
+            ],
+            sections: vec![
+                squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+                    .to_section(squid_n_core::ids::SectionId(0), "S15".into()),
+            ],
+            ..Default::default()
+        };
+        m.add_enclosed_slab_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            SlabPlate {
+                // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
+                section: Some(squid_n_core::ids::SectionId(0)),
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: 0.005,
+                }],
+                usage: None,
+                method: DistributionMethod::OneWay,
+                one_way,
+            },
+        );
+        m
     };
 
     // 一方向 X → スパン = lx = 6000（長辺）。
@@ -4027,6 +4199,7 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
         .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
     model.floor_regions.clear();
     model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
     model.slabs.push(Slab {
         id: SlabId(0),
         shape: SlabShape::Attached {
@@ -4078,6 +4251,7 @@ fn test_attached_point_slab_check_coef_2() {
         .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
     model.floor_regions.clear();
     model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
     model.slabs.push(Slab {
         id: SlabId(0),
         shape: SlabShape::Attached {
@@ -5510,24 +5684,18 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         mk_beam(6, 6, 7),
         mk_beam(7, 7, 4),
     ];
-    let mk_slab = |id: u32, boundary: Vec<u32>| Slab {
-        id: squid_n_core::ids::SlabId(id),
-        shape: SlabShape::Enclosed {
-            boundary: boundary.into_iter().map(NodeId).collect(),
-        },
-        plate: SlabPlate {
-            // 板厚と自重はスラブ断面（`SectionId(1)`）から解決する。
-            section: Some(SectionId(1)),
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: 0.005,
-            }],
-            usage: None,
-            method: DistributionMethod::TriTrapezoid,
-            one_way: None,
-        },
+    let plate = SlabPlate {
+        // 板厚と自重はスラブ断面（`SectionId(1)`）から解決する。
+        section: Some(SectionId(1)),
+        loads: vec![AreaLoad {
+            kind: "DL".into(),
+            value: 0.005,
+        }],
+        usage: None,
+        method: DistributionMethod::TriTrapezoid,
+        one_way: None,
     };
-    let model = Model {
+    let mut model = Model {
         nodes,
         elements,
         sections: vec![
@@ -5578,9 +5746,12 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         // 小梁: 大梁 y=0 の中間 (4000,0) と大梁 y=6000 の中間 (4000,6000) を結ぶ。
         unassigned_joists: vec![SecondaryMember {
             gravity_end_shares: None,
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(8), NodeId(9)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [4000.0, 0.0, 3500.0],
+                [4000.0, 6000.0, 3500.0],
+            ]),
             section: Some(SectionId(0)),
             name: "B1".into(),
         }],
@@ -5590,12 +5761,26 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
                 FloorRegionId(0),
                 vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
             );
-            region.slab_ids = vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+            region.slab_ids.clear();
             region
         }],
-        slabs: vec![mk_slab(0, vec![4, 8, 9, 7]), mk_slab(1, vec![8, 5, 6, 9])],
+        slabs: vec![],
         ..Default::default()
     };
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(8), NodeId(9), NodeId(7)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(8), NodeId(5), NodeId(6), NodeId(9)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
     model
         .validate()
         .expect("テストモデルは validate を通るはず");
@@ -5638,17 +5823,11 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
     // 期待値には別途足す。
     for sm in app.core.model.joists().chain(app.core.model.posts()) {
         if let Some(w) = squid_n_load::floor::joist_self_weight_udl(&app.core.model, sm) {
-            let (a, b) = (sm.nodes[0], sm.nodes[1]);
-            let (Some(na), Some(nb)) = (
-                app.core.model.nodes.get(a.index()),
-                app.core.model.nodes.get(b.index()),
-            ) else {
+            let Some((na, nb)) = app.core.model.secondary_member_end_points(sm) else {
                 continue;
             };
-            let len = ((nb.coord[0] - na.coord[0]).powi(2)
-                + (nb.coord[1] - na.coord[1]).powi(2)
-                + (nb.coord[2] - na.coord[2]).powi(2))
-            .sqrt();
+            let len = ((nb[0] - na[0]).powi(2) + (nb[1] - na[1]).powi(2) + (nb[2] - na[2]).powi(2))
+                .sqrt();
             sw_total += w * len;
         }
     }
@@ -6751,7 +6930,7 @@ fn test_build_preparation_csv() {
 /// そろえる必要があり、片方だけ数え漏らすと削除ボタンが押せるのに Noop になる。
 #[test]
 fn test_prep_sections_count_slab_reference() {
-    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::DistributionMethod;
 
     let mut model = crate::sample::portal_frame();
@@ -6761,19 +6940,16 @@ fn test_prep_sections_count_slab_reference() {
             .to_section(slab_sec, "S15".into()),
     );
     // 門型ラーメンの 4 節点を境界にした床板を 1 枚置く。
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
-        },
-        plate: SlabPlate {
+    model.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+        SlabPlate {
             section: Some(slab_sec),
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
         },
-    });
+    );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let mut app = App {

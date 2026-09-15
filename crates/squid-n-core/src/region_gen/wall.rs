@@ -210,7 +210,7 @@ pub fn generate_wall_region_boundaries(model: &Model) -> Vec<WallRegionBoundary>
 /// グリッド索引は候補を粗く絞り込む役割のみを持ち、**最終的な同一直線の判定は
 /// 必ず [`is_same_line`]（実距離）で行う**ため、索引の取りこぼし・衝突は
 /// 正しさを損なわない（性能上のヒントにすぎない）。
-fn wall_planes(model: &Model) -> Vec<([f64; 2], [f64; 2])> {
+pub(crate) fn wall_planes(model: &Model) -> Vec<([f64; 2], [f64; 2])> {
     let footprints = column_footprints(model);
     if footprints.len() < 2 {
         return Vec::new();

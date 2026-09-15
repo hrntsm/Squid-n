@@ -11,8 +11,6 @@ use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind, Model, NodalL
 
 #[cfg(test)]
 use squid_n_core::ids::NodeId;
-#[cfg(test)]
-use squid_n_core::model::SlabShape;
 
 /// 節点が大梁のスパン上にあるかを判定する側が候補とする 2 節点 `Beam` 要素
 /// （要素独立な幾何のみ。ダングリング参照は除外済み）。判定のたびに `model.elements` を
@@ -269,7 +267,7 @@ fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option<f64
     let mut found = false;
 
     for slab in &model.slabs {
-        let SlabShape::Enclosed { boundary } = &slab.shape else {
+        let Some(boundary) = slab.boundary_nodes(model) else {
             continue; // 取り付く床板は境界辺を持たない。
         };
         let n = boundary.len();
@@ -467,10 +465,13 @@ mod tests {
             ],
             elements: vec![beam(0, 0, 1)],
             unassigned_joists: vec![SecondaryMember {
+                id: squid_n_core::ids::SecondaryMemberId(0),
                 gravity_end_shares: None,
-                end_support: Default::default(),
                 kind: SecondaryMemberKind::Joist,
-                nodes: [NodeId(2), NodeId(2)],
+                ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                    [2000.0, 0.0, 0.0],
+                    [2000.0, 0.0, 0.0],
+                ]),
                 section: Some(SectionId(0)),
                 name: "b1".into(),
             }],
@@ -628,8 +629,7 @@ mod segment_tests {
 #[cfg(test)]
 mod joist_tributary_tests {
     use super::*;
-    use squid_n_core::ids::SlabId;
-    use squid_n_core::model::{DistributionMethod, Node, Slab, SlabPlate};
+    use squid_n_core::model::{DistributionMethod, Node, SlabPlate};
 
     fn node(id: u32, x: f64, y: f64) -> Node {
         Node {
@@ -642,20 +642,17 @@ mod joist_tributary_tests {
         }
     }
 
-    fn rect_slab(id: u32, corners: [u32; 4]) -> Slab {
-        Slab {
-            id: SlabId(id),
-            shape: SlabShape::Enclosed {
-                boundary: corners.into_iter().map(NodeId).collect(),
-            },
-            plate: SlabPlate {
+    fn add_rect_slab(model: &mut Model, corners: [u32; 4]) {
+        model.add_enclosed_slab_from_nodes(
+            &corners.map(NodeId),
+            SlabPlate {
                 section: None,
                 loads: Vec::new(),
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
-        }
+        );
     }
 
     /// 4000×3000 と 4000×3000 の 2 枚が joist（節点 3-2）を挟んで隣り合う。
@@ -674,8 +671,8 @@ mod joist_tributary_tests {
             ],
             ..Default::default()
         };
-        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
-        model.slabs.push(rect_slab(1, [3, 2, 4, 5]));
+        add_rect_slab(&mut model, [0, 1, 2, 3]);
+        add_rect_slab(&mut model, [3, 2, 4, 5]);
 
         let w = joist_edge_tributary_width(&model, NodeId(3), NodeId(2));
         assert!(matches!(w, Some(x) if (x - 3000.0).abs() < 1e-6), "{w:?}");
@@ -696,7 +693,7 @@ mod joist_tributary_tests {
             ],
             ..Default::default()
         };
-        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        add_rect_slab(&mut model, [0, 1, 2, 3]);
 
         let w = joist_edge_tributary_width(&model, NodeId(0), NodeId(1));
         assert!(matches!(w, Some(x) if (x - 1500.0).abs() < 1e-6), "{w:?}");
@@ -721,9 +718,9 @@ mod joist_tributary_tests {
             ],
             ..Default::default()
         };
-        model.slabs.push(rect_slab(0, [0, 1, 2, 3])); // 割れていない側
-        model.slabs.push(rect_slab(1, [3, 6, 7, 5])); // 割れた側・左半分
-        model.slabs.push(rect_slab(2, [6, 2, 4, 7])); // 割れた側・右半分
+        add_rect_slab(&mut model, [0, 1, 2, 3]); // 割れていない側
+        add_rect_slab(&mut model, [3, 6, 7, 5]); // 割れた側・左半分
+        add_rect_slab(&mut model, [6, 2, 4, 7]); // 割れた側・右半分
 
         let w = joist_edge_tributary_width(&model, NodeId(3), NodeId(2));
         assert!(matches!(w, Some(x) if (x - 4500.0).abs() < 1e-6), "{w:?}");
@@ -744,7 +741,7 @@ mod joist_tributary_tests {
             ],
             ..Default::default()
         };
-        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        add_rect_slab(&mut model, [0, 1, 2, 3]);
 
         let w = joist_edge_tributary_width(&model, NodeId(4), NodeId(5));
         assert_eq!(w, None);
@@ -769,10 +766,10 @@ mod joist_tributary_tests {
             ],
             ..Default::default()
         };
-        model.slabs.push(rect_slab(1, [4, 5, 6, 7]));
+        add_rect_slab(&mut model, [4, 5, 6, 7]);
 
         // 片側にしか床板がない小梁として、正しい答え（1500）だけが返ることを確認する。
-        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        add_rect_slab(&mut model, [0, 1, 2, 3]);
         let w = joist_edge_tributary_width(&model, NodeId(0), NodeId(1));
         assert!(matches!(w, Some(x) if (x - 1500.0).abs() < 1e-6), "{w:?}");
     }

@@ -228,8 +228,8 @@ fn test_model_issues_collects_every_issue() {
 #[test]
 fn test_model_issues_rejects_slab_without_section() {
     use super::precheck::{model_issues, precheck_model};
-    use squid_n_core::ids::{FloorRegionId, SectionId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab, SlabShape};
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::DistributionMethod;
 
     let mut model = make_cantilever_model();
     // 境界節点は 3 点必要なので、床用の節点を足す。
@@ -266,20 +266,19 @@ fn test_model_issues_rejects_slab_without_section() {
             spring: None,
         });
     }
-    let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
-    region.slab_ids.push(SlabId(0));
-    model.floor_regions.push(region);
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed { boundary },
-        plate: SlabPlate {
+    let slab_id = model.add_enclosed_slab_from_nodes(
+        &boundary,
+        SlabPlate {
             section: None,
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
         },
-    });
+    );
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
+    region.slab_ids.push(slab_id);
+    model.floor_regions.push(region);
 
     // 断面が未割当。
     let msgs: Vec<String> = model_issues(&model)
@@ -1262,11 +1261,15 @@ fn test_model_issues_warns_unassigned_joist() {
         story: None,
         support_spring: None,
     });
+    let joist_ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        model.nodes[n as usize].coord,
+        model.nodes[(n + 1) as usize].coord,
+    ]);
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(n), NodeId(n + 1)],
+        ends: joist_ends,
         section: Some(SectionId(0)),
         name: "孤立小梁".into(),
     });
@@ -1291,10 +1294,13 @@ fn test_model_issues_warns_unassigned_joist() {
     assert!(precheck_model(&model).is_err(), "解析を止める");
 
     // 片持ち小梁は所属がなくても取付き線の支持辺から荷重を受けるためエラーにしない。
-    model.unassigned_joists[0].end_support = [
-        squid_n_core::model::EndSupport::Supported,
-        squid_n_core::model::EndSupport::Free,
-    ];
+    model.unassigned_joists[0].ends = squid_n_core::model::SecondaryMemberEnds::Cantilever {
+        support: squid_n_core::model::SecondaryMemberAnchor {
+            support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+            position: 0.5,
+        },
+        free_end_vector: [0.0, 1000.0],
+    };
     let issues = model_issues(&model);
     assert!(
         !issues
@@ -1304,10 +1310,7 @@ fn test_model_issues_warns_unassigned_joist() {
     );
 
     // 実部材化済み（両端節点を結ぶ実 Beam がある）小梁も所属なしのエラーにしない。
-    let (a, b) = (
-        model.unassigned_joists[0].nodes[0],
-        model.unassigned_joists[0].nodes[1],
-    );
+    let (a, b) = (NodeId(n), NodeId(n + 1));
     model.elements.push(squid_n_core::model::ElementData {
         id: ElemId(model.elements.len() as u32),
         kind: squid_n_core::model::ElementKind::Beam,
@@ -1325,7 +1328,7 @@ fn test_model_issues_warns_unassigned_joist() {
         plastic_zone: None,
         spring: None,
     });
-    model.unassigned_joists[0].end_support = Default::default();
+    model.unassigned_joists[0].ends = joist_ends;
     let issues = model_issues(&model);
     assert!(
         !issues
@@ -1335,43 +1338,32 @@ fn test_model_issues_warns_unassigned_joist() {
     );
 }
 
-/// 両端が自由端の二次部材は不安定としてエラーにする。
+/// 支持部材アンカーへ解決できない二次部材は不安定としてエラーにする。
 #[test]
-fn test_model_issues_errors_both_free_secondary() {
+fn test_model_issues_errors_unresolved_secondary() {
     use super::precheck::{model_issues, IssueSeverity};
-    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut model = make_cantilever_model();
-    let n = model.nodes.len() as u32;
-    for (i, c) in [[500.0, 0.0, 0.0], [800.0, 0.0, 0.0]]
-        .into_iter()
-        .enumerate()
-    {
-        model.nodes.push(Node {
-            id: NodeId(n + i as u32),
-            coord: c,
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(n), NodeId(n + 1)],
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            [500.0, 1000.0, 0.0],
+            [800.0, 1000.0, 0.0],
+        ]),
         section: Some(SectionId(0)),
-        name: "両端自由".into(),
-        end_support: [EndSupport::Free, EndSupport::Free],
+        name: "支持なし".into(),
     });
 
     let issues = model_issues(&model);
     let issue = issues
         .iter()
-        .find(|i| i.message.contains("両端が自由端"))
+        .find(|i| i.message.contains("アンカーへ解決できない"))
         .unwrap_or_else(|| {
             let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
-            panic!("両端自由のエラーがない: {msgs:?}")
+            panic!("未解決のエラーがない: {msgs:?}")
         });
     assert_eq!(issue.severity, IssueSeverity::Error);
 }
@@ -1380,30 +1372,25 @@ fn test_model_issues_errors_both_free_secondary() {
 #[test]
 fn test_model_issues_warns_free_end_on_support() {
     use super::precheck::{model_issues, IssueSeverity};
-    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
 
     let mut model = make_cantilever_model();
-    let n = model.nodes.len() as u32;
-    for (i, c) in [[500.0, 0.0, 0.0], [800.0, 0.0, 0.0]]
-        .into_iter()
-        .enumerate()
-    {
-        model.nodes.push(Node {
-            id: NodeId(n + i as u32),
-            coord: c,
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(n), NodeId(n + 1)],
+        ends: SecondaryMemberEnds::Cantilever {
+            support: SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [500.0, 0.0],
+        },
         section: Some(SectionId(0)),
         name: "自由端が大梁上".into(),
-        end_support: [EndSupport::Free, EndSupport::Supported],
     });
 
     let issues = model_issues(&model);
@@ -1417,52 +1404,30 @@ fn test_model_issues_warns_free_end_on_support() {
     assert_eq!(issue.severity, IssueSeverity::Warning);
 }
 
-/// 片持ち小梁の自由端に載る二次部材の端を Free にすると警告する。
+/// 片持ち小梁どうしの自由端が同じ位置に接する場合は警告する。
 #[test]
 fn test_model_issues_warns_free_end_on_free_tip() {
     use super::precheck::{model_issues, IssueSeverity};
-    use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
 
     let mut model = make_cantilever_model();
-    let n = model.nodes.len() as u32;
-    for (i, c) in [
-        [200.0, 0.0, 0.0],
-        [200.0, 3000.0, 0.0],
-        [800.0, 0.0, 0.0],
-        [800.0, 3000.0, 0.0],
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        model.nodes.push(Node {
-            id: NodeId(n + i as u32),
-            coord: c,
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
-    for (nodes, end_support, name) in [
-        ([n, n + 1], [EndSupport::Supported, EndSupport::Free], "CA"),
-        (
-            [n + 2, n + 3],
-            [EndSupport::Supported, EndSupport::Free],
-            "CB",
-        ),
-        (
-            [n + 1, n + 3],
-            [EndSupport::Free, EndSupport::Supported],
-            "RIB",
-        ),
-    ] {
+    for (id, name) in [(0u32, "CA"), (1, "CB")] {
         model.unassigned_joists.push(SecondaryMember {
             gravity_end_shares: None,
+            id: squid_n_core::ids::SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(nodes[0]), NodeId(nodes[1])],
+            ends: SecondaryMemberEnds::Cantilever {
+                support: SecondaryMemberAnchor {
+                    support: SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                free_end_vector: [500.0, 0.0],
+            },
             section: None,
             name: name.into(),
-            end_support,
         });
     }
 
@@ -1549,25 +1514,6 @@ fn test_model_issues_warns_floating_plate() {
     use squid_n_core::model::{DistributionMethod, Material, MaterialCategory, Slab, SlabShape};
 
     let mut model = make_cantilever_model();
-    let n = model.nodes.len() as u32;
-    for (i, c) in [
-        [8000.0, 8000.0, 0.0],
-        [12000.0, 8000.0, 0.0],
-        [12000.0, 11000.0, 0.0],
-        [8000.0, 11000.0, 0.0],
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        model.nodes.push(Node {
-            id: NodeId(n + i as u32),
-            coord: c,
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        });
-    }
     let sid = SectionId(model.sections.len() as u32);
     let mid = MaterialId(model.materials.len() as u32);
     model.materials.push(Material {
@@ -1587,11 +1533,12 @@ fn test_model_issues_warns_floating_plate() {
         .to_section(sid, "S15".into());
     sec.material = Some(mid);
     model.sections.push(sec);
+    // 支持部材を解決できない割当領域を持つ床板。床領域（大梁の区画）には入らないため
+    // 「浮き床板」として警告される。
+    let slab_id = SlabId(0);
     model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(n), NodeId(n + 1), NodeId(n + 2), NodeId(n + 3)],
-        },
+        id: slab_id,
+        shape: SlabShape::Enclosed,
         plate: SlabPlate {
             section: Some(sid),
             loads: Vec::new(),
@@ -1600,6 +1547,22 @@ fn test_model_issues_warns_floating_plate() {
             one_way: None,
         },
     });
+    model
+        .floor_assignment_regions
+        .regions
+        .push(squid_n_core::model::FloorPlateAssignmentRegion {
+            id: squid_n_core::ids::FloorPlateAssignmentRegionId(0),
+            boundary: vec![
+                squid_n_core::model::SupportBoundary {
+                    support: squid_n_core::model::SupportMemberId::Primary(
+                        squid_n_core::ids::ElemId(9999),
+                    ),
+                    span: [0.0, 1.0],
+                };
+                4
+            ],
+            assignment: squid_n_core::model::PlateAssignment::Plate(slab_id),
+        });
 
     let issues = model_issues(&model);
     let warning = issues
@@ -1617,13 +1580,17 @@ fn test_model_issues_warns_floating_plate() {
             panic!("浮き床板の警告がない: {msgs:?}")
         });
     assert_eq!(warning.severity, IssueSeverity::Warning);
-    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+    assert!(
+        precheck_model(&model).is_ok(),
+        "解析は止めない: {:?}",
+        precheck_model(&model).err()
+    );
 }
 
-/// 上下の梁際をともに切った壁版はエラーで止める。
+/// 上下の梁際をともに切った壁版は、柱際が健全でもエラーで止める。
 ///
-/// 柱際の鉛直辺は壁の重量を受けないため、上下とも縁が切れていると自重の伝達先が
-/// 無くなる。実際に作らない納まりなので、入力の誤りとして扱う。
+/// 上下の梁際をともに切った納まりは実際に想定しないため、切れていない鉛直支持辺へ
+/// 負担率を明示しても、支持先の指定によらず入力の誤りとして一律に止める。
 #[test]
 fn test_model_issues_errors_on_both_beam_face_slit() {
     use super::precheck::{model_issues, IssueSeverity};
@@ -1631,6 +1598,9 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     use squid_n_core::model::{WallPlate, WallPlateShape, WallSlit};
 
     let mut model = make_cantilever_model();
+    // 壁の自重が正になるよう、断面へ板厚を、材料へ密度を与える。
+    model.sections[0].thickness = Some(200.0);
+    model.materials[0].density = 2.4e-9;
     let n = model.nodes.len() as u32;
     for (i, c) in [[1000.0, 0.0, 3000.0], [0.0, 0.0, 3000.0]]
         .into_iter()
@@ -1645,36 +1615,139 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
             support_spring: None,
         });
     }
+    // 柱際の鉛直辺（境界 [0,1,n,n+1] の辺 1・辺 3）を柱で支持する。
+    for (i, ends) in [[NodeId(0), NodeId(n + 1)], [NodeId(1), NodeId(n)]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut column = model.elements[0].clone();
+        column.id = ElemId(1 + i as u32);
+        column.nodes = smallvec::smallvec![ends[0], ends[1]];
+        column.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        model.elements.push(column);
+    }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed { boundary },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 1000.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: WallSlit {
-            column_face: [true, true],
-            beam_face: [true, true],
+    model.add_enclosed_wall_plate_from_nodes(
+        &boundary,
+        WallPlate {
+            // 切れていない鉛直支持辺（辺 1・辺 3）へ負担率を明示する。
+            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: WallSlit {
+                column_face: [false, false],
+                beam_face: [true, true],
+            },
         },
-    });
+    );
+
+    assert!(
+        squid_n_load::wall_plate_load::wall_plates_without_load_path(&model).is_empty(),
+        "鉛直支持辺へ負担率を明示しているため、自重の行き先はある"
+    );
 
     let issues = model_issues(&model);
     let hit = issues
         .iter()
-        .find(|i| i.message.contains("自重の行き先が決まらない壁版"));
+        .find(|i| i.message.contains("上下の梁際がともに切れた壁版"));
     let hit = hit.expect("エラーが出る");
     assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
 
     model.wall_plates[0].slit.beam_face = [true, false];
     assert!(
-        model_issues(&model)
+        !model_issues(&model)
             .iter()
-            .any(|i| i.message.contains("自重の行き先が決まらない壁版")),
-        "支持先を指定しない限りエラーを解消しない"
+            .any(|i| i.message.contains("上下の梁際がともに切れた壁版")),
+        "片側スリットはエラーにしない"
     );
+}
+
+/// 壁領域を覆い断面あり＝解析要素になる壁版でも、上下の梁際をともに切れば
+/// 「上下の梁際がともに切れた壁版」のエラーとする。
+///
+/// 要素経路の自重は切った梁際の節点へも乗り得るため、そのまま解析には使えない。
+/// `wall_plates_without_load_path` は解析要素を対象外にするので、この止めは解析前チェックだけが担う。
+#[test]
+fn test_model_issues_errors_on_both_beam_face_slit_on_element_plate() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::{WallPlateId, WallRegionId};
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallRegion, WallSlit};
+
+    let mut model = make_cantilever_model();
+    // 壁の自重が正になるよう、断面へ板厚を、材料へ密度を与える。
+    model.sections[0].thickness = Some(200.0);
+    model.materials[0].density = 2.4e-9;
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[1000.0, 0.0, 3000.0], [0.0, 0.0, 3000.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 柱際の鉛直辺（境界 [0,1,n,n+1] の辺 1・辺 3）を柱で支持する。
+    for (i, ends) in [[NodeId(0), NodeId(n + 1)], [NodeId(1), NodeId(n)]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut column = model.elements[0].clone();
+        column.id = ElemId(1 + i as u32);
+        column.nodes = smallvec::smallvec![ends[0], ends[1]];
+        column.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        model.elements.push(column);
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
+    let plate_id = model.add_enclosed_wall_plate_from_nodes(
+        &boundary,
+        WallPlate {
+            self_weight_shares: vec![0.0, 0.5, 0.0, 0.5],
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: WallSlit {
+                column_face: [false, false],
+                beam_face: [true, true],
+            },
+        },
+    );
+    // 壁領域全体を覆わせて、解析要素になる壁版にする（断面は割当済み）。
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: boundary.clone(),
+        wall_plate_ids: vec![plate_id],
+        posts: Vec::new(),
+    });
+    assert!(
+        model.wall_plate_becomes_element(&model.wall_plates[0]),
+        "解析要素になる壁版であることを前提にする"
+    );
+    assert!(
+        squid_n_load::wall_plate_load::wall_plates_without_load_path(&model).is_empty(),
+        "解析要素の壁版は行き先判定の対象外であり、この止めは解析前チェックだけが担う"
+    );
+
+    let issues = model_issues(&model);
+    let hit = issues
+        .iter()
+        .find(|i| i.message.contains("上下の梁際がともに切れた壁版"))
+        .expect("要素壁版でもエラーが出る");
+    assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
 }
 
 /// スリットが効かない壁版（境界が 4 節点でない）は、エラーではなく警告で知らせる。
@@ -1708,28 +1781,29 @@ fn test_model_issues_warns_ignored_slit_on_non_quad_plate() {
         });
     }
     // 境界 5 節点（上辺が中間節点で分割されている）。
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![
-                NodeId(0),
-                NodeId(1),
-                NodeId(n),
-                NodeId(n + 2),
-                NodeId(n + 1),
-            ],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[
+            NodeId(0),
+            NodeId(1),
+            NodeId(n),
+            NodeId(n + 2),
+            NodeId(n + 1),
+        ],
+        WallPlate {
+            self_weight_shares: Vec::new(),
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: WallSlit {
+                column_face: [true, true],
+                beam_face: [true, true],
+            },
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: WallSlit {
-            column_face: [true, true],
-            beam_face: [true, true],
-        },
-    });
+    );
 
     let issues = model_issues(&model);
     let warn = issues
@@ -1772,38 +1846,40 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
             support_spring: None,
         });
     }
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![
-                NodeId(0),
-                NodeId(1),
-                NodeId(n),
-                NodeId(n + 2),
-                NodeId(n + 1),
-            ],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[
+            NodeId(0),
+            NodeId(1),
+            NodeId(n),
+            NodeId(n + 2),
+            NodeId(n + 1),
+        ],
+        WallPlate {
+            self_weight_shares: Vec::new(),
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(1),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)],
+    );
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)],
+        WallPlate {
+            self_weight_shares: Vec::new(),
+            id: WallPlateId(1),
+            shape: WallPlateShape::Enclosed,
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: None,
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     model.wall_plates.push(WallPlate {
         self_weight_shares: Vec::new(),
         id: WallPlateId(2),
@@ -1870,7 +1946,19 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         "自重が算定できないことに触れること: {}",
         no_section.message
     );
-    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+    // 割当領域の仮の支持部材（断面なし）が「断面未割当の部材」エラーに
+    // 引っかからないよう、既存断面を割り当ててから解析前チェックする。
+    let fallback_section = model.sections[0].id;
+    for e in &mut model.elements {
+        if e.section.is_none() {
+            e.section = Some(fallback_section);
+        }
+    }
+    assert!(
+        precheck_model(&model).is_ok(),
+        "解析は止めない: {:?}",
+        precheck_model(&model).err()
+    );
 }
 
 /// 自立壁（床領域アンカー）が荷重を流せる床の上に載っていない場合はエラーで止める。

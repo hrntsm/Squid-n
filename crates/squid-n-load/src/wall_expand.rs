@@ -189,9 +189,9 @@ pub fn expand_wall_elements_owned(
             let Some(plate) = expanded.wall_plate(plate_id) else {
                 continue;
             };
-            let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+            if !matches!(plate.shape, WallPlateShape::Enclosed) {
                 continue;
-            };
+            }
             if !expanded.wall_plate_becomes_element(plate) {
                 if expanded.wall_plate_covers_region(plate) {
                     report.skipped_no_section += 1;
@@ -200,6 +200,9 @@ pub fn expand_wall_elements_owned(
                 }
                 continue;
             }
+            let Some(boundary) = plate.boundary_nodes(&expanded) else {
+                continue;
+            };
             let id = ElemId(next_id);
             next_id += 1;
             jobs.push((
@@ -283,9 +286,7 @@ mod tests {
         WallPlate {
             self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(id),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
+            shape: WallPlateShape::Enclosed,
             section,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -293,6 +294,11 @@ mod tests {
             loads: vec![],
             slit: Default::default(),
         }
+    }
+
+    /// 4 節点の囲まれた壁版を、境界支持部材を伴ってモデルへ追加する（テスト用）。
+    fn push_quad(m: &mut Model, plate: WallPlate) {
+        m.add_enclosed_wall_plate_from_nodes(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)], plate);
     }
 
     fn base_model() -> Model {
@@ -331,7 +337,7 @@ mod tests {
                 value: 3.0e-4,
             },
         ];
-        m.wall_plates.push(plate);
+        push_quad(&mut m, plate);
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -357,7 +363,7 @@ mod tests {
     #[test]
     fn test_generates_wall_element_for_quad_plate_with_section() {
         let mut m = base_model();
-        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        push_quad(&mut m, quad_plate(0, Some(SectionId(0))));
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -371,9 +377,19 @@ mod tests {
         assert_eq!(report.generated, 1);
         assert_eq!(report.skipped_not_covering, 0);
         assert_eq!(report.skipped_no_section, 0);
-        assert_eq!(expanded.elements.len(), 1);
-        let elem = &expanded.elements[0];
-        assert_eq!(elem.kind, ElementKind::Wall);
+        assert_eq!(
+            expanded
+                .elements
+                .iter()
+                .filter(|e| e.kind == ElementKind::Wall)
+                .count(),
+            1
+        );
+        let elem = expanded
+            .elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Wall)
+            .expect("壁エレメント");
         assert_eq!(elem.nodes.len(), 4);
         assert_eq!(
             index.plate_of(elem.id),
@@ -383,8 +399,8 @@ mod tests {
         // （モジュール doc「wall_attrs の合成」参照）。
         assert_eq!(expanded.wall_attrs.len(), 1);
         assert_eq!(expanded.wall_attrs[0].elem, elem.id);
-        // 入力の正（`m`）は変更されない。
-        assert!(m.elements.is_empty());
+        // 入力の正（`m`）は変更されない（境界支持部材は入力由来のため許容）。
+        assert!(m.elements.iter().all(|e| e.kind != ElementKind::Wall));
         assert!(m.wall_attrs.is_empty());
     }
 
@@ -399,7 +415,7 @@ mod tests {
             column_face: [true, false],
             beam_face: [false, true],
         };
-        m.wall_plates.push(plate);
+        push_quad(&mut m, plate);
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -426,15 +442,12 @@ mod tests {
     fn test_becomes_element_agrees_with_generated_elements() {
         let mut m = base_model();
         // 4 節点・断面あり（要素になる）。
-        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        push_quad(&mut m, quad_plate(0, Some(SectionId(0))));
         // 4 節点だが断面なし（要素にならない）。
-        m.wall_plates.push(quad_plate(1, None));
+        push_quad(&mut m, quad_plate(1, None));
         // 壁領域を覆わない（境界の一部しか共有しない）壁版。
-        let mut partial = quad_plate(2, Some(SectionId(0)));
-        partial.shape = WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
-        };
-        m.wall_plates.push(partial);
+        let partial = quad_plate(2, Some(SectionId(0)));
+        m.add_enclosed_wall_plate_from_nodes(&[NodeId(0), NodeId(1), NodeId(2)], partial);
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -446,7 +459,6 @@ mod tests {
             ],
             posts: Vec::new(),
         });
-
         let (_expanded, index, _report) = expand_wall_elements(&m);
         let generated: std::collections::BTreeSet<_> = index.0.values().copied().collect();
         for plate in &m.wall_plates {
@@ -469,7 +481,7 @@ mod tests {
     #[cfg(debug_assertions)]
     fn test_re_expanding_an_already_expanded_model_panics_in_debug() {
         let mut m = base_model();
-        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        push_quad(&mut m, quad_plate(0, Some(SectionId(0))));
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -484,7 +496,7 @@ mod tests {
     #[test]
     fn test_skips_plate_without_section() {
         let mut m = base_model();
-        m.wall_plates.push(quad_plate(0, None));
+        push_quad(&mut m, quad_plate(0, None));
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -496,7 +508,10 @@ mod tests {
         let (expanded, index, report) = expand_wall_elements(&m);
         assert_eq!(report.generated, 0);
         assert_eq!(report.skipped_no_section, 1);
-        assert!(expanded.elements.is_empty());
+        assert!(expanded
+            .elements
+            .iter()
+            .all(|e| e.kind != ElementKind::Wall));
         assert!(index.is_empty());
     }
 
@@ -507,11 +522,11 @@ mod tests {
     fn test_skips_non_quad_boundary() {
         let mut m = base_model();
         m.nodes.push(node(4, 2000.0, 0.0, 3000.0));
-        let mut plate = quad_plate(0, Some(SectionId(0)));
-        plate.shape = WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(4), NodeId(3)],
-        };
-        m.wall_plates.push(plate);
+        let plate = quad_plate(0, Some(SectionId(0)));
+        m.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(4), NodeId(3)],
+            plate,
+        );
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -523,7 +538,10 @@ mod tests {
         let (expanded, _index, report) = expand_wall_elements(&m);
         assert_eq!(report.generated, 0);
         assert_eq!(report.skipped_not_covering, 1);
-        assert!(expanded.elements.is_empty());
+        assert!(expanded
+            .elements
+            .iter()
+            .all(|e| e.kind != ElementKind::Wall));
     }
 
     #[test]
@@ -573,7 +591,7 @@ mod tests {
             plastic_zone: None,
             spring: None,
         });
-        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        push_quad(&mut m, quad_plate(0, Some(SectionId(0))));
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),
@@ -582,8 +600,9 @@ mod tests {
             posts: Vec::new(),
         });
 
+        let max_existing = m.elements.iter().map(|e| e.id.0).max().unwrap_or(0);
         let (expanded, _index, _report) = expand_wall_elements(&m);
-        assert_eq!(expanded.elements.len(), 2);
+        assert_eq!(expanded.elements.len(), m.elements.len() + 1);
         assert!(expanded
             .elements
             .iter()
@@ -593,14 +612,18 @@ mod tests {
             .iter()
             .find(|e| e.kind == ElementKind::Wall)
             .expect("壁要素が生成される");
-        assert_eq!(wall_elem.id, ElemId(6), "既存の最大IDより後ろへ付与する");
+        assert_eq!(
+            wall_elem.id,
+            ElemId(max_existing + 1),
+            "既存の最大IDより後ろへ付与する"
+        );
     }
 
     /// 展開は決定的で、同じモデルへ複数回呼んでも同じ `ElemId` 割当になる（D5）。
     #[test]
     fn test_expansion_is_deterministic_across_calls() {
         let mut m = base_model();
-        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        push_quad(&mut m, quad_plate(0, Some(SectionId(0))));
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),

@@ -72,6 +72,44 @@ impl Model {
             _ => self.wall_regions.iter().find(|r| r.id == id),
         }
     }
+
+    /// 壁領域の境界多角形の内側（境界を除く）に点 `p` [mm] があるか。
+    /// 境界座標・構面が引けない場合は `false`。
+    pub fn wall_region_contains_point(&self, id: WallRegionId, p: [f64; 3]) -> bool {
+        use crate::geom::vec3;
+        let Some(region) = self.wall_region(id) else {
+            return false;
+        };
+        let Some(coords) = region.boundary_coords(self) else {
+            return false;
+        };
+        if coords.len() < 3 {
+            return false;
+        }
+        let origin = coords[0];
+        let Some(u) = coords[1..]
+            .iter()
+            .find_map(|c| vec3::unit(vec3::sub(*c, origin)))
+        else {
+            return false;
+        };
+        let Some(normal) = vec3::unit(vec3::cross(
+            vec3::sub(coords[1], origin),
+            vec3::sub(coords[2], origin),
+        )) else {
+            return false;
+        };
+        let v = vec3::cross(normal, u);
+        let to_2d = |q: [f64; 3]| {
+            let d = vec3::sub(q, origin);
+            [vec3::dot(d, u), vec3::dot(d, v)]
+        };
+        if vec3::dot(vec3::sub(p, origin), normal).abs() > crate::geom::MEMBER_AXIS_TOL_MM {
+            return false;
+        }
+        let poly: Vec<[f64; 2]> = coords.iter().map(|&c| to_2d(c)).collect();
+        crate::geom::polygon::contains_excluding_boundary(&poly, to_2d(p))
+    }
 }
 
 #[cfg(test)]

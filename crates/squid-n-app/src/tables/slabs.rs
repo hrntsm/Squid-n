@@ -1,12 +1,13 @@
 use crate::app::App;
-use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
-use squid_n_core::model::{AreaLoad, DistributionMethod, EndSupport, OneWayDir, SlabUsage};
+use squid_n_core::ids::{FloorPlateAssignmentRegionId, FloorRegionId, NodeId, SlabId};
+use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, SlabUsage};
 use squid_n_core::model::{RegionAnchor, SlabShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{
-    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName,
-    SetSecondaryMemberEndSupport, SetSlabOneWay, SetSlabUsage,
+    AssignSlabToFloorPlateRegion, DeleteSlab, SetAttachedAnchor, SetAttachedExtent,
+    SetFloorPlateRegionNoPlate, SetFloorRegionName, SetSlabOneWay, SetSlabUsage,
+    UnsetFloorPlateRegion,
 };
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
@@ -133,15 +134,6 @@ fn one_way_label(o: Option<OneWayDir>) -> &'static str {
         None => "なし",
         Some(OneWayDir::X) => "X",
         Some(OneWayDir::Y) => "Y",
-    }
-}
-
-fn end_support_label(end_support: &[EndSupport; 2]) -> &'static str {
-    match end_support {
-        [EndSupport::Supported, EndSupport::Supported] => "支持-支持",
-        [EndSupport::Supported, EndSupport::Free] => "支持-自由（片持ち）",
-        [EndSupport::Free, EndSupport::Supported] => "自由-支持（片持ち）",
-        [EndSupport::Free, EndSupport::Free] => "自由-自由",
     }
 }
 
@@ -274,14 +266,15 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             row.col(|ui| match &slab.shape {
-                SlabShape::Enclosed { boundary } => {
-                    let s = boundary
-                        .iter()
-                        .map(|n| n.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join("-");
-                    table_util::text_cell(ui, &s);
-                }
+                SlabShape::Enclosed => match app.core.model.slab_assignment_region(slab.id) {
+                    Some(region) => {
+                        table_util::text_cell(
+                            ui,
+                            &format!("R{}（{}辺）", region.id.0, region.boundary.len()),
+                        );
+                    }
+                    None => table_util::muted_cell(ui, "―", "割当領域に属していません"),
+                },
                 SlabShape::Attached { anchor, extent } => {
                     attached_boundary_cell(
                         ui,
@@ -434,146 +427,96 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         "小梁は解析要素ではなく、床板から受けた荷重を大梁へ伝えます。端部支持条件「自由」は\
          片持ち小梁（基端支持・先端自由）を表し、荷重は基端の鉛直反力として伝達します。",
     );
-    let joists: Vec<squid_n_core::model::SecondaryMember> = app
+    crate::tables::secondary::secondary_member_placement_form(
+        app,
+        ui,
+        squid_n_core::model::SecondaryMemberKind::Joist,
+    );
+    ui.add_space(4.0);
+    crate::tables::secondary::secondary_member_list(
+        app,
+        ui,
+        squid_n_core::model::SecondaryMemberKind::Joist,
+    );
+
+    ui.separator();
+    ui.strong("床板の割当");
+    ui.label(
+        "囲まれた床板は、大梁・小梁で分割された床板割当領域へ1枚ずつ割り当てます。\
+         任意の節点境界からは作成できません。",
+    );
+
+    let region_ids: Vec<FloorPlateAssignmentRegionId> = app
         .core
         .model
-        .joists()
-        .filter(|sm| !app.core.model.secondary_member_materialized(sm))
-        .cloned()
+        .floor_assignment_regions
+        .regions
+        .iter()
+        .map(|r| r.id)
         .collect();
-    let mut pending_end_support: Vec<([NodeId; 2], [EndSupport; 2])> = Vec::new();
+    if region_ids.is_empty() {
+        ui.label(
+            "床板割当領域がありません。解析前処理（割当領域の再構築）を実行すると、\
+             大梁・小梁で分割された領域が作られます。",
+        );
+    }
     table_util::standard_table(
         ui,
-        "secondary_joists_tbl",
+        "floor_assignment_regions_tbl",
         &[
-            Col::text("所属"),
-            Col::text("両端節点"),
-            Col::text("断面"),
-            Col::name("支持条件"),
+            Col::id(),
+            Col::text("所属床領域"),
+            Col::text("状態"),
+            Col::text("床板"),
+            Col::text("境界支持部材"),
         ],
-        joists.len(),
+        region_ids.len(),
         |row| {
-            let i = row.index();
-            let sm = &joists[i];
+            let id = region_ids[row.index()];
+            let region = app
+                .core
+                .model
+                .floor_assignment_region(id)
+                .expect("region_ids は同じモデルから取得");
             row.col(|ui| {
-                let owner = app
-                    .core
-                    .model
-                    .floor_regions
-                    .iter()
-                    .find(|r| r.secondary_joists.iter().any(|j| j.nodes == sm.nodes));
+                table_util::id_label(ui, id.0);
+            });
+            row.col(|ui| {
+                let owner = region.assignment.plate().and_then(|sid| {
+                    app.core
+                        .model
+                        .floor_regions
+                        .iter()
+                        .find(|r| r.slab_ids.contains(&sid))
+                });
                 match owner {
                     Some(r) if !r.name.is_empty() => table_util::text_cell(ui, &r.name),
                     Some(r) => table_util::text_cell(ui, &format!("#{}", r.id.0)),
-                    None => table_util::muted_cell(ui, "未割当", "どの床領域にも所属していません"),
+                    None => table_util::muted_cell(ui, "―", "未所属"),
                 }
             });
             row.col(|ui| {
-                table_util::text_cell(ui, &format!("{}-{}", sm.nodes[0].0, sm.nodes[1].0));
+                let text = match region.assignment {
+                    squid_n_core::model::PlateAssignment::Unset => "未設定",
+                    squid_n_core::model::PlateAssignment::NoPlate => "版なし",
+                    squid_n_core::model::PlateAssignment::Plate(_) => "版あり",
+                };
+                table_util::text_cell(ui, text);
+            });
+            row.col(|ui| match region.assignment.plate() {
+                Some(sid) => table_util::text_cell(ui, &format!("#{}", sid.0)),
+                None => table_util::muted_cell(ui, "―", "床板が割り当てられていません"),
             });
             row.col(|ui| {
-                let label = sm
-                    .section
-                    .and_then(|sid| app.core.model.sections.get(sid.index()))
-                    .map(|sec| sec.display_name())
-                    .unwrap_or_else(|| "―".to_string());
-                table_util::text_cell(ui, &label);
-            });
-            row.col(|ui| {
-                table_util::cell_combo(
-                    ui,
-                    ("joist_end_support", sm.nodes[0].0, sm.nodes[1].0),
-                    end_support_label(&sm.end_support),
-                    |ui| {
-                        for candidate in [
-                            [EndSupport::Supported, EndSupport::Supported],
-                            [EndSupport::Supported, EndSupport::Free],
-                            [EndSupport::Free, EndSupport::Supported],
-                        ] {
-                            if ui
-                                .selectable_label(
-                                    sm.end_support == candidate,
-                                    end_support_label(&candidate),
-                                )
-                                .clicked()
-                                && sm.end_support != candidate
-                            {
-                                pending_end_support.push((sm.nodes, candidate));
-                            }
-                        }
-                    },
-                );
+                table_util::text_cell(ui, &format!("{}辺", region.boundary.len()));
             });
         },
     );
-    let mut edited_end_support = false;
-    for (nodes, end_support) in pending_end_support {
-        app.core.scoped.undo.run(
-            &mut app.core.model,
-            Box::new(SetSecondaryMemberEndSupport { nodes, end_support }),
-        );
-        edited_end_support = true;
-    }
-    if edited_end_support {
-        app.core.scoped.staleness.mark_edited();
-    }
 
-    ui.separator();
-    ui.strong("床板を追加");
-
-    if app.core.model.nodes.len() < 3 {
-        ui.label("床板を追加するには節点が3つ以上必要です");
-        return;
-    }
-
-    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
-
-    if app.ui.scoped.slab_draft.nodes.len() < 3 {
-        app.ui.scoped.slab_draft.nodes.resize(3, None);
-    }
     ui.label(
-        "境界節点（頂点0→1→2→…→0 の順で外周を辿り、その辺 i=節点i→節点i+1 を持つ梁を検索します。3〜N 節点対応）:",
+        "下の「割り当てる床板の仕様」を設定し、未設定・版なしの領域へ割り当てます。\
+         版ありの領域は上の床板一覧で編集してください。",
     );
-    ui.horizontal(|ui| {
-        if ui.button("+ 頂点を追加").clicked() {
-            app.ui.scoped.slab_draft.nodes.push(None);
-        }
-        if ui
-            .add_enabled(
-                app.ui.scoped.slab_draft.nodes.len() > 3,
-                egui::Button::new("− 頂点を削除"),
-            )
-            .on_hover_text("末尾の頂点スロットを削除（最小3）")
-            .clicked()
-        {
-            app.ui.scoped.slab_draft.nodes.pop();
-        }
-        ui.label(format!("頂点数: {}", app.ui.scoped.slab_draft.nodes.len()));
-    });
-    ui.horizontal_wrapped(|ui| {
-        let n_slots = app.ui.scoped.slab_draft.nodes.len();
-        for k in 0..n_slots {
-            let text = app.ui.scoped.slab_draft.nodes[k]
-                .map(|n| format!("N{}", n.0))
-                .unwrap_or_else(|| "―".to_string());
-            egui::ComboBox::from_id_salt(format!("slab_draft_node_{}", k))
-                .selected_text(format!("頂点{}: {}", k, text))
-                .show_ui(ui, |ui| {
-                    for &nid in &node_ids {
-                        let label = format!("N{}", nid.0);
-                        if ui
-                            .selectable_label(
-                                app.ui.scoped.slab_draft.nodes[k] == Some(nid),
-                                &label,
-                            )
-                            .clicked()
-                        {
-                            app.ui.scoped.slab_draft.nodes[k] = Some(nid);
-                        }
-                    }
-                });
-        }
-    });
 
     ui.horizontal(|ui| {
         ui.label("荷重種別:");
@@ -661,54 +604,78 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         );
     });
 
-    let selected: Vec<NodeId> = app
+    let value_kn_m2 = app
         .ui
         .scoped
         .slab_draft
-        .nodes
-        .iter()
-        .filter_map(|n| *n)
-        .collect();
-    let mut dedup = selected.clone();
-    dedup.sort_by_key(|n| n.0);
-    dedup.dedup();
-    let n_slots = app.ui.scoped.slab_draft.nodes.len();
-    let can_add = selected.len() == n_slots && n_slots >= 3 && dedup.len() == n_slots;
+        .load_value
+        .trim()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+    let value = to_internal::area_load_kn_per_m2(value_kn_m2);
+    let kind = app.ui.scoped.slab_draft.load_kind.trim();
+    let kind = if kind.is_empty() { "DL" } else { kind }.to_string();
+    let plate = squid_n_core::model::SlabPlate {
+        section: app.ui.scoped.slab_draft.section,
+        loads: vec![AreaLoad { kind, value }],
+        usage: app.ui.scoped.slab_draft.usage,
+        method: app.ui.scoped.slab_draft.method,
+        one_way: None,
+    };
 
-    if ui
-        .add_enabled(can_add, egui::Button::new("+ 追加"))
-        .on_hover_text("境界節点が3つ以上すべて選択され、かつ重複がない場合に追加できます")
-        .clicked()
-    {
-        let boundary: Vec<NodeId> = app
-            .ui
-            .scoped
-            .slab_draft
-            .nodes
-            .iter()
-            .map(|n| n.expect("can_add で全スロット Some を確認済み"))
-            .collect();
-        let value_kn_m2 = app
-            .ui
-            .scoped
-            .slab_draft
-            .load_value
-            .trim()
-            .parse::<f64>()
-            .unwrap_or(0.0);
-        let value = to_internal::area_load_kn_per_m2(value_kn_m2);
-        let kind = app.ui.scoped.slab_draft.load_kind.trim();
-        let kind = if kind.is_empty() { "DL" } else { kind }.to_string();
+    let mut pending_assign: Vec<FloorPlateAssignmentRegionId> = Vec::new();
+    let mut pending_no_plate: Vec<FloorPlateAssignmentRegionId> = Vec::new();
+    let mut pending_unset: Vec<FloorPlateAssignmentRegionId> = Vec::new();
+    ui.horizontal_wrapped(|ui| {
+        for &region_id in &region_ids {
+            let Some(state) = app
+                .core
+                .model
+                .floor_assignment_region(region_id)
+                .map(|r| r.assignment)
+            else {
+                continue;
+            };
+            ui.group(|ui| {
+                ui.label(format!("領域 R{}", region_id.0));
+                if let squid_n_core::model::PlateAssignment::Plate(sid) = state {
+                    ui.label(format!("床板 #{}", sid.0));
+                } else if ui.button("この仕様で割当").clicked() {
+                    pending_assign.push(region_id);
+                }
+                if !state.is_no_plate() && ui.button("版なし").clicked() {
+                    pending_no_plate.push(region_id);
+                }
+                if !state.is_unset() && ui.button("未設定へ戻す").clicked() {
+                    pending_unset.push(region_id);
+                }
+            });
+        }
+    });
+    let pending =
+        !pending_assign.is_empty() || !pending_no_plate.is_empty() || !pending_unset.is_empty();
+    for &region in &pending_assign {
         app.core.scoped.undo.run(
             &mut app.core.model,
-            Box::new(AddSlab {
-                boundary,
-                loads: vec![AreaLoad { kind, value }],
-                method: app.ui.scoped.slab_draft.method,
-                usage: app.ui.scoped.slab_draft.usage,
-                section: app.ui.scoped.slab_draft.section,
+            Box::new(AssignSlabToFloorPlateRegion {
+                region,
+                plate: plate.clone(),
             }),
         );
+    }
+    for &region in &pending_no_plate {
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(SetFloorPlateRegionNoPlate { region }),
+        );
+    }
+    for &region in &pending_unset {
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(UnsetFloorPlateRegion { region }),
+        );
+    }
+    if pending {
         app.core.scoped.staleness.mark_edited();
     }
 

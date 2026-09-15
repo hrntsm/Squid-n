@@ -1259,19 +1259,20 @@ mod tests {
             shear_rebar_material: None,
             steel_material: None,
         });
-        model.wall_plates.push(WallPlate {
-            self_weight_shares: Vec::new(),
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
             },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
+        );
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),

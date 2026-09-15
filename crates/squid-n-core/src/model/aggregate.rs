@@ -141,6 +141,18 @@ pub struct Model {
     /// どの `WallRegion` からも参照されないことがある。フィールド無しは空として補完。
     #[serde(default)]
     pub wall_plates: Vec<WallPlate>,
+    /// 床板割当領域。床領域を大梁・小梁で分割した閉領域で、床板 ID を参照する。
+    /// フィールド無しは空として補完。
+    #[serde(default)]
+    pub floor_assignment_regions: FloorPlateAssignmentRegions,
+    /// 壁版割当領域。壁領域を柱・梁・間柱で分割した閉領域で、壁版 ID を参照する。
+    /// フィールド無しは空として補完。
+    #[serde(default)]
+    pub wall_assignment_regions: WallPlateAssignmentRegions,
+    /// 新規二次部材へ割り当てる次の安定 ID。[`Model::alloc_secondary_member_id`] が
+    /// 単調増加で払い出す。既存 ID の最大 + 1 以上を保つ。フィールド無しは 0。
+    #[serde(default)]
+    pub next_secondary_member_id: u32,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -178,9 +190,10 @@ fn check_id_consistency<T>(
 /// 床板が参照する節点（境界節点、または取付き先の節点）。
 ///
 /// 取り付く床板は自由端に節点を持たないため、取付き先の節点だけを返す。
-fn slab_node_refs(slab: &Slab) -> Vec<NodeId> {
+/// 囲まれた床板の境界節点は割当領域の支持部材材軸から解決する。
+fn slab_node_refs(model: &Model, slab: &Slab) -> Vec<NodeId> {
     match &slab.shape {
-        SlabShape::Enclosed { boundary } => boundary.clone(),
+        SlabShape::Enclosed => slab.boundary_nodes(model).unwrap_or_default(),
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::Point(n) => vec![*n],
@@ -194,9 +207,9 @@ fn slab_node_refs(slab: &Slab) -> Vec<NodeId> {
 /// 取り付く壁版は自由端に節点を持たないため、取付き先の節点だけを返す
 /// （`slab_node_refs` と同じ考え方）。`RegionAnchor::Point` は壁の取付き先としては
 /// 使わない（`WallPlate::boundary_coords` のドキュメント参照）。
-fn wall_plate_node_refs(plate: &WallPlate) -> Vec<NodeId> {
+fn wall_plate_node_refs(model: &Model, plate: &WallPlate) -> Vec<NodeId> {
     match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => boundary.clone(),
+        WallPlateShape::Enclosed => plate.boundary_nodes(model).unwrap_or_default(),
         WallPlateShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::FloorRegion { nodes, .. } => nodes.to_vec(),
@@ -429,7 +442,7 @@ impl Model {
             }
         }
         for slab in &self.slabs {
-            for nid in slab_node_refs(slab) {
+            for nid in slab_node_refs(self, slab) {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
                     return Err(CoreError::DanglingRef(format!(
                         "Slab {} -> Node {}",
@@ -447,7 +460,7 @@ impl Model {
             }
         }
         for plate in &self.wall_plates {
-            for nid in wall_plate_node_refs(plate) {
+            for nid in wall_plate_node_refs(self, plate) {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
                     return Err(CoreError::DanglingRef(format!(
                         "WallPlate {} -> Node {}",
@@ -484,7 +497,6 @@ impl Model {
                 Self::validate_secondary_member(
                     sm,
                     &format!("FloorRegion {ri} secondary_joists[{ji}]"),
-                    &self.nodes,
                     &self.sections,
                 )?;
                 if sm.kind != SecondaryMemberKind::Joist {
@@ -499,7 +511,6 @@ impl Model {
             Self::validate_secondary_member(
                 sm,
                 &format!("unassigned_joists[{i}]"),
-                &self.nodes,
                 &self.sections,
             )?;
             if sm.kind != SecondaryMemberKind::Joist {
@@ -513,7 +524,6 @@ impl Model {
                 Self::validate_secondary_member(
                     sm,
                     &format!("WallRegion {ri} posts[{pi}]"),
-                    &self.nodes,
                     &self.sections,
                 )?;
                 if sm.kind != SecondaryMemberKind::Post {
@@ -525,12 +535,7 @@ impl Model {
             }
         }
         for (i, sm) in self.unassigned_posts.iter().enumerate() {
-            Self::validate_secondary_member(
-                sm,
-                &format!("unassigned_posts[{i}]"),
-                &self.nodes,
-                &self.sections,
-            )?;
+            Self::validate_secondary_member(sm, &format!("unassigned_posts[{i}]"), &self.sections)?;
             if sm.kind != SecondaryMemberKind::Post {
                 return Err(CoreError::DanglingRef(format!(
                     "unassigned_posts[{i}] は Post でない"
@@ -540,18 +545,20 @@ impl Model {
 
         {
             use std::collections::HashSet;
-            let mut seen = HashSet::new();
+            let mut seen_ids = HashSet::new();
             for sm in self.joists().chain(self.posts()) {
-                let a = sm.nodes[0].0.min(sm.nodes[1].0);
-                let b = sm.nodes[0].0.max(sm.nodes[1].0);
-                if !seen.insert((sm.kind, a, b)) {
+                if !seen_ids.insert(sm.id) {
                     return Err(CoreError::DanglingRef(format!(
-                        "二次部材が重複しています（{:?} 節点 {}-{}）",
-                        sm.kind, a, b
+                        "二次部材の安定 ID が重複しています（{:?}）",
+                        sm.id
                     )));
                 }
             }
         }
+
+        self.validate_secondary_member_anchor_ends()?;
+        self.floor_assignment_regions.validate(&self.slabs)?;
+        self.wall_assignment_regions.validate(&self.wall_plates)?;
 
         for slab in &self.slabs {
             if let SlabShape::Attached {
@@ -599,20 +606,16 @@ impl Model {
         }
 
         {
-            let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
+            let assigned: std::collections::HashSet<_> = self
+                .floor_assignment_regions
+                .regions
+                .iter()
+                .filter_map(|region| region.assignment.plate())
+                .collect();
             for slab in &self.slabs {
-                let SlabShape::Enclosed { boundary } = &slab.shape else {
-                    continue;
-                };
-                if boundary.is_empty() {
-                    continue;
-                }
-                let mut key: Vec<u32> = boundary.iter().map(|n| n.0).collect();
-                key.sort_unstable();
-                key.dedup();
-                if !seen.insert(key) {
-                    return Err(CoreError::DuplicateId(format!(
-                        "Slab {} は他の床板と同じ境界を持つ",
+                if matches!(slab.shape, SlabShape::Enclosed) && !assigned.contains(&slab.id) {
+                    return Err(CoreError::DanglingRef(format!(
+                        "Slab {} はどの床板割当領域にも割り当てられていない",
                         slab.id.0
                     )));
                 }
@@ -621,7 +624,10 @@ impl Model {
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for plate in &self.wall_plates {
-                let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+                let WallPlateShape::Enclosed = plate.shape else {
+                    continue;
+                };
+                let Some(boundary) = plate.boundary_nodes(self) else {
                     continue;
                 };
                 if boundary.is_empty() {
@@ -633,6 +639,23 @@ impl Model {
                 if !seen.insert(key) {
                     return Err(CoreError::DuplicateId(format!(
                         "WallPlate {} は他の壁版と同じ境界を持つ",
+                        plate.id.0
+                    )));
+                }
+            }
+        }
+        {
+            let assigned: std::collections::HashSet<_> = self
+                .wall_assignment_regions
+                .regions
+                .iter()
+                .filter_map(|region| region.assignment.plate())
+                .collect();
+            for plate in &self.wall_plates {
+                if matches!(plate.shape, WallPlateShape::Enclosed) && !assigned.contains(&plate.id)
+                {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} はどの壁版割当領域にも割り当てられていない",
                         plate.id.0
                     )));
                 }
@@ -691,6 +714,172 @@ impl Model {
         }
     }
 
+    /// 二次部材を安定 ID から引く。**ID は配列添字と一致しない**。
+    pub fn secondary_member(&self, id: SecondaryMemberId) -> Option<&SecondaryMember> {
+        self.joists().chain(self.posts()).find(|m| m.id == id)
+    }
+
+    /// 既存の二次部材 ID と衝突しない安定 ID を 1 つ払い出す。
+    ///
+    /// 全二次部材の最大 ID + 1 以上を返し、[`Model::next_secondary_member_id`] を進める。
+    pub fn alloc_secondary_member_id(&mut self) -> SecondaryMemberId {
+        let next = self
+            .joists()
+            .chain(self.posts())
+            .map(|m| m.id.0.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        self.next_secondary_member_id = self.next_secondary_member_id.max(next);
+        let id = SecondaryMemberId(self.next_secondary_member_id);
+        self.next_secondary_member_id = self.next_secondary_member_id.saturating_add(1);
+        id
+    }
+
+    /// 床板割当領域を安定 ID から引く。ID は配列添字と一致しない。
+    pub fn floor_assignment_region(
+        &self,
+        id: FloorPlateAssignmentRegionId,
+    ) -> Option<&FloorPlateAssignmentRegion> {
+        self.floor_assignment_regions.get(id)
+    }
+
+    /// 壁版割当領域を安定 ID から引く。ID は配列添字と一致しない。
+    pub fn wall_assignment_region(
+        &self,
+        id: WallPlateAssignmentRegionId,
+    ) -> Option<&WallPlateAssignmentRegion> {
+        self.wall_assignment_regions.get(id)
+    }
+
+    /// 二次部材の検証。安定 ID 重複・アンカー参照・材軸位置範囲・支持グラフ循環・
+    /// 片持ち自由端を [`validate_secondary_members`] で、主架構アンカーの実在を
+    /// 要素参照で検証する。
+    fn validate_secondary_member_anchor_ends(&self) -> Result<(), crate::error::CoreError> {
+        let members: Vec<&SecondaryMember> = self.joists().chain(self.posts()).collect();
+        crate::model::validate_secondary_members(&members)?;
+        for sm in &members {
+            let ends = sm.ends;
+            for anchor in ends.anchors() {
+                if let SupportMemberId::Primary(elem) = anchor.support {
+                    if self.element(elem).is_none() {
+                        return Err(crate::error::CoreError::DanglingRef(format!(
+                            "SecondaryMember {} のアンカーが存在しない要素 ElemId({}) を参照している",
+                            sm.id.0, elem.0
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 支持部材の材軸を `(始端座標, 終端座標)` [mm] で返す。引けない場合は `None`。
+    ///
+    /// 主架構は 2 節点要素の両端節点、二次部材は支持端アンカーを再帰的に解決する。
+    /// 片持ち二次部材の自由端は親構面内ベクトルで表され、構面の基底をモデルが
+    /// 持たないため解決できない（`None`）。
+    pub fn support_member_axis(&self, id: SupportMemberId) -> Option<([f64; 3], [f64; 3])> {
+        let mut visiting = std::collections::HashSet::new();
+        self.support_member_axis_inner(id, &mut visiting)
+    }
+
+    /// アンカーが指す支持部材材軸上の点 [mm] を返す。支持部材が引けない場合は `None`。
+    pub fn anchor_point(&self, anchor: SecondaryMemberAnchor) -> Option<[f64; 3]> {
+        let mut visiting = std::collections::HashSet::new();
+        self.anchor_point_inner(anchor, &mut visiting)
+    }
+
+    /// 支持部材の両端に一致するモデル節点を返す。対応する節点が無ければ `None`。
+    pub fn support_member_nodes(&self, id: SupportMemberId) -> Option<[NodeId; 2]> {
+        let (a, b) = self.support_member_axis(id)?;
+        let tol = crate::geom::MEMBER_AXIS_TOL_MM;
+        let find = |p: [f64; 3]| {
+            self.nodes
+                .iter()
+                .find(|n| crate::geom::vec3::dist(n.coord, p) <= tol)
+                .map(|n| n.id)
+        };
+        Some([find(a)?, find(b)?])
+    }
+
+    fn support_member_axis_inner(
+        &self,
+        id: SupportMemberId,
+        visiting: &mut std::collections::HashSet<SecondaryMemberId>,
+    ) -> Option<([f64; 3], [f64; 3])> {
+        match id {
+            SupportMemberId::Primary(elem) => {
+                let e = self.element(elem)?;
+                if e.nodes.len() < 2 {
+                    return None;
+                }
+                let a = self.node(*e.nodes.first()?)?.coord;
+                let b = self.node(*e.nodes.last()?)?.coord;
+                Some((a, b))
+            }
+            SupportMemberId::Secondary(sm) => {
+                if !visiting.insert(sm) {
+                    return None;
+                }
+                let member = self.secondary_member(sm)?;
+                let axis = match member.ends {
+                    SecondaryMemberEnds::Supported([a, b]) => Some((
+                        self.anchor_point_inner(a, visiting)?,
+                        self.anchor_point_inner(b, visiting)?,
+                    )),
+                    SecondaryMemberEnds::Cantilever {
+                        support,
+                        free_end_vector,
+                    } => {
+                        let p = self.anchor_point_inner(support, visiting)?;
+                        let q = self.cantilever_free_point(member.kind, p, free_end_vector)?;
+                        Some((p, q))
+                    }
+                    SecondaryMemberEnds::Detached([p0, p1]) => Some((p0, p1)),
+                };
+                visiting.remove(&sm);
+                axis
+            }
+        }
+    }
+
+    fn anchor_point_inner(
+        &self,
+        anchor: SecondaryMemberAnchor,
+        visiting: &mut std::collections::HashSet<SecondaryMemberId>,
+    ) -> Option<[f64; 3]> {
+        let (a, b) = self.support_member_axis_inner(anchor.support, visiting)?;
+        let t = anchor.position;
+        Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ])
+    }
+
+    /// 支持部材境界（支持部材 ID ＋材軸区間）の座標を、境界の辺順に返す。
+    /// 各辺は `(始点, 終点)`、辺 i の終点は辺 i+1 の始点と一致する。
+    /// 支持部材が引けない辺があれば `None`。
+    pub fn support_boundary_segments(
+        &self,
+        boundary: &[SupportBoundary],
+    ) -> Option<Vec<([f64; 3], [f64; 3])>> {
+        boundary
+            .iter()
+            .map(|edge| {
+                let (a, b) = self.support_member_axis(edge.support)?;
+                let at = |t: f64| {
+                    [
+                        a[0] + (b[0] - a[0]) * t,
+                        a[1] + (b[1] - a[1]) * t,
+                        a[2] + (b[2] - a[2]) * t,
+                    ]
+                };
+                Some((at(edge.span[0]), at(edge.span[1])))
+            })
+            .collect()
+    }
+
     /// 指定した節点が部材・節点荷重・階・床・拘束のいずれかから参照されているかを判定する。
     /// 参照中の節点を削除すると参照が壊れる（ダングリング）ため、削除前にこれで確認する。
     pub fn node_in_use(&self, id: NodeId) -> bool {
@@ -736,16 +925,15 @@ impl Model {
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
             || self.floor_regions.iter().any(|r| r.boundary.contains(&id))
-            || self.slabs.iter().any(|sl| slab_node_refs(sl).contains(&id))
+            || self
+                .slabs
+                .iter()
+                .any(|sl| slab_node_refs(self, sl).contains(&id))
             || self.wall_regions.iter().any(|r| r.boundary.contains(&id))
             || self
                 .wall_plates
                 .iter()
-                .any(|p| wall_plate_node_refs(p).contains(&id))
-            || self
-                .joists()
-                .chain(self.posts())
-                .any(|sm| sm.nodes.contains(&id))
+                .any(|p| wall_plate_node_refs(self, p).contains(&id))
             || self.constraints.iter().any(|c| match c {
                 Constraint::RigidDiaphragm { master, slaves, .. } => {
                     *master == id || slaves.contains(&id)
@@ -805,6 +993,7 @@ impl Model {
             && self.lumped_vibration_cases == other.lumped_vibration_cases
             && self.generated_masters == other.generated_masters
             && self.mass_method == other.mass_method
+            && self.slab_thickness == other.slab_thickness
             && self.load_cfg == other.load_cfg
             && self.wall_attrs == other.wall_attrs
             && self.wall_plates == other.wall_plates
@@ -824,6 +1013,9 @@ impl Model {
             && self.beam_torsion == other.beam_torsion
             && self.panel_zone == other.panel_zone
             && self.wall_regions == other.wall_regions
+            && self.floor_assignment_regions == other.floor_assignment_regions
+            && self.wall_assignment_regions == other.wall_assignment_regions
+            && self.next_secondary_member_id == other.next_secondary_member_id
     }
 
     /// ダンパー要素の特性を返す（`Model::damper_attrs` から要素 ID で検索）。
@@ -882,20 +1074,10 @@ impl Model {
             for n in &mut region.boundary {
                 f(n);
             }
-            for sm in &mut region.secondary_joists {
-                for n in &mut sm.nodes {
-                    f(n);
-                }
-            }
         }
         for slab in &mut self.slabs {
-            match &mut slab.shape {
-                SlabShape::Enclosed { boundary } => {
-                    for n in boundary {
-                        f(n);
-                    }
-                }
-                SlabShape::Attached { anchor, .. } => match anchor {
+            if let SlabShape::Attached { anchor, .. } = &mut slab.shape {
+                match anchor {
                     RegionAnchor::Line { nodes, .. } => {
                         for n in nodes {
                             f(n);
@@ -903,16 +1085,12 @@ impl Model {
                     }
                     RegionAnchor::Point(n) => f(n),
                     RegionAnchor::FloorRegion { .. } => {}
-                },
+                }
             }
         }
         for plate in &mut self.wall_plates {
             match &mut plate.shape {
-                WallPlateShape::Enclosed { boundary } => {
-                    for n in boundary {
-                        f(n);
-                    }
-                }
+                WallPlateShape::Enclosed => {}
                 WallPlateShape::Attached { anchor, .. } => match anchor {
                     RegionAnchor::Line { nodes, .. } => {
                         for n in nodes {
@@ -930,21 +1108,6 @@ impl Model {
         }
         for region in &mut self.wall_regions {
             for n in &mut region.boundary {
-                f(n);
-            }
-            for sm in &mut region.posts {
-                for n in &mut sm.nodes {
-                    f(n);
-                }
-            }
-        }
-        for sm in &mut self.unassigned_joists {
-            for n in &mut sm.nodes {
-                f(n);
-            }
-        }
-        for sm in &mut self.unassigned_posts {
-            for n in &mut sm.nodes {
                 f(n);
             }
         }
@@ -1071,6 +1234,8 @@ impl Model {
                 f(&mut ml.elem);
             }
         }
+        self.floor_assignment_regions.visit_primary_supports(&mut f);
+        self.wall_assignment_regions.visit_primary_supports(&mut f);
         self.shift_elem_attr_refs(&mut f);
     }
 
@@ -1270,19 +1435,13 @@ impl Model {
         }
     }
 
-    /// 二次部材 1 件の節点・断面参照が実在することを検証する。
+    /// 二次部材 1 件の断面参照が実在することを検証する。
     pub fn validate_secondary_member(
         sm: &SecondaryMember,
         label: &str,
-        nodes: &[Node],
         sections: &[Section],
     ) -> Result<(), crate::error::CoreError> {
         use crate::error::CoreError;
-        for &nid in &sm.nodes {
-            if nid.index() >= nodes.len() || nodes[nid.index()].id != nid {
-                return Err(CoreError::DanglingRef(format!("{label} -> Node {}", nid.0)));
-            }
-        }
         if let Some(sid) = sm.section {
             if sid.index() >= sections.len() || sections[sid.index()].id != sid {
                 return Err(CoreError::DanglingRef(format!(
@@ -1323,6 +1482,11 @@ impl Model {
                 f(sid);
             }
         }
+        for region in &mut self.floor_assignment_regions.regions {
+            if let crate::model::PlateAssignment::Plate(id) = &mut region.assignment {
+                f(id);
+            }
+        }
     }
 
     /// モデル内の全ての `WallPlateId` 参照（壁版自身の ID・壁領域の `wall_plate_ids`）へ
@@ -1336,6 +1500,11 @@ impl Model {
         for region in &mut self.wall_regions {
             for pid in &mut region.wall_plate_ids {
                 f(pid);
+            }
+        }
+        for region in &mut self.wall_assignment_regions.regions {
+            if let crate::model::PlateAssignment::Plate(id) = &mut region.assignment {
+                f(id);
             }
         }
     }
@@ -1380,6 +1549,65 @@ impl Model {
                     }
                     None => false,
                 });
+        }
+        for region in &mut self.floor_assignment_regions.regions {
+            if let crate::model::PlateAssignment::Plate(id) = region.assignment {
+                region.assignment = match remap.get(id.index()).copied().flatten() {
+                    Some(new_id) => crate::model::PlateAssignment::Plate(new_id),
+                    None => crate::model::PlateAssignment::Unset,
+                };
+            }
+        }
+    }
+
+    /// `keep` が `false` を返す壁版を取り除き、`id == index` の不変条件を
+    /// 復元したうえで、`WallRegion.wall_plate_ids` と壁版割当領域の参照を
+    /// 新しい ID へ張り替える（取り除かれた壁版への参照は削除・未設定化する）。
+    ///
+    /// 壁版をまとめて間引く処理は必ずこれを通すこと（[`Model::retain_slabs`] の壁側版）。
+    pub fn retain_wall_plates(&mut self, mut keep: impl FnMut(&WallPlate) -> bool) {
+        let mut remap: Vec<Option<WallPlateId>> = Vec::with_capacity(self.wall_plates.len());
+        let mut next = 0u32;
+        for plate in &self.wall_plates {
+            if keep(plate) {
+                remap.push(Some(WallPlateId(next)));
+                next += 1;
+            } else {
+                remap.push(None);
+            }
+        }
+        if remap.iter().all(|r| r.is_some()) {
+            return;
+        }
+
+        let mut i = 0usize;
+        self.wall_plates.retain(|_| {
+            let k = remap[i].is_some();
+            i += 1;
+            k
+        });
+        for (i, plate) in self.wall_plates.iter_mut().enumerate() {
+            plate.id = WallPlateId(i as u32);
+        }
+
+        for region in &mut self.wall_regions {
+            region
+                .wall_plate_ids
+                .retain_mut(|id| match remap.get(id.index()).copied().flatten() {
+                    Some(new_id) => {
+                        *id = new_id;
+                        true
+                    }
+                    None => false,
+                });
+        }
+        for region in &mut self.wall_assignment_regions.regions {
+            if let crate::model::PlateAssignment::Plate(id) = region.assignment {
+                region.assignment = match remap.get(id.index()).copied().flatten() {
+                    Some(new_id) => crate::model::PlateAssignment::Plate(new_id),
+                    None => crate::model::PlateAssignment::Unset,
+                };
+            }
         }
     }
 
@@ -1507,24 +1735,24 @@ mod node_reference_tests {
             kind: LoadCaseKind::default(),
         });
 
-        // 1: 床領域の境界。2: 床領域が持つ二次部材小梁（`secondary_joists`）。
+        // 1: 床領域の境界。2: 二次部材小梁は節点ではなく支持部材アンカーを参照する
+        // （節点 2 はもう参照されない）。
         let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
         region.secondary_joists.push(SecondaryMember {
+            id: SecondaryMemberId(0),
             gravity_end_shares: None,
-            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(2), NodeId(2)],
+            ends: SecondaryMemberEnds::Detached([[0.0; 3]; 2]),
             section: None,
             name: String::new(),
         });
         model.floor_regions.push(region);
 
-        // 3: 床板（Enclosed）。4: 床板（Attached／Line）。
+        // 3: 囲まれた床板（Enclosed）は節点ではなく割当領域（支持部材）を参照する。
+        // 4: 床板（Attached／Line）。
         model.slabs.push(Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(3)],
-            },
+            shape: SlabShape::Enclosed,
             plate: SlabPlate::default(),
         });
         model.slabs.push(Slab {
@@ -1546,12 +1774,11 @@ mod node_reference_tests {
             .push(WallRegion::new(WallRegionId(0), vec![NodeId(5)]));
 
         // 6: 壁版（Enclosed）。7: 壁版（Attached／Line）。
+        // 囲まれた壁版は節点ではなく割当領域（支持部材）を参照する。
         model.wall_plates.push(WallPlate {
             self_weight_shares: Vec::new(),
             id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(6)],
-            },
+            shape: WallPlateShape::Enclosed,
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -1578,12 +1805,12 @@ mod node_reference_tests {
             slit: Default::default(),
         });
 
-        // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
+        // 8: 二次部材（未割当小梁）。節点ではなく支持部材アンカーを参照する。
         model.unassigned_joists.push(SecondaryMember {
+            id: SecondaryMemberId(1),
             gravity_end_shares: None,
-            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(8), NodeId(8)],
+            ends: SecondaryMemberEnds::Detached([[0.0; 3]; 2]),
             section: None,
             name: String::new(),
         });
@@ -1615,12 +1842,20 @@ mod node_reference_tests {
             slit: Default::default(),
         });
 
-        for i in 0..=10u32 {
+        for i in (0..=10u32).filter(|i| *i != 2 && *i != 3 && *i != 6 && *i != 8) {
             assert!(
                 model.node_referenced_by_regions_or_plates(NodeId(i)),
                 "node {i} は参照されているはず"
             );
         }
+        // 2 は二次部材小梁の端点だった節点。二次部材は節点ではなくアンカーを参照する。
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(2)));
+        // 8 も未割当小梁の端点だった節点（同じ理由）。
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(8)));
+        // 3 は囲まれた床板の境界だった節点。囲まれた床板は節点を参照しない。
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(3)));
+        // 6 は囲まれた壁版の境界だった節点。囲まれた壁版は節点を参照しない。
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(6)));
         // 11 はどこからも参照されない対照節点。
         assert!(!model.node_referenced_by_regions_or_plates(NodeId(11)));
     }

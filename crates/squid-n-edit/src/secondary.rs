@@ -2,12 +2,16 @@
 
 use super::*;
 use squid_n_core::ids::*;
-use squid_n_core::model::{EndSupport, SecondaryMember, SecondaryMemberKind};
+use squid_n_core::model::{
+    EndSupport, SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+};
 use std::collections::HashSet;
 
 fn secondary_member_ok(model: &Model, sm: &SecondaryMember) -> bool {
-    sm.nodes.iter().all(|&n| crate::refs::node_exists(model, n))
-        && crate::refs::section_ref_ok(model, sm.section)
+    crate::refs::section_ref_ok(model, sm.section)
+        && model
+            .secondary_member_axis(sm)
+            .is_some_and(|(_, _, len)| len > 1e-9)
 }
 
 fn joists_ok(joists: &[SecondaryMember]) -> bool {
@@ -20,50 +24,35 @@ fn posts_ok(posts: &[SecondaryMember]) -> bool {
     posts.iter().all(|sm| sm.kind == SecondaryMemberKind::Post)
 }
 
-fn endpoint_key(sm: &SecondaryMember) -> (SecondaryMemberKind, u32, u32) {
-    let a = sm.nodes[0].0.min(sm.nodes[1].0);
-    let b = sm.nodes[0].0.max(sm.nodes[1].0);
-    (sm.kind, a, b)
-}
-
-fn unique_endpoints(sms: &[SecondaryMember]) -> bool {
+fn unique_ids(sms: &[SecondaryMember]) -> bool {
     let mut seen = HashSet::new();
-    sms.iter().all(|sm| seen.insert(endpoint_key(sm)))
+    sms.iter().all(|sm| seen.insert(sm.id))
 }
 
-fn joist_key_in_other_regions(
-    model: &Model,
-    key: (SecondaryMemberKind, u32, u32),
-    skip: FloorRegionId,
-) -> bool {
+fn joist_id_in_other_regions(model: &Model, id: SecondaryMemberId, skip: FloorRegionId) -> bool {
     model
         .floor_regions
         .iter()
-        .any(|r| r.id != skip && r.secondary_joists.iter().any(|sm| endpoint_key(sm) == key))
+        .any(|r| r.id != skip && r.secondary_joists.iter().any(|sm| sm.id == id))
 }
 
-fn post_key_in_other_regions(
-    model: &Model,
-    key: (SecondaryMemberKind, u32, u32),
-    skip: WallRegionId,
-) -> bool {
+fn post_id_in_other_regions(model: &Model, id: SecondaryMemberId, skip: WallRegionId) -> bool {
     model
         .wall_regions
         .iter()
-        .any(|r| r.id != skip && r.posts.iter().any(|sm| endpoint_key(sm) == key))
+        .any(|r| r.id != skip && r.posts.iter().any(|sm| sm.id == id))
 }
 
 fn relocate_removed(
     old: &[SecondaryMember],
-    new_keys: &HashSet<(SecondaryMemberKind, u32, u32)>,
+    new_ids: &HashSet<SecondaryMemberId>,
     unassigned: &mut Vec<SecondaryMember>,
 ) {
     for sm in old {
-        let key = endpoint_key(sm);
-        if new_keys.contains(&key) {
+        if new_ids.contains(&sm.id) {
             continue;
         }
-        if unassigned.iter().any(|u| endpoint_key(u) == key) {
+        if unassigned.iter().any(|u| u.id == sm.id) {
             continue;
         }
         unassigned.push(sm.clone());
@@ -72,9 +61,9 @@ fn relocate_removed(
 
 fn take_from_unassigned(
     unassigned: &mut Vec<SecondaryMember>,
-    new_keys: &HashSet<(SecondaryMemberKind, u32, u32)>,
+    new_ids: &HashSet<SecondaryMemberId>,
 ) {
-    unassigned.retain(|sm| !new_keys.contains(&endpoint_key(sm)));
+    unassigned.retain(|sm| !new_ids.contains(&sm.id));
 }
 
 /// 未割当小梁を末尾へ追加する。逆操作は [`DeleteUnassignedJoist`]。
@@ -87,8 +76,7 @@ impl EditCommand for AddUnassignedJoist {
         if self.sm.kind != SecondaryMemberKind::Joist || !secondary_member_ok(model, &self.sm) {
             return Box::new(Noop);
         }
-        let key = endpoint_key(&self.sm);
-        if model.joists().any(|sm| endpoint_key(sm) == key) {
+        if model.joists().any(|sm| sm.id == self.sm.id) {
             return Box::new(Noop);
         }
         let index = model.unassigned_joists.len();
@@ -153,8 +141,7 @@ impl EditCommand for AddUnassignedPost {
         if self.sm.kind != SecondaryMemberKind::Post || !secondary_member_ok(model, &self.sm) {
             return Box::new(Noop);
         }
-        let key = endpoint_key(&self.sm);
-        if model.posts().any(|sm| endpoint_key(sm) == key) {
+        if model.posts().any(|sm| sm.id == self.sm.id) {
             return Box::new(Noop);
         }
         let index = model.unassigned_posts.len();
@@ -257,18 +244,18 @@ impl EditCommand for SetFloorRegionSecondaryJoists {
         }
         if !joists_ok(&self.joists)
             || !self.joists.iter().all(|sm| secondary_member_ok(model, sm))
-            || !unique_endpoints(&self.joists)
+            || !unique_ids(&self.joists)
         {
             return Box::new(Noop);
         }
         if self
             .joists
             .iter()
-            .any(|sm| joist_key_in_other_regions(model, endpoint_key(sm), self.region))
+            .any(|sm| joist_id_in_other_regions(model, sm.id, self.region))
         {
             return Box::new(Noop);
         }
-        let new_keys: HashSet<_> = self.joists.iter().map(endpoint_key).collect();
+        let new_keys: HashSet<_> = self.joists.iter().map(|sm| sm.id).collect();
         let old_joists = std::mem::replace(
             &mut model.floor_regions[idx].secondary_joists,
             self.joists.clone(),
@@ -391,18 +378,18 @@ impl EditCommand for SetWallRegionPosts {
         }
         if !posts_ok(&self.posts)
             || !self.posts.iter().all(|sm| secondary_member_ok(model, sm))
-            || !unique_endpoints(&self.posts)
+            || !unique_ids(&self.posts)
         {
             return Box::new(Noop);
         }
         if self
             .posts
             .iter()
-            .any(|sm| post_key_in_other_regions(model, endpoint_key(sm), self.region))
+            .any(|sm| post_id_in_other_regions(model, sm.id, self.region))
         {
             return Box::new(Noop);
         }
-        let new_keys: HashSet<_> = self.posts.iter().map(endpoint_key).collect();
+        let new_keys: HashSet<_> = self.posts.iter().map(|sm| sm.id).collect();
         let old_posts = std::mem::replace(&mut model.wall_regions[idx].posts, self.posts.clone());
         let old_unassigned = model.unassigned_posts.clone();
         take_from_unassigned(&mut model.unassigned_posts, &new_keys);
@@ -452,32 +439,22 @@ impl EditCommand for SetWallRegionPostSection {
     }
 }
 
-/// 間柱の端部負担率を変更する。端点と負担率は同じ並びで指定する。
+/// 間柱の端部負担率を変更する。安定 ID で対象を探し、負担率は端の並びで指定する。
 pub struct SetPostGravityEndShares {
-    pub nodes: [NodeId; 2],
+    pub member: SecondaryMemberId,
     pub shares: Option<[f64; 2]>,
 }
 
 impl EditCommand for SetPostGravityEndShares {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let posts = model
-            .wall_regions
-            .iter_mut()
-            .flat_map(|r| r.posts.iter_mut())
-            .chain(model.unassigned_posts.iter_mut());
-        for post in posts {
-            let reversed = post.nodes == [self.nodes[1], self.nodes[0]];
-            if post.nodes != self.nodes && !reversed {
-                continue;
-            }
-            let shares = self.shares.map(|r| if reversed { [r[1], r[0]] } else { r });
-            let old = std::mem::replace(&mut post.gravity_end_shares, shares);
-            return Box::new(Self {
-                nodes: post.nodes,
-                shares: old,
-            });
-        }
-        Box::new(Noop)
+        let Some(post) = find_secondary_mut(model, self.member) else {
+            return Box::new(Noop);
+        };
+        let old = std::mem::replace(&mut post.gravity_end_shares, self.shares);
+        Box::new(Self {
+            member: self.member,
+            shares: old,
+        })
     }
 
     fn label(&self) -> &str {
@@ -487,98 +464,686 @@ impl EditCommand for SetPostGravityEndShares {
 
 /// 二次部材（小梁・間柱）の端部支持条件を変更する。
 ///
-/// 端点対で対象を探し、床領域内・壁領域内・未割当のいずれにあっても設定する。
-/// 端点対が同じ部材と一致する場合は端点の並び順を読み替えて適用する。対象が一意に
-/// 定まらない場合（同じ端点の小梁と間柱が併存する等）と、同じ条件の場合は Noop。
+/// 安定 ID で対象を探し、床領域内・壁領域内・未割当のいずれにあっても設定する。
+/// 支持端は現在の端部座標から支持部材アンカーへ再解決し、自由端は片持ちへ変換する
+/// （片持ちへの読み替えは、利用者が自由端を指定したときだけ行う）。同じ条件の場合は
+/// Noop。
 pub struct SetSecondaryMemberEndSupport {
-    pub nodes: [NodeId; 2],
+    pub member: SecondaryMemberId,
     pub end_support: [EndSupport; 2],
 }
 
-fn find_secondary_mut(model: &mut Model, nodes: [NodeId; 2]) -> Option<&mut SecondaryMember> {
-    let want = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
-    let key = |sm: &SecondaryMember| {
-        (
-            sm.nodes[0].0.min(sm.nodes[1].0),
-            sm.nodes[0].0.max(sm.nodes[1].0),
-        )
-    };
-    let count = model
-        .unassigned_joists
-        .iter()
-        .filter(|sm| key(sm) == want)
-        .count()
-        + model
-            .unassigned_posts
-            .iter()
-            .filter(|sm| key(sm) == want)
-            .count()
-        + model
-            .floor_regions
-            .iter()
-            .flat_map(|r| r.secondary_joists.iter())
-            .filter(|sm| key(sm) == want)
-            .count()
-        + model
-            .wall_regions
-            .iter()
-            .flat_map(|r| r.posts.iter())
-            .filter(|sm| key(sm) == want)
-            .count();
-    if count != 1 {
-        return None;
-    }
-    if let Some(sm) = model
-        .unassigned_joists
-        .iter_mut()
-        .find(|sm| key(sm) == want)
-    {
+fn find_secondary_mut(model: &mut Model, id: SecondaryMemberId) -> Option<&mut SecondaryMember> {
+    if let Some(sm) = model.unassigned_joists.iter_mut().find(|sm| sm.id == id) {
         return Some(sm);
     }
-    if let Some(sm) = model.unassigned_posts.iter_mut().find(|sm| key(sm) == want) {
+    if let Some(sm) = model.unassigned_posts.iter_mut().find(|sm| sm.id == id) {
         return Some(sm);
     }
     for region in &mut model.floor_regions {
-        if let Some(sm) = region
-            .secondary_joists
-            .iter_mut()
-            .find(|sm| key(sm) == want)
-        {
+        if let Some(sm) = region.secondary_joists.iter_mut().find(|sm| sm.id == id) {
             return Some(sm);
         }
     }
     for region in &mut model.wall_regions {
-        if let Some(sm) = region.posts.iter_mut().find(|sm| key(sm) == want) {
+        if let Some(sm) = region.posts.iter_mut().find(|sm| sm.id == id) {
             return Some(sm);
         }
     }
     None
 }
 
+/// `ends` が表す端部支持条件（片持ちの自由端は端番号 1）。支持未解決の `Detached` は
+/// 支持条件が確定していないため `None` とし、「同条件」として扱わない。
+fn ends_supported(ends: &SecondaryMemberEnds) -> Option<[bool; 2]> {
+    match ends {
+        SecondaryMemberEnds::Cantilever { .. } => Some([true, false]),
+        SecondaryMemberEnds::Supported(_) => Some([true, true]),
+        SecondaryMemberEnds::Detached(_) => None,
+    }
+}
+
 impl EditCommand for SetSecondaryMemberEndSupport {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let Some(sm) = find_secondary_mut(model, self.nodes) else {
+        let new_supported = [
+            self.end_support[0] == EndSupport::Supported,
+            self.end_support[1] == EndSupport::Supported,
+        ];
+        let Some(sm) = model.secondary_member(self.member) else {
             return Box::new(Noop);
         };
-        let reversed = sm.nodes != self.nodes;
-        let new_support = if reversed {
-            [self.end_support[1], self.end_support[0]]
-        } else {
-            self.end_support
-        };
-        let old = sm.end_support;
-        if old == new_support {
+        let old_ends = sm.ends;
+        let kind = sm.kind;
+        if ends_supported(&old_ends) == Some(new_supported) {
             return Box::new(Noop);
         }
-        sm.end_support = new_support;
-        let inverse = if reversed { [old[1], old[0]] } else { old };
-        Box::new(SetSecondaryMemberEndSupport {
-            nodes: self.nodes,
-            end_support: inverse,
+        let Some((a, b)) = model.secondary_member_end_points(sm) else {
+            return Box::new(Noop);
+        };
+        let ends = model.secondary_ends_from_coords(self.member, kind, [a, b], new_supported);
+        let candidate = SecondaryMember {
+            id: self.member,
+            gravity_end_shares: None,
+            kind,
+            ends,
+            section: sm.section,
+            name: sm.name.clone(),
+        };
+        if !secondary_ends_ok(model, &candidate) {
+            return Box::new(Noop);
+        }
+        let snapshot = snapshot_secondary(model);
+        let action = SecondaryAction::SetEnds(self.member, ends);
+        apply_secondary_action(model, &action);
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreSecondarySnapshot {
+            snapshot,
+            redo: action,
         })
     }
 
     fn label(&self) -> &str {
         "二次部材の端部支持条件変更"
+    }
+}
+
+/// 二次部材を新規に配置する親（作業範囲）。
+///
+/// [`SecondaryParent::Unassigned`] はどの床領域・壁領域にも入れず未割当へ置く。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondaryParent {
+    Floor(FloorRegionId),
+    Wall(WallRegionId),
+    Unassigned,
+}
+
+impl SecondaryParent {
+    fn accepts(self, kind: SecondaryMemberKind) -> bool {
+        match self {
+            SecondaryParent::Floor(_) => kind == SecondaryMemberKind::Joist,
+            SecondaryParent::Wall(_) => kind == SecondaryMemberKind::Post,
+            SecondaryParent::Unassigned => true,
+        }
+    }
+}
+
+fn anchor_ok(model: &Model, anchor: &SecondaryMemberAnchor) -> bool {
+    anchor.position.is_finite()
+        && (0.0..=1.0).contains(&anchor.position)
+        && model.support_member_axis(anchor.support).is_some()
+}
+
+/// 取付き位置表現が `Model::validate` を通るか。`Detached`（支持未解決）は配置を
+/// 拒否する対象なので常に不適とする。
+fn secondary_ends_ok(model: &Model, candidate: &SecondaryMember) -> bool {
+    if matches!(candidate.ends, SecondaryMemberEnds::Detached(_)) {
+        return false;
+    }
+    if !candidate.ends.anchors().iter().all(|a| anchor_ok(model, a)) {
+        return false;
+    }
+    let mut all: Vec<&SecondaryMember> = model
+        .joists()
+        .chain(model.posts())
+        .filter(|sm| sm.id != candidate.id)
+        .collect();
+    all.push(candidate);
+    squid_n_core::model::validate_secondary_members(&all).is_ok()
+}
+
+/// 二次部材を 1 本追加する。端部は支持部材アンカーで与える。
+///
+/// 親領域（[`SecondaryParent`]）へ追加したうえで割当領域を再構築する。境界が
+/// 変わって参照先を失った囲まれた版は取り除かれ、新領域は未設定になる。
+/// 追加・再構築・版の除去は 1 つの Undo 単位で、取り消すと適用前へ戻る。
+/// 支持が決まらない端（[`SecondaryMemberEnds::Detached`]）や種別に合わない親は
+/// Noop とし、片持ちへの読み替えはしない。
+pub struct PlaceSecondaryMember {
+    pub parent: SecondaryParent,
+    pub kind: SecondaryMemberKind,
+    pub ends: SecondaryMemberEnds,
+    pub section: Option<SectionId>,
+    pub name: String,
+}
+
+impl EditCommand for PlaceSecondaryMember {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if !self.parent.accepts(self.kind) || !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        let candidate = SecondaryMember {
+            id: SecondaryMemberId(u32::MAX),
+            gravity_end_shares: None,
+            kind: self.kind,
+            ends: self.ends,
+            section: self.section,
+            name: self.name.clone(),
+        };
+        if !secondary_ends_ok(model, &candidate) {
+            return Box::new(Noop);
+        }
+        let snapshot = snapshot_secondary(model);
+        let id = model.alloc_secondary_member_id();
+        let action = SecondaryAction::Place {
+            parent: self.parent,
+            id,
+            kind: self.kind,
+            ends: self.ends,
+            section: self.section,
+            name: self.name.clone(),
+        };
+        if !apply_secondary_action(model, &action) {
+            return Box::new(Noop);
+        }
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreSecondarySnapshot {
+            snapshot,
+            redo: action,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材配置"
+    }
+}
+
+/// 安定 ID で二次部材を 1 本削除する。割当領域を再構築し、参照先を失った版を
+/// 取り除くまでを 1 つの Undo 単位に含める。
+pub struct DeleteSecondaryMember {
+    pub member: SecondaryMemberId,
+}
+
+impl EditCommand for DeleteSecondaryMember {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if model.secondary_member(self.member).is_none() {
+            return Box::new(Noop);
+        }
+        let snapshot = snapshot_secondary(model);
+        let action = SecondaryAction::Delete(self.member);
+        if !apply_secondary_action(model, &action) {
+            return Box::new(Noop);
+        }
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreSecondarySnapshot {
+            snapshot,
+            redo: action,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材削除"
+    }
+}
+
+/// 安定 ID で二次部材の両端（取付き位置）を置き換える。
+///
+/// 端の移動は `ends` の差し替えで表す。取付き位置表現が不正、または支持が決まらない
+/// 端（[`SecondaryMemberEnds::Detached`]）は Noop。配置と同様に割当領域を再構築する。
+pub struct SetSecondaryMemberEnds {
+    pub member: SecondaryMemberId,
+    pub ends: SecondaryMemberEnds,
+}
+
+impl EditCommand for SetSecondaryMemberEnds {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(sm) = model.secondary_member(self.member) else {
+            return Box::new(Noop);
+        };
+        if sm.ends == self.ends {
+            return Box::new(Noop);
+        }
+        let candidate = SecondaryMember {
+            id: self.member,
+            gravity_end_shares: None,
+            kind: sm.kind,
+            ends: self.ends,
+            section: sm.section,
+            name: sm.name.clone(),
+        };
+        if !secondary_ends_ok(model, &candidate) {
+            return Box::new(Noop);
+        }
+        let snapshot = snapshot_secondary(model);
+        let action = SecondaryAction::SetEnds(self.member, self.ends);
+        if !apply_secondary_action(model, &action) {
+            return Box::new(Noop);
+        }
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreSecondarySnapshot {
+            snapshot,
+            redo: action,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材の端部移動"
+    }
+}
+
+/// 二次部材の配置・削除・端部移動のうち、再適用（redo）で繰り返す操作。
+#[derive(Clone)]
+enum SecondaryAction {
+    Place {
+        parent: SecondaryParent,
+        id: SecondaryMemberId,
+        kind: SecondaryMemberKind,
+        ends: SecondaryMemberEnds,
+        section: Option<SectionId>,
+        name: String,
+    },
+    Delete(SecondaryMemberId),
+    SetEnds(SecondaryMemberId, SecondaryMemberEnds),
+}
+
+/// 割当領域の再構築と孤児版の除去で変化するモデル部分（undo 用）。
+#[derive(Clone)]
+struct SecondarySnapshot {
+    floor_regions: Vec<squid_n_core::model::FloorRegion>,
+    wall_regions: Vec<squid_n_core::model::WallRegion>,
+    unassigned_joists: Vec<SecondaryMember>,
+    unassigned_posts: Vec<SecondaryMember>,
+    floor_assignment_regions: squid_n_core::model::FloorPlateAssignmentRegions,
+    wall_assignment_regions: squid_n_core::model::WallPlateAssignmentRegions,
+    slabs: Vec<squid_n_core::model::Slab>,
+    wall_plates: Vec<squid_n_core::model::WallPlate>,
+    next_secondary_member_id: u32,
+}
+
+fn snapshot_secondary(model: &Model) -> SecondarySnapshot {
+    SecondarySnapshot {
+        floor_regions: model.floor_regions.clone(),
+        wall_regions: model.wall_regions.clone(),
+        unassigned_joists: model.unassigned_joists.clone(),
+        unassigned_posts: model.unassigned_posts.clone(),
+        floor_assignment_regions: model.floor_assignment_regions.clone(),
+        wall_assignment_regions: model.wall_assignment_regions.clone(),
+        slabs: model.slabs.clone(),
+        wall_plates: model.wall_plates.clone(),
+        next_secondary_member_id: model.next_secondary_member_id,
+    }
+}
+
+fn restore_secondary(model: &mut Model, snapshot: SecondarySnapshot) {
+    model.floor_regions = snapshot.floor_regions;
+    model.wall_regions = snapshot.wall_regions;
+    model.unassigned_joists = snapshot.unassigned_joists;
+    model.unassigned_posts = snapshot.unassigned_posts;
+    model.floor_assignment_regions = snapshot.floor_assignment_regions;
+    model.wall_assignment_regions = snapshot.wall_assignment_regions;
+    model.slabs = snapshot.slabs;
+    model.wall_plates = snapshot.wall_plates;
+    model.next_secondary_member_id = snapshot.next_secondary_member_id;
+}
+
+fn remove_secondary(model: &mut Model, id: SecondaryMemberId) -> bool {
+    if let Some(pos) = model.unassigned_joists.iter().position(|sm| sm.id == id) {
+        model.unassigned_joists.remove(pos);
+        return true;
+    }
+    if let Some(pos) = model.unassigned_posts.iter().position(|sm| sm.id == id) {
+        model.unassigned_posts.remove(pos);
+        return true;
+    }
+    for region in &mut model.floor_regions {
+        if let Some(pos) = region.secondary_joists.iter().position(|sm| sm.id == id) {
+            region.secondary_joists.remove(pos);
+            return true;
+        }
+    }
+    for region in &mut model.wall_regions {
+        if let Some(pos) = region.posts.iter().position(|sm| sm.id == id) {
+            region.posts.remove(pos);
+            return true;
+        }
+    }
+    false
+}
+
+fn apply_secondary_action(model: &mut Model, action: &SecondaryAction) -> bool {
+    match action {
+        SecondaryAction::Place {
+            parent,
+            id,
+            kind,
+            ends,
+            section,
+            name,
+        } => {
+            if model.secondary_member(*id).is_some() {
+                return false;
+            }
+            let member = SecondaryMember {
+                id: *id,
+                gravity_end_shares: None,
+                kind: *kind,
+                ends: *ends,
+                section: *section,
+                name: name.clone(),
+            };
+            match parent {
+                SecondaryParent::Floor(region) => {
+                    let idx = region.index();
+                    match model.floor_regions.get_mut(idx) {
+                        Some(r) if r.id == *region => {
+                            r.secondary_joists.push(member);
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+                SecondaryParent::Wall(region) => {
+                    let idx = region.index();
+                    match model.wall_regions.get_mut(idx) {
+                        Some(r) if r.id == *region => {
+                            r.posts.push(member);
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+                SecondaryParent::Unassigned => {
+                    if member.kind == SecondaryMemberKind::Joist {
+                        model.unassigned_joists.push(member);
+                    } else {
+                        model.unassigned_posts.push(member);
+                    }
+                    true
+                }
+            }
+        }
+        SecondaryAction::Delete(id) => remove_secondary(model, *id),
+        SecondaryAction::SetEnds(id, ends) => match find_secondary_mut(model, *id) {
+            Some(sm) => {
+                sm.ends = *ends;
+                true
+            }
+            None => false,
+        },
+    }
+}
+
+/// [`SecondarySnapshot`] を復元し、redo で操作を再適用できるようにする逆操作。
+struct RestoreSecondarySnapshot {
+    snapshot: SecondarySnapshot,
+    redo: SecondaryAction,
+}
+
+impl EditCommand for RestoreSecondarySnapshot {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        restore_secondary(model, self.snapshot.clone());
+        Box::new(ApplySecondaryAction {
+            action: self.redo.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材編集の取り消し"
+    }
+}
+
+/// [`RestoreSecondarySnapshot`] の逆操作。操作を再適用して割当領域を再構築する。
+struct ApplySecondaryAction {
+    action: SecondaryAction,
+}
+
+impl EditCommand for ApplySecondaryAction {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let snapshot = snapshot_secondary(model);
+        if !apply_secondary_action(model, &self.action) {
+            return Box::new(Noop);
+        }
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreSecondarySnapshot {
+            snapshot,
+            redo: self.action.clone(),
+        })
+    }
+
+    fn label(&self) -> &str {
+        "二次部材編集の再適用"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
+        SlabPlate, SupportMemberId,
+    };
+
+    fn node(id: u32, coord: [f64; 3]) -> Node {
+        Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    fn beam(id: u32, a: u32, b: u32) -> ElementData {
+        ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    fn anchor(elem: u32, position: f64) -> SecondaryMemberAnchor {
+        SecondaryMemberAnchor {
+            support: SupportMemberId::Primary(ElemId(elem)),
+            position,
+        }
+    }
+
+    /// 4 辺を大梁で囲んだ 1 床領域のモデル。割当領域は 1 面。
+    fn square_model() -> Model {
+        let mut model = Model::default();
+        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(node(i as u32, [x, y, 0.0]));
+        }
+        for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.elements.push(beam(i as u32, a, b));
+        }
+        model.floor_regions.push(FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        ));
+        model.rebuild_floor_assignment_regions();
+        model
+    }
+
+    fn place_joist(model: &mut Model, undo: &mut crate::UndoStack) -> bool {
+        undo.run(
+            model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Floor(FloorRegionId(0)),
+                kind: SecondaryMemberKind::Joist,
+                ends: SecondaryMemberEnds::Supported([anchor(0, 0.5), anchor(2, 0.5)]),
+                section: None,
+                name: "J0".into(),
+            }),
+        )
+    }
+
+    #[test]
+    fn 床領域へ小梁を配置すると割当領域が分割される() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        assert_eq!(model.floor_assignment_regions.regions.len(), 1);
+
+        assert!(place_joist(&mut model, &mut undo));
+        assert_eq!(model.joists().count(), 1);
+        assert_eq!(model.joists().next().unwrap().id, SecondaryMemberId(0));
+        assert_eq!(
+            model.floor_assignment_regions.regions.len(),
+            2,
+            "小梁で 2 面"
+        );
+        assert!(model
+            .floor_assignment_regions
+            .regions
+            .iter()
+            .all(|r| r.assignment.is_unset()));
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        undo.undo(&mut model);
+        assert_eq!(model.joists().count(), 0);
+        assert_eq!(model.floor_assignment_regions.regions.len(), 1);
+        assert!(model.validate().is_ok());
+
+        undo.redo(&mut model);
+        assert_eq!(model.joists().count(), 1);
+        assert_eq!(
+            model.joists().next().unwrap().id,
+            SecondaryMemberId(0),
+            "redo でも同じ安定 ID"
+        );
+        assert!(model.validate().is_ok());
+    }
+
+    #[test]
+    fn 支持が決まらない配置は拒否する() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Floor(FloorRegionId(0)),
+                kind: SecondaryMemberKind::Joist,
+                ends: SecondaryMemberEnds::Detached([[0.0, 0.0, 0.0], [4000.0, 4000.0, 0.0]]),
+                section: None,
+                name: String::new(),
+            }),
+        );
+        assert!(!applied, "Detached への読み替えはしない");
+        assert_eq!(model.joists().count(), 0);
+    }
+
+    #[test]
+    fn 存在しない支持部材を指す配置は拒否する() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Floor(FloorRegionId(0)),
+                kind: SecondaryMemberKind::Joist,
+                ends: SecondaryMemberEnds::Supported([anchor(99, 0.5), anchor(2, 0.5)]),
+                section: None,
+                name: String::new(),
+            }),
+        );
+        assert!(!applied);
+        assert_eq!(model.joists().count(), 0);
+    }
+
+    #[test]
+    fn 版あり領域の分割で版が除去され新領域は未設定() {
+        let mut model = square_model();
+        let slab = model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                SlabPlate::default(),
+            )
+            .expect("1 面へ割当");
+        assert_eq!(model.slabs.len(), 1);
+
+        let mut undo = crate::UndoStack::new();
+        assert!(place_joist(&mut model, &mut undo));
+        assert_eq!(model.slabs.len(), 0, "参照先を失った囲まれた床板は取り除く");
+        assert!(model
+            .floor_assignment_regions
+            .regions
+            .iter()
+            .all(|r| r.assignment.is_unset()));
+        assert!(model.unset_plate_assignment_regions().0.len() == 2);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        undo.undo(&mut model);
+        assert_eq!(model.slabs.len(), 1, "undo で版が戻る");
+        assert!(model.slab_assignment_region(slab).is_some());
+        assert!(model.joists().count() == 0);
+        assert!(model.validate().is_ok());
+    }
+
+    #[test]
+    fn 二次部材の削除で領域が統合される() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        assert!(place_joist(&mut model, &mut undo));
+        let id = model.joists().next().unwrap().id;
+
+        assert!(undo.run(&mut model, Box::new(DeleteSecondaryMember { member: id })));
+        assert_eq!(model.joists().count(), 0);
+        assert_eq!(model.floor_assignment_regions.regions.len(), 1);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    #[test]
+    fn 二次部材の端部を移動すると割当領域が再構築される() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        assert!(place_joist(&mut model, &mut undo));
+        let id = model.joists().next().unwrap().id;
+
+        let ends = SecondaryMemberEnds::Supported([anchor(0, 0.25), anchor(2, 0.5)]);
+        assert!(undo.run(
+            &mut model,
+            Box::new(SetSecondaryMemberEnds { member: id, ends })
+        ));
+        assert_eq!(model.joists().next().unwrap().ends, ends);
+        assert_eq!(model.floor_assignment_regions.regions.len(), 2);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    /// 大梁（主架構要素）の削除で割当領域の境界が変わり、そこだけに載っていた
+    /// 囲まれた床板が孤児化しても、削除から戻せるまで（`DeleteMember` 直後に
+    /// `Model::validate` が通る）を固定する。孤児版を残すと validate が必ず落ちる。
+    #[test]
+    fn 大梁削除で孤児化した床板は取り除かれvalidateが通る() {
+        let mut model = square_model();
+        let slab = model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                SlabPlate::default(),
+            )
+            .expect("1 面へ割当");
+        assert_eq!(model.slabs.len(), 1);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        let mut undo = crate::UndoStack::new();
+        assert!(undo.run(&mut model, Box::new(crate::DeleteMember { id: ElemId(0) })));
+        assert_eq!(model.slabs.len(), 0, "参照先を失った囲まれた床板は取り除く");
+        assert!(model.floor_assignment_regions.regions.is_empty());
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        undo.undo(&mut model);
+        assert_eq!(model.slabs.len(), 1, "undo で版が戻る");
+        assert!(model.slab_assignment_region(slab).is_some());
+        assert_eq!(model.elements.len(), 4, "undo で大梁が戻る");
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        undo.redo(&mut model);
+        assert_eq!(model.slabs.len(), 0);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 }

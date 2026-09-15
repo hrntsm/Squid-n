@@ -232,6 +232,6 @@ impl App {
         };
         self.core.scoped.wave_library_selected_sha256 =
             squid_n_io::wave_library::wave_sha256(&dir, &name).ok();
-        self.start_time_history_job(wave);
+        self.request_analysis(PendingAnalysis::TimeHistory(Box::new(wave)));
     }
 }
