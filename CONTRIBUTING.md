@@ -45,15 +45,20 @@ cargo test  -p squid-n-mcp --features mcp
 cargo run -p squid-n-mcp --features mcp
 ```
 
+## 開発時の検証
+
+検証は「編集中」と「PR 前」の2段階です。
+
+- 編集中：変更したクレートだけ検証する。小さな修正のたびに workspace 全体を回さない
+- PR 前：workspace 全体＋非デフォルト feature のフル検証を行う。
+  CI（`.github/workflows/ci.yml`）も同じ範囲を検証する
+
+具体的なコマンドは「テスト」「静的解析」の各節を正本とする。
+
 ## テスト
 
-### 開発ループ（編集中）と PR 前の使い分け
-
-編集中は変更したクレートだけを検証します。小さな修正のたびに workspace
-全体を回す必要はありません。
-
 ```bash
-# 変更クレートのみ
+# 編集中：変更クレートのみ
 cargo test -p <changed-crate>
 
 # GUI / MCP 領域を変更したときだけ feature 付きで確認する
@@ -61,9 +66,7 @@ cargo test -p squid-n-app --features gui
 cargo test -p squid-n-mcp --features mcp
 ```
 
-PR 前には下記の全テスト（workspace 全体＋非デフォルト feature）を実行します。
-CI（`.github/workflows/ci.yml`）も同じ範囲を検証します。
-テスト系コマンドの正本はこの節です。
+PR 前のフル検証は以下です（テスト系コマンドの正本はこの節）。
 
 ```bash
 # 全テスト実行（default 構成）
@@ -75,7 +78,11 @@ cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/
 
 # 決定性テスト（100回ビット一致確認を含む）
 cargo test --workspace deterministic
+```
 
+### PR 前のその他の検証
+
+```bash
 # 依存方向チェック（循環依存の検出）
 cargo run -p xtask -- check-deps
 ```
@@ -122,22 +129,20 @@ cargo test -p squid-n-app --test wall_model
 
 ## 静的解析
 
-**コミット前には必ず確認してください。** CI と同条件で実行します
+編集中は変更クレートのみ、PR 前は以下の CI 相当のフル検証を行います
 （`--all-targets` がないとテストコードが clippy の対象外になります）。
 
-編集中は変更クレートだけに絞ると反復が速くなります。GUI / MCP 領域の
-変更時は feature 付きも同様に `-p` で確認します。
-
 ```bash
+# 編集中：変更クレートのみ（GUI / MCP 領域の変更時は feature 付きも同様に -p で確認する）
 cargo clippy -p <changed-crate> --all-targets --locked -- -D warnings
 ```
 
-PR 前のフル検証は以下です。GUI / MCP の feature 付き検証は、同じ依存グラフを
-何度も構築しないよう 2 クレートまとめて 1 回の呼び出しにしています
-（`squid-n-app/gui` のような `クレート名/機能名` 形式で指定する）。
-default 構成の検証は別に維持するため、`--all-features` にはまとめません。
-
 ```bash
+# PR 前のフル検証（clippy / fmt 系の正本はこの節）。
+# GUI / MCP の feature 付き検証は、同じ依存グラフを
+# 何度も構築しないよう 2 クレートまとめて 1 回の呼び出しにしている
+# （`squid-n-app/gui` のような `クレート名/機能名` 形式で指定する）。
+# default 構成の検証は別に維持するため、`--all-features` にはまとめない。
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings
 cargo fmt --all -- --check
