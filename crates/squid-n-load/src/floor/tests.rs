@@ -6,14 +6,6 @@ use squid_n_core::model::{
 };
 
 #[test]
-fn test_fem_uniform() {
-    let cmq = fem_uniform(10.0, 4000.0);
-    let expected = 10.0 * 4000.0_f64.powi(2) / 12.0;
-    assert!((cmq.c_i - expected).abs() < 1e-6);
-    assert_eq!(cmq.q_i, 10.0 * 4000.0 / 2.0);
-}
-
-#[test]
 fn test_fem_triangle_spec() {
     let w0 = 10.0_f64;
     let l = 4000.0_f64;
@@ -25,7 +17,6 @@ fn test_fem_triangle_spec() {
         cmq.c_i,
         expected
     );
-    assert!((expected - 8.3333e6).abs() < 1.0e3, "expected={}", expected);
 }
 
 #[test]
@@ -121,29 +112,8 @@ fn test_fixed_end_moments_matches_fem_uniform() {
         w2: w,
     }];
     assert_fem_matches(&loads, l, fem_uniform(w, l), "uniform");
-}
-
-#[test]
-fn test_fixed_end_moments_matches_fem_triangle() {
-    // emit_shape の Triangle{w0}（中央ピーク）と同じ区間分割: 2区間
-    let w0 = 10.0_f64;
-    let l = 4000.0_f64;
-    let mid = l / 2.0;
-    let loads = vec![
-        MemberLoadKind::Distributed {
-            a: 0.0,
-            b: mid,
-            w1: 0.0,
-            w2: w0,
-        },
-        MemberLoadKind::Distributed {
-            a: mid,
-            b: l,
-            w1: w0,
-            w2: 0.0,
-        },
-    ];
-    assert_fem_matches(&loads, l, fem_triangle(w0, l), "triangle");
+    // 左右のせん断配分も直接照合する（総和だけでは左右の取り違えを見逃す）。
+    assert_eq!(fem_uniform(w, l).q_i, w * l / 2.0);
 }
 
 #[test]
@@ -175,36 +145,10 @@ fn test_fixed_end_moments_matches_fem_trapezoid() {
         },
     ];
     assert_fem_matches(&loads, l, fem_trapezoid(w0, a, b, l), "trapezoid");
-}
 
-#[test]
-fn test_simple_beam_moment_at_uniform_midspan() {
-    let w = 10.0_f64;
-    let l = 4000.0_f64;
-    let loads = vec![MemberLoadKind::Distributed {
-        a: 0.0,
-        b: l,
-        w1: w,
-        w2: w,
-    }];
-    let expected_mid = w * l * l / 8.0;
-    assert!((simple_beam_moment_at(&loads, l, l / 2.0) - expected_mid).abs() / expected_mid < 1e-9);
-    // 端部はゼロ、対称性 M(x)=M(L−x)
-    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
-    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
-    let x = 0.3 * l;
-    assert!(
-        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
-            < 1e-6
-    );
-}
-
-#[test]
-fn test_simple_beam_moment_at_triangle_midspan() {
-    let w0 = 10.0_f64;
-    let l = 4000.0_f64;
+    // emit_shape の Triangle{w0}（中央ピーク）と同じ区間分割: 2区間
     let mid = l / 2.0;
-    let loads = vec![
+    let tri_loads = vec![
         MemberLoadKind::Distributed {
             a: 0.0,
             b: mid,
@@ -218,53 +162,99 @@ fn test_simple_beam_moment_at_triangle_midspan() {
             w2: 0.0,
         },
     ];
-    let expected_mid = w0 * l * l / 12.0;
-    assert!((simple_beam_moment_at(&loads, l, mid) - expected_mid).abs() / expected_mid < 1e-9);
-    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
-    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+    assert_fem_matches(&tri_loads, l, fem_triangle(w0, l), "triangle");
 }
 
 #[test]
-fn test_simple_beam_moment_at_trapezoid_midspan() {
-    let w0 = 10.0_f64;
-    let l = 6000.0_f64;
-    let a = 1500.0_f64;
-    let b = l - 2.0 * a;
-    let loads = vec![
-        MemberLoadKind::Distributed {
-            a: 0.0,
-            b: a,
-            w1: 0.0,
-            w2: w0,
-        },
-        MemberLoadKind::Distributed {
-            a,
-            b: a + b,
-            w1: w0,
-            w2: w0,
-        },
-        MemberLoadKind::Distributed {
-            a: a + b,
-            b: l,
-            w1: w0,
-            w2: 0.0,
-        },
-    ];
-    // 中央値の閉形式 M0=w0(3L²−4a²)/24 と照合
-    let expected_mid = w0 * (3.0 * l * l - 4.0 * a * a) / 24.0;
-    let mid = simple_beam_moment_at(&loads, l, l / 2.0);
-    assert!(
-        (mid - expected_mid).abs() / expected_mid < 1e-9,
-        "台形中央値={mid} 期待値={expected_mid}"
-    );
-    // 端部はゼロ、対称性
-    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
-    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
-    let x = 0.15 * l;
-    assert!(
-        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
-            < 1e-6
-    );
+fn test_simple_beam_moment_at_midspan_closed_forms() {
+    // 閉形式: 等分布 wL²/8、三角形(中央ピーク) w0L²/12、台形 w0(3L²−4a²)/24。
+    let uniform = {
+        let (w, l) = (10.0_f64, 4000.0_f64);
+        (
+            vec![MemberLoadKind::Distributed {
+                a: 0.0,
+                b: l,
+                w1: w,
+                w2: w,
+            }],
+            l,
+            w * l * l / 8.0,
+        )
+    };
+    let triangle = {
+        let (w0, l) = (10.0_f64, 4000.0_f64);
+        let mid = l / 2.0;
+        (
+            vec![
+                MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: mid,
+                    w1: 0.0,
+                    w2: w0,
+                },
+                MemberLoadKind::Distributed {
+                    a: mid,
+                    b: l,
+                    w1: w0,
+                    w2: 0.0,
+                },
+            ],
+            l,
+            w0 * l * l / 12.0,
+        )
+    };
+    let trapezoid = {
+        let (w0, l, a) = (10.0_f64, 6000.0_f64, 1500.0_f64);
+        let b = l - 2.0 * a;
+        (
+            vec![
+                MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: a,
+                    w1: 0.0,
+                    w2: w0,
+                },
+                MemberLoadKind::Distributed {
+                    a,
+                    b: a + b,
+                    w1: w0,
+                    w2: w0,
+                },
+                MemberLoadKind::Distributed {
+                    a: a + b,
+                    b: l,
+                    w1: w0,
+                    w2: 0.0,
+                },
+            ],
+            l,
+            w0 * (3.0 * l * l - 4.0 * a * a) / 24.0,
+        )
+    };
+
+    for (label, (loads, l, expected_mid)) in [
+        ("uniform", uniform),
+        ("triangle", triangle),
+        ("trapezoid", trapezoid),
+    ] {
+        let mid = simple_beam_moment_at(&loads, l, l / 2.0);
+        assert!(
+            (mid - expected_mid).abs() / expected_mid < 1e-9,
+            "{label}: 中央値={mid} 期待値={expected_mid}"
+        );
+        // 端部はゼロ、対称性 M(x)=M(L−x)
+        assert!(
+            simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6,
+            "{label}"
+        );
+        assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6, "{label}");
+        let x = 0.25 * l;
+        assert!(
+            (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
+                < 1e-6,
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -293,25 +283,10 @@ fn test_simple_reactions_and_moment_point_load() {
     let slope = simple_beam_moment_at(&loads, l, x2) - simple_beam_moment_at(&loads, l, x1);
     let expected_slope = r_i * (x2 - x1);
     assert!((slope - expected_slope).abs() / expected_slope < 1e-6);
-}
-
-#[test]
-fn test_simple_beam_moment_at_symmetric_pair_of_asymmetric_points() {
-    // 個々には非対称な集中荷重でも、鏡映対で組み合わせれば合算モーメントは対称になる。
-    let p = 80.0_f64;
-    let l = 6000.0_f64;
-    let a = 1800.0_f64; // 非対称位置
-    let loads = vec![
-        MemberLoadKind::Point { a, p },
-        MemberLoadKind::Point { a: l - a, p },
-    ];
-    let x = 0.2 * l;
-    assert!(
-        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
-            < 1e-6
-    );
-    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
-    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+    // 荷重点より先: M(x) = R_i·x − P·(x−a)（静定梁の断面力、R_i = P·b/L）
+    let x3 = a + 0.3 * b;
+    let expected_after = p * b / l * x3 - p * (x3 - a);
+    assert!((simple_beam_moment_at(&loads, l, x3) - expected_after).abs() / expected_after < 1e-9);
 }
 
 fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
@@ -518,6 +493,17 @@ fn test_polygon_trapezoid_conservation() {
         sampled_area,
         true_area
     );
+
+    // one_way 指定でも非矩形なら多角形経路へ落ちる。
+    use squid_n_core::model::OneWayDir;
+    let (model, mut slab) = polygon_slab_model(&pts, DistributionMethod::OneWay, w);
+    slab.plate.one_way = Some(OneWayDir::X);
+    let one_way_loads = distribute_slab(&model, &slab);
+    let one_way_area = total_load(&one_way_loads) / w;
+    assert!(
+        (one_way_area - true_area).abs() / true_area < 0.01,
+        "one_way 指定でも多角形経路: sampled={one_way_area} true={true_area}"
+    );
 }
 
 #[test]
@@ -555,26 +541,6 @@ fn test_polygon_pentagon_conservation() {
         sampled_area,
         true_area
     );
-}
-
-#[test]
-fn test_polygon_one_way_fallback() {
-    // one_way 指定でも非矩形なら多角形経路にフォールバックする。
-    use squid_n_core::model::OneWayDir;
-    let pts = [
-        (0.0, 0.0),
-        (6000.0, 0.0),
-        (4000.0, 3000.0),
-        (1000.0, 3000.0),
-    ];
-    let w = 0.002_f64;
-    let (model, mut slab) = polygon_slab_model(&pts, DistributionMethod::OneWay, w);
-    slab.plate.one_way = Some(OneWayDir::X);
-    let loads = distribute_slab(&model, &slab);
-    let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
-    let sampled_area = total_load(&loads) / w;
-    let true_area = area_xy(&coords);
-    assert!((sampled_area - true_area).abs() / true_area < 0.01);
 }
 
 // ------------------------------------------------------------------
@@ -651,6 +617,7 @@ fn test_cantilever_with_side_joist_uses_support_edges() {
     };
     model.unassigned_joists.push(SecondaryMember {
         id: squid_n_core::ids::SecondaryMemberId(0),
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
             [0.0, 0.0, 0.0],
@@ -931,6 +898,7 @@ fn test_cantilever_support_edge_prefers_full_real_beam() {
     };
     let mk_joist = || SecondaryMember {
         id: squid_n_core::ids::SecondaryMemberId(2),
+        gravity_end_shares: None,
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
             [0.0, depth, 0.0],

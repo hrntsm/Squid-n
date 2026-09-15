@@ -225,6 +225,65 @@ fn test_rc_portal_categories_and_concrete() {
 
     // 基礎梁の型枠: 側面 1 面＋底面 = (0.8+0.4)×5.3 = 6.36 m²
     assert!((fgs[0].formwork_m2 - 1.2 * 5.3).abs() < 1e-9);
+
+    // 合計（QuantityTotals）は明細の全フィールドの和と一致する。
+    let totals = q.totals();
+    let concrete_sum: f64 = q.items.iter().map(|i| i.concrete_m3).sum();
+    let formwork_sum: f64 = q.items.iter().map(|i| i.formwork_m2).sum();
+    let rebar_sum: f64 = q.items.iter().map(|i| i.rebar_weight_t()).sum();
+    let steel_sum: f64 = q.items.iter().map(|i| i.steel_weight_t()).sum();
+    let joints_sum: f64 = q.items.iter().map(|i| i.rebar_joints).sum();
+    assert!((totals.concrete_m3 - concrete_sum).abs() < 1e-12);
+    assert!((totals.formwork_m2 - formwork_sum).abs() < 1e-12);
+    assert!((totals.rebar_t - rebar_sum).abs() < 1e-12);
+    assert!((totals.steel_t - steel_sum).abs() < 1e-12);
+    assert!((totals.rebar_joints - joints_sum).abs() < 1e-12);
+
+    // 部位別小計はカテゴリ明細の全フィールドの和と一致する
+    // （区分は MemberCategory の定義順で基礎梁・柱・大梁の 3 つ）。
+    let by_cat = q.totals_by_category();
+    assert_eq!(
+        by_cat.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+        vec![
+            MemberCategory::FoundationGirder,
+            MemberCategory::Column,
+            MemberCategory::Girder
+        ]
+    );
+    for (category, sub) in &by_cat {
+        let items: Vec<_> = q.items.iter().filter(|i| i.category == *category).collect();
+        assert!(!items.is_empty(), "category={category:?}");
+        let concrete: f64 = items.iter().map(|i| i.concrete_m3).sum();
+        let formwork: f64 = items.iter().map(|i| i.formwork_m2).sum();
+        let rebar: f64 = items.iter().map(|i| i.rebar_weight_t()).sum();
+        let steel: f64 = items.iter().map(|i| i.steel_weight_t()).sum();
+        let joints: f64 = items.iter().map(|i| i.rebar_joints).sum();
+        assert!(
+            (sub.concrete_m3 - concrete).abs() < 1e-12,
+            "category={category:?}: concrete sub={}, items={concrete}",
+            sub.concrete_m3
+        );
+        assert!(
+            (sub.formwork_m2 - formwork).abs() < 1e-12,
+            "category={category:?}: formwork sub={}, items={formwork}",
+            sub.formwork_m2
+        );
+        assert!(
+            (sub.rebar_t - rebar).abs() < 1e-12,
+            "category={category:?}: rebar sub={}, items={rebar}",
+            sub.rebar_t
+        );
+        assert!(
+            (sub.steel_t - steel).abs() < 1e-12,
+            "category={category:?}: steel sub={}, items={steel}",
+            sub.steel_t
+        );
+        assert!(
+            (sub.rebar_joints - joints).abs() < 1e-12,
+            "category={category:?}: joints sub={}, items={joints}",
+            sub.rebar_joints
+        );
+    }
 }
 
 #[test]
@@ -524,6 +583,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: Some(SectionId(2)),
@@ -575,6 +635,7 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
     model.sections.push(sec);
     // 頂部の大梁（節点2-3）に載るパラペット（立ち上がり高さ1000mm、全長）。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -612,20 +673,10 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
     );
 }
 
+/// 大梁（i 端ハンチ）・基礎梁（両端ハンチ）のハンチが部材付帯情報から
+/// 平均断面で体積・型枠へ加算される。
 #[test]
-fn test_totals_aggregation() {
-    let model = rc_portal_model();
-    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
-    let totals = q.totals();
-    let sum: f64 = q.items.iter().map(|i| i.concrete_m3).sum();
-    assert!((totals.concrete_m3 - sum).abs() < 1e-12);
-    // 部位別小計に柱・大梁・基礎梁が現れる。
-    let by_cat = q.totals_by_category();
-    assert_eq!(by_cat.len(), 3);
-}
-
-#[test]
-fn test_girder_haunch_from_member_detail() {
+fn test_haunch_from_member_detail() {
     use squid_n_core::model::{Haunch as CoreHaunch, MemberDetailAttr};
 
     // 大梁（ElemId(2)）の i 端にハンチ: 長さ 1000、せい増分 200、幅増分 200。
@@ -666,11 +717,6 @@ fn test_girder_haunch_from_member_detail() {
         .find(|i| i.category == MemberCategory::FoundationGirder)
         .unwrap();
     assert!((fg.formwork_m2 - 1.2 * 5.3).abs() < 1e-9);
-}
-
-#[test]
-fn test_foundation_girder_haunch_from_member_detail() {
-    use squid_n_core::model::{Haunch as CoreHaunch, MemberDetailAttr};
 
     // 基礎梁（ElemId(3)）の両端にハンチ: 長さ 800、せい増分 300（幅増分なし）。
     let mut model = rc_portal_model();

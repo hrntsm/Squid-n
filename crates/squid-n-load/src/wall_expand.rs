@@ -284,6 +284,7 @@ mod tests {
 
     fn quad_plate(id: u32, section: Option<SectionId>) -> WallPlate {
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(id),
             shape: WallPlateShape::Enclosed,
             section,
@@ -547,6 +548,7 @@ mod tests {
     fn test_attached_plate_is_not_generated() {
         let mut m = base_model();
         m.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: squid_n_core::model::RegionAnchor::Line {

@@ -65,19 +65,20 @@ fn distances(groups: &[AxisGroup], group_name: &str) -> Vec<f64> {
         .unwrap_or_default()
 }
 
-/// 2×2 の柱グリッドから X1・X2 / Y1・Y2 が座標昇順で生成される。
+/// 柱グリッドから X / Y 通りが座標昇順で生成される。
+/// 負の座標を含んでも番号は座標昇順で単調に増える。
 #[test]
 fn generates_x_y_axes_in_coordinate_order() {
     let mut m = Model::default();
-    for x in [0.0, 6000.0] {
+    for x in [-6000.0, 0.0, 6000.0] {
         for y in [0.0, 5000.0] {
             push_column(&mut m, x, y, 3000.0);
         }
     }
     let groups = generate_axes(&m);
 
-    assert_eq!(names(&groups, "X"), vec!["X1", "X2"]);
-    assert_eq!(distances(&groups, "X"), vec![0.0, 6000.0]);
+    assert_eq!(names(&groups, "X"), vec!["X1", "X2", "X3"]);
+    assert_eq!(distances(&groups, "X"), vec![-6000.0, 0.0, 6000.0]);
     assert_eq!(names(&groups, "Y"), vec!["Y1", "Y2"]);
     assert_eq!(distances(&groups, "Y"), vec![0.0, 5000.0]);
 
@@ -93,18 +94,6 @@ fn generates_x_y_axes_in_coordinate_order() {
     // 各通りには、その位置に立つ柱の上下 2 節点（2 本ぶん＝4 節点）が属する。
     assert_eq!(x.axes[0].nodes.len(), 4);
     assert!(x.axes.iter().all(|a| a.source == AxisSource::Auto));
-}
-
-/// 負の座標を含んでも、番号は座標昇順で単調に増える。
-#[test]
-fn numbers_ascend_with_coordinate_including_negative() {
-    let mut m = Model::default();
-    for x in [6000.0, -6000.0, 0.0] {
-        push_column(&mut m, x, 0.0, 3000.0);
-    }
-    let groups = generate_axes(&m);
-    assert_eq!(names(&groups, "X"), vec!["X1", "X2", "X3"]);
-    assert_eq!(distances(&groups, "X"), vec![-6000.0, 0.0, 6000.0]);
 }
 
 /// 許容差 1mm 以内の柱位置は同じ通りにまとまる。

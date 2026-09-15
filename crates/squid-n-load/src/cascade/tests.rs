@@ -51,6 +51,7 @@ fn beam(id: u32, i: u32, j: u32) -> ElementData {
 
 fn joist(model: &Model, a: u32, b: u32, name: &str) -> SecondaryMember {
     SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(a),
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -219,6 +220,7 @@ fn joist_anchored_to_girder_midspan_becomes_point_load() {
     m.elements.push(beam(1, 2, 3));
     // 両端が大梁 A・B の材軸中間（節点の無い位置）に載る小梁。
     m.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -291,6 +293,7 @@ fn vertical_post_splits_load_in_half() {
     m.elements.push(beam(0, 0, 1)); // 下の梁
     m.elements.push(beam(1, 2, 3)); // 上の梁
     m.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
         id: squid_n_core::ids::SecondaryMemberId(4),
         kind: SecondaryMemberKind::Post,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -355,12 +358,16 @@ fn inclined_joist_reactions_match_simple_beam() {
     // 材軸上 1/5 の位置に集中荷重を足すと、鉛直反力は 4:1 に分かれる
     // （水平てこでのモーメントつり合い。混ぜると 0.62:0.38 になってしまう）。
     let p = 1000.0_f64;
-    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, true);
+    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, None);
     assert!((ri - 0.8 * p).abs() < 1e-9, "R_i={ri}");
     assert!((rj - 0.2 * p).abs() < 1e-9, "R_j={rj}");
 
-    // 鉛直材（水平投影 0）だけが不静定で、両端 1/2 ずつになる。
-    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, false);
+    // 端部負担率を両端 1/2 に固定すると、両端の負担は 1/2 ずつになる。
+    let (ri, rj) = super::reactions_of(
+        &MemberLoadKind::Point { a: 1000.0, p },
+        5000.0,
+        Some([0.5, 0.5]),
+    );
     assert!((ri - 0.5 * p).abs() < 1e-9 && (rj - 0.5 * p).abs() < 1e-9);
 }
 
@@ -453,6 +460,7 @@ fn floating_joist_without_load_is_not_reported() {
     m.nodes.push(node(0, 0.0, 0.0, 0.0));
     m.nodes.push(node(1, 4000.0, 0.0, 0.0));
     m.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([

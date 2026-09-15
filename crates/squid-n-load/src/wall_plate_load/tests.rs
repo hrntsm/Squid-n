@@ -40,6 +40,7 @@ fn beam(id: u32, a: u32, b: u32) -> ElementData {
 
 fn plate(id: u32) -> WallPlate {
     WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(id),
         shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
@@ -107,6 +108,7 @@ fn split_by_post() -> Model {
     let mut m = bay();
     // 割当領域を間柱で分割するため、間柱を安定 ID ＋取付き位置で持たせる。
     m.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Post,
         ends: squid_n_core::model::SecondaryMemberEnds::Supported([
@@ -368,9 +370,13 @@ fn edge_len(model: &Model, bl: &BeamLoad) -> f64 {
 /// 壁エレメントの頂点等分配と一致する。
 #[test]
 fn 地震用重量は辺の両端へ半分ずつ配り総和を保存する() {
-    let m = split_by_post();
+    let mut m = split_by_post();
+    // 壁版自重の分配だけを確認するため、間柱自身の自重は外す。
+    for p in m.wall_regions.iter_mut().flat_map(|r| r.posts.iter_mut()) {
+        p.section = None;
+    }
     let mut node_weight = vec![0.0; m.nodes.len()];
-    accumulate_enclosed_wall_seismic_weight(&m, &mut node_weight);
+    accumulate_wall_and_secondary_seismic_weight(&m, &mut node_weight).unwrap();
 
     let sum: f64 = node_weight.iter().sum();
     assert!(
@@ -403,6 +409,7 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
     let mut m = split_by_post();
     // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
     m.wall_regions[0].posts.push(SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Post,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([

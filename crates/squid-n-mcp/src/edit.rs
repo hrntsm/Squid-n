@@ -46,6 +46,16 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
         .and_then(|v| v.as_str())
         .ok_or("command が必要です")?;
     match command {
+        "SetPostGravityEndShares" => {
+            let member = value
+                .get("member")
+                .and_then(|v| v.as_u64())
+                .ok_or("member が必要です（SecondaryMemberId）")? as u32;
+            Ok(Box::new(squid_n_edit::SetPostGravityEndShares {
+                member: squid_n_core::ids::SecondaryMemberId(member),
+                shares: parse_optional_f64_pair(value.get("shares"), "shares")?,
+            }))
+        }
         "AssignWallPlateToRegion" => {
             let region = parse_wall_assignment_region_id(
                 value.get("region").ok_or("region が必要です")?,
@@ -103,6 +113,11 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                     .map_err(|e| format!("loads の解析に失敗: {e}"))?,
             };
             Ok(Box::new(SetWallPlateAttrs {
+                self_weight_shares: match value.get("self_weight_shares") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(v) => serde_json::from_value(v.clone())
+                        .map_err(|e| format!("self_weight_shares の解析に失敗: {e}"))?,
+                },
                 id: parse_wall_plate_id(value.get("id").ok_or("id が必要です")?)?,
                 opening_area: parse_f64(value.get("opening_area"), "opening_area")?.unwrap_or(0.0),
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
@@ -389,7 +404,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
              床領域: SetFloorRegionName, SetFloorRegionSecondaryJoists / \
              二次部材: PlaceSecondaryMember, DeleteSecondaryMember, SetSecondaryMemberEnds, \
-             SetSecondaryMemberEndSupport / \
+             SetSecondaryMemberEndSupport, SetPostGravityEndShares / \
              壁領域: SetWallRegionPosts / \
              未割当: AddUnassignedJoist, DeleteUnassignedJoist, AddUnassignedPost, DeleteUnassignedPost）"
         )),

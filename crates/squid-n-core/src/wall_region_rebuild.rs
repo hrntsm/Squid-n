@@ -153,7 +153,12 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
             report.unassigned_wall_plates += 1;
             continue;
         };
-        if let Some(attached) = try_convert_wall_attached(model, boundary, &beams) {
+        if let Some(attached) = plate
+            .self_weight_shares
+            .is_empty()
+            .then(|| try_convert_wall_attached(model, boundary, &beams))
+            .flatten()
+        {
             discarded_by_conversion.extend(boundary.iter().copied());
             converted.push((pi, attached));
             report.wall_plates_converted_to_attached += 1;
@@ -391,6 +396,7 @@ mod tests {
         model.add_enclosed_wall_plate_from_nodes(
             &nodes,
             WallPlate {
+                self_weight_shares: Vec::new(),
                 id: WallPlateId(0),
                 shape: WallPlateShape::Enclosed,
                 section: None,
@@ -439,6 +445,7 @@ mod tests {
         model.wall_regions[0].name = "西面耐震壁".into();
         model.unassigned_posts.push(crate::model::SecondaryMember {
             id: crate::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
             kind: crate::model::SecondaryMemberKind::Post,
             ends: crate::model::SecondaryMemberEnds::Detached([
                 [0.0, 0.0, 0.0],
@@ -506,6 +513,7 @@ mod tests {
         model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
         model.unassigned_posts.push(crate::model::SecondaryMember {
             id: crate::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
             kind: crate::model::SecondaryMemberKind::Post,
             ends: crate::model::SecondaryMemberEnds::Detached([
                 [2000.0, 0.0, 0.0],

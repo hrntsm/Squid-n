@@ -921,6 +921,7 @@ mod tests {
         );
         region.secondary_joists = vec![SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(4),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 [2000.0, 0.0, 0.0],
@@ -1263,6 +1264,7 @@ mod tests {
             .secondary_joists
             .push(SecondaryMember {
                 id: squid_n_core::ids::SecondaryMemberId(6),
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                     [2005.0, 0.0, 0.0],
@@ -1386,6 +1388,7 @@ mod tests {
             .secondary_joists
             .push(SecondaryMember {
                 id: squid_n_core::ids::SecondaryMemberId(8),
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                     [0.0, 5.0, 0.0],
@@ -1481,6 +1484,7 @@ mod tests {
         });
         model.unassigned_joists.push(SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(10),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 [8000.0, 0.0, 0.0],

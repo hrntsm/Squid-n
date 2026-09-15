@@ -466,6 +466,7 @@ mod tests {
             elements: vec![beam(0, 0, 1)],
             unassigned_joists: vec![SecondaryMember {
                 id: squid_n_core::ids::SecondaryMemberId(0),
+                gravity_end_shares: None,
                 kind: SecondaryMemberKind::Joist,
                 ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                     [2000.0, 0.0, 0.0],

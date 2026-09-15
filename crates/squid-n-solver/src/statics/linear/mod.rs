@@ -3,13 +3,12 @@ use crate::common::constraint::Reducer;
 use crate::common::csc_cache::CscCache;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, LoadCaseId};
-use squid_n_core::model::{ElementData, ElementKind, LoadCaseKind, MemberLoad, Model};
+use squid_n_core::model::{ElementData, ElementKind, MemberLoad, Model};
 use squid_n_element::behavior::{Ctx, ElementBehavior};
-use squid_n_element::factory::build_behavior;
+use squid_n_element::factory::build_behavior_with_axial_factor;
 use squid_n_element::frame::beam::MemberForces;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::{assemble_csc, Triplet};
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// 長期軸力無効化（一貫構造計算プログラムの実務慣行）で断面積に乗じる縮小係数。
@@ -45,46 +44,18 @@ fn is_axial_disabled_target(
     }
 }
 
-/// 長期応力解析の計算条件（一貫構造計算プログラムの実務慣行）を適用したモデルを返す。
-///
-/// 対象荷重ケースが長期系（`LoadCaseKind::is_long_term`）かつ `stress_cfg` で
-/// 軸力無効化が指定されている部材がある場合のみ、対象部材が参照する断面を
-/// 複製して断面積を `AXIAL_DISABLE_FACTOR` 倍に縮小したモデルを作る
-/// （同じ断面 ID を共有する他部材へは影響しない）。曲げ・せん断・ねじり
-/// 関連の断面性能は変更しない。対象がなければ元のモデルをそのまま返す。
-fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> {
-    let cfg = &model.stress_cfg;
-    if !lc_kind.is_long_term() || (!cfg.no_long_axial_brace && !cfg.no_long_axial_column) {
-        return Cow::Borrowed(model);
-    }
-
-    let targets: Vec<usize> = model
-        .elements
+fn long_axial_factor(model: &Model, elem: &ElementData, lc: LoadCaseId) -> f64 {
+    let kind = model
+        .load_cases
         .iter()
-        .enumerate()
-        .filter(|(_, e)| is_axial_disabled_target(e, model, cfg) && e.section.is_some())
-        .map(|(i, _)| i)
-        .collect();
-    if targets.is_empty() {
-        return Cow::Borrowed(model);
+        .find(|load| load.id == lc)
+        .map(|load| load.kind)
+        .unwrap_or_default();
+    if kind.is_long_term() && is_axial_disabled_target(elem, model, &model.stress_cfg) {
+        AXIAL_DISABLE_FACTOR
+    } else {
+        1.0
     }
-
-    let mut m = model.clone();
-    for i in targets {
-        let Some(sid) = m.elements[i].section else {
-            continue;
-        };
-        let Some(orig) = m.sections.get(sid.index()) else {
-            continue;
-        };
-        let mut reduced = orig.clone();
-        reduced.area *= AXIAL_DISABLE_FACTOR;
-        reduced.shape = None;
-        reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
-        m.elements[i].section = Some(reduced.id);
-        m.sections.push(reduced);
-    }
-    Cow::Owned(m)
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -162,15 +133,6 @@ pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
 
 pub fn linear_static_once(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
-    let lc_kind = model
-        .load_cases
-        .iter()
-        .find(|l| l.id == lc)
-        .map(|l| l.kind)
-        .unwrap_or_default();
-    let model_cow = apply_long_axial_cut(model, lc_kind);
-    let model: &Model = &model_cow;
-
     if model.stress_cfg.tension_only_iteration && has_tension_only_brace(model) {
         return solve_tension_only_iterative(model, lc);
     }
@@ -187,32 +149,6 @@ fn has_tension_only_brace(model: &Model) -> bool {
         .elements
         .iter()
         .any(|e| matches!(e.kind, ElementKind::Brace { tension_only: true }))
-}
-
-/// 指定した要素 index のブレースについて、参照断面を複製し軸剛性用の断面積を
-/// [`AXIAL_DISABLE_FACTOR`] 倍に縮小したモデルを返す（apply_long_axial_cut と同じ
-/// 手法。無効化対象が空なら元のモデルをそのまま借用する）。同じ断面 ID を共有する
-/// active なブレースへは影響しない。
-fn reduce_brace_axial<'a>(model: &'a Model, disabled: &[usize]) -> Cow<'a, Model> {
-    if disabled.is_empty() {
-        return Cow::Borrowed(model);
-    }
-    let mut m = model.clone();
-    for &i in disabled {
-        let Some(sid) = m.elements[i].section else {
-            continue;
-        };
-        let Some(orig) = m.sections.get(sid.index()) else {
-            continue;
-        };
-        let mut reduced = orig.clone();
-        reduced.area *= AXIAL_DISABLE_FACTOR;
-        reduced.shape = None;
-        reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
-        m.elements[i].section = Some(reduced.id);
-        m.sections.push(reduced);
-    }
-    Cow::Owned(m)
 }
 
 /// active-set 反復で追跡する引張専用ブレース1本の情報。
@@ -281,7 +217,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         });
     }
 
-    let assembly = BraceIterAssembly::build(model, &dofmap, &braces);
+    let assembly = BraceIterAssembly::build(model, &dofmap, &braces, lc);
 
     let f_free = assemble_global_f(model, &dofmap, lc);
     let f_red = reducer.reduce_f(&f_free);
@@ -374,14 +310,12 @@ struct BraceIterAssembly {
 
 impl BraceIterAssembly {
     /// `dofmap` は元モデル（`model`）から構築したもの。
-    fn build(model: &Model, dofmap: &DofMap, braces: &[ToBrace]) -> Self {
+    fn build(model: &Model, dofmap: &DofMap, braces: &[ToBrace], lc: LoadCaseId) -> Self {
         let brace_of_elem: HashMap<usize, usize> = braces
             .iter()
             .enumerate()
             .map(|(k, b)| (b.elem, k))
             .collect();
-        let brace_elems: Vec<usize> = braces.iter().map(|b| b.elem).collect();
-        let disabled_model = reduce_brace_axial(model, &brace_elems);
 
         let n_elem = model.elements.len();
         let mut gdofs = Vec::with_capacity(n_elem);
@@ -391,16 +325,15 @@ impl BraceIterAssembly {
         let mut behavior_disabled = Vec::with_capacity(n_elem);
 
         for (i, elem) in model.elements.iter().enumerate() {
-            let b_active = build_behavior(elem, model);
+            let factor = long_axial_factor(model, elem, lc);
+            let b_active = build_behavior_with_axial_factor(elem, model, factor);
             let g = b_active.global_dofs(dofmap);
             let k = b_active.tangent_stiffness(&Ctx { model });
 
             if brace_of_elem.contains_key(&i) {
-                let delem = &disabled_model.elements[i];
-                let b_disabled = build_behavior(delem, &disabled_model);
-                let kd = b_disabled.tangent_stiffness(&Ctx {
-                    model: &disabled_model,
-                });
+                let b_disabled =
+                    build_behavior_with_axial_factor(elem, model, factor * AXIAL_DISABLE_FACTOR);
+                let kd = b_disabled.tangent_stiffness(&Ctx { model });
                 k_disabled.push(Some(kd));
                 behavior_disabled.push(Some(b_disabled));
             } else {
@@ -519,7 +452,8 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         Vec::with_capacity(model.elements.len());
     let mut k_triplets = Vec::new();
     for elem in &model.elements {
-        let behavior = build_behavior(elem, model);
+        let behavior =
+            build_behavior_with_axial_factor(elem, model, long_axial_factor(model, elem, lc));
         let gdofs = behavior.global_dofs(&dofmap);
         let k_local = behavior.tangent_stiffness(&ctx);
         k_triplets.extend(k_local.to_triplets(&gdofs));

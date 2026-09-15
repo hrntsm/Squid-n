@@ -951,6 +951,7 @@ fn test_delete_section_referenced_by_joist() {
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
     region.secondary_joists = vec![SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -2417,6 +2418,7 @@ fn model_with_enclosed_wall_plate() -> Model {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -2441,6 +2443,7 @@ fn test_set_wall_plate_attrs_roundtrip() {
     stack.run(
         &mut model,
         Box::new(SetWallPlateAttrs {
+            self_weight_shares: Vec::new(),
             id,
             opening_area: 200.0,
             opening_weight: 80.0,
@@ -2483,6 +2486,7 @@ fn test_set_wall_plate_attrs_missing_id_is_noop() {
     stack.run(
         &mut model,
         Box::new(SetWallPlateAttrs {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             opening_area: 1.0,
             opening_weight: 2.0,
@@ -3589,6 +3593,7 @@ fn test_composite_delete_nodes_descending_roundtrip() {
 
 fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(n0),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -5128,6 +5133,7 @@ fn make_sm(
     kind: squid_n_core::model::SecondaryMemberKind,
 ) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(id),
         kind,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -5429,6 +5435,7 @@ fn test_copy_story_secondary_creates_unassigned_joist() {
     model
         .unassigned_joists
         .push(squid_n_core::model::SecondaryMember {
+            gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             ends,
@@ -5516,6 +5523,7 @@ fn test_copy_story_counts_midspan_secondary_as_skipped() {
     model
         .unassigned_joists
         .push(squid_n_core::model::SecondaryMember {
+            gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             ends: SecondaryMemberEnds::Supported([mids[0], mids[1]]),
@@ -5562,6 +5570,7 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
         .map(|n| n.id)
         .collect();
     let joist = squid_n_core::model::SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -6213,6 +6222,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -6322,6 +6332,7 @@ fn test_wall_plate_region_assignment_roundtrip() {
     let first = model.add_enclosed_wall_plate_from_nodes(
         &boundary,
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: squid_n_core::ids::WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -6420,6 +6431,7 @@ fn test_unset_wall_plate_region_restores_wall_region_membership() {
     let plate_id = model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -6469,6 +6481,7 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -6499,4 +6512,34 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
     assert_eq!(model.wall_plates.len(), 1);
     assert_eq!(model.wall_regions[0].wall_plate_ids, vec![WallPlateId(0)]);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 間柱の端部負担率を安定 ID で設定し、取り消せる。
+#[test]
+fn 間柱端部負担率を設定し取り消せる() {
+    let mut model = empty_model();
+    model
+        .unassigned_posts
+        .push(squid_n_core::model::SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
+            kind: squid_n_core::model::SecondaryMemberKind::Post,
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 3000.0],
+            ]),
+            section: None,
+            name: "P1".into(),
+        });
+    let cmd = SetPostGravityEndShares {
+        member: squid_n_core::ids::SecondaryMemberId(0),
+        shares: Some([0.25, 0.75]),
+    };
+    let undo = cmd.apply(&mut model);
+    assert_eq!(
+        model.unassigned_posts[0].gravity_end_shares,
+        Some([0.25, 0.75])
+    );
+    undo.apply(&mut model);
+    assert_eq!(model.unassigned_posts[0].gravity_end_shares, None);
 }

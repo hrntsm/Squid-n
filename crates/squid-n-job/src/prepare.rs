@@ -143,6 +143,7 @@ mod tests {
         model
             .unassigned_joists
             .push(squid_n_core::model::SecondaryMember {
+                gravity_end_shares: None,
                 id: squid_n_core::ids::SecondaryMemberId(0),
                 kind: squid_n_core::model::SecondaryMemberKind::Joist,
                 ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -336,6 +337,7 @@ mod tests {
         with_wall.add_enclosed_wall_plate_from_nodes(
             &[NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
             WallPlate {
+                self_weight_shares: Vec::new(),
                 id: WallPlateId(0),
                 shape: WallPlateShape::Enclosed,
                 section: Some(wall_section_id()),

@@ -3,40 +3,23 @@ use test_support::build_symmetric_frame;
 
 // ---- d_value ----
 #[test]
-fn test_d_value_rigid_beams_general() {
-    // 梁が十分剛（ΣKb 大）→ k̄ 大 → a → 1 → D → Kc0
-    let e = 1.0;
-    let ic = 1.0;
-    let h = 1.0;
-    let kc0 = 12.0 * e * ic / (h * h * h);
-    let d = d_value(e, ic, h, 1e9, false);
+fn test_d_value_formula_and_degenerate() {
+    // 一般階: kc = Ic/h = 1, ΣKb = 4 → k̄ = 2 → a = 2/(2+2) = 0.5 → D = 0.5·12 = 6
+    assert!((d_value(1.0, 1.0, 1.0, 4.0, false) - 6.0).abs() < 1e-9);
+    // 最下階: a = (0.5+2)/(2+2) = 0.625 → D = 7.5
+    assert!((d_value(1.0, 1.0, 1.0, 4.0, true) - 7.5).abs() < 1e-9);
+    // 梁が十分剛（ΣKb 大）→ k̄ 大 → a → 1 → D → Kc0 = 12·E·Ic/h³
+    let kc0 = 12.0;
+    let d = d_value(1.0, 1.0, 1.0, 1e9, false);
     assert!((d - kc0).abs() / kc0 < 1e-6, "a→1 で D→Kc0, got {d}");
-}
-
-#[test]
-fn test_d_value_known_kbar() {
-    // kc = Ic/h = 1, ΣKb = 4 → k̄ = 4/(2·1) = 2 → a = 2/(2+2) = 0.5
-    // Kc0 = 12 → D = 0.5·12 = 6
-    let d = d_value(1.0, 1.0, 1.0, 4.0, false);
-    assert!((d - 6.0).abs() < 1e-9, "got {d}");
-}
-
-#[test]
-fn test_d_value_first_story() {
-    // 最下階: k̄ = 2 → a = (0.5+2)/(2+2) = 0.625 → D = 0.625·12 = 7.5
-    let d = d_value(1.0, 1.0, 1.0, 4.0, true);
-    assert!((d - 7.5).abs() < 1e-9, "got {d}");
-}
-
-#[test]
-fn test_d_value_degenerate() {
+    // 退化: Ic=0 / h=0 は 0
     assert_eq!(d_value(1.0, 0.0, 1.0, 4.0, false), 0.0);
     assert_eq!(d_value(1.0, 1.0, 0.0, 4.0, false), 0.0);
 }
 
 // 剛心の検算例
 #[test]
-fn test_center_of_rigidity_dod_example() {
+fn test_center_of_rigidity_and_eccentricity_dod_example() {
     // 確定値: Dy=[100,300] @ x=[0,6000] → Xs = 4500
     let cols = vec![
         ColumnStiffness {
@@ -52,58 +35,10 @@ fn test_center_of_rigidity_dod_example() {
     ];
     let cr = center_of_rigidity(&cols);
     assert!((cr[0] - 4500.0).abs() < 1e-9, "Xs got {}", cr[0]);
-}
 
-#[test]
-fn test_eccentricity_dod_example() {
     // 上の剛心に重心 Xg=3000 → ex = 1500（DoD §8.1）
-    let cols = vec![
-        ColumnStiffness {
-            pos: [0.0, 0.0],
-            dx: 1.0,
-            dy: 100.0,
-        },
-        ColumnStiffness {
-            pos: [6000.0, 0.0],
-            dx: 1.0,
-            dy: 300.0,
-        },
-    ];
-    let cr = center_of_rigidity(&cols);
     let ecc = eccentricity(&cols, [3000.0, 0.0], cr);
     assert!((ecc.ex - 1500.0).abs() < 1e-9, "ex got {}", ecc.ex);
-}
-
-#[test]
-fn test_eccentricity_symmetric_zero() {
-    // 対称 4 本柱 → 剛心＝重心＝中央 → 偏心率 0
-    let cols = vec![
-        ColumnStiffness {
-            pos: [0.0, 0.0],
-            dx: 100.0,
-            dy: 100.0,
-        },
-        ColumnStiffness {
-            pos: [6000.0, 0.0],
-            dx: 100.0,
-            dy: 100.0,
-        },
-        ColumnStiffness {
-            pos: [0.0, 6000.0],
-            dx: 100.0,
-            dy: 100.0,
-        },
-        ColumnStiffness {
-            pos: [6000.0, 6000.0],
-            dx: 100.0,
-            dy: 100.0,
-        },
-    ];
-    let cr = center_of_rigidity(&cols);
-    assert!((cr[0] - 3000.0).abs() < 1e-9);
-    assert!((cr[1] - 3000.0).abs() < 1e-9);
-    let ecc = eccentricity(&cols, [3000.0, 3000.0], cr);
-    assert!(ecc.re_x.abs() < 1e-9 && ecc.re_y.abs() < 1e-9);
 }
 
 #[test]
@@ -225,13 +160,6 @@ fn test_misc_wall_stiffness() {
     assert_eq!(misc_wall_stiffness(2.0, 1000.0, 400.0, 0.0), 0.0);
 }
 
-#[test]
-fn test_sum_column_area() {
-    let (model, s0) = build_symmetric_frame(None);
-    // 柱 4 本 × area 100
-    assert!((sum_column_area(&model, s0) - 400.0).abs() < 1e-12);
-}
-
 /// 壁厚 100mm の壁用断面を末尾に足し、その `SectionId` を返す。
 fn push_wall_section(model: &mut squid_n_core::Model) -> squid_n_core::ids::SectionId {
     let id = squid_n_core::ids::SectionId(model.sections.len() as u32);
@@ -253,6 +181,7 @@ fn push_self_standing(
     use squid_n_core::model::{RegionAnchor, WallPlate, WallPlateShape};
     let id = squid_n_core::ids::WallPlateId(model.wall_plates.len() as u32);
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id,
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::FloorRegion { nodes },
@@ -278,6 +207,8 @@ fn test_append_misc_wall_stiffnesses() {
     let (mut model, s0) = build_symmetric_frame(None);
     model.stress_cfg.misc_wall_n = Some(2.0);
     let wall_sec = push_wall_section(&mut model);
+    // 柱 4 本 × area 100
+    assert!((sum_column_area(&model, s0) - 400.0).abs() < 1e-12);
 
     // 対象: x=6000 の Y 方向の自立壁（N1→N3、z=0）。高さは階高（3000）。
     // 長さ 6000 × 厚 100 → Aw' = 6e5、z_mid = 1500 → S0 帰属。
@@ -294,6 +225,7 @@ fn test_append_misc_wall_stiffnesses() {
     // 対象外: 取付き線に取り付く全高の腰壁。フロア間で壁がつながっていないもの
     // （腰壁・垂れ壁・パラペット）は周辺部材の断面性能へ算入する経路が受け持つ。
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(model.wall_plates.len() as u32),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {

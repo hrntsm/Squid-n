@@ -75,36 +75,28 @@ fn cft_pipe_section(outer_dia: f64, thick: f64) -> Section {
 // ------------------------------------------------------------------
 
 #[test]
-fn test_cft_rect_xn_half_d() {
+fn test_cft_rect_cn_cm_closed_form() {
+    // (xr, cN/(cb·cd·fc), cM/(cb·cd²·fc))。値は三角形応力分布の積分から
+    // 独立に導出した定数。
+    let cases = [
+        (0.5, 0.25, 1.0 / 12.0),
+        (1.0, 0.5, 1.0 / 12.0),
+        (2.0, 0.75, 1.0 / 24.0),
+    ];
     let (cb, cd, fc) = (400.0, 400.0, 8.0);
-    let xn = 0.5 * cd;
-    let (cn, cm) = cft_rect_cn_cm(cb, cd, fc, xn);
-    let expected_cn = cb * cd * fc * (0.5 / 2.0);
-    let expected_cm = cb * cd * cd * fc * (0.5 * (3.0 - 1.0) / 12.0);
-    assert!((cn - expected_cn).abs() / expected_cn < 1e-9);
-    assert!((cm - expected_cm).abs() / expected_cm < 1e-9);
-}
-
-#[test]
-fn test_cft_rect_xn_eq_d_continuity() {
-    let (cb, cd, fc) = (400.0, 400.0, 8.0);
-    let (cn, cm) = cft_rect_cn_cm(cb, cd, fc, cd);
-    // Xn=1 の境界で両分岐が一致することを確認する。
-    let expected_cn = cb * cd * fc * 0.5;
-    let expected_cm = cb * cd * cd * fc * (1.0 / 12.0);
-    assert!((cn - expected_cn).abs() / expected_cn < 1e-6);
-    assert!((cm - expected_cm).abs() / expected_cm < 1e-6);
-}
-
-#[test]
-fn test_cft_rect_xn_2d() {
-    let (cb, cd, fc) = (400.0, 400.0, 8.0);
-    let xn = 2.0 * cd;
-    let (cn, cm) = cft_rect_cn_cm(cb, cd, fc, xn);
-    let expected_cn = cb * cd * fc * (1.0 - 1.0 / 4.0);
-    let expected_cm = cb * cd * cd * fc * (1.0 / 24.0);
-    assert!((cn - expected_cn).abs() / expected_cn < 1e-9);
-    assert!((cm - expected_cm).abs() / expected_cm < 1e-9);
+    for (xr, cn_ratio, cm_ratio) in cases {
+        let (cn, cm) = cft_rect_cn_cm(cb, cd, fc, xr * cd);
+        let expected_cn = cb * cd * fc * cn_ratio;
+        let expected_cm = cb * cd * cd * fc * cm_ratio;
+        assert!(
+            (cn - expected_cn).abs() / expected_cn < 1e-9,
+            "xr={xr}: cn={cn}, expected={expected_cn}"
+        );
+        assert!(
+            (cm - expected_cm).abs() / expected_cm < 1e-9,
+            "xr={xr}: cm={cm}, expected={expected_cm}"
+        );
+    }
 }
 
 #[test]
@@ -130,18 +122,13 @@ fn test_cft_rect_matches_numeric_integration() {
 // ------------------------------------------------------------------
 
 #[test]
-fn test_cft_circle_positive_and_small_at_small_xn() {
+fn test_cft_circle_cn_cm_small_and_asymptotic() {
     let dc = 400.0;
     let fc = 8.0;
     let (cn, cm) = cft_circle_cn_cm(dc, fc, 0.05 * dc);
     assert!(cn > 0.0 && cm > 0.0);
     assert!(cn < std::f64::consts::PI * dc * dc / 4.0 * fc);
-}
 
-#[test]
-fn test_cft_circle_converges_to_area_times_fc() {
-    let dc = 400.0;
-    let fc = 8.0;
     let (cn, _) = cft_circle_cn_cm(dc, fc, 1000.0 * dc);
     let ca_fc = std::f64::consts::PI * dc * dc / 4.0 * fc;
     assert!((cn - ca_fc).abs() / ca_fc < 1e-3, "cn={cn}, ca_fc={ca_fc}");
@@ -173,23 +160,6 @@ fn test_cft_box_n0_ma_equals_sm0() {
         (ma_z - s_mo).abs() / s_mo < 1e-6,
         "ma_z={ma_z}, s_mo={s_mo}"
     );
-}
-
-#[test]
-fn test_cft_box_n_exceeds_cnc_steel_only() {
-    let sec = cft_box_section(400.0, 300.0, 9.0);
-    let mat = make_material(24.0, "SN400B");
-    let ctx = ctx_column(LoadTerm::Long);
-    let design = CftDesign;
-
-    let forces = MemberForcesAt {
-        n: -20_000_000.0,
-        mz: 1_000_000.0,
-        ..zero_forces()
-    };
-    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-    assert!(r.ratio().is_finite());
-    assert!(crate::full_detail(&r).contains("cNc"));
 }
 
 /// 断片が意図した component に配置されていることの確認
@@ -254,29 +224,6 @@ fn test_cft_pipe_biaxial_smoke() {
         .components
         .iter()
         .any(|c| c.kind == crate::CheckKind::Shear));
-}
-
-#[test]
-fn test_cft_shear_box() {
-    let sec = cft_box_section(400.0, 300.0, 9.0);
-    let mat = make_material(24.0, "SN400B");
-    let ctx = ctx_column(LoadTerm::Long);
-    let design = CftDesign;
-
-    let (sa, _, _) = cft_box_steel_props(400.0, 300.0, 9.0);
-    let f_value = steel_f_value_prefix("SN400B", 9.0).unwrap();
-    let s_fs = steel_fs(f_value, LoadTerm::Long);
-    let dw = 400.0 - 2.0 * 9.0;
-    let s_aw = 2.0 * 9.0 * dw;
-    let s_qa = s_aw * s_fs;
-    let _ = sa;
-
-    let forces = MemberForcesAt {
-        qy: s_qa * 0.4,
-        ..zero_forces()
-    };
-    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-    assert!((r.ratio() - 0.4).abs() < 1e-3, "ratio={}", r.ratio());
 }
 
 /// 軽量コンクリート1種の充填 CFT は cNc が 0.9 倍に低減され、

@@ -55,6 +55,7 @@ fn multi_opening_mode_label(mode: MultiOpeningMode) -> &'static str {
 /// 下段の `add_*` は「取り付く壁版を追加」フォームの入力欄。
 #[derive(Clone, Debug, Default)]
 pub struct WallPlateDraft {
+    pub self_weight_shares: Vec<f64>,
     /// 編集対象の壁版。
     pub target: Option<WallPlateId>,
     /// バッファを初期化した対象（`target` と異なれば model 値で再同期する）。
@@ -263,6 +264,65 @@ fn opening_summary(plate: &WallPlate) -> String {
 }
 
 pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
+    ui.collapsing("間柱の自重・重力荷重の伝達先", |ui| {
+        let posts: Vec<_> = app.core.model.posts().cloned().collect();
+        for post in posts {
+            let model = &app.core.model;
+            let Some((a, b)) = model.secondary_member_end_points(&post) else {
+                continue;
+            };
+            if (a[0] - b[0]).hypot(a[1] - b[1]) > squid_n_core::geom::MEMBER_AXIS_TOL_MM {
+                continue;
+            }
+            let lower = usize::from(a[2] > b[2]);
+            let mut bottom_percent = post
+                .valid_gravity_end_shares()
+                .map(|r| r[lower] * 100.0)
+                .unwrap_or(0.0);
+            let mut chosen = None;
+            ui.push_id(post.id, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}（下端／上端）", post.name));
+                    if post.valid_gravity_end_shares().is_none() {
+                        ui.colored_label(crate::theme::ERROR_RED, "未指定・不正");
+                    }
+                    if ui.button("下端100%").clicked() {
+                        chosen = Some(100.0);
+                    }
+                    if ui.button("上端100%").clicked() {
+                        chosen = Some(0.0);
+                    }
+                    if ui.button("上下50%").clicked() {
+                        chosen = Some(50.0);
+                    }
+                    ui.label("下端");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut bottom_percent)
+                                .range(0.0..=100.0)
+                                .suffix(" %"),
+                        )
+                        .changed()
+                    {
+                        chosen = Some(bottom_percent);
+                    }
+                });
+            });
+            if let Some(percent) = chosen {
+                let mut shares = [0.0; 2];
+                shares[lower] = percent / 100.0;
+                shares[1 - lower] = 1.0 - shares[lower];
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
+                    Box::new(squid_n_edit::SetPostGravityEndShares {
+                        member: post.id,
+                        shares: Some(shares),
+                    }),
+                );
+                app.core.scoped.staleness.mark_edited();
+            }
+        }
+    });
     ui.label(
         "壁版は、柱・梁が囲む鉛直構面内の版（囲まれた壁版）、または主架構・床領域に\
          取り付く版（取り付く壁版＝パラペット・腰壁・垂れ壁・自立壁）です。板厚と材料は\
@@ -780,6 +840,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             app.ui.scoped.wall_plate_draft.opening_area = format!("{area:.0}");
             app.ui.scoped.wall_plate_draft.opening_weight = format!("{weight:.0}");
             app.ui.scoped.wall_plate_draft.slit = slit;
+            app.ui.scoped.wall_plate_draft.self_weight_shares = plate.self_weight_shares.clone();
             app.ui.scoped.wall_plate_draft.openings = format_openings(&openings);
             let total = plate.finish_intensity();
             app.ui.scoped.wall_plate_draft.load_value =
@@ -802,6 +863,39 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         .model
         .wall_plate(target)
         .is_some_and(|p| p.is_attached());
+
+    if let Some(plate) = app.core.model.wall_plate(target) {
+        if let Some(boundary) = plate.boundary_nodes(&app.core.model) {
+            ui.label("自重の支持先：各辺の負担率を合計 100% で指定してください。");
+            ui.label("解析要素にならない壁版に適用します。0% の辺へは伝えません。");
+            let shares = &mut app.ui.scoped.wall_plate_draft.self_weight_shares;
+            shares.resize(boundary.len(), 0.0);
+            for (i, ratio) in shares.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "節点 {} → {}",
+                        boundary[i].0,
+                        boundary[(i + 1) % boundary.len()].0
+                    ));
+                    let mut percent = *ratio * 100.0;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut percent)
+                                .range(0.0..=100.0)
+                                .suffix(" %"),
+                        )
+                        .changed()
+                    {
+                        *ratio = percent / 100.0;
+                    }
+                });
+            }
+            let sum = shares.iter().sum::<f64>();
+            if (sum - 1.0).abs() > 1e-9 {
+                ui.colored_label(crate::theme::ERROR_RED, format!("負担率の合計 {:.3}%：この壁が解析要素にならない場合、解析前チェックで止まります。", sum * 100.0));
+            }
+        }
+    }
 
     ui.horizontal(|ui| {
         ui.label("開口面積[mm²]:");
@@ -873,12 +967,6 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                 )
                 .color(crate::theme::GRAY_600)
                 .small(),
-            );
-        }
-        if app.ui.scoped.wall_plate_draft.slit.both_beam_faces() {
-            ui.colored_label(
-                crate::theme::ERROR_RED,
-                "上下の梁際をともに切ると自重の伝達先がなくなります（解析前チェックが止めます）",
             );
         }
         ui.label(
@@ -980,6 +1068,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             app.core.scoped.undo.run(
                 &mut app.core.model,
                 Box::new(SetWallPlateAttrs {
+                    self_weight_shares: app.ui.scoped.wall_plate_draft.self_weight_shares.clone(),
                     id: target,
                     opening_area,
                     opening_weight,
@@ -1386,6 +1475,7 @@ mod tests {
 
     fn enclosed(id: u32, section: Option<SectionId>) -> WallPlate {
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(id),
             shape: WallPlateShape::Enclosed,
             section,

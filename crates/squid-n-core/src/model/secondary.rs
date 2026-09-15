@@ -35,6 +35,9 @@ pub enum EndSupport {
 pub struct SecondaryMember {
     /// 安定 ID。モデル内の全二次部材で一意。
     pub id: SecondaryMemberId,
+    /// 鉛直材の重力荷重を両端へ渡す負担率（[`SecondaryMemberEnds`] の端の順）。既定の `None` は未指定。
+    #[serde(default)]
+    pub gravity_end_shares: Option<[f64; 2]>,
     pub kind: SecondaryMemberKind,
     /// 両端の支持部材への取付き位置（片持ちは支持端と自由端ベクトル）。
     pub ends: SecondaryMemberEnds,
@@ -48,6 +51,7 @@ impl Default for SecondaryMember {
     fn default() -> Self {
         Self {
             id: SecondaryMemberId(0),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: SecondaryMemberEnds::Detached([[0.0; 3]; 2]),
             section: None,
@@ -739,6 +743,18 @@ fn validate_anchor(
     Ok(())
 }
 
+impl SecondaryMember {
+    /// 非負・有限で総和1、自由端への負担が0の端部負担率だけを返す。
+    pub fn valid_gravity_end_shares(&self) -> Option<[f64; 2]> {
+        let end_support = ends_end_support(&self.ends);
+        self.gravity_end_shares.filter(|r| {
+            r.iter().all(|v| v.is_finite() && *v >= 0.0)
+                && (r[0] + r[1] - 1.0).abs() <= 1e-9
+                && (0..2).all(|i| end_support[i] != EndSupport::Free || r[i] == 0.0)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +807,7 @@ mod tests {
 
     fn joist(id: u32, coords: [[f64; 3]; 2]) -> SecondaryMember {
         SecondaryMember {
+            gravity_end_shares: None,
             id: SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
             ends: SecondaryMemberEnds::Detached(coords),
@@ -864,6 +881,7 @@ mod tests {
     fn 支持のない端は生座標のまま残す() {
         let mut model = two_girder_model();
         model.unassigned_posts.push(SecondaryMember {
+            gravity_end_shares: None,
             id: SecondaryMemberId(0),
             kind: SecondaryMemberKind::Post,
             ends: SecondaryMemberEnds::Detached([[0.0, 0.0, 3000.0], [2000.0, 0.0, 3000.0]]),

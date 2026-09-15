@@ -127,6 +127,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn arbitrary_release_direction_has_zero_moment_and_inplane_resistance() {
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+        for angle in [0.2_f64, 0.7, 1.3] {
+            let (nz, ny) = angle.sin_cos();
+            let col = make_test_column(ReleaseAxis::LocalDirection([ny, nz]));
+            let k = col.tangent_stiffness(&ctx);
+            let scale = (0..12).map(|i| k.get(i, i).abs()).fold(0.0, f64::max);
+            for end in [0, 6] {
+                for row in 0..12 {
+                    let moment = k.get(row, end + 4) * ny + k.get(row, end + 5) * nz;
+                    assert!(moment.abs() < scale * 1e-12);
+                }
+            }
+            // 壁法線と材軸に直交する並進は、両端ピンの面内曲げ抵抗を生じない。
+            for row in 0..12 {
+                let force = k.get(row, 7) * nz - k.get(row, 8) * ny;
+                assert!(force.abs() < scale * 1e-12);
+                for column in 0..12 {
+                    assert!((k.get(row, column) - k.get(column, row)).abs() < scale * 1e-12);
+                }
+            }
+        }
+    }
+
     /// 軸剛性 EA/L は解放の影響を受けない。
     #[test]
     fn test_release_keeps_axial_stiffness() {

@@ -801,6 +801,7 @@ mod tests {
             steel_material: None,
         });
         model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             id: SecondaryMemberId(0),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             ends: SecondaryMemberEnds::Detached([[3000.0, 0.0, 0.0], [3000.0, 4000.0, 0.0]]),
@@ -903,6 +904,7 @@ mod tests {
         });
         // 辺0（節点0-1、大梁として実在）に全長載るパラペット（立ち上がり500mm）。
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -1010,6 +1012,7 @@ mod tests {
             steel_material: None,
         });
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Line {
@@ -1128,6 +1131,7 @@ mod tests {
             });
         }
         let plate = WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
@@ -1755,6 +1759,7 @@ mod cascade_tests {
             one_way: None,
         };
         let joist_a = SecondaryMember {
+            gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(4),
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
@@ -1765,6 +1770,7 @@ mod cascade_tests {
             name: "A".into(),
         };
         let joist_b = SecondaryMember {
+            gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(6),
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([

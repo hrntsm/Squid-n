@@ -278,6 +278,7 @@ mod tests {
     fn secondary_member(id: u32, section: Option<SectionId>) -> SecondaryMember {
         SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(id),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 [0.0, 0.0, 0.0],
@@ -462,6 +463,7 @@ mod tests {
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let joists = vec![squid_n_core::model::SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 [0.0, 0.0, 0.0],
@@ -487,6 +489,7 @@ mod tests {
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Post,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 [0.0, 0.0, 0.0],

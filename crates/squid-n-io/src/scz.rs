@@ -304,6 +304,30 @@ mod tests {
         let mut model = make_3node_model();
         model.slab_thickness = 150.0;
         model.next_secondary_member_id = 7;
+        model.wall_plates.push(squid_n_core::model::WallPlate {
+            self_weight_shares: vec![0.75, 0.25, 0.0],
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed,
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![],
+            loads: vec![],
+            slit: Default::default(),
+        });
+        model
+            .unassigned_posts
+            .push(squid_n_core::model::SecondaryMember {
+                id: squid_n_core::ids::SecondaryMemberId(0),
+                gravity_end_shares: Some([0.75, 0.25]),
+                kind: squid_n_core::model::SecondaryMemberKind::Post,
+                ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                ]),
+                section: None,
+                name: "P1".into(),
+            });
         let dir = crate::test_util::test_tmp();
         let path = dir.join("p.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();

@@ -218,6 +218,8 @@ test story_gen::tests::（4 件）... ok
 test result: ok. 15 passed; 0 failed
 ```
 
+（テスト再編後: `floor::tests::test_fem_uniform` は `test_fixed_end_moments_matches_fem_uniform` に統合。実行結果は当時の記録のため上記ログは原文のまま。）
+
 ただし現行テストは実装済み範囲のみを検証しており、§1・§3 の各項目
 （壁・ダンパー自重、仕上げ荷重、柱面間長さ、多剛床、±地震組合せ等）への回帰テストは存在しない。
 

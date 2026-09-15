@@ -886,6 +886,7 @@ mod tests {
 
     fn joist(id: u32, coords: [[f64; 3]; 2]) -> SecondaryMember {
         SecondaryMember {
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: crate::model::SecondaryMemberEnds::Detached(coords),
             section: None,

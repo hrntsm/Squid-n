@@ -175,6 +175,17 @@ pub(crate) fn compute_member_response(
                 axial: 0.0,
                 rp: 0.0,
                 horizontal_force: horizontal_force_in_dir(&f, elem.nodes.len(), dir_idx),
+                wall_shear_signed: if matches!(elem.kind, squid_n_core::model::ElementKind::Wall)
+                    && f.data.len() == 24
+                {
+                    squid_n_core::model::wall_element_geometry(elem, model).map(|g| {
+                        (0..3)
+                            .map(|d| (f.data[12 + d] + f.data[18 + d]) * g.ex_bottom[d])
+                            .sum()
+                    })
+                } else {
+                    None
+                },
             });
             continue;
         }
@@ -219,6 +230,7 @@ pub(crate) fn compute_member_response(
             axial,
             rp,
             horizontal_force,
+            wall_shear_signed: None,
         });
     }
     out

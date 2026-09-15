@@ -124,7 +124,20 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
         let Some(mat) = model.element_material(e) else {
             continue;
         };
-        if mat.category != want {
+        let cft_column = want == MaterialCategory::Concrete
+            && edges[2..]
+                .iter()
+                .any(|(a, b)| (*a == n0 && *b == n1) || (*a == n1 && *b == n0))
+            && model
+                .element_section(e)
+                .and_then(|s| s.shape.as_ref())
+                .is_some_and(|s| {
+                    matches!(
+                        s,
+                        SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
+                    )
+                });
+        if mat.category != want && !cft_column {
             return Some(format!(
                 "耐震壁 ID {} は{}ですが、周辺架構の部材 ID {} の材料「{}」の区分は{}です。\
                  耐震壁と周辺架構の構造種別を揃えてください。\
@@ -565,6 +578,7 @@ mod tests {
         let plate_id = model.add_enclosed_wall_plate_from_nodes(
             &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             squid_n_core::model::WallPlate {
+                self_weight_shares: Vec::new(),
                 id: squid_n_core::ids::WallPlateId(0),
                 shape: squid_n_core::model::WallPlateShape::Enclosed,
                 section: Some(SectionId(0)),

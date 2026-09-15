@@ -629,6 +629,7 @@ impl EditCommand for AddAttachedWallPlate {
         }
         let id = WallPlateId(model.wall_plates.len() as u32);
         model.wall_plates.push(WallPlate {
+            self_weight_shares: Vec::new(),
             id,
             shape: WallPlateShape::Attached {
                 anchor: self.anchor,
@@ -677,6 +678,7 @@ impl EditCommand for AssignWallPlateToRegion {
             region: self.region,
             assignment: squid_n_core::model::PlateAssignment::Plate(new_id),
             plate: Some(squid_n_core::model::WallPlate {
+                self_weight_shares: Vec::new(),
                 id: new_id,
                 shape: squid_n_core::model::WallPlateShape::Enclosed,
                 section: self.section,
@@ -967,6 +969,7 @@ impl EditCommand for SetWallPlateSection {
 /// そのまま保存する（`WallPlate` が形によらず同じフィールドを持つ設計〔D3〕を
 /// コマンド側で崩さないため）。
 pub struct SetWallPlateAttrs {
+    pub self_weight_shares: Vec<f64>,
     pub id: WallPlateId,
     pub opening_area: f64,
     pub opening_weight: f64,
@@ -984,6 +987,7 @@ impl EditCommand for SetWallPlateAttrs {
         }
         let plate = &mut model.wall_plates[idx];
         let old = SetWallPlateAttrs {
+            self_weight_shares: plate.self_weight_shares.clone(),
             id: self.id,
             opening_area: plate.opening_area,
             opening_weight: plate.opening_weight,
@@ -996,6 +1000,7 @@ impl EditCommand for SetWallPlateAttrs {
         plate.openings = self.openings.clone();
         plate.loads = self.loads.clone();
         plate.slit = self.slit;
+        plate.self_weight_shares = self.self_weight_shares.clone();
         Box::new(old)
     }
 

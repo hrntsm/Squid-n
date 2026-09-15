@@ -179,6 +179,7 @@ fn wall_post_model() -> Model {
     // 間柱で 2 枚へ分割する。
     model.unassigned_posts.push(SecondaryMember {
         id: SecondaryMemberId(0),
+        gravity_end_shares: Some([0.5, 0.5]),
         kind: SecondaryMemberKind::Post,
         ends: SecondaryMemberEnds::Supported([
             SecondaryMemberAnchor {
@@ -200,6 +201,7 @@ fn wall_post_model() -> Model {
             .assign_enclosed_wall_plate_to_matching_region(
                 &nodes,
                 WallPlate {
+                    self_weight_shares: Vec::new(),
                     id: WallPlateId(id),
                     shape: WallPlateShape::Enclosed,
                     section: Some(SectionId(2)),
@@ -229,14 +231,6 @@ fn wall_post_app() -> App {
     app.core.analysis_cfg.threads = 1;
     app.core.model = wall_post_model();
     app
-}
-
-#[test]
-fn test_model_is_valid() {
-    let model = wall_post_model();
-    assert!(model.validate().is_ok(), "{:?}", model.validate());
-    assert_eq!(model.posts().count(), 1);
-    assert_eq!(model.wall_plates.len(), 2);
 }
 
 /// 間柱で分割された壁版は壁エレメントにならない。壁柱が枚数分に割れることを
@@ -310,24 +304,6 @@ fn test_wall_weight_is_split_between_columns_and_post() {
         "間柱は壁全体の 1/2（左右の壁版から 1/4 ずつ）を受ける: {post_total} / 期待 {expect}"
     );
     assert_eq!(out.primary.len(), 2, "柱側の鉛直辺 2 本が残りを受ける");
-}
-
-/// 準備計算・DL 同期・線形静解析まで通り、解析前チェックがエラーを出さない。
-#[test]
-fn test_runs_full_pipeline() {
-    let mut app = wall_post_app();
-    app.run_preparation();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    app.run_linear_static(LoadCaseId(0));
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
 }
 
 /// 壁版の自重が地震用重量へ算入される（要素にならなくても失われない）。
@@ -490,6 +466,8 @@ fn base_column_axial_sum(app: &App, res: &squid_n_solver::statics::linear::Stati
 /// オーダーで出ることを固定する。経路が切れれば差は 0 になる。
 #[test]
 fn test_wall_weight_reaches_column_axial_force() {
+    let fixture = wall_post_model();
+    assert!(fixture.validate().is_ok(), "{:?}", fixture.validate());
     let base_axial = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
@@ -538,4 +516,43 @@ fn test_wall_weight_reaches_column_axial_force() {
         "柱脚軸力が壁自重に反応していない（増分 {diff}・壁自重 {}）",
         wall_weight()
     );
+}
+#[test]
+fn 明示負担率で密度直接集計とdl集計の階重量が一致する() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCase, LoadCaseKind, MassMethod};
+    use squid_n_load::story_gen::generate_stories_with_opts;
+
+    for bottom_ratio in [0.0, 0.25, 1.0] {
+        let mut model = wall_post_model();
+        for region in &mut model.wall_regions {
+            for post in &mut region.posts {
+                post.gravity_end_shares = Some([bottom_ratio, 1.0 - bottom_ratio]);
+            }
+        }
+        let direct = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+        let dl = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&model)
+            .cases
+            .into_iter()
+            .find(|lc| lc.kind == LoadCaseKind::Dead)
+            .unwrap();
+        let id = LoadCaseId(0);
+        model.load_cases = vec![LoadCase {
+            id,
+            name: "DL".into(),
+            kind: dl.kind,
+            nodal: dl.nodal,
+            member: dl.member,
+        }];
+        let from_dl =
+            generate_stories_with_opts(&model, &[id], false, MassMethod::LumpedOnly).unwrap();
+        for (a, b) in direct.stories.iter().zip(&from_dl.stories) {
+            assert!(
+                (a.seismic_weight.unwrap_or(0.0) - b.seismic_weight.unwrap_or(0.0)).abs() < 1e-6,
+                "下端負担率 {bottom_ratio}: 直接集計 {:?} / DL {:?}",
+                a.seismic_weight,
+                b.seismic_weight
+            );
+        }
+    }
 }

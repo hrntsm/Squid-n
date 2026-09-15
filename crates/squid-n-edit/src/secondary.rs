@@ -439,6 +439,29 @@ impl EditCommand for SetWallRegionPostSection {
     }
 }
 
+/// 間柱の端部負担率を変更する。安定 ID で対象を探し、負担率は端の並びで指定する。
+pub struct SetPostGravityEndShares {
+    pub member: SecondaryMemberId,
+    pub shares: Option<[f64; 2]>,
+}
+
+impl EditCommand for SetPostGravityEndShares {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(post) = find_secondary_mut(model, self.member) else {
+            return Box::new(Noop);
+        };
+        let old = std::mem::replace(&mut post.gravity_end_shares, self.shares);
+        Box::new(Self {
+            member: self.member,
+            shares: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "間柱端部負担率変更"
+    }
+}
+
 /// 二次部材（小梁・間柱）の端部支持条件を変更する。
 ///
 /// 安定 ID で対象を探し、床領域内・壁領域内・未割当のいずれにあっても設定する。
@@ -500,6 +523,7 @@ impl EditCommand for SetSecondaryMemberEndSupport {
         let ends = model.secondary_ends_from_coords(self.member, kind, [a, b], new_supported);
         let candidate = SecondaryMember {
             id: self.member,
+            gravity_end_shares: None,
             kind,
             ends,
             section: sm.section,
@@ -589,6 +613,7 @@ impl EditCommand for PlaceSecondaryMember {
         }
         let candidate = SecondaryMember {
             id: SecondaryMemberId(u32::MAX),
+            gravity_end_shares: None,
             kind: self.kind,
             ends: self.ends,
             section: self.section,
@@ -669,6 +694,7 @@ impl EditCommand for SetSecondaryMemberEnds {
         }
         let candidate = SecondaryMember {
             id: self.member,
+            gravity_end_shares: None,
             kind: sm.kind,
             ends: self.ends,
             section: sm.section,
@@ -788,6 +814,7 @@ fn apply_secondary_action(model: &mut Model, action: &SecondaryAction) -> bool {
             }
             let member = SecondaryMember {
                 id: *id,
+                gravity_end_shares: None,
                 kind: *kind,
                 ends: *ends,
                 section: *section,

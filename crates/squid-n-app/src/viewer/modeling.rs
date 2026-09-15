@@ -1202,9 +1202,15 @@ fn show_wall_modeling_detail(
             ui.label("軸・曲げ: 弾性（ファイバー断面を組めない）");
         }
     }
-    let qu = squid_n_element::wall::wall_element::WallElement::shear_capacity_of(elem, model);
-    if qu > 0.0 {
-        ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", force_kn(qu)));
+    let qu = squid_n_element::wall::wall_element::WallElement::directional_shear_capacity_of(
+        elem, model,
+    );
+    if qu.iter().all(|q| *q > 0.0) {
+        ui.label(format!(
+            "面内せん断: 正 Qu={:.0} kN／負 Qu={:.0} kN",
+            force_kn(qu[0]),
+            force_kn(qu[1])
+        ));
     } else {
         ui.label("面内せん断: 弾性（Qu を算定できない）");
     }

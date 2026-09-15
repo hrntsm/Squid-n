@@ -576,6 +576,7 @@ mod tests {
     fn test_secondary(model: &Model, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
             id: squid_n_core::ids::SecondaryMemberId(i),
+            gravity_end_shares: None,
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 model.nodes[i as usize].coord,

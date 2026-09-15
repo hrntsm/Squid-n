@@ -38,8 +38,7 @@ pub fn is_side_column_member(kind: ElementKind) -> bool {
 ///    とき、自部材の両端節点が「下辺a-上辺a」または「下辺b-上辺b」のいずれかの
 ///    鉛直辺の2節点と一致すること。
 ///
-/// 解放曲げ面は、壁面法線（下辺方向×鉛直の外積）と柱の局所 ey・ez の内積絶対値が
-/// 大きい方（＝回転軸が壁法線に平行な方）とする。
+/// 解放回転軸は壁面法線を柱の局所 y-z 面へ射影した方向とする。
 pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<ReleaseAxis> {
     let (n0, n1, p0, p1) = side_column_candidate(data, model)?;
 
@@ -109,13 +108,10 @@ fn release_axis_for_normal(
     normal: [f64; 3],
 ) -> ReleaseAxis {
     let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
-    let dot_ey = dot(axis.rot[1], normal).abs();
-    let dot_ez = dot(axis.rot[2], normal).abs();
-    if dot_ey >= dot_ez {
-        ReleaseAxis::LocalY
-    } else {
-        ReleaseAxis::LocalZ
-    }
+    let ny = dot(axis.rot[1], normal);
+    let nz = dot(axis.rot[2], normal);
+    let norm = ny.hypot(nz);
+    ReleaseAxis::LocalDirection([ny / norm, nz / norm])
 }
 
 /// 耐震壁の鉛直辺（節点対）→ 壁面法線の事前インデックス。

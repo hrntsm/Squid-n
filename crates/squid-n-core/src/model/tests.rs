@@ -5,6 +5,7 @@ use crate::model::MaterialCategory;
 /// 形状を持たない二次部材（生座標は原点）。ID・種別の検証用。
 fn test_secondary(kind: SecondaryMemberKind, id: u32, name: &str) -> SecondaryMember {
     SecondaryMember {
+        gravity_end_shares: None,
         id: SecondaryMemberId(id),
         kind,
         ends: SecondaryMemberEnds::Detached([[0.0; 3]; 2]),
@@ -1412,6 +1413,7 @@ fn test_validate_enclosed_wall_plate_requires_assignment_region() {
             support_spring: None,
         }],
         wall_plates: vec![WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             // 割当領域が無い＝境界を解決できない（陳腐化した状態）。
             shape: WallPlateShape::Enclosed,
@@ -1447,6 +1449,7 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
     let empty = WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Enclosed,
         section: None,
@@ -1482,6 +1485,7 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
         });
     }
     let mk = |span: [f64; 2]| WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -1523,6 +1527,7 @@ fn test_validate_self_standing_wall_checks_only_node_refs() {
         });
     }
     let mk = |nodes: [NodeId; 2]| WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::FloorRegion { nodes },
@@ -1593,6 +1598,7 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -1656,6 +1662,7 @@ fn infer_free_end_for_cantilever_joist() {
         spring: None,
     });
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id: SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         ends: SecondaryMemberEnds::Detached([[3000.0, 0.0, 0.0], [3000.0, 3000.0, 0.0]]),
@@ -1766,6 +1773,7 @@ fn push_joist(model: &mut Model, nodes: [u32; 2], name: &str) {
     let (a, b) = (coord(nodes[0]), coord(nodes[1]));
     let id = model.alloc_secondary_member_id();
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id,
         kind: SecondaryMemberKind::Joist,
         ends: SecondaryMemberEnds::Detached([a, b]),
@@ -1877,6 +1885,7 @@ fn infer_free_end_for_cantilever_post() {
     let mut model = two_node_model(&[[0.0, 0.0, 0.0], [6000.0, 0.0, 0.0], [0.0, 0.0, 3000.0]]);
     push_beam(&mut model, 0, 0, 1);
     model.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: None,
         id: SecondaryMemberId(0),
         kind: SecondaryMemberKind::Post,
         ends: SecondaryMemberEnds::Detached([[0.0, 0.0, 0.0], [0.0, 0.0, 3000.0]]),

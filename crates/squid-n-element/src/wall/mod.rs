@@ -4,6 +4,7 @@
 //! - [`misc_wall`] —   フレーム内雑壁の判定・幾何
 //! - [`side_column`] — 耐震壁の側柱
 pub mod misc_wall;
+pub mod shear_section;
 pub mod side_column;
 pub mod wall_element;
 
@@ -47,3 +48,5 @@ pub(crate) fn add_surrounding_frame(
         });
     }
 }
+
+mod section_geometry;

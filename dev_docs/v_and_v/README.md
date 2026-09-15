@@ -61,6 +61,10 @@
 各レポートの照合結果・修正履歴・残課題の詳細。**未完了の要約**は
 [未検証一覧.md](未検証一覧.md) を参照。
 
+| レポート | 対象 | 状態 |
+|---|---|---|
+| [壁版の支持範囲判定_2026-09.md](壁版の支持範囲判定_2026-09.md) | 壁の支持辺・間柱端部の負担率の明示入力、部分支持・支持梁重複の診断 | 🔶 |
+
 ### 参照実装マニュアル照合
 
 | レポート | 対象章 | 判定 | 備考 |
@@ -90,7 +94,8 @@
 |----------|------|------|
 | [adversarial_review_2026-07.md](adversarial_review_2026-07.md) | 横断（PO・剛域・MITC4 等） | 🔶 |
 | [解析コア_敵対的レビュー_2026-07.md](解析コア_敵対的レビュー_2026-07.md) | 静解析・固有値・増分解析 | 🔶 |
-| [耐震壁_敵対的レビュー_2026-07.md](耐震壁_敵対的レビュー_2026-07.md) | 壁エレメント | 🔶 |
+| [壁断面統一と正負別せん断耐力_2026-09.md](壁断面統一と正負別せん断耐力_2026-09.md) | 材料別実幅・SRC/CFT・任意角度・正負別壁ばね、PR #277統合後の回帰結果 | 🔶（数値検証済み・実験照合未） |
+| [耐震壁_敵対的レビュー_2026-07.md](耐震壁_敵対的レビュー_2026-07.md) | 壁エレメントの再現試験・独立算式照合・追加回帰検証（判断と途中履歴はADR・申し送りを参照） | 🔶 |
 | [保有水平耐力_プッシュオーバー_敵対的レビュー_2026-07.md](保有水平耐力_プッシュオーバー_敵対的レビュー_2026-07.md) | ルート3 PO | 🔶 |
 | [材端集中ばね梁_定式化レビュー_2026-07.md](材端集中ばね梁_定式化レビュー_2026-07.md) | ConcentratedSpringBeam | 🔶 |
 | [増分解析_ヒンジ形成と剛性低下_検証_2026-07.md](増分解析_ヒンジ形成と剛性低下_検証_2026-07.md) | ヒンジ・剛性低下 | ✅ |
@@ -124,18 +129,19 @@
 
 | # | 対象 | クレート | ソースファイル | テスト関数 | フェーズ | 状態 |
 |---|------|----------|---------------|-----------|---------|------|
-| 1 | ティモシェンコ梁 | squid-n-element | beam.rs | `test_phi_zero_converges_to_bernoulli`, `test_beam_axial_stiffness`, `test_beam_torsion_stiffness` | P1 | ✅ |
-| 2 | 剛域あり梁 | squid-n-element | beam.rs | `test_auto_rigid_zone_standard_formula` | P1 | 🔶 |
-| 3 | 端部ばね（ピン・半剛） | squid-n-element | beam.rs | `test_pinned_end_releases_moment` | P1 | 🔶 |
+| 1 | ティモシェンコ梁 | squid-n-element | beam.rs | `test_phi_zero_converges_to_bernoulli`（Bernoulli 極限。軸 EA/L・ねじり GJ/L を含む 12×12 成分。テスト再編により旧 `test_beam_axial_stiffness`・`test_beam_torsion_stiffness` を統合）, `test_torsion_not_stiffened_by_rigid_zone`（剛域ありでもねじりは GJ/L のまま） | P1 | ✅ |
+| 2 | 剛域あり梁 | squid-n-element | beam.rs | `test_apply_auto_rigid_zones_and_manual_protection`, `test_auto_rigid_zone_only_when_all_members_are_rc`（自動剛域の適用と手動端の保護・適用条件。テスト再編により旧 `test_auto_rigid_zone_standard_formula` を統合） | P1 | 🔶 |
+| 3 | 端部ばね（ピン・半剛） | squid-n-element | beam.rs | `test_pinned_end_rotation_stiffness_exactly_zero`（テスト再編により旧 `test_pinned_end_releases_moment` を統合） | P1 | 🔶 |
 | 4 | MITC4 シェル（膜） | squid-n-element | shell.rs | `test_patch_membrane_distorted`（歪みメッシュ・機械精度） | P1.5 | ✅ |
 | 5 | MITC4 シェル（曲げ） | squid-n-element | shell.rs | `test_patch_bending_distorted`（歪みメッシュ定曲率・機械精度） | P1.5 | ✅ |
-| 6 | MITC4 シェル（せん断/収束） | squid-n-solver | linear.rs | `test_ss_plate_convergence`, `test_clamped_plate_convergence`（板たわみ ±2% 収束＝ロッキングなし） | P1.5 | ✅ |
+| 6 | MITC4 シェル（せん断/収束） | squid-n-solver | linear.rs | `test_plate_convergence`（単純支持・四辺固定の板たわみ ±2% 収束＝ロッキングなし。テスト再編により旧 2 テストを統合） | P1.5 | ✅ |
 | 7 | パネルゾーンのフェイスモーメント | squid-n-element | panel.rs | `test_face_moments_reference_case1`（pQc=851.135kN 等）, `test_face_moments_reference_case2_t_joint`（ト型） | P1 | ✅ |
 | 7a | 仕口パネル（せん断変形角の追加自由度） | squid-n-solver | tests/panel_zone.rs | `test_panel_shear_angle_matches_closed_form`（M=K·γ）, `test_panel_dof_equilibrium_residual_is_zero`（資料 2.10.3-3）。定式化と残課題は [仕口パネル_定式化と検証_2026-07.md](仕口パネル_定式化と検証_2026-07.md) | P1 | ✅ |
 | 8 | 線形静的解析 | squid-n-solver | linear.rs | `test_*`（座標変換回帰 `test_beam_to_global_transverse_uses_correct_inertia` 含む） | P2 | ✅ |
 | 9 | 固有値解析 | squid-n-solver | eigen.rs | `test_1dof_period` | P2 | ✅ |
 | 10 | Ai分布 | squid-n-load | ai.rs | `test_*` | P2 | ✅ |
 | 11 | 床荷重分割 | squid-n-load | floor.rs | `test_*` | P2 | ✅ |
+| 11a | 壁・間柱の自重支持先 | squid-n-load / squid-n-app | wall_plate_load.rs / cascade.rs | `wall_plate_load::tests`・`vertical_post_uses_explicit_end_shares`・`明示負担率で密度直接集計とdl集計の階重量が一致する` | [検証記録](壁版の支持範囲判定_2026-09.md) | 🔶（実測照合は未実施） |
 | 12 | 荷重組合せ | squid-n-load | combo.rs | `test_combinations` | P2 | ✅ |
 | 13 | 許容応力度設計 | squid-n-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
 | 14 | 保有耐力 | squid-n-design-jp | holding_capacity.rs | `test_*` | P7 | 🔶 |
@@ -153,7 +159,7 @@
 | 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 | 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
 | 28 | 二次部材小梁の分配 Span 検定 | squid-n-load / squid-n-app | floor/joist_design.rs, check.rs | `distribution_loads_on_shared_joist_match_average_width` / `split_slab_edges_compose_onto_full_joist` / `span_attaches_to_nearest_joist_only` / `perimeter_parallel_joist_does_not_steal_beam_span` / `joist_distribution_cover_rejects_half_span` / `shared_joist_expects_both_slabs` / `missing_expected_slab_is_not_ready` / `zero_expected_axis_does_not_receive_spans` / `joist_design_checks_cover_imported_secondary_members` | 横断 | ☑ |
-| 29 | 耐震スリット（辺ごとの縁切り。袖壁・腰壁垂壁・剛域・耐震壁判定・自重） | squid-n-element / squid-n-load | wall/misc_wall.rs, frame/beam/{construct,rigid_zone}.rs, story_gen/self_weight_calc.rs | `test_column_face_slit_drops_wing_wall_but_keeps_girder_strip` / `test_strip_height_follows_beam_face_slit` / `test_any_slit_breaks_seismic_wall` / `柱際スリットのある側は剛域の袖壁張り出しを持たない` / `test_column_face_slit_wall_is_collected_as_misc_wall` / `test_column_face_slit_is_per_side` / `test_column_face_slit_does_not_change_self_weight_destination` / `test_bottom_beam_face_slit_sends_self_weight_to_top` / `test_top_beam_face_slit_sends_self_weight_to_bottom` | 横断 | 🔶 |
+| 29 | 耐震スリット（辺ごとの縁切り。袖壁・腰壁垂壁・剛域・耐震壁判定・自重） | squid-n-element / squid-n-load | wall/misc_wall.rs, frame/beam/{construct,rigid_zone}.rs, story_gen/self_weight_calc.rs | `test_column_face_slit_drops_wing_wall_but_keeps_girder_strip` / `test_strip_height_follows_beam_face_slit` / `test_any_slit_breaks_seismic_wall` / `柱際スリットのある側は剛域の袖壁張り出しを持たない` / `test_column_face_slit_wall_is_collected_as_misc_wall` / `test_column_face_slit_is_per_side` / `test_wall_self_weight_moves_only_by_beam_face_slit`（柱際は行き先不変、梁際の切れ側で全量移動。テスト再編により旧 3 テストを統合） | 横断 | 🔶 |
 | 30 | 壁版の要素生成判定と可視化 | squid-n-core / squid-n-load / squid-n-app | model/wall_plate.rs, wall_expand.rs, viewer/scene.rs | `test_becomes_element_agrees_with_generated_elements` / `test_becomes_element_requires_section` / `test_boundary_coords_with_uses_supplied_coords` / `囲まれた壁版は境界節点が全て構面上にあるときだけ描く` / `取り付く壁版は取付き先の節点で構面を判定する` | 横断 | ☑ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装・対象外（採用しない）。

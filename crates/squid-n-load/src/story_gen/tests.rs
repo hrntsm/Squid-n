@@ -241,6 +241,7 @@ fn test_base_master_ignores_non_structural_slaves() {
         model.nodes[free_id.index()].coord,
     ]);
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         ends,
@@ -248,6 +249,10 @@ fn test_base_master_ignores_non_structural_slaves() {
         name: "B1".into(),
     });
 
+    let mut base_beam = model.elements[0].clone();
+    base_beam.id = ElemId(model.elements.len() as u32);
+    base_beam.nodes = [NodeId(0), NodeId(1)].into_iter().collect();
+    model.elements.push(base_beam);
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert!(
         gen_slaves(&gen, StoryId(0)).contains(&free_id),
@@ -661,12 +666,19 @@ fn secondary_joist_model() -> Model {
         model.nodes[2].coord,
     ]);
     model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Joist,
         ends,
         section: Some(SectionId(0)),
         name: "G1".into(),
     });
+    for top in [1, 2] {
+        let mut column = two_story_model().elements[0].clone();
+        column.id = ElemId(model.elements.len() as u32);
+        column.nodes = [NodeId(0), NodeId(top)].into_iter().collect();
+        model.elements.push(column);
+    }
     model
 }
 
@@ -795,6 +807,7 @@ fn secondary_joist_on_girder_midspan_model(with_joist: bool) -> Model {
     }
     if with_joist {
         model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
             ends: squid_n_core::model::SecondaryMemberEnds::Supported([
@@ -1345,6 +1358,7 @@ fn wall_model() -> Model {
     model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: Some(SectionId(0)),
@@ -1633,6 +1647,7 @@ fn test_density_seismic_weight_includes_attached_wall_plate() {
         steel_material: None,
     });
     let plate = WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
@@ -1832,6 +1847,7 @@ fn single_column_with_attached_wall(transfer: LoadTransfer) -> (Model, f64) {
         });
     }
     model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::Line {

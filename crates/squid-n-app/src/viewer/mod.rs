@@ -1475,6 +1475,7 @@ mod wall_expanded_view_model_tests {
         model.add_enclosed_wall_plate_from_nodes(
             &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             WallPlate {
+                self_weight_shares: Vec::new(),
                 id: WallPlateId(0),
                 shape: WallPlateShape::Enclosed,
                 section: Some(SectionId(0)),
@@ -1541,6 +1542,7 @@ mod wall_expanded_view_model_tests {
         model.add_enclosed_wall_plate_from_nodes(
             &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             WallPlate {
+                self_weight_shares: Vec::new(),
                 id: WallPlateId(0),
                 shape: WallPlateShape::Enclosed,
                 section: Some(SectionId(0)),

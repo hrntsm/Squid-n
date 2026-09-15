@@ -586,6 +586,7 @@ fn build_secondaries(
         }
         let sm = squid_n_core::model::SecondaryMember {
             id: model.alloc_secondary_member_id(),
+            gravity_end_shares: None,
             kind: s.kind,
             ends: squid_n_core::model::SecondaryMemberEnds::Detached([
                 model.node(NodeId(ni)).map(|n| n.coord).unwrap_or([0.0; 3]),
@@ -1136,6 +1137,7 @@ fn assign_imported_walls(model: &mut Model, pending: Vec<PendingWall>) -> Result
         let plate_id = WallPlateId(model.wall_plates.len() as u32);
         if let Some(region_id) = region {
             model.wall_plates.push(WallPlate {
+                self_weight_shares: Vec::new(),
                 id: plate_id,
                 shape: WallPlateShape::Enclosed,
                 section: wall.section,
@@ -1157,6 +1159,7 @@ fn assign_imported_walls(model: &mut Model, pending: Vec<PendingWall>) -> Result
             &wall.boundary,
         ) {
             model.wall_plates.push(WallPlate {
+                self_weight_shares: Vec::new(),
                 id: plate_id,
                 shape,
                 section: wall.section,

@@ -389,6 +389,7 @@ fn test_query_model_wall_plates() {
 
     let mut m = sample_model();
     m.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
@@ -426,6 +427,7 @@ fn test_apply_edit_set_wall_plate_slit() {
         .expect("temp store"),
     };
     state.model.wall_plates.push(WallPlate {
+        self_weight_shares: Vec::new(),
         id: squid_n_core::ids::WallPlateId(0),
         shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
@@ -499,6 +501,7 @@ fn test_apply_edit_wall_plate_region_assignment() {
     let first = model.add_enclosed_wall_plate_from_nodes(
         &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         WallPlate {
+            self_weight_shares: Vec::new(),
             id: WallPlateId(0),
             shape: WallPlateShape::Enclosed,
             section: None,
@@ -1039,4 +1042,38 @@ fn test_apply_edit_place_secondary_member() {
         "{:?}",
         state.model.validate()
     );
+}
+
+/// MCP 経由で間柱の端部負担率を指定できる。
+#[test]
+fn test_mcp_set_post_gravity_end_shares() {
+    let mut model = sample_model();
+    model
+        .unassigned_posts
+        .push(squid_n_core::model::SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            gravity_end_shares: None,
+            kind: squid_n_core::model::SecondaryMemberKind::Post,
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 3000.0],
+            ]),
+            section: None,
+            name: "P1".into(),
+        });
+    let cmd = crate::edit::parse_edit_command(&serde_json::json!({
+        "command": "SetPostGravityEndShares", "member": 0, "shares": [0.25, 0.75]
+    }))
+    .unwrap();
+    cmd.apply(&mut model);
+    assert_eq!(
+        model.unassigned_posts[0].gravity_end_shares,
+        Some([0.25, 0.75])
+    );
+    crate::edit::parse_edit_command(&serde_json::json!({
+        "command": "SetPostGravityEndShares", "member": 0, "shares": null
+    }))
+    .unwrap()
+    .apply(&mut model);
+    assert_eq!(model.unassigned_posts[0].gravity_end_shares, None);
 }
