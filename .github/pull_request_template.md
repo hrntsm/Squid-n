@@ -28,10 +28,10 @@
 <!-- 実行したコマンドと結果を記載してください。 -->
 
 - [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings`
-- [ ] `cargo clippy -p squid-n-app -p squid-n-mcp --all-targets --features squid-n-app/gui,squid-n-mcp/mcp --locked -- -D warnings`
+- [ ] `cargo clippy -p squid-n-app -p squid-n-mcp -p squid-n-io --all-targets --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked -- -D warnings`
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test --workspace --locked`
-- [ ] `cargo test -p squid-n-app -p squid-n-mcp --features squid-n-app/gui,squid-n-mcp/mcp --locked`
+- [ ] `cargo test -p squid-n-app -p squid-n-mcp -p squid-n-io --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked`
 - [ ] `cargo run -p xtask -- check-deps`
 - [ ] `mdbook build`
 
