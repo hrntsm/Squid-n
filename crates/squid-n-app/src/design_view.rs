@@ -852,13 +852,13 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                 });
                 row.col(|ui| {
                     let label = match ji {
-                        crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
-                            secondary_label(app.core.model.joists(), *nodes)
+                        crate::app::JoistCheckTarget::SecondaryJoist { member } => {
+                            secondary_label(app.core.model.joists(), *member)
                         }
-                        crate::app::JoistCheckTarget::SecondaryPost { nodes } => {
+                        crate::app::JoistCheckTarget::SecondaryPost { member } => {
                             format!(
                                 "（間柱）{}",
-                                secondary_label(app.core.model.posts(), *nodes)
+                                secondary_label(app.core.model.posts(), *member)
                             )
                         }
                     };
@@ -952,19 +952,13 @@ fn rank_label(r: squid_n_design_jp::secondary::holding_capacity::MemberRank) -> 
     }
 }
 
-/// 二次部材の表示名（名前が空なら端点の節点対から作る）。
+/// 二次部材の表示名（名前が空なら安定 ID から作る）。
 fn secondary_label<'a>(
     members: impl Iterator<Item = &'a squid_n_core::model::SecondaryMember>,
-    nodes: [squid_n_core::ids::NodeId; 2],
+    id: squid_n_core::ids::SecondaryMemberId,
 ) -> String {
-    let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
     members
-        .filter(|sm| {
-            (
-                sm.nodes[0].0.min(sm.nodes[1].0),
-                sm.nodes[0].0.max(sm.nodes[1].0),
-            ) == key
-        })
+        .filter(|sm| sm.id == id)
         .find_map(|sm| (!sm.name.is_empty()).then(|| sm.name.clone()))
-        .unwrap_or_else(|| format!("SM{}-{}", nodes[0].0, nodes[1].0))
+        .unwrap_or_else(|| format!("SM{}", id.0))
 }

@@ -158,6 +158,43 @@ pub enum StaticTarget {
     Combo(usize),
 }
 
+/// 未設定の割当領域の確認待ちになっている解析実行。利用者が続行を選んだら
+/// [`App::resume_pending_analysis`] が同じ解析を起動し直す。
+pub enum PendingAnalysis {
+    /// 静的解析の単体実行（荷重ケースまたは荷重組合せ）。
+    StaticTarget(StaticTarget),
+    /// 静的解析の一括解析。
+    StaticAll,
+    /// 固有値解析（モード数）。
+    Eigen(usize),
+    /// 増分解析。
+    Pushover,
+    /// 時刻歴応答解析（入力波）。
+    TimeHistory(Box<squid_n_solver::dynamic::timehistory::GroundMotion>),
+    /// 質点系固有値。
+    LumpedMassEigen,
+    /// 質点系時刻歴（入力加速度列）。
+    LumpedMassTimeHistory(Vec<f64>),
+}
+
+/// 3D ビューでクリックした割当領域（床板・壁版の割当ダイアログの対象）。
+#[cfg(feature = "gui")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionAssignTarget {
+    Floor(squid_n_core::ids::FloorPlateAssignmentRegionId),
+    Wall(squid_n_core::ids::WallPlateAssignmentRegionId),
+}
+
+/// 3D で二次部材の配置作業範囲として選んだ親領域。
+#[cfg(feature = "gui")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkScope {
+    /// 床領域（小梁の作業範囲）。
+    Floor(squid_n_core::ids::FloorRegionId),
+    /// 壁領域（間柱の作業範囲）。
+    Wall(squid_n_core::ids::WallRegionId),
+}
+
 /// 表示対象の静的解析結果を指すキー。荷重ケース単体（ユーザー／地震静的）か
 /// 荷重組合せかを区別する。
 ///
@@ -263,17 +300,17 @@ pub struct Selection {
     pub members: Vec<squid_n_core::ids::ElemId>,
 }
 
-/// 小梁設計結果の対象（二次部材の端点）。
+/// 小梁設計結果の対象（二次部材の安定 ID）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JoistCheckTarget {
-    /// 二次部材小梁。端点の節点対で識別する（リビルドで走査順が変わっても安定）。
+    /// 二次部材小梁。安定 ID で識別する（リビルドで走査順が変わっても安定）。
     SecondaryJoist {
-        nodes: [squid_n_core::ids::NodeId; 2],
+        member: squid_n_core::ids::SecondaryMemberId,
     },
     /// 二次部材間柱。現状は常に「未」（軸力・面外曲げの検定が未対応）。
     /// 表から消すと検定されていないことに気づけないため、行としては残す。
     SecondaryPost {
-        nodes: [squid_n_core::ids::NodeId; 2],
+        member: squid_n_core::ids::SecondaryMemberId,
     },
 }
 
@@ -878,6 +915,15 @@ pub struct ModelScoped {
     /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
     /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
     pub combo_error: Option<String>,
+    /// 未設定の割当領域について利用者が続行を確認した時点の対象 ID 集合
+    /// （床板・壁版別）。この集合と一致する間は確認を省略する。モデルが変わって
+    /// 未設定集合が変われば再確認する。
+    pub unset_regions_ack: Option<(
+        Vec<squid_n_core::ids::FloorPlateAssignmentRegionId>,
+        Vec<squid_n_core::ids::WallPlateAssignmentRegionId>,
+    )>,
+    /// 未設定の割当領域の確認待ちになっている解析実行。`None` なら確認待ちはない。
+    pub pending_unset_analysis: Option<PendingAnalysis>,
 }
 
 impl Default for ModelScoped {
@@ -908,6 +954,8 @@ impl Default for ModelScoped {
             auto_load_sync_hash: None,
             generated_panels: Vec::new(),
             combo_error: None,
+            unset_regions_ack: None,
+            pending_unset_analysis: None,
         }
     }
 }
@@ -1015,19 +1063,16 @@ pub struct UiModelScoped {
     /// 梁作成モードで選択済みの始点節点（2 点目で梁を生成しリセット）
     #[cfg(feature = "gui")]
     pub beam_draw_first: Option<crate::viewer::space_grid::SnapPoint>,
-    /// ビューアの壁作成モード（ON 中はクリックで節点を選び 4 点で壁を作る）
+    /// ビューアの壁作成モード（ON 中はクリックで壁版割当領域を選ぶ）
     #[cfg(feature = "gui")]
     pub wall_draw_mode: bool,
-    /// 壁作成モードで選択済みの節点（4 点目で壁を生成しリセット）
-    #[cfg(feature = "gui")]
-    pub wall_draw_nodes: Vec<squid_n_core::ids::NodeId>,
-    /// ビューアのスラブ作成モード（ON 中はクリックで境界節点を順に選び、
-    /// 「確定」で 3〜N 節点のスラブを作る）
+    /// ビューアのスラブ作成モード（ON 中はクリックで床板割当領域を選ぶ）。
     #[cfg(feature = "gui")]
     pub slab_draw_mode: bool,
-    /// スラブ作成モードで選択済みの境界節点（外周順。確定で AddSlab しリセット）
+    /// 3D ビューでクリックした割当領域（床板・壁版の割当ダイアログの対象）。
+    /// ダイアログを閉じると `None`。
     #[cfg(feature = "gui")]
-    pub slab_draw_nodes: Vec<squid_n_core::ids::NodeId>,
+    pub region_assign_dialog: Option<RegionAssignTarget>,
     /// 荷重の追加・編集モーダルの状態（開いていなければ `None`）。
     /// ナビゲータの荷重ツリーから開く。対象を 3D で選ぶ間はモーダルを閉じるため、
     /// 入力内容はここに保持され続ける（`crate::load_editor`）。
@@ -1043,6 +1088,21 @@ pub struct UiModelScoped {
     /// モデルタブ「スラブ」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub slab_draft: crate::tables::slabs::SlabDraft,
+    /// 床タブ・壁版タブ「二次部材」配置フォームのドラフト状態
+    #[cfg(feature = "gui")]
+    pub secondary_draft: crate::tables::secondary::SecondaryMemberDraft,
+    /// 3D で選択した作業範囲（親の床領域・壁領域）。`None` は未選択。
+    #[cfg(feature = "gui")]
+    pub work_scope: Option<WorkScope>,
+    /// ビューアの小梁配置モード（ON 中は床領域を選び、支持部材を 2 点クリック）
+    #[cfg(feature = "gui")]
+    pub joist_place_mode: bool,
+    /// ビューアの間柱配置モード（ON 中は壁領域を選び、支持部材を 2 点クリック）
+    #[cfg(feature = "gui")]
+    pub post_place_mode: bool,
+    /// 配置モードで 1 点目に選んだ支持部材アンカー（2 点目で配置してリセット）
+    #[cfg(feature = "gui")]
+    pub member_place_first: Option<squid_n_core::model::SecondaryMemberAnchor>,
     /// 階の追加フォームの入力 `(階名, 階レベル [mm])`。
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
@@ -1128,11 +1188,9 @@ impl Default for UiModelScoped {
             #[cfg(feature = "gui")]
             wall_draw_mode: false,
             #[cfg(feature = "gui")]
-            wall_draw_nodes: Vec::new(),
-            #[cfg(feature = "gui")]
             slab_draw_mode: false,
             #[cfg(feature = "gui")]
-            slab_draw_nodes: Vec::new(),
+            region_assign_dialog: None,
             #[cfg(feature = "gui")]
             load_editor: None,
             #[cfg(feature = "gui")]
@@ -1141,6 +1199,16 @@ impl Default for UiModelScoped {
             combo_draft: ComboDraft::default(),
             #[cfg(feature = "gui")]
             slab_draft: crate::tables::slabs::SlabDraft::default(),
+            #[cfg(feature = "gui")]
+            secondary_draft: crate::tables::secondary::SecondaryMemberDraft::default(),
+            #[cfg(feature = "gui")]
+            work_scope: None,
+            #[cfg(feature = "gui")]
+            joist_place_mode: false,
+            #[cfg(feature = "gui")]
+            post_place_mode: false,
+            #[cfg(feature = "gui")]
+            member_place_first: None,
             #[cfg(feature = "gui")]
             new_story_draft: (String::new(), 0.0),
             #[cfg(feature = "gui")]
@@ -1887,6 +1955,7 @@ impl eframe::App for App {
 
         crate::frame_wizard::frame_wizard_window(ui.ctx(), self);
         crate::story_copy_view::story_copy_window(ui.ctx(), self);
+        self.region_assign_window(ui.ctx());
 
         if self.core.scoped.pending_save_recording.is_some() {
             let mut choice: Option<bool> = None;
@@ -1964,6 +2033,59 @@ impl eframe::App for App {
                 self.cancel_register_wave();
             } else if do_confirm {
                 self.confirm_register_wave();
+            }
+        }
+
+        if self.core.scoped.pending_unset_analysis.is_some() {
+            let (floors, walls) = self.core.model.unset_plate_assignment_regions();
+            let mut do_confirm = false;
+            let mut do_cancel = false;
+            let mut open = true;
+            egui::Window::new("未設定の割当領域の確認")
+                .title_bar(true)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.colored_label(
+                        crate::theme::WARN_TEXT,
+                        "未設定の床板・壁版割当領域が残っています。",
+                    );
+                    ui.label(
+                        "未設定の領域は床荷重・躯体自重と壁の剛性が解析に入らず、\
+                         応力・変形を過小評価し得ます。計算前に内容を確認してください。",
+                    );
+                    if !floors.is_empty() {
+                        let list = floors
+                            .iter()
+                            .map(|id| format!("R{}", id.0))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        ui.label(format!("床板割当領域 {} 件: {}", floors.len(), list));
+                    }
+                    if !walls.is_empty() {
+                        let list = walls
+                            .iter()
+                            .map(|id| format!("R{}", id.0))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        ui.label(format!("壁版割当領域 {} 件: {}", walls.len(), list));
+                    }
+                    ui.label("このまま計算を続行しますか？");
+                    ui.horizontal(|ui| {
+                        if ui.button("続行して計算").clicked() {
+                            do_confirm = true;
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            if !open || do_cancel {
+                self.cancel_pending_analysis();
+            } else if do_confirm {
+                self.resume_pending_analysis();
             }
         }
 

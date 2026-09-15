@@ -201,7 +201,6 @@ impl App {
         self.begin_analysis();
         true
     }
-
     /// パニックを解析エラーへ変換して計算を実行する（ジョブスレッド用）。
     fn run_compute<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -568,6 +567,58 @@ impl App {
             .filter(|d| d.severity == DiagSeverity::Warning)
             .count();
         (errors, warnings)
+    }
+}
+
+/// 未設定の割当領域の確認を経て解析を起動する GUI 専用の入口。
+///
+/// 未設定が残る間は `pending_unset_analysis` へ保持し、確認ダイアログの「続行」で
+/// 同じ解析を起動し直す。解析パネルの実行ボタンはここを通る。
+#[cfg(feature = "gui")]
+impl App {
+    /// 解析パネルの実行入口。未設定の割当領域があれば確認待ちにして戻る。
+    pub fn request_analysis(&mut self, pending: PendingAnalysis) {
+        self.ensure_preparation();
+        if self.unset_regions_confirm_required() {
+            self.core.scoped.pending_unset_analysis = Some(pending);
+            return;
+        }
+        self.dispatch_analysis(pending);
+    }
+
+    /// 未設定の割当領域について、確認が必要か（未確認の集合が残っているか）。
+    fn unset_regions_confirm_required(&self) -> bool {
+        let signature = self.core.model.unset_plate_assignment_regions();
+        if signature.0.is_empty() && signature.1.is_empty() {
+            return false;
+        }
+        self.core.scoped.unset_regions_ack.as_ref() != Some(&signature)
+    }
+
+    /// 確認待ちの解析を起動する。確認済みの対象集合を記録してから起動する。
+    pub(crate) fn resume_pending_analysis(&mut self) {
+        let Some(pending) = self.core.scoped.pending_unset_analysis.take() else {
+            return;
+        };
+        self.core.scoped.unset_regions_ack = Some(self.core.model.unset_plate_assignment_regions());
+        self.dispatch_analysis(pending);
+    }
+
+    /// 確認待ちの解析を取り消す。
+    pub(crate) fn cancel_pending_analysis(&mut self) {
+        self.core.scoped.pending_unset_analysis = None;
+    }
+
+    fn dispatch_analysis(&mut self, pending: PendingAnalysis) {
+        match pending {
+            PendingAnalysis::StaticTarget(target) => self.start_static_target_job(target),
+            PendingAnalysis::StaticAll => self.start_static_all_job(),
+            PendingAnalysis::Eigen(n_modes) => self.start_eigen_job(n_modes),
+            PendingAnalysis::Pushover => self.start_pushover_job(),
+            PendingAnalysis::TimeHistory(wave) => self.start_time_history_job(*wave),
+            PendingAnalysis::LumpedMassEigen => self.start_lumped_mass_eigen_job(),
+            PendingAnalysis::LumpedMassTimeHistory(accel) => self.start_lumped_mass_th_job(accel),
+        }
     }
 }
 

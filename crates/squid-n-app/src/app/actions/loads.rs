@@ -142,6 +142,8 @@ impl App {
     ///    計算して保存する（同期前のハッシュを保存すると、次回呼び出しで
     ///    「同期していないのに一致」と誤判定するため、必ず同期後の状態で保存する）。
     pub fn sync_auto_load_cases_action(&mut self) {
+        self.core.model.rebuild_floor_assignment_regions();
+        self.core.model.rebuild_wall_assignment_regions();
         squid_n_core::region_rebuild::rebuild_floor_regions(&mut self.core.model);
         squid_n_core::wall_region_rebuild::rebuild_wall_regions(&mut self.core.model);
         self.apply_rigid_zones_for_analysis();

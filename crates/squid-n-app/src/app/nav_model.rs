@@ -277,9 +277,12 @@ mod tests {
 
     fn secondary_member(id: u32, section: Option<SectionId>) -> SecondaryMember {
         SecondaryMember {
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
-            nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [1000.0, 0.0, 0.0],
+            ]),
             section,
             name: format!("secondary-{id}"),
         }
@@ -288,7 +291,7 @@ mod tests {
     fn slab(id: u32, section: Option<SectionId>) -> Slab {
         Slab {
             id: squid_n_core::ids::SlabId(id),
-            shape: squid_n_core::model::SlabShape::Enclosed { boundary: vec![] },
+            shape: squid_n_core::model::SlabShape::Enclosed,
             plate: squid_n_core::model::SlabPlate {
                 section,
                 method: squid_n_core::model::DistributionMethod::OneWay,
@@ -458,9 +461,12 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let joists = vec![squid_n_core::model::SecondaryMember {
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: squid_n_core::model::SecondaryMemberKind::Joist,
-            nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [1000.0, 0.0, 0.0],
+            ]),
             section: Some(SectionId(0)),
             name: "SB1".to_string(),
         }];
@@ -480,9 +486,12 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![SecondaryMember {
-            end_support: Default::default(),
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Post,
-            nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 3000.0],
+            ]),
             section: Some(SectionId(0)),
             name: "post-0".to_string(),
         }];

@@ -365,22 +365,23 @@ fn wall_bay_model() -> Model {
     // 決定的に採番されるが、値そのものは呼び出し経路に依存する。準備計算
     // （`apply_auto_panel_zones` が仕口パネルを 12〜15 番へ先に生成する経路）を
     // 経た後の解析時点では、壁要素の ID は 12 ではなく 16 になる。
-    model.wall_plates.push(WallPlate {
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(2)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![WallOpening {
+                width: 900.0,
+                height: 1200.0,
+                offset: Some([1550.0, 0.0]),
+            }],
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(2)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: vec![WallOpening {
-            width: 900.0,
-            height: 1200.0,
-            offset: Some([1550.0, 0.0]),
-        }],
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
 
     // 取り付く壁版 1 枚（Y=3000 面の梁 6-7 に載るパラペット。立ち上がり 900、
     // 荷重は取付き線の両端＝柱頭の節点 6・7 へ集中する）。
@@ -756,11 +757,7 @@ fn test_wall_element_changes_eigen_period() {
     for r in &mut model_without.wall_regions {
         r.wall_plate_ids.clear();
     }
-    model_without.wall_plates.retain(|p| p.id != WallPlateId(0));
-    // ID＝配列インデックスの不変条件を保つため詰め直す。
-    for (i, p) in model_without.wall_plates.iter_mut().enumerate() {
-        p.id = WallPlateId(i as u32);
-    }
+    model_without.retain_wall_plates(|p| p.id != WallPlateId(0));
     let mut without_wall = App::default();
     without_wall.core.analysis_cfg.threads = 1;
     without_wall.core.model = model_without;

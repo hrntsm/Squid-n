@@ -411,8 +411,9 @@ pub(super) fn draw_section_solids(
 
     if show_secondary {
         for sm in model.joists().chain(model.posts()) {
-            let n0 = sm.nodes[0].index();
-            let n1 = sm.nodes[1].index();
+            let Some([n0, n1]) = super::secondary_end_node_indices(model, sm) else {
+                continue;
+            };
             if n0 >= coords.len() || n1 >= coords.len() {
                 continue;
             }

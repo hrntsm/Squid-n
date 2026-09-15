@@ -288,13 +288,14 @@ fn import_builds_expected_model() {
                 .iter()
                 .find(|b| b.is_same_level(z) && b.contains(m, centroid))
                 .expect("領域が大梁の境界に載る");
-            let a = m.nodes[sm.nodes[0].index()].coord;
-            let b = m.nodes[sm.nodes[1].index()].coord;
+            let Some((a, b)) = m.secondary_member_end_points(sm) else {
+                continue;
+            };
             let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
             assert!(
                 boundary.contains(m, mid),
                 "小梁 {:?} の中点が所属領域に入らない",
-                sm.nodes
+                sm.id
             );
         }
     }
@@ -324,6 +325,140 @@ fn import_builds_expected_model() {
             e.id
         );
     }
+}
+
+/// 取り込み時に、二次部材の支持端が支持部材アンカーへ解決されることを固定する。
+#[test]
+fn import_anchorizes_secondary_members() {
+    let app = imported();
+    let m = &app.core.model;
+    let total = m.joists().count() + m.posts().count();
+    let anchored = m
+        .joists()
+        .chain(m.posts())
+        .filter(|sm| !sm.is_detached())
+        .count();
+    assert_eq!(
+        anchored, total,
+        "実フィクスチャの二次部材は全端をアンカーへ解決できる"
+    );
+}
+
+/// ST-Bridge フィクスチャの `<StbNode>` 座標 [mm] を id で引く（テスト専用の簡易走査）。
+/// 本番のパーサは `squid-n-io` にあり、ここは元スラブの面積を独立に検算するためだけに使う。
+fn fixture_node_coords(xml: &str) -> std::collections::HashMap<u32, [f64; 2]> {
+    let mut nodes = std::collections::HashMap::new();
+    for chunk in xml.split("<StbNode ").skip(1) {
+        let head = chunk.split('>').next().unwrap_or("");
+        let (Some(id), Some(x), Some(y)) = (
+            stb_attr(head, "id").and_then(|v| v.parse::<u32>().ok()),
+            stb_attr(head, "X").and_then(|v| v.parse::<f64>().ok()),
+            stb_attr(head, "Y").and_then(|v| v.parse::<f64>().ok()),
+        ) else {
+            continue;
+        };
+        nodes.insert(id, [x, y]);
+    }
+    nodes
+}
+
+/// タグの属性値 `name="value"` を取り出す。
+fn stb_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    Some(&rest[..rest.find('"')?])
+}
+
+/// ST-Bridge フィクスチャの元スラブ総面積 [mm²] と、板厚を掛けた総和 [mm³] を返す。
+/// 板厚は `StbSecSlab_RC` の `depth`（無ければ `thickness`）を使う。
+fn fixture_source_slab_measures(xml: &str) -> (f64, f64) {
+    use squid_n_core::geom::polygon;
+    let nodes = fixture_node_coords(xml);
+    let mut thickness = std::collections::HashMap::new();
+    for chunk in xml.split("<StbSecSlab_RC ").skip(1) {
+        let block = chunk.split("</StbSecSlab_RC>").next().unwrap_or("");
+        let (Some(id), Some(t)) = (
+            stb_attr(block, "id").and_then(|v| v.parse::<u32>().ok()),
+            stb_attr(block, "depth")
+                .or_else(|| stb_attr(block, "thickness"))
+                .and_then(|v| v.parse::<f64>().ok()),
+        ) else {
+            continue;
+        };
+        thickness.insert(id, t);
+    }
+    let mut area_sum = 0.0;
+    let mut thickness_sum = 0.0;
+    for chunk in xml.split("<StbSlab ").skip(1) {
+        let block = chunk.split("</StbSlab>").next().unwrap_or("");
+        let head = block.split('>').next().unwrap_or("");
+        let section = stb_attr(head, "id_section").and_then(|v| v.parse::<u32>().ok());
+        let order = block
+            .split("<StbNodeIdOrder>")
+            .nth(1)
+            .and_then(|rest| rest.split("</StbNodeIdOrder>").next());
+        let Some(order) = order else {
+            continue;
+        };
+        let poly: Vec<[f64; 2]> = order
+            .split_whitespace()
+            .filter_map(|v| v.parse::<u32>().ok())
+            .filter_map(|id| nodes.get(&id).copied())
+            .collect();
+        if poly.len() < 3 {
+            continue;
+        }
+        let area = polygon::area(&poly);
+        area_sum += area;
+        if let Some(t) = section.and_then(|s| thickness.get(&s)) {
+            thickness_sum += area * t;
+        }
+    }
+    (area_sum, thickness_sum)
+}
+
+/// 取り込み後も床板の総面積と、総重量に比例する「面積×板厚」が元 StbSlab と一致すること。
+///
+/// 割当領域と境界が一致しない版を領域ごとに切り分けるとき、面積を領域面積へ置き換えると
+/// 総重量が動く。ここでは元フィクスチャの境界から独立に面積を求め、取り込み結果と比べる。
+/// フィクスチャの床板はすべて同じコンクリート（Fc21）なので、面積×板厚の一致は総重量の一致を意味する。
+#[test]
+fn import_preserves_stbridge_slab_area_and_weight() {
+    let app = imported();
+    let m = &app.core.model;
+
+    let xml = std::fs::read_to_string(fixture_path()).expect("フィクスチャを読む");
+    let (source_area, source_area_thickness) = fixture_source_slab_measures(&xml);
+
+    let mut slab_area = 0.0;
+    let mut slab_area_thickness = 0.0;
+    for slab in &m.slabs {
+        let coords = slab
+            .boundary_coords(m)
+            .unwrap_or_else(|| panic!("床板 {:?} の境界が解決できない", slab.id));
+        let area = squid_n_core::geom::polygon::area_xy(&coords);
+        slab_area += area;
+        if let Some(t) = m.slab_plate_thickness(slab) {
+            slab_area_thickness += area * t;
+        }
+    }
+
+    let rel = |a: f64, b: f64| {
+        if b == 0.0 {
+            (a - b).abs()
+        } else {
+            (a - b).abs() / b.abs()
+        }
+    };
+    assert!(
+        rel(slab_area, source_area) < 1e-6,
+        "床板総面積: 取り込み {slab_area} / 元 {source_area}"
+    );
+    assert!(
+        rel(slab_area_thickness, source_area_thickness) < 1e-6,
+        "床板の総重量（面積×板厚）: 取り込み {slab_area_thickness} / 元 {source_area_thickness}"
+    );
 }
 
 // ===================== 2. 準備計算 =====================
@@ -1203,30 +1338,20 @@ fn joist_design_checks_cover_imported_secondary_members() {
 
     let mut checked = 0;
     for (slab_id, target, jr) in &results.joist_checks {
-        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target else {
+        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { member } = target else {
             continue; // 間柱は検定対象外（軸力・面外曲げが未対応）。
         };
         checked += 1;
         if jr.unchecked {
             continue;
         }
-        let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
-        let sm = app
+        let sm = app.core.model.secondary_member(*member).expect("小梁");
+        let z_joist = app
             .core
             .model
-            .joists()
-            .find(|sm| {
-                let a = sm.nodes[0].0.min(sm.nodes[1].0);
-                let b = sm.nodes[0].0.max(sm.nodes[1].0);
-                (a, b) == key
-            })
-            .expect("小梁");
-        let z_joist = sm
-            .nodes
-            .iter()
-            .map(|n| app.core.model.nodes[n.index()].coord[2])
-            .sum::<f64>()
-            / 2.0;
+            .secondary_member_end_points(sm)
+            .map(|(a, b)| (a[2] + b[2]) / 2.0)
+            .unwrap_or(0.0);
         let Some(sid) = slab_id else {
             continue;
         };
@@ -1240,9 +1365,8 @@ fn joist_design_checks_cover_imported_secondary_members() {
         let z_slab = slab.level(&app.core.model).expect("床板のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
-            "小梁 {}-{}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
-            nodes[0].0,
-            nodes[1].0,
+            "小梁 {}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            member.0,
             slab_id
         );
     }
@@ -1769,28 +1893,20 @@ fn slab_floor_load_reaches_primary_frame() {
         .map(|c| c.effective_steel_factor())
         .unwrap_or(1.0);
     for sm in model.joists().chain(model.posts()) {
-        let (a, b) = (sm.nodes[0], sm.nodes[1]);
-        let materialized = model.elements.iter().any(|e| {
-            e.kind == ElementKind::Beam
-                && e.nodes.len() == 2
-                && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
-        });
-        if a == b || materialized {
+        if model.secondary_member_materialized(sm) {
             continue;
         }
+        let Some((na, nb)) = model.secondary_member_end_points(sm) else {
+            continue;
+        };
         let (Some(sec), Some(mat)) = (
             sm.section.and_then(|id| model.sections.get(id.index())),
             model.secondary_material(sm),
         ) else {
             continue;
         };
-        let (Some(na), Some(nb)) = (model.nodes.get(a.index()), model.nodes.get(b.index())) else {
-            continue;
-        };
-        let len = ((nb.coord[0] - na.coord[0]).powi(2)
-            + (nb.coord[1] - na.coord[1]).powi(2)
-            + (nb.coord[2] - na.coord[2]).powi(2))
-        .sqrt();
+        let len =
+            ((nb[0] - na[0]).powi(2) + (nb[1] - na[1]).powi(2) + (nb[2] - na[2]).powi(2)).sqrt();
         let factor = if mat.fc.is_some() { 1.0 } else { steel_factor };
         expected += mat.density * sec.area * len * squid_n_core::units::GRAVITY_MM_S2 * factor;
     }

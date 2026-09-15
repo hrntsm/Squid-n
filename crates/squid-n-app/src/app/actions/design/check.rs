@@ -128,15 +128,6 @@ impl App {
         let mut joist_checks = Vec::new();
         let mut slab_checks = Vec::new();
 
-        let beam_between = |a: NodeId, b: NodeId| -> bool {
-            self.core.model.elements.iter().any(|e| {
-                e.kind == squid_n_core::model::ElementKind::Beam
-                    && e.nodes.len() == 2
-                    && ((e.nodes[0] == a && e.nodes[1] == b)
-                        || (e.nodes[0] == b && e.nodes[1] == a))
-            })
-        };
-
         for slab in &self.core.model.slabs {
             let Some(thickness) = self.core.model.slab_plate_thickness(slab) else {
                 continue;
@@ -179,7 +170,7 @@ impl App {
             }
         }
 
-        self.design_secondary_joist_checks(&mut joist_checks, &beam_between);
+        self.design_secondary_joist_checks(&mut joist_checks);
 
         (joist_checks, slab_checks)
     }
@@ -209,40 +200,22 @@ impl App {
     ///   ため前提が成り立たない（`Model::floor_region_on_single_diaphragm`）。
     ///
     /// 表から消すと検定されていないことに気づけないため、行は残す。
-    fn design_secondary_joist_checks(
-        &self,
-        joist_checks: &mut Vec<crate::app::JoistCheck>,
-        beam_between: &impl Fn(squid_n_core::ids::NodeId, squid_n_core::ids::NodeId) -> bool,
-    ) {
+    fn design_secondary_joist_checks(&self, joist_checks: &mut Vec<crate::app::JoistCheck>) {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
-        use squid_n_load::floor::{
-            cantilever_extremes, flip_member_loads, simple_beam_extremes, span_node_key,
-        };
+        use squid_n_load::floor::{cantilever_extremes, simple_beam_extremes};
 
         let w_of =
             |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Floor);
         let transfer = squid_n_load::cascade::solve(&self.core.model, w_of, true);
 
         for sm in self.core.model.posts() {
-            let (Some(na), Some(nb)) = (
-                self.core.model.nodes.get(sm.nodes[0].index()),
-                self.core.model.nodes.get(sm.nodes[1].index()),
-            ) else {
+            let Some((_, _, span)) = self.core.model.secondary_member_axis(sm) else {
                 continue;
             };
-            let d = [
-                nb.coord[0] - na.coord[0],
-                nb.coord[1] - na.coord[1],
-                nb.coord[2] - na.coord[2],
-            ];
-            let span = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            if span <= 1e-9 {
-                continue;
-            }
             joist_checks.push((
                 None,
-                crate::app::JoistCheckTarget::SecondaryPost { nodes: sm.nodes },
+                crate::app::JoistCheckTarget::SecondaryPost { member: sm.id },
                 fd::joist_unchecked(span),
             ));
         }
@@ -251,33 +224,16 @@ impl App {
             if sm.kind != SecondaryMemberKind::Joist {
                 continue;
             }
-
-            let (a, b) = (sm.nodes[0], sm.nodes[1]);
-            if a == b || beam_between(a, b) {
+            if self.core.model.secondary_member_materialized(sm) {
                 continue;
             }
-            let key = span_node_key(a, b);
-            let (Some(na), Some(nb)) = (
-                self.core.model.nodes.get(a.index()),
-                self.core.model.nodes.get(b.index()),
-            ) else {
+            let Some((_, _, span)) = self.core.model.secondary_member_axis(sm) else {
                 continue;
             };
-            let span = {
-                let d = [
-                    nb.coord[0] - na.coord[0],
-                    nb.coord[1] - na.coord[1],
-                    nb.coord[2] - na.coord[2],
-                ];
-                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-            };
-            if span <= 1e-9 {
-                continue;
-            }
 
-            let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
-            let entry = transfer.members.get(&key);
-            let region = self.core.model.floor_region_of_joist(sm.nodes);
+            let target = crate::app::JoistCheckTarget::SecondaryJoist { member: sm.id };
+            let entry = transfer.members.get(&sm.id);
+            let region = self.core.model.floor_region_of_joist(sm.id);
             let region_slab = region.and_then(|r| r.slab_ids.first().copied());
             let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
 
@@ -313,13 +269,10 @@ impl App {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
-            let ex = match sm.free_end() {
-                Some(1) => cantilever_extremes(&entry.member_loads, span, e, sec.iy),
-                Some(_) => {
-                    let loads = flip_member_loads(&entry.member_loads, span);
-                    cantilever_extremes(&loads, span, e, sec.iy)
-                }
-                None => simple_beam_extremes(&entry.member_loads, span, e, sec.iy),
+            let ex = if sm.is_cantilever() {
+                cantilever_extremes(&entry.member_loads, span, e, sec.iy)
+            } else {
+                simple_beam_extremes(&entry.member_loads, span, e, sec.iy)
             };
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
