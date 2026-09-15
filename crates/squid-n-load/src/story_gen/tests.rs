@@ -236,10 +236,14 @@ fn test_base_master_ignores_non_structural_slaves() {
         story: None,
         support_spring: None,
     });
+    let ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        model.nodes[0].coord,
+        model.nodes[free_id.index()].coord,
+    ]);
     model.unassigned_joists.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), free_id],
+        ends,
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
@@ -652,10 +656,14 @@ fn secondary_joist_model() -> Model {
         fc: None,
         fy: None,
     });
+    let ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        model.nodes[1].coord,
+        model.nodes[2].coord,
+    ]);
     model.unassigned_joists.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(1), NodeId(2)],
+        ends,
         section: Some(SectionId(0)),
         name: "G1".into(),
     });
@@ -681,6 +689,148 @@ fn test_master_mass_corrected_lumped_does_not_deduct_secondary_member_self_weigh
         "mt={} expected={}",
         mass[0],
         expected_mt
+    );
+}
+
+/// 2 本の並行大梁（いずれも材軸中間に節点を持たない 1 部材）を持ち、
+/// その材軸位置 0.5 に小梁がアンカーするモデル。小梁の両端に一致する節点は無い。
+fn secondary_joist_on_girder_midspan_model(with_joist: bool) -> Model {
+    let mut model = Model::default();
+    for (i, (x, y, z)) in [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 3000.0),
+        (4000.0, 0.0, 3000.0),
+        (0.0, 4000.0, 3000.0),
+        (4000.0, 4000.0, 3000.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [x, y, z],
+            restraint: if i == 0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "G".into(),
+        area: 8000.0,
+        iy: 1.0e7,
+        iz: 1.0e7,
+        j: 1.0e7,
+        depth: 300.0,
+        width: 200.0,
+        as_y: 4000.0,
+        as_z: 4000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "J".into(),
+        area: 5000.0,
+        iy: 1.0e7,
+        iz: 1.0e7,
+        j: 1.0e7,
+        depth: 200.0,
+        width: 100.0,
+        as_y: 4000.0,
+        as_z: 4000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "S".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: None,
+    });
+    for (id, (a, b), sec) in [
+        (0u32, (1u32, 2u32), 0u32),
+        (1, (3, 4), 0),
+        (2, (1, 3), 0),
+        (3, (2, 4), 0),
+    ] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(sec)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    if with_joist {
+        model.unassigned_joists.push(SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(1)),
+                    position: 0.5,
+                },
+            ]),
+            section: Some(SectionId(1)),
+            name: "J0".into(),
+        });
+    }
+    model
+}
+
+/// 大梁の材軸中間へアンカーした小梁（両端に節点が無い）の自重が、DL ケースが
+/// 無く密度から直接算入する経路でも階の地震用重量へ含まれること（欠落させない）。
+#[test]
+fn test_secondary_member_on_midspan_is_seismic_weight_in_density_path() {
+    let with = secondary_joist_on_girder_midspan_model(true);
+    let without = secondary_joist_on_girder_midspan_model(false);
+
+    let sw = 7.85e-9 * 5000.0 * 4000.0 * GRAVITY_MM_S2;
+    let gen_with = generate_stories_with_opts(&with, &[], true, MassMethod::default()).unwrap();
+    let gen_without =
+        generate_stories_with_opts(&without, &[], true, MassMethod::default()).unwrap();
+
+    let upper = |gen: &StoryGenResult| gen.stories.last().unwrap().seismic_weight.unwrap();
+    let delta = upper(&gen_with) - upper(&gen_without);
+    assert!(
+        (delta - sw).abs() < 1e-9 * sw.max(1.0),
+        "小梁自重が階の地震用重量へ含まれない: delta={delta} expected={sw}"
     );
 }
 
@@ -1167,18 +1317,44 @@ fn wall_model() -> Model {
     // 壁の解析要素は入力の正ではなく生成物（D5）のため、壁版（`WallPlate`）と
     // それが属する壁領域（`WallRegion`）を直接構築する。`enumerate_self_weight`
     // が内部で壁展開モデルを組み立て、そこから `ElementKind::Wall` を生成する。
-    model.wall_plates.push(WallPlate {
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    //
+    // 囲まれた壁版の境界は割当領域（支持部材）が持つため、境界辺の支持部材を
+    // 断面なしの梁として先に置く（テストが後から足す断面付きの部材と衝突しない
+    // よう ID は 100 番台にする）。
+    for (id, (a, b)) in [
+        (100u32, (0u32, 1u32)),
+        (101, (1, 2)),
+        (102, (2, 3)),
+        (103, (3, 0)),
+    ] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
         name: String::new(),

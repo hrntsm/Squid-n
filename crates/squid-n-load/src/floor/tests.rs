@@ -319,7 +319,7 @@ fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Mod
 }
 
 fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
-    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::ids::NodeId;
     use squid_n_core::model::{AreaLoad, Node};
     let mk = |id: u32, x: f64, y: f64| Node {
         id: NodeId(id),
@@ -329,7 +329,7 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
         story: None,
         support_spring: None,
     };
-    let model = Model {
+    let mut model = Model {
         nodes: vec![
             mk(0, 0.0, 0.0),
             mk(1, lx, 0.0),
@@ -338,12 +338,9 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
         ],
         ..Default::default()
     };
-    let slab = Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: SlabPlate {
+    let slab_id = model.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -353,7 +350,8 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
             method,
             one_way: None,
         },
-    };
+    );
+    let slab = model.slabs[slab_id.index()].clone();
     (model, slab)
 }
 
@@ -466,7 +464,7 @@ fn mk_node(id: u32, x: f64, y: f64) -> squid_n_core::model::Node {
 }
 
 fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) -> (Model, Slab) {
-    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::ids::NodeId;
     use squid_n_core::model::AreaLoad;
     let nodes: Vec<_> = pts
         .iter()
@@ -474,14 +472,13 @@ fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) ->
         .map(|(i, (x, y))| mk_node(i as u32, *x, *y))
         .collect();
     let boundary: Vec<NodeId> = (0..pts.len() as u32).map(NodeId).collect();
-    let model = Model {
+    let mut model = Model {
         nodes,
         ..Default::default()
     };
-    let slab = Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed { boundary },
-        plate: SlabPlate {
+    let slab_id = model.add_enclosed_slab_from_nodes(
+        &boundary,
+        SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -491,7 +488,8 @@ fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) ->
             method,
             one_way: None,
         },
-    };
+    );
+    let slab = model.slabs[slab_id.index()].clone();
     (model, slab)
 }
 
@@ -542,6 +540,9 @@ fn test_polygon_pentagon_conservation() {
             LoadTarget::Edge(e) => assert!(e < 5),
             LoadTarget::Node(_) => panic!("polygon path should not emit node targets"),
             LoadTarget::Span { .. } => panic!("polygon path should not emit span targets"),
+            LoadTarget::Secondary { .. } => {
+                panic!("polygon path should not emit secondary targets")
+            }
         }
     }
 
@@ -649,9 +650,12 @@ fn test_cantilever_with_side_joist_uses_support_edges() {
         ..Default::default()
     };
     model.unassigned_joists.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), NodeId(2)],
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            [0.0, 0.0, 0.0],
+            [0.0, depth, 0.0],
+        ]),
         section: None,
         name: "J".into(),
     });
@@ -684,11 +688,13 @@ fn test_cantilever_with_side_joist_uses_support_edges() {
     let joist_area = depth * depth / 2.0;
     let joist = loads
         .iter()
-        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .find(|bl| matches!(bl.target, LoadTarget::Secondary { .. }))
         .expect("小梁への分配");
     match joist.target {
-        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(0), NodeId(2)]),
-        other => panic!("Span ではない: {other:?}"),
+        LoadTarget::Secondary { member, .. } => {
+            assert_eq!(member, squid_n_core::ids::SecondaryMemberId(0))
+        }
+        other => panic!("Secondary ではない: {other:?}"),
     }
     let joist_total = joist.cmq.q_i + joist.cmq.q_j;
     assert!(
@@ -924,9 +930,12 @@ fn test_cantilever_support_edge_prefers_full_real_beam() {
         },
     };
     let mk_joist = || SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(2),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(2), NodeId(3)],
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            [0.0, depth, 0.0],
+            [l, depth, 0.0],
+        ]),
         section: None,
         name: "J".into(),
     };
@@ -972,11 +981,13 @@ fn test_cantilever_support_edge_prefers_full_real_beam() {
     let loads = distribute_slab(&partial, &mk_slab());
     let span = loads
         .iter()
-        .find(|bl| matches!(bl.target, LoadTarget::Span { .. }))
+        .find(|bl| matches!(bl.target, LoadTarget::Secondary { .. }))
         .expect("小梁への分配");
     match span.target {
-        LoadTarget::Span { nodes, .. } => assert_eq!(nodes, [NodeId(2), NodeId(3)]),
-        other => panic!("Span ではない: {other:?}"),
+        LoadTarget::Secondary { member, .. } => {
+            assert_eq!(member, squid_n_core::ids::SecondaryMemberId(2))
+        }
+        other => panic!("Secondary ではない: {other:?}"),
     }
 }
 
@@ -984,7 +995,7 @@ fn test_cantilever_support_edge_prefers_full_real_beam() {
 /// 総和（面荷重 × 全床板面積）を保存する。
 #[test]
 fn test_distribute_region_conserves_total_over_multiple_slabs() {
-    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
 
     let mut model = Model::default();
     // 6000×5000 の床領域（節点 0-1-2-3）。中央の小梁位置（節点 4-5）で 2 枚の床板
@@ -1009,25 +1020,19 @@ fn test_distribute_region_conserves_total_over_multiple_slabs() {
             support_spring: None,
         });
     }
-    let mk_slab = |id: u32, boundary: Vec<NodeId>| Slab {
-        id: SlabId(id),
-        shape: SlabShape::Enclosed { boundary },
-        plate: SlabPlate {
-            method: DistributionMethod::TriTrapezoid,
-            ..SlabPlate::default()
-        },
+    let plate = SlabPlate {
+        method: DistributionMethod::TriTrapezoid,
+        ..SlabPlate::default()
     };
-    model
-        .slabs
-        .push(mk_slab(0, vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)]));
-    model
-        .slabs
-        .push(mk_slab(1, vec![NodeId(5), NodeId(4), NodeId(2), NodeId(3)]));
+    let first = model
+        .add_enclosed_slab_from_nodes(&[NodeId(0), NodeId(1), NodeId(4), NodeId(5)], plate.clone());
+    let second =
+        model.add_enclosed_slab_from_nodes(&[NodeId(5), NodeId(4), NodeId(2), NodeId(3)], plate);
     let mut region = FloorRegion::new(
         FloorRegionId(0),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
-    region.slab_ids = vec![SlabId(0), SlabId(1)];
+    region.slab_ids = vec![first, second];
 
     let loads = super::distribute_region(&model, &region, |_| 1.0e-3);
     let total: f64 = loads.iter().map(|bl| bl.cmq.q_i + bl.cmq.q_j).sum();

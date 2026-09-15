@@ -154,16 +154,12 @@ fn test_beam_has_attached_slab_survives_joist_subdivided_region() {
     model.slabs = vec![
         Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)],
-            },
+            shape: SlabShape::Enclosed,
             plate: plate.clone(),
         },
         Slab {
             id: SlabId(1),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(5), NodeId(4), NodeId(2), NodeId(3)],
-            },
+            shape: SlabShape::Enclosed,
             plate,
         },
     ];

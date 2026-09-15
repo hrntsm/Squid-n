@@ -503,7 +503,7 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
             e.0 += 1;
             e.1 = e.1.max(t);
         };
-        if let Some(boundary) = slab.boundary_nodes() {
+        if let Some(boundary) = slab.boundary_nodes(model) {
             let n = boundary.len();
             if n < 3 {
                 continue;
@@ -514,7 +514,7 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
                     boundary[(i + 1) % n].index() as u32,
                 );
             }
-        } else if let Some([a, b]) = slab.edge_nodes(0) {
+        } else if let Some([a, b]) = slab.edge_nodes(model, 0) {
             add_edge(a.index() as u32, b.index() as u32);
         }
     }
@@ -603,22 +603,17 @@ fn build_notes(model: &Model) -> Vec<String> {
 /// 解析要素ではない二次部材（小梁・間柱）の数量。実部材化済み小梁は線材側で数える。
 fn secondary_member_quantity(ctx: &Ctx, sm: &SecondaryMember) -> Option<MemberQuantity> {
     let model = ctx.model;
-    let a = sm.nodes[0];
-    let b = sm.nodes[1];
-    if sm.kind == SecondaryMemberKind::Joist
-        && model.elements.iter().any(|e| {
-            e.kind == ElementKind::Beam
-                && e.nodes.len() == 2
-                && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
-        })
-    {
+    if sm.kind == SecondaryMemberKind::Joist && model.secondary_member_materialized(sm) {
         return None;
     }
     let sec = model.sections.get(sm.section?.index())?;
     let mat = model.secondary_material(sm)?;
-    let ni = a.index();
-    let nj = b.index();
-    let (ci, cj) = (model.nodes.get(ni)?.coord, model.nodes.get(nj)?.coord);
+    let (ci, cj) = model.secondary_member_end_points(sm)?;
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let find = |p: [f64; 3]| model.nodes.iter().position(|n| dist3(n.coord, p) <= tol);
+    let (Some(ni), Some(nj)) = (find(ci), find(cj)) else {
+        return None;
+    };
     let len = dist3(ci, cj);
     if len <= 0.0 {
         return None;
@@ -1214,7 +1209,7 @@ fn wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
             RegionAnchor::FloorRegion { nodes, .. } => nodes.to_vec(),
             RegionAnchor::Point(_) => return None,
         },
-        WallPlateShape::Enclosed { boundary } => boundary.clone(),
+        WallPlateShape::Enclosed => plate.boundary_nodes(model).unwrap_or_default(),
     };
     if anchor_nodes.is_empty() {
         return None;
@@ -1276,7 +1271,7 @@ fn slab_quantity(ctx: &Ctx, slab: &Slab) -> Option<MemberQuantity> {
         slab: Some(slab.id),
         label: format!("S{}", slab.id.0),
         story: slab
-            .reference_node()
+            .reference_node(model)
             .map(|n| ctx.story_name(n.index()))
             .unwrap_or_else(|| "-".to_string()),
         category,

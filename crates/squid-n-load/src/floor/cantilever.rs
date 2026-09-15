@@ -7,6 +7,7 @@ use squid_n_core::geom::polygon::area_xy;
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::ElemId;
 use squid_n_core::ids::NodeId;
+use squid_n_core::ids::SecondaryMemberId;
 use squid_n_core::model::Model;
 
 use super::fem::fem_uniform;
@@ -71,7 +72,10 @@ enum EdgeSupport {
     /// 辺の全長を覆う実部材（複数要素に分かれうる）。
     Beams(Vec<crate::secondary::SegmentCoverage>),
     /// 辺の全長に材軸が載る二次部材小梁。
-    Joist { nodes: [NodeId; 2], t: [f64; 2] },
+    Joist {
+        member: SecondaryMemberId,
+        t: [f64; 2],
+    },
 }
 
 fn edge_coords(coords: &[[f64; 3]], k: usize) -> ([f64; 3], [f64; 3]) {
@@ -100,8 +104,8 @@ fn covering_joist(
     axes: &[SecondaryJoistAxis],
     p0: [f64; 3],
     p1: [f64; 3],
-) -> Option<([NodeId; 2], [f64; 2])> {
-    let mut best: Option<([NodeId; 2], [f64; 2], f64)> = None;
+) -> Option<(SecondaryMemberId, [f64; 2])> {
+    let mut best: Option<(SecondaryMemberId, [f64; 2], f64)> = None;
     for axis in axes {
         let (Some(s0), Some(s1)) = (
             project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM),
@@ -111,10 +115,10 @@ fn covering_joist(
         };
         let d = point_line_dist(p0, axis.a, axis.b).max(point_line_dist(p1, axis.a, axis.b));
         if best.is_none_or(|(_, _, bd)| d < bd) {
-            best = Some((axis.nodes, [s0 / axis.len, s1 / axis.len], d));
+            best = Some((axis.member, [s0 / axis.len, s1 / axis.len], d));
         }
     }
-    best.map(|(nodes, t, _)| (nodes, t))
+    best.map(|(member, t, _)| (member, t))
 }
 
 fn edge_support(
@@ -126,7 +130,7 @@ fn edge_support(
     if let Some(cover) = covering_beams(beams, p0, p1) {
         return Some(EdgeSupport::Beams(cover));
     }
-    covering_joist(joists, p0, p1).map(|(nodes, t)| EdgeSupport::Joist { nodes, t })
+    covering_joist(joists, p0, p1).map(|(member, t)| EdgeSupport::Joist { member, t })
 }
 
 /// 支持辺の等分布荷重を、その辺を受ける部材へ分配結果として積む。
@@ -166,11 +170,11 @@ fn emit_support_load(
                 });
             }
         }
-        EdgeSupport::Joist { nodes, t } => {
+        EdgeSupport::Joist { member, t } => {
             loads.push(BeamLoad {
                 elem: ElemId(u32::MAX),
-                target: LoadTarget::Span {
-                    nodes: *nodes,
+                target: LoadTarget::Secondary {
+                    member: *member,
                     t: *t,
                 },
                 shape: LoadShape::Uniform { w: w_line },

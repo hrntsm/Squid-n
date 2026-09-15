@@ -6,7 +6,7 @@
 //! - [`BeamLoad`] — 分配結果1件（作用対象・荷重形状・CMQ）
 //! - [`push_edge`] — 境界辺 i への辺荷重を `loads` へ追加する
 
-use squid_n_core::ids::{ElemId, NodeId};
+use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId};
 
 #[derive(Clone, Copy, Debug)]
 pub enum LoadShape {
@@ -45,12 +45,22 @@ pub struct Cmq {
 /// 荷重の作用対象。
 /// - `Edge(i)`: 境界の辺 i。`elem` にも同じ値 `ElemId(i as u32)` を設定する。
 /// - `Node(id)`: 実節点への集中荷重。`elem` は番兵 `ElemId(u32::MAX)`。
-/// - `Span { nodes, t }`: 実部材化された小梁への分布荷重。`t`（既定 `[0.0, 1.0]`）は無次元区間。
+/// - `Span { nodes, t }`: 節点対で表した線分への分布荷重。`t`（既定 `[0.0, 1.0]`）は
+///   無次元区間。実部材化された小梁・床板境界辺の幾何解決に使う。
+/// - `Secondary { member, t }`: 二次部材（小梁）の材軸への分布荷重。`t` は材軸の
+///   無次元区間。二次部材が支持辺となるとき、節点対を持たずに安定 ID で指す。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoadTarget {
     Edge(usize),
     Node(NodeId),
-    Span { nodes: [NodeId; 2], t: [f64; 2] },
+    Span {
+        nodes: [NodeId; 2],
+        t: [f64; 2],
+    },
+    Secondary {
+        member: SecondaryMemberId,
+        t: [f64; 2],
+    },
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -257,15 +257,16 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
             fc: Some(24.0),
             fy: None,
         }],
-        floor_regions: vec![FloorRegion::new(
-            FloorRegionId(0),
-            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        )],
+        floor_regions: vec![FloorRegion {
+            slab_ids: vec![SlabId(0)],
+            ..FloorRegion::new(
+                FloorRegionId(0),
+                vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            )
+        }],
         slabs: vec![Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
+            shape: SlabShape::Enclosed,
             plate: SlabPlate {
                 section: Some(SectionId(1)),
                 loads: vec![],
@@ -401,9 +402,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         slabs: vec![
             Slab {
                 id: SlabId(0),
-                shape: SlabShape::Enclosed {
-                    boundary: vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)],
-                },
+                shape: SlabShape::Enclosed,
                 plate: SlabPlate {
                     section: Some(SectionId(1)),
                     loads: vec![],
@@ -414,9 +413,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
             },
             Slab {
                 id: SlabId(1),
-                shape: SlabShape::Enclosed {
-                    boundary: vec![NodeId(5), NodeId(4), NodeId(2), NodeId(3)],
-                },
+                shape: SlabShape::Enclosed,
                 plate: SlabPlate {
                     section: Some(SectionId(1)),
                     loads: vec![],
@@ -498,12 +495,18 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
     let slabs = match plate {
         Some(plate) => vec![Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: boundary.clone(),
-            },
+            shape: SlabShape::Enclosed,
             plate,
         }],
         None => vec![],
+    };
+    let model_floor_regions = if slabs.is_empty() {
+        vec![FloorRegion::new(FloorRegionId(0), boundary)]
+    } else {
+        vec![FloorRegion {
+            slab_ids: vec![SlabId(0)],
+            ..FloorRegion::new(FloorRegionId(0), boundary)
+        }]
     };
     let model = Model {
         nodes: vec![
@@ -526,7 +529,7 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
             fc: Some(24.0),
             fy: None,
         }],
-        floor_regions: vec![FloorRegion::new(FloorRegionId(0), boundary)],
+        floor_regions: model_floor_regions,
         slabs,
         slab_thickness: 150.0,
         ..Default::default()
@@ -654,15 +657,16 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             fc: None,
             fy: Some(235.0),
         }],
-        floor_regions: vec![FloorRegion::new(
-            FloorRegionId(0),
-            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        )],
+        floor_regions: vec![FloorRegion {
+            slab_ids: vec![SlabId(0)],
+            ..FloorRegion::new(
+                FloorRegionId(0),
+                vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            )
+        }],
         slabs: vec![Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
+            shape: SlabShape::Enclosed,
             plate: SlabPlate {
                 section: Some(SectionId(1)),
                 loads: vec![],
@@ -2335,18 +2339,19 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         openings: openings.clone(),
         finish_intensity: 0.0,
     });
-    model.wall_plates.push(squid_n_core::model::WallPlate {
-        id: squid_n_core::ids::WallPlateId(0),
-        shape: squid_n_core::model::WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed,
+            section: Some(SectionId(1)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings,
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(1)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings,
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
 
     let column = BeamElement::new(&column_elem, &model);
 
@@ -2496,18 +2501,19 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         openings: openings.clone(),
         finish_intensity: 0.0,
     });
-    model.wall_plates.push(squid_n_core::model::WallPlate {
-        id: squid_n_core::ids::WallPlateId(0),
-        shape: squid_n_core::model::WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed,
+            section: Some(SectionId(1)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings,
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(1)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings,
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
 
     let beam = BeamElement::new(&beam_elem, &model);
 
@@ -2699,18 +2705,19 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             openings: openings.clone(),
             finish_intensity: 0.0,
         });
-        model.wall_plates.push(squid_n_core::model::WallPlate {
-            id: squid_n_core::ids::WallPlateId(0),
-            shape: squid_n_core::model::WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            squid_n_core::model::WallPlate {
+                id: squid_n_core::ids::WallPlateId(0),
+                shape: squid_n_core::model::WallPlateShape::Enclosed,
+                section: Some(SectionId(1)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings,
+                loads: vec![],
+                slit,
             },
-            section: Some(SectionId(1)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings,
-            loads: vec![],
-            slit,
-        });
+        );
         model
     };
 
@@ -3741,7 +3748,7 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
         spring: None,
     };
 
-    Model {
+    let mut model = Model {
         nodes: vec![
             mk_node(0, [0.0, 0.0, 0.0]),
             mk_node(1, [0.0, 0.0, 3000.0]),
@@ -3775,20 +3782,22 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             mk_sec(2, 0.0, Some(wall_thickness)),
         ],
         materials: vec![mat],
-        wall_plates: vec![squid_n_core::model::WallPlate {
+        ..Default::default()
+    };
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(4), NodeId(5), NodeId(1)],
+        squid_n_core::model::WallPlate {
             id: squid_n_core::ids::WallPlateId(0),
-            shape: squid_n_core::model::WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(1)],
-            },
+            shape: squid_n_core::model::WallPlateShape::Enclosed,
             section: Some(SectionId(2)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
             loads: vec![],
             slit: Default::default(),
-        }],
-        ..Default::default()
-    }
+        },
+    );
+    model
 }
 
 /// 剛域長は、取り付く壁の分だけ長くなる。

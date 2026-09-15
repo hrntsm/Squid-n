@@ -73,7 +73,7 @@ fn slab_cooperating_width(
     let mut matched = false;
 
     let mut referenced = std::collections::HashSet::new();
-    let mut candidates: Vec<(&[NodeId], f64)> = Vec::new();
+    let mut candidates: Vec<(Vec<NodeId>, f64)> = Vec::new();
     for region in &model.floor_regions {
         referenced.extend(region.slab_ids.iter().copied());
         let t = region
@@ -83,14 +83,14 @@ fn slab_cooperating_width(
             .filter_map(|s| model.slab_plate_thickness(s))
             .fold(0.0_f64, f64::max);
         if t > 0.0 {
-            candidates.push((&region.boundary, t));
+            candidates.push((region.boundary.clone(), t));
         }
     }
     for slab in &model.slabs {
         if referenced.contains(&slab.id) {
             continue;
         }
-        let Some(boundary) = slab.boundary_nodes() else {
+        let Some(boundary) = slab.boundary_nodes(model) else {
             continue;
         };
         let Some(t) = model.slab_plate_thickness(slab) else {
@@ -107,7 +107,7 @@ fn slab_cooperating_width(
         t_used = t_used.max(t);
         let mut s_pos: f64 = 0.0;
         let mut s_neg: f64 = 0.0;
-        for nid in boundary {
+        for nid in &boundary {
             let Some(q) = model.nodes.get(nid.index()) else {
                 continue;
             };
@@ -116,11 +116,11 @@ fn slab_cooperating_width(
             s_neg = s_neg.max(-s);
         }
         if s_pos > 0.0 {
-            let far_w = far_beam_width(boundary, s_pos, 1.0);
+            let far_w = far_beam_width(&boundary, s_pos, 1.0);
             a_pos = a_pos.max((s_pos - b / 2.0 - far_w / 2.0).max(0.0));
         }
         if s_neg > 0.0 {
-            let far_w = far_beam_width(boundary, s_neg, -1.0);
+            let far_w = far_beam_width(&boundary, s_neg, -1.0);
             a_neg = a_neg.max((s_neg - b / 2.0 - far_w / 2.0).max(0.0));
         }
     }

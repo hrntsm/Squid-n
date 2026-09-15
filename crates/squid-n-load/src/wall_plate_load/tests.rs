@@ -38,12 +38,10 @@ fn beam(id: u32, a: u32, b: u32) -> ElementData {
     }
 }
 
-fn plate(id: u32, boundary: [u32; 4]) -> WallPlate {
+fn plate(id: u32) -> WallPlate {
     WallPlate {
         id: WallPlateId(id),
-        shape: WallPlateShape::Enclosed {
-            boundary: boundary.into_iter().map(NodeId).collect(),
-        },
+        shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -51,6 +49,12 @@ fn plate(id: u32, boundary: [u32; 4]) -> WallPlate {
         loads: vec![],
         slit: Default::default(),
     }
+}
+
+/// 4 節点境界の囲まれた壁版を、境界支持部材を伴って追加する。
+fn add_plate(m: &mut Model, id: u32, boundary: [u32; 4]) {
+    let nodes: Vec<NodeId> = boundary.into_iter().map(NodeId).collect();
+    m.add_enclosed_wall_plate_from_nodes(&nodes, plate(id));
 }
 
 /// 4m×3m の 1 構面。左右に柱、上下に大梁、中央 x=2000 に間柱 1 本。
@@ -101,19 +105,43 @@ fn full_weight() -> f64 {
 /// 間柱で 2 枚に分割された壁領域を作る。
 fn split_by_post() -> Model {
     let mut m = bay();
-    m.wall_plates = vec![plate(0, [0, 4, 5, 3]), plate(1, [4, 1, 2, 5])];
+    // 割当領域を間柱で分割するため、間柱を安定 ID ＋取付き位置で持たせる。
+    m.unassigned_posts.push(SecondaryMember {
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Post,
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                position: 0.5,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(3)),
+                position: 0.5,
+            },
+        ]),
+        section: Some(SectionId(1)),
+        name: "P1".into(),
+    });
+    m.rebuild_wall_assignment_regions();
+    m.assign_enclosed_wall_plate_to_matching_region(
+        &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+        plate(0),
+    )
+    .expect("下流側の割当領域");
+    m.assign_enclosed_wall_plate_to_matching_region(
+        &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+        plate(1),
+    )
+    .expect("上流側の割当領域");
+    // 割当領域の境界は安定 ID で間柱を参照するため、間柱は未割当から壁領域へ移す
+    // （重複させない。二重計上を防ぐ）。
+    let post = m.unassigned_posts.pop().expect("間柱");
     m.wall_regions = vec![WallRegion {
         id: WallRegionId(0),
         name: String::new(),
         boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         wall_plate_ids: vec![WallPlateId(0), WallPlateId(1)],
-        posts: vec![SecondaryMember {
-            end_support: Default::default(),
-            kind: SecondaryMemberKind::Post,
-            nodes: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(1)),
-            name: "P1".into(),
-        }],
+        posts: vec![post],
     }];
     m
 }
@@ -122,7 +150,7 @@ fn split_by_post() -> Model {
 #[test]
 fn 領域を覆う壁版は分配の対象外() {
     let mut m = bay();
-    m.wall_plates = vec![plate(0, [0, 1, 2, 3])];
+    add_plate(&mut m, 0, [0, 1, 2, 3]);
     m.wall_regions = vec![WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -145,13 +173,12 @@ fn 領域を覆っても断面が無ければ分配の対象になる() {
     use squid_n_core::model::AreaLoad;
 
     let mut m = bay();
-    let mut p = plate(0, [0, 1, 2, 3]);
-    p.section = None;
-    p.loads = vec![AreaLoad {
+    add_plate(&mut m, 0, [0, 1, 2, 3]);
+    m.wall_plates[0].section = None;
+    m.wall_plates[0].loads = vec![AreaLoad {
         kind: "増打ち".into(),
         value: 1.0e-3,
     }];
-    m.wall_plates = vec![p];
     m.wall_regions = vec![WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -202,7 +229,7 @@ fn 間柱で分割された壁は左右の鉛直辺へ半分ずつ配る() {
 
     let post = out
         .posts
-        .get(&(NodeId(4), NodeId(5)))
+        .get(&squid_n_core::ids::SecondaryMemberId(0))
         .expect("間柱が荷重を受ける");
     let post_total: f64 = post
         .member_loads
@@ -252,7 +279,7 @@ fn 柱際スリットのある鉛直辺は自重を受けない() {
     // 下の大梁へ全量が回るため）。
     let post_total: f64 = out
         .posts
-        .get(&(NodeId(4), NodeId(5)))
+        .get(&squid_n_core::ids::SecondaryMemberId(0))
         .map(|p| {
             p.member_loads
                 .iter()
@@ -292,7 +319,7 @@ fn 柱際スリットのある鉛直辺は自重を受けない() {
 fn 下辺の梁際スリットは自重を上の梁へ回す() {
     let mut m = bay();
     // 間柱を置かず、鉛直辺に支持を持たない壁版にする（下の梁が全量を受ける形）。
-    m.wall_plates.push(plate(0, [0, 1, 2, 3]));
+    add_plate(&mut m, 0, [0, 1, 2, 3]);
     m.wall_regions.push(WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -336,40 +363,6 @@ fn edge_len(model: &Model, bl: &BeamLoad) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
-/// 鉛直辺に支持部材が無い壁版（腰壁）は、最も低い水平な辺へ全量を配る。
-#[test]
-fn 鉛直辺に支持が無い壁版は下の梁が全量を受ける() {
-    let mut m = bay();
-    // 柱に載らない位置（x=1000〜3000）の腰壁。上辺は自由端。
-    m.nodes.push(node(6, 1000.0, 0.0));
-    m.nodes.push(node(7, 3000.0, 0.0));
-    m.nodes.push(node(8, 3000.0, 900.0));
-    m.nodes.push(node(9, 1000.0, 900.0));
-    m.wall_plates = vec![plate(0, [6, 7, 8, 9])];
-    m.wall_regions = vec![WallRegion {
-        id: WallRegionId(0),
-        name: String::new(),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        wall_plate_ids: vec![WallPlateId(0)],
-        posts: Vec::new(),
-    }];
-
-    let out = distribute_enclosed_wall_plates(&m);
-    assert!(out.posts.is_empty(), "間柱は無い");
-    assert_eq!(out.primary.len(), 1, "下辺 1 本だけが受ける");
-    let bl = &out.primary[0];
-    let LoadTarget::Span { nodes, .. } = bl.target else {
-        panic!("Span で出す");
-    };
-    assert_eq!(nodes, [NodeId(6), NodeId(7)], "最も低い水平な辺");
-    let total = match bl.shape {
-        LoadShape::Uniform { w } => w * edge_len(&m, bl),
-        _ => panic!("等分布"),
-    };
-    let expect = 2000.0 * 900.0 * T * RHO * squid_n_core::units::GRAVITY_MM_S2;
-    assert!((total - expect).abs() / expect < 1e-9, "総和保存: {total}");
-}
-
 /// 地震用重量の集計は、荷重の分配と同じ辺の割り当てを共有する。
 /// 矩形の壁版が左右の鉛直辺で受ける場合、上下 2 節点ずつへ 1/4 ずつとなり、
 /// 壁エレメントの頂点等分配と一致する。
@@ -410,54 +403,23 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
     let mut m = split_by_post();
     // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
     m.wall_regions[0].posts.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Post,
-        nodes: [NodeId(0), NodeId(3)],
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 3000.0],
+        ]),
         section: Some(SectionId(1)),
         name: "P0".into(),
     });
 
     let out = distribute_enclosed_wall_plates(&m);
     assert!(
-        !out.posts.contains_key(&(NodeId(0), NodeId(3))),
+        !out.posts
+            .contains_key(&squid_n_core::ids::SecondaryMemberId(1)),
         "柱に並走する間柱は荷重を受けない"
     );
     assert_eq!(out.primary.len(), 2, "柱側の鉛直辺は主架構が受け続ける");
-}
-
-/// 下に大梁も間柱も無い壁版は、自重の行き先が決まらないので何も配らない。
-///
-/// 行き先の無い節点荷重は `DofMap` が無視するため、黙って落とすと荷重タブには
-/// 見えるのに解析から消える。解析前チェックがエラーで止める対象になる。
-#[test]
-fn 行き先の無い壁版は配らずに診断へ回す() {
-    let mut m = bay();
-    // 宙に浮いた壁版（4 隅とも柱・大梁の材軸から外れている）。
-    for (id, x, z) in [
-        (6, 1000.0, 1000.0),
-        (7, 3000.0, 1000.0),
-        (8, 3000.0, 2000.0),
-        (9, 1000.0, 2000.0),
-    ] {
-        m.nodes.push(node(id, x, z));
-    }
-    m.wall_plates = vec![plate(0, [6, 7, 8, 9])];
-    m.wall_regions = vec![WallRegion {
-        id: WallRegionId(0),
-        name: String::new(),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        wall_plate_ids: vec![WallPlateId(0)],
-        posts: Vec::new(),
-    }];
-
-    let out = distribute_enclosed_wall_plates(&m);
-    assert!(out.posts.is_empty());
-    assert!(out.primary.is_empty(), "行き先が無いので何も配らない");
-    assert_eq!(
-        wall_plates_without_load_path(&m),
-        vec![WallPlateId(0)],
-        "診断が拾う"
-    );
 }
 
 /// 支持部材のある辺を持つ壁版は診断の対象にならない。

@@ -54,7 +54,7 @@
 use std::collections::HashMap;
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
-use squid_n_core::ids::{ElemId, NodeId, WallPlateId};
+use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, WallPlateId};
 use squid_n_core::model::{MemberLoadKind, Model, WallPlate, WallPlateShape};
 
 use crate::cascade::SecondaryKey;
@@ -69,23 +69,21 @@ pub struct WallEdgeShare {
     pub nodes: [NodeId; 2],
     /// この辺が受け持つ重量 [N]（下向きを正）。
     pub total: f64,
-    /// 受け手が間柱なら、その端点対（順不同キー）。主架構（柱・梁）なら `None`。
-    pub post: Option<(NodeId, NodeId)>,
+    /// 受け手が間柱ならその安定 ID。主架構（柱・梁）なら `None`。
+    pub post: Option<SecondaryMemberId>,
 }
 
 /// 間柱 1 本が壁版から受け持つ荷重。
 #[derive(Clone, Debug)]
 pub struct PostWallLoad {
-    /// 間柱の端点（`SecondaryMember::nodes` と同じ順。材軸局所座標の原点は `[0]`）。
-    pub span_nodes: [NodeId; 2],
-    /// 材軸局所の部材荷重（下向きを正）。
+    /// 材軸局所の部材荷重（下向きを正。原点は間柱の材軸始端）。
     pub member_loads: Vec<MemberLoadKind>,
 }
 
 /// 要素にならない壁版の自重の分配結果。
 #[derive(Clone, Debug, Default)]
 pub struct EnclosedWallLoads {
-    /// 間柱が受け持つ荷重（端点対キー）。
+    /// 間柱が受け持つ荷重（間柱の安定 ID キー）。
     pub posts: HashMap<SecondaryKey, PostWallLoad>,
     /// 主架構（柱・大梁）が受け持つ辺荷重。床板の分配と同じ幾何解決
     /// （`squid-n-job::auto_loads::slab_load_case_content`）へ合流させる。
@@ -110,7 +108,7 @@ enum EdgeSupport {
     /// 主架構（柱・大梁）が覆っている。
     Primary,
     /// 間柱が覆っている。
-    Post((NodeId, NodeId)),
+    Post(SecondaryMemberId),
 }
 
 /// 辺の支持部材を引くための索引。
@@ -129,9 +127,8 @@ impl<'a> SupportIndex<'a> {
         let posts = model
             .posts()
             .filter_map(|sm| {
-                let a = model.nodes.get(sm.nodes[0].index())?.coord;
-                let b = model.nodes.get(sm.nodes[1].index())?.coord;
-                Some((crate::floor::span_node_key(sm.nodes[0], sm.nodes[1]), a, b))
+                let (a, b) = model.secondary_member_end_points(sm)?;
+                Some((sm.id, a, b))
             })
             .collect();
         SupportIndex {
@@ -218,28 +215,27 @@ fn slit_edge_flags(
 /// 壁版 1 枚の自重を辺へ配る。
 fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShare> {
     let model = index.model;
-    let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+    if !matches!(plate.shape, WallPlateShape::Enclosed) {
         return Vec::new();
-    };
+    }
     if model.wall_plate_becomes_element(plate) {
         return Vec::new();
     }
     let Some(total) = model.wall_plate_self_weight(plate, model) else {
         return Vec::new();
     };
+    let Some(boundary) = plate.boundary_nodes(model) else {
+        return Vec::new();
+    };
     if total <= 0.0 || boundary.len() < 3 {
         return Vec::new();
     }
-    let Some(coords) = boundary
-        .iter()
-        .map(|n| model.nodes.get(n.index()).map(|nd| nd.coord))
-        .collect::<Option<Vec<[f64; 3]>>>()
-    else {
+    let Some(coords) = plate.boundary_coords(model) else {
         return Vec::new();
     };
 
     let n = boundary.len();
-    let slit_edge = slit_edge_flags(model, plate, boundary, &coords);
+    let slit_edge = slit_edge_flags(model, plate, &boundary, &coords);
     let mut vertical: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
     let mut horizontal: Vec<usize> = Vec::new();
     for i in 0..n {
@@ -316,16 +312,10 @@ fn push_post_share(
     key: SecondaryKey,
     share: &WallEdgeShare,
 ) {
-    let Some(sm) = model
-        .posts()
-        .find(|sm| crate::floor::span_node_key(sm.nodes[0], sm.nodes[1]) == key)
-    else {
+    let Some(sm) = model.posts().find(|sm| sm.id == key) else {
         return;
     };
-    let (Some(pa), Some(pb)) = (
-        model.nodes.get(sm.nodes[0].index()).map(|n| n.coord),
-        model.nodes.get(sm.nodes[1].index()).map(|n| n.coord),
-    ) else {
+    let Some((pa, pb)) = model.secondary_member_end_points(sm) else {
         return;
     };
     let (Some(e0), Some(e1)) = (
@@ -346,7 +336,6 @@ fn push_post_share(
     }
     let w = share.total / (hi - lo);
     let entry = out.posts.entry(key).or_insert_with(|| PostWallLoad {
-        span_nodes: sm.nodes,
         member_loads: Vec::new(),
     });
     entry.member_loads.push(MemberLoadKind::Distributed {
@@ -419,7 +408,7 @@ pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
         .wall_plates
         .iter()
         .filter(|plate| {
-            if !matches!(plate.shape, WallPlateShape::Enclosed { .. })
+            if !matches!(plate.shape, WallPlateShape::Enclosed)
                 || model.wall_plate_becomes_element(plate)
             {
                 return false;

@@ -311,8 +311,8 @@ mod tests {
     use super::*;
     use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::model::{
-        DistributionMethod, FloorRegion, Material, MaterialCategory, Node, Section, Slab,
-        SlabPlate, SlabShape, WallPlate,
+        DistributionMethod, FloorRegion, Material, MaterialCategory, Node, Section, SlabPlate,
+        WallPlate,
     };
 
     const THICKNESS_MM: f64 = 150.0;
@@ -611,18 +611,16 @@ mod tests {
         let boundary = vec![NodeId(n0), NodeId(n0 + 1), NodeId(n0 + 2), NodeId(n0 + 3)];
         let mut region = FloorRegion::new(FloorRegionId(id), boundary.clone());
         if slab {
-            let sid = SlabId(m.slabs.len() as u32);
-            m.slabs.push(Slab {
-                id: sid,
-                shape: SlabShape::Enclosed { boundary },
-                plate: SlabPlate {
+            let sid = m.add_enclosed_slab_from_nodes(
+                &boundary,
+                SlabPlate {
                     section: None,
                     loads: Vec::new(),
                     usage: None,
                     method: DistributionMethod::TriTrapezoid,
                     one_way: None,
                 },
-            });
+            );
             region.slab_ids.push(sid);
         }
         m.floor_regions.push(region);
@@ -768,19 +766,18 @@ mod tests {
             m.nodes.push(mk_node(m.nodes.len() as u32, x, y, z));
         }
         let boundary = vec![NodeId(n0), NodeId(n0 + 1), NodeId(n0 + 2), NodeId(n0 + 3)];
-        let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
-        region.slab_ids.push(SlabId(0));
-        m.slabs.push(Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed { boundary },
-            plate: SlabPlate {
+        let sid = m.add_enclosed_slab_from_nodes(
+            &boundary,
+            SlabPlate {
                 section: None,
                 loads: Vec::new(),
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
-        });
+        );
+        let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
+        region.slab_ids.push(sid);
         m.floor_regions.push(region);
 
         let plate = self_standing_plate();

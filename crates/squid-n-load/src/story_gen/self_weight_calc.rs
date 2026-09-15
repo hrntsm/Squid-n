@@ -41,14 +41,25 @@ fn node_adjacency(model: &Model) -> HashMap<NodeId, Vec<usize>> {
 /// `wall_clear_area_factor` の元の照合と同じ）→ `Beam` 要素の `model.elements`
 /// 添字。壁の各辺→柱梁対応付けを O(壁の辺数×要素数) から O(1) 参照へ落とすための
 /// 事前索引（`enumerate_self_weight` で1回構築し使い回す）。同一節点対に複数の
-/// 候補がある場合は要素順で最初に見つかったものを採用する（元の
-/// `elements.iter().find` の挙動を保つため `entry().or_insert` を使う）。
+/// 候補がある場合は断面を持つ要素を優先し、どちらも同じなら要素順で最初に
+/// 見つかったものを採用する（断面未割当の仮の支持部材が実際の柱梁の内法控除を
+/// 打ち消さないようにするため）。
 fn beam_pair_map(model: &Model) -> HashMap<(NodeId, NodeId), usize> {
     let mut map = HashMap::new();
     for (idx, e) in model.elements.iter().enumerate() {
         if e.kind == ElementKind::Beam && e.nodes.len() >= 2 {
             let (a, b) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
-            map.entry(ordered_pair(a, b)).or_insert(idx);
+            match map.entry(ordered_pair(a, b)) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(idx);
+                }
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    let prev = &model.elements[*o.get()];
+                    if prev.section.is_none() && e.section.is_some() {
+                        o.insert(idx);
+                    }
+                }
+            }
         }
     }
     map
@@ -103,6 +114,39 @@ pub(crate) enum SelfWeightItem {
     /// 1/2 ずつ。要素ではないため部材荷重にはならず、節点荷重（→ 主架構梁上の
     /// 節点なら CMQ 変換）として扱う。
     SecondaryLine { ni: usize, nj: usize, total: f64 },
+}
+
+/// 二次部材の端部座標 `p` [mm] の自重を配る構造節点の `model.nodes` 添字。
+///
+/// 座標に一致する節点（[`squid_n_core::geom::MEMBER_AXIS_TOL_MM`] 以内）があればそれを使う。
+/// 大梁の材軸中間へアンカーした二次部材のように一致する節点が無い場合は、**最も近い
+/// 構造節点**（剛床代表節点を除く）へ配り、自重を欠落させない。階への帰属は節点の Z が
+/// 属する区間で決まるため、Z を第一優先、次に 3 次元距離、最後に添字で決める
+/// （入力順に依存しない）。構造節点が 1 つも無ければ `None`。
+fn secondary_end_weight_node(model: &Model, p: [f64; 3]) -> Option<usize> {
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    if let Some(i) = model
+        .nodes
+        .iter()
+        .position(|n| dist3(n.coord, p) <= tol && !model.generated_masters.contains(&n.id))
+    {
+        return Some(i);
+    }
+    let generated: std::collections::HashSet<NodeId> =
+        model.generated_masters.iter().copied().collect();
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| !generated.contains(&n.id))
+        .min_by(|(_, x), (_, y)| {
+            let dx = (x.coord[2] - p[2]).abs();
+            let dy = (y.coord[2] - p[2]).abs();
+            dx.total_cmp(&dy)
+                .then_with(|| dist3(x.coord, p).total_cmp(&dist3(y.coord, p)))
+                .then(x.id.0.cmp(&y.id.0))
+        })
+        .map(|(i, _)| i)
 }
 
 /// モデル全要素の自重を列挙する（§柱梁自重・§壁自重・§ダンパー自重）。
@@ -314,12 +358,16 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
         let Some(sec) = model.sections.get(sec_id.index()) else {
             continue;
         };
-        let ni = sm.nodes[0].index();
-        let nj = sm.nodes[1].index();
-        let (Some(n0), Some(n1)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
+        let Some((a, b)) = model.secondary_member_end_points(sm) else {
             continue;
         };
-        let len = dist3(n0.coord, n1.coord);
+        let (Some(ni), Some(nj)) = (
+            secondary_end_weight_node(model, a),
+            secondary_end_weight_node(model, b),
+        ) else {
+            continue;
+        };
+        let len = dist3(a, b);
         let factor = if mat.fc.is_some() {
             1.0
         } else {

@@ -109,7 +109,7 @@ pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
             distribute_attached(model, &coords, w, *anchor, &mut loads);
             return loads;
         }
-        SlabShape::Enclosed { .. } => {}
+        SlabShape::Enclosed => {}
     }
 
     match slab_dimensions_of(&coords) {
@@ -172,7 +172,7 @@ fn distribute_attached(
 /// 取り付く床板（[`SlabShape::Attached`]）の辺 0（取付き線）は、取付き先が持つ
 /// 無次元区間 `span`（[`RegionAnchor::Line::span`]）をそのまま `Span::t` へ引き継ぐ。
 /// 大梁または小梁で囲まれた床板の境界辺は常に全長（`t = [0.0, 1.0]`）である。
-fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
+fn resolve_edges_to_span(model: &Model, slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
     let anchor_t = match &slab.shape {
         SlabShape::Attached {
             anchor: RegionAnchor::Line { span, .. },
@@ -184,7 +184,7 @@ fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
         .into_iter()
         .filter_map(|mut bl| match bl.target {
             LoadTarget::Edge(k) => {
-                let [n0, n1] = slab.edge_nodes(k)?;
+                let [n0, n1] = slab.edge_nodes(model, k)?;
                 let t = if k == 0 { anchor_t } else { [0.0, 1.0] };
                 bl.target = LoadTarget::Span { nodes: [n0, n1], t };
                 // `push_edge` は `elem` に辺インデックスを入れている（実要素とは無関係）。
@@ -205,7 +205,7 @@ fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
 /// 見つからない浮き床板）を、床領域とは独立に分配する用途に使う
 /// （`squid-n-job::auto_loads` 参照）。戻り値の `LoadTarget` は `Node`/`Span` のみ。
 pub fn distribute_slab_resolved(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
-    resolve_edges_to_span(slab, distribute_slab_w(model, slab, w))
+    resolve_edges_to_span(model, slab, distribute_slab_w(model, slab, w))
 }
 
 /// 床領域（大梁の 1 スパン区画）の面荷重を、床領域内の床板へ束ねて分配する。
@@ -225,7 +225,7 @@ pub fn distribute_region(
             continue;
         };
         let slab_loads = distribute_slab_w(model, slab, w_of(slab));
-        loads.extend(resolve_edges_to_span(slab, slab_loads));
+        loads.extend(resolve_edges_to_span(model, slab, slab_loads));
     }
     loads
 }

@@ -74,6 +74,7 @@ fn push_resolved_loads(
                 }
                 out.push(bl);
             }
+            LoadTarget::Secondary { .. } => out.push(bl),
         }
     }
 }
@@ -99,7 +100,8 @@ pub fn slab_beam_loads_with(
         &mut beam_loads,
     );
 
-    for (node, r) in transfer.primary_node_loads() {
+    let (nodal_reactions, member_reactions) = transfer.primary_loads(model);
+    for (node, r) in nodal_reactions {
         beam_loads.push(BeamLoad {
             elem: ElemId(u32::MAX),
             target: LoadTarget::Node(node),
@@ -112,6 +114,7 @@ pub fn slab_beam_loads_with(
             },
         });
     }
+    beam_loads.extend(member_reactions);
 
     beam_loads
 }
@@ -406,6 +409,55 @@ pub fn slab_load_case_content(
                     }
                 }
             }
+            LoadTarget::Secondary { member: sm_id, t } => {
+                let Some(sm) = model.secondary_member(sm_id) else {
+                    continue;
+                };
+                let Some((a, b, _)) = model.secondary_member_axis(sm) else {
+                    continue;
+                };
+                let lerp = |c0: [f64; 3], c1: [f64; 3], f: f64| {
+                    [
+                        c0[0] + (c1[0] - c0[0]) * f,
+                        c0[1] + (c1[1] - c0[1]) * f,
+                        c0[2] + (c1[2] - c0[2]) * f,
+                    ]
+                };
+                let p0 = lerp(a, b, t[0]);
+                let p1 = lerp(a, b, t[1]);
+                let hit0 = beam_span_position(model, p0, SPAN_TOL_MM);
+                let hit1 = beam_span_position(model, p1, SPAN_TOL_MM);
+                if let (Some((e0, a0)), Some((e1, a1))) = (hit0, hit1) {
+                    if e0 == e1 {
+                        let start = a0.min(a1);
+                        let len_e = (a1 - a0).abs();
+                        if len_e > 1e-9 {
+                            emit_shape(&mut member, e0, start, len_e, a0 > a1, &bl.shape);
+                        }
+                        continue;
+                    }
+                }
+                if emit_along_segment(model, &mut member, p0, p1, &bl.shape) {
+                    continue;
+                }
+                let find = |p: [f64; 3]| {
+                    model
+                        .nodes
+                        .iter()
+                        .find(|n| squid_n_core::geom::vec3::dist(n.coord, p) <= SPAN_TOL_MM)
+                        .map(|n| n.id)
+                };
+                let (Some(n0), Some(n1)) = (find(p0), find(p1)) else {
+                    continue;
+                };
+                let len = squid_n_core::geom::vec3::dist(p0, p1);
+                let (r0, r1) = simple_reactions(&bl.shape, len);
+                for (n, r) in [(n0, r0), (n1, r1)] {
+                    if r.abs() > 1e-9 {
+                        nodal.push(NodalLoad::auto(n, [0.0, 0.0, -r, 0.0, 0.0, 0.0]));
+                    }
+                }
+            }
         }
     }
 
@@ -601,12 +653,12 @@ pub fn apply_auto_load_cases(model: &mut Model, cases: &[AutoLoadCaseContent]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::SlabPlate;
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion,
         ForceRegime, LocalAxis, Node,
     };
-    use squid_n_core::model::{Slab, SlabPlate, SlabShape};
 
     fn make_square_slab_model() -> Model {
         let mk_node = |id: u32, x: f64, y: f64| Node {
@@ -643,13 +695,14 @@ mod tests {
             mk_beam(2, 2, 3),
             mk_beam(3, 3, 0),
         ];
-        let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-        let slab = Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: boundary.clone(),
-            },
-            plate: SlabPlate {
+        let mut model = Model {
+            nodes,
+            elements,
+            ..Default::default()
+        };
+        let slab_id = model.add_enclosed_slab_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            SlabPlate {
                 section: None,
                 loads: vec![AreaLoad {
                     kind: "DL".into(),
@@ -659,15 +712,118 @@ mod tests {
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
+        );
+        let mut region = FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        );
+        region.slab_ids.push(slab_id);
+        model.floor_regions.push(region);
+        model
+    }
+
+    /// 大梁の材軸中間（座標一致する節点が無い位置）へアンカーした小梁の反力が、
+    /// 大梁の中間集中荷重として荷重ケース内容に載る（節点が無いことを理由に捨てない）。
+    #[test]
+    fn secondary_reaction_on_girder_midspan_becomes_member_point_load() {
+        use squid_n_core::ids::{MaterialId, SecondaryMemberId, SectionId};
+        use squid_n_core::model::{
+            Material, MaterialCategory, SecondaryMember, SecondaryMemberEnds, Section,
         };
-        let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-        region.slab_ids.push(slab.id);
-        Model {
-            nodes,
-            elements,
-            floor_regions: vec![region],
-            slabs: vec![slab],
+        use squid_n_core::units::GRAVITY_MM_S2;
+
+        const DENSITY: f64 = 7.85e-9;
+        const AREA: f64 = 10_000.0;
+
+        let mk_node = |id: u32, x: f64, y: f64| Node {
+            id: NodeId(id),
+            coord: [x, y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let mut model = Model {
+            nodes: vec![
+                mk_node(0, 0.0, 0.0),
+                mk_node(1, 6000.0, 0.0),
+                mk_node(2, 0.0, 4000.0),
+                mk_node(3, 6000.0, 4000.0),
+            ],
+            elements: vec![mk_beam(0, 0, 1), mk_beam(1, 2, 3)],
             ..Default::default()
+        };
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "SN400".into(),
+            category: MaterialCategory::Steel,
+            young: 205_000.0,
+            poisson: 0.3,
+            density: DENSITY,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "H".into(),
+            floor: None,
+            area: AREA,
+            iy: 1.0e8,
+            iz: 1.0e7,
+            j: 1.0e6,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        model.unassigned_joists.push(SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            ends: SecondaryMemberEnds::Detached([[3000.0, 0.0, 0.0], [3000.0, 4000.0, 0.0]]),
+            section: Some(SectionId(0)),
+            name: "SB".into(),
+        });
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(&model, |_| 0.0, true, &beam_map);
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+        assert!(nodal.is_empty(), "{nodal:?}");
+        let points: Vec<_> = member
+            .iter()
+            .filter(|m| matches!(m.kind, MemberLoadKind::Point { .. }))
+            .collect();
+        assert_eq!(points.len(), 2, "2 本の大梁へ 1 件ずつ: {member:?}");
+        let expected = DENSITY * AREA * GRAVITY_MM_S2 * 2000.0;
+        for m in points {
+            let MemberLoadKind::Point { a, p } = m.kind else {
+                unreachable!("Point で絞り込み済み")
+            };
+            assert!((a - 3000.0).abs() < 1e-6, "a={a}");
+            assert!((p - expected).abs() / expected < 1e-9, "p={p}");
         }
     }
 
@@ -1537,11 +1693,11 @@ mod attached_anchor_tests {
 #[cfg(test)]
 mod cascade_tests {
     use super::*;
-    use squid_n_core::ids::{FloorRegionId, MaterialId, NodeId, SectionId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion,
         ForceRegime, LocalAxis, Material, MaterialCategory, Node, SecondaryMember,
-        SecondaryMemberKind, Section, Slab, SlabPlate, SlabShape,
+        SecondaryMemberKind, Section, SlabPlate,
     };
 
     /// 6000×6000 の床領域を、小梁 A（中央を Y 方向に通す）で 2 枚の床板に分け、
@@ -1588,46 +1744,62 @@ mod cascade_tests {
             mk_beam(2, 2, 3),
             mk_beam(3, 3, 0),
         ];
-        let mk_slab = |id: u32, boundary: Vec<NodeId>| Slab {
-            id: SlabId(id),
-            shape: SlabShape::Enclosed { boundary },
-            plate: SlabPlate {
-                section: None,
-                loads: vec![AreaLoad {
-                    kind: "DL".into(),
-                    value: 0.005,
-                }],
-                usage: None,
-                method: DistributionMethod::TriTrapezoid,
-                one_way: None,
-            },
+        let plate = SlabPlate {
+            section: None,
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: 0.005,
+            }],
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+        };
+        let joist_a = SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(4),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [3000.0, 0.0, 0.0],
+                [3000.0, 6000.0, 0.0],
+            ]),
+            section: Some(SectionId(0)),
+            name: "A".into(),
+        };
+        let joist_b = SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(6),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                [3000.0, 3000.0, 0.0],
+                [6000.0, 3000.0, 0.0],
+            ]),
+            section: Some(SectionId(0)),
+            name: "B".into(),
         };
         // 小梁 A で左右 2 枚に分ける（B は床板の境界にしない＝分配は A までで完結する）。
-        let slabs = vec![
-            mk_slab(0, vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)]),
-            mk_slab(1, vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)]),
-        ];
+        let mut model = Model {
+            nodes,
+            elements,
+            unassigned_joists: vec![joist_a.clone()],
+            ..Default::default()
+        };
+        model.rebuild_floor_assignment_regions();
+        let first = model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+                plate.clone(),
+            )
+            .expect("左半分の割当領域");
+        let second = model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+                plate,
+            )
+            .expect("右半分の割当領域");
         let mut region = FloorRegion::new(
             FloorRegionId(0),
             vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         );
-        region.slab_ids = vec![SlabId(0), SlabId(1)];
-        region.secondary_joists = vec![
-            SecondaryMember {
-                end_support: Default::default(),
-                kind: SecondaryMemberKind::Joist,
-                nodes: [NodeId(4), NodeId(5)],
-                section: Some(SectionId(0)),
-                name: "A".into(),
-            },
-            SecondaryMember {
-                end_support: Default::default(),
-                kind: SecondaryMemberKind::Joist,
-                nodes: [NodeId(6), NodeId(7)],
-                section: Some(SectionId(0)),
-                name: "B".into(),
-            },
-        ];
+        region.slab_ids = vec![first, second];
+        region.secondary_joists = vec![joist_a, joist_b];
         let materials = vec![Material {
             id: MaterialId(0),
             name: "SN400".into(),
@@ -1661,15 +1833,11 @@ mod cascade_tests {
             shear_rebar_material: None,
             steel_material: None,
         }];
-        Model {
-            nodes,
-            elements,
-            floor_regions: vec![region],
-            slabs,
-            materials,
-            sections,
-            ..Default::default()
-        }
+        model.unassigned_joists.clear();
+        model.floor_regions.push(region);
+        model.materials = materials;
+        model.sections = sections;
+        model
     }
 
     /// 小梁に支持された小梁があっても、床の面荷重は 1 N も失わずに主架構へ届く。
@@ -1727,15 +1895,14 @@ mod cascade_tests {
     #[test]
     fn reaction_of_supported_joist_lands_on_supporting_joist() {
         use squid_n_load::cascade::{self as cascade, SupportAt};
-        use squid_n_load::floor::span_node_key;
 
         let model = joist_on_joist_model();
         let transfer = cascade::solve(&model, |s| model.slab_dead_intensity(s), false);
 
-        let ka = span_node_key(NodeId(4), NodeId(5));
-        let kb = span_node_key(NodeId(6), NodeId(7));
+        let ka = squid_n_core::ids::SecondaryMemberId(4);
+        let kb = squid_n_core::ids::SecondaryMemberId(6);
         let b = transfer.members.get(&kb).expect("B");
-        let i6 = b.nodes.iter().position(|n| *n == NodeId(6)).expect("節点6");
+        let i6 = 0;
         assert!(
             matches!(b.supports[i6], SupportAt::Secondary { key, .. } if key == ka),
             "B の端は A に載る: {:?}",
