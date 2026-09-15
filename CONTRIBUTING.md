@@ -80,6 +80,12 @@ cargo test --workspace --locked
 # GUI / MCP / Parquet の非デフォルト feature（3 クレートまとめて 1 回の呼び出し。
 # `クレート名/機能名` 形式で指定する。default 構成は上の実行で別に検証する）
 cargo test -p squid-n-app -p squid-n-mcp -p squid-n-io --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked
+
+# Parquet 無効構成の独立検証。squid-n-mcp が squid-n-io/parquet を常時有効化しているため、
+# --workspace では feature 統一により squid-n-io の default（parquet 無効）構成が
+# 独立には検証されない。以下で直接保証する
+cargo test -p squid-n-io --locked
+cargo check -p squid-n-app --features squid-n-app/gui --locked
 ```
 
 特定のテストだけ再実行したいときは、名前で絞り込めます。

@@ -36,6 +36,14 @@ jobs:
       # 同じ依存グラフの重複構築を避ける。default 構成は上の実行で別に検証する。
       - name: featureテスト実行（MCP/GUI/Parquet）
         run: cargo test -p squid-n-mcp -p squid-n-app -p squid-n-io --features squid-n-mcp/mcp,squid-n-app/gui,squid-n-io/parquet --locked
+      # squid-n-mcp が squid-n-io/parquet を常時有効化しているため、
+      # --workspace では feature 統一により squid-n-io の default（parquet 無効）構成が
+      # 独立には検証されない。Parquet 無効構成と、Arrow / Parquet を切り離した
+      # GUI 開発ループ構成をそれぞれ直接保証するため、以下も別に実行する。
+      - name: テスト実行（squid-n-io の default 構成）
+        run: cargo test -p squid-n-io --locked
+      - name: ビルド確認（GUI 単体・Parquet なし）
+        run: cargo check -p squid-n-app --features squid-n-app/gui --locked
 
   clippy:
     name: Clippy静的解析

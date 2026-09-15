@@ -32,6 +32,8 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test --workspace --locked`
 - [ ] `cargo test -p squid-n-app -p squid-n-mcp -p squid-n-io --features squid-n-app/gui,squid-n-mcp/mcp,squid-n-io/parquet --locked`
+- [ ] `cargo test -p squid-n-io --locked`
+- [ ] `cargo check -p squid-n-app --features squid-n-app/gui --locked`
 - [ ] `cargo run -p xtask -- check-deps`
 - [ ] `mdbook build`
 
