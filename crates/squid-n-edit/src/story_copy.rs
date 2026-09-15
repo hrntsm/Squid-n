@@ -44,7 +44,7 @@
 use super::*;
 use squid_n_core::ids::{ElemId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
-    SecondaryMember, SecondaryMemberKind, Section, Slab, SlabPlate, SlabShape, SlabUsage,
+    SecondaryMember, SecondaryMemberEnds, SecondaryMemberKind, Section, Slab, SlabPlate, SlabUsage,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -493,9 +493,11 @@ fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKe
 /// 階の床板を、対応付けキーで引ける索引にする。
 fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKey, SlabId> {
     PlanIndex::build(model.slabs.iter().filter_map(|sl| {
-        (slab_story(model, sl) == Some(story))
-            .then(|| Some((ctx.key(model, story, sl.boundary_nodes()?)?, sl.id)))
-            .flatten()
+        if slab_story(model, sl) != Some(story) {
+            return None;
+        }
+        let boundary = sl.boundary_nodes(model)?;
+        Some((ctx.key(model, story, &boundary)?, sl.id))
     }))
 }
 
@@ -586,12 +588,11 @@ fn secondary_by_plan(
 ) -> PlanIndex<SecondaryPlanKey, SecondarySlot> {
     PlanIndex::build(all_secondary_slots(model).into_iter().filter_map(|slot| {
         let sm = secondary_at(model, slot)?;
-        (secondary_story(model, sm) == Some(story))
-            .then(|| {
-                ctx.key(model, story, &sm.nodes)
-                    .map(|k| ((sm.kind, k), slot))
-            })
-            .flatten()
+        if secondary_story(model, sm) != Some(story) {
+            return None;
+        }
+        let key = ctx.key(model, story, &secondary_nodes(model, sm)?)?;
+        Some(((sm.kind, key), slot))
     }))
 }
 
@@ -601,9 +602,9 @@ fn secondary_by_plan(
 /// ここで `None` を返すと複製の対象からも見送り件数からも外れ、利用者からは
 /// 「複製したのに床が足りない」理由が見えなくなる。
 fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
-    let refs: Vec<squid_n_core::ids::NodeId> = match slab.boundary_nodes() {
-        Some(b) => b.to_vec(),
-        None => slab.reference_node().into_iter().collect(),
+    let refs: Vec<squid_n_core::ids::NodeId> = match slab.boundary_nodes(model) {
+        Some(b) => b,
+        None => slab.reference_node(model).into_iter().collect(),
     };
     refs.iter()
         .filter_map(|nid| model.nodes.get(nid.index()))
@@ -612,12 +613,40 @@ fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
 }
 
 /// 二次部材の所属階（材端節点のうちもっとも高い節点の所属階）。
+///
+/// 大梁の材軸中間へアンカーした部材は端に一致する節点を持たないため、材端と同じ
+/// レベル（[`squid_n_core::geom::LEVEL_TOL_MM`] 以内）の節点から階を引く。ここで
+/// `None` を返すと複製の対象からも見送り件数からも外れ、利用者に理由が見えなくなる。
 fn secondary_story(model: &Model, sm: &SecondaryMember) -> Option<StoryId> {
-    sm.nodes
+    if let Some(nodes) = secondary_nodes(model, sm) {
+        return nodes
+            .iter()
+            .filter_map(|nid| model.nodes.get(nid.index()))
+            .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
+            .and_then(|n| n.story);
+    }
+    let (a, b) = model.secondary_member_end_points(sm)?;
+    let z = a[2].max(b[2]);
+    model
+        .nodes
         .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
-        .and_then(|n| n.story)
+        .filter(|n| (n.coord[2] - z).abs() <= squid_n_core::geom::LEVEL_TOL_MM)
+        .filter_map(|n| n.story)
+        .next()
+}
+
+/// 二次部材の両端に一致するモデル節点。対応する節点が無ければ `None`。
+fn secondary_nodes(model: &Model, sm: &SecondaryMember) -> Option<[NodeId; 2]> {
+    let (a, b) = model.secondary_member_end_points(sm)?;
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let find = |p: [f64; 3]| {
+        model
+            .nodes
+            .iter()
+            .find(|n| squid_n_core::geom::vec3::dist(n.coord, p) <= tol)
+            .map(|n| n.id)
+    };
+    Some([find(a)?, find(b)?])
 }
 
 /// 断面の割当を配る（部材・床・二次部材）。
@@ -669,10 +698,8 @@ fn copy_sections(
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| {
-            Some((
-                ctx.key(model, cmd.from, sl.boundary_nodes()?)?,
-                sl.section(),
-            ))
+            let boundary = sl.boundary_nodes(model)?;
+            Some((ctx.key(model, cmd.from, &boundary)?, sl.section()))
         })
         .collect();
     for (key, src_sec) in src {
@@ -704,12 +731,11 @@ fn copy_sections(
         .into_iter()
         .filter_map(|slot| {
             let sm = secondary_at(model, slot)?;
-            (secondary_story(model, sm) == Some(cmd.from))
-                .then(|| {
-                    ctx.key(model, cmd.from, &sm.nodes)
-                        .map(|k| ((sm.kind, k), sm.section))
-                })
-                .flatten()
+            if secondary_story(model, sm) != Some(cmd.from) {
+                return None;
+            }
+            let key = ctx.key(model, cmd.from, &secondary_nodes(model, sm)?)?;
+            Some(((sm.kind, key), sm.section))
         })
         .collect();
     for (key, src_sec) in src {
@@ -830,7 +856,10 @@ fn copy_slabs(
         .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
-        .filter_map(|sl| ctx.key(model, cmd.from, sl.boundary_nodes()?))
+        .filter_map(|sl| {
+            let boundary = sl.boundary_nodes(model)?;
+            ctx.key(model, cmd.from, &boundary)
+        })
         .collect();
 
     if cmd.overwrite {
@@ -839,10 +868,10 @@ fn copy_slabs(
             .iter()
             .filter(|sl| slab_story(model, sl) == Some(to))
             .filter(|sl| {
-                let Some(boundary) = sl.boundary_nodes() else {
+                let Some(boundary) = sl.boundary_nodes(model) else {
                     return false;
                 };
-                ctx.key(model, to, boundary)
+                ctx.key(model, to, &boundary)
                     .is_some_and(|k| !src_keys.contains(&k))
                     && boundary.iter().all(|&n| ctx.maps_back(model, n, dz))
             })
@@ -866,7 +895,7 @@ fn copy_slabs(
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     let mut created = Vec::new();
     for sl in src {
-        let Some(src_boundary) = sl.boundary_nodes().map(|b| b.to_vec()) else {
+        let Some(src_boundary) = sl.boundary_nodes(model) else {
             report.skipped += 1;
             continue;
         };
@@ -897,17 +926,16 @@ fn copy_slabs(
                 d
             }
         });
-        let id = SlabId(model.slabs.len() as u32);
-        model.slabs.push(Slab {
-            id,
-            shape: SlabShape::Enclosed { boundary },
-            plate: SlabPlate {
-                section,
-                method: sl.method(),
-                one_way: sl.one_way(),
-                ..Default::default()
-            },
-        });
+        let plate = SlabPlate {
+            section,
+            method: sl.method(),
+            one_way: sl.one_way(),
+            ..Default::default()
+        };
+        let id = match model.assign_enclosed_slab_to_matching_region(&boundary, plate.clone()) {
+            Some(id) => id,
+            None => model.add_enclosed_slab_from_nodes(&boundary, plate),
+        };
         created.push(id);
         report.slabs_created += 1;
     }
@@ -933,8 +961,9 @@ fn copy_slab_loads(
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| {
+            let boundary = sl.boundary_nodes(model)?;
             Some((
-                ctx.key(model, cmd.from, sl.boundary_nodes()?)?,
+                ctx.key(model, cmd.from, &boundary)?,
                 sl.plate.loads.clone(),
                 sl.plate.usage,
             ))
@@ -974,10 +1003,13 @@ fn should_delete_copied_secondary(
     if secondary_story(model, sm) != Some(to) {
         return false;
     }
+    let Some(nodes) = secondary_nodes(model, sm) else {
+        return false;
+    };
     let unmatched = ctx
-        .key(model, to, &sm.nodes)
+        .key(model, to, &nodes)
         .is_some_and(|k| !src_keys.contains(&(sm.kind, k)));
-    let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
+    let in_src_plan = nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
     unmatched && in_src_plan
 }
 
@@ -995,9 +1027,11 @@ fn copy_secondary(
         .into_iter()
         .filter_map(|slot| {
             let sm = secondary_at(model, slot)?;
-            (secondary_story(model, sm) == Some(cmd.from))
-                .then(|| ctx.key(model, cmd.from, &sm.nodes).map(|k| (sm.kind, k)))
-                .flatten()
+            if secondary_story(model, sm) != Some(cmd.from) {
+                return None;
+            }
+            ctx.key(model, cmd.from, &secondary_nodes(model, sm)?)
+                .map(|k| (sm.kind, k))
         })
         .collect();
 
@@ -1078,7 +1112,11 @@ fn copy_secondary(
         .collect();
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     for sm in src {
-        let Some(plan) = ctx.key(model, cmd.from, &sm.nodes) else {
+        let Some(src_nodes) = secondary_nodes(model, &sm) else {
+            report.skipped += 1;
+            continue;
+        };
+        let Some(plan) = ctx.key(model, cmd.from, &src_nodes) else {
             report.skipped += 1;
             continue;
         };
@@ -1091,8 +1129,8 @@ fn copy_secondary(
             continue;
         }
         let (Some(a), Some(b)) = (
-            ctx.mapped_node(model, sm.nodes[0], dz),
-            ctx.mapped_node(model, sm.nodes[1], dz),
+            ctx.mapped_node(model, src_nodes[0], dz),
+            ctx.mapped_node(model, src_nodes[1], dz),
         ) else {
             report.skipped += 1;
             continue;
@@ -1105,12 +1143,25 @@ fn copy_secondary(
                 d
             }
         });
+        let (Some(ca), Some(cb)) = (
+            model.nodes.get(a.index()).map(|n| n.coord),
+            model.nodes.get(b.index()).map(|n| n.coord),
+        ) else {
+            report.skipped += 1;
+            continue;
+        };
+        let supported = match sm.ends {
+            SecondaryMemberEnds::Cantilever { .. } => [true, false],
+            _ => [true, true],
+        };
+        let id = model.alloc_secondary_member_id();
+        let ends = model.secondary_ends_from_coords(id, sm.kind, [ca, cb], supported);
         let new_sm = SecondaryMember {
+            id,
             kind: sm.kind,
-            nodes: [a, b],
+            ends,
             section,
             name: sm.name.clone(),
-            end_support: sm.end_support,
         };
         match sm.kind {
             SecondaryMemberKind::Joist => model.unassigned_joists.push(new_sm),

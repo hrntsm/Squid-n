@@ -193,51 +193,182 @@ impl EditCommand for RestoreStories {
     }
 }
 
-/// 床板の追加。末尾に `SlabId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
-/// 逆操作は床板の削除。
-///
-/// ここで作るのは**大梁または小梁で囲まれた床板**である。所属する床領域
-/// （大梁の区画）は次の準備計算（`rebuild_floor_regions`）が自動で結びつける。
-/// 取り付く床板（片持ち・バルコニー・出隅）の追加コマンドは [`crate::AddAttachedSlab`]。
-pub struct AddSlab {
-    pub boundary: Vec<NodeId>,
-    pub loads: Vec<squid_n_core::model::AreaLoad>,
-    pub method: squid_n_core::model::DistributionMethod,
-    /// 室用途（積載荷重プリセット。`None` は積載寄与なし）。
-    pub usage: Option<squid_n_core::model::SlabUsage>,
-    /// スラブ断面（板厚・コンクリート材料を持つ断面）。`None` は未割当。
-    pub section: Option<SectionId>,
+/// 床板割当領域へ床板を割り当てる。床板を末尾に生成し、領域の状態を
+/// `Plate(生成した床板)` へ変える。領域が無い、または既に版ありのときは Noop。
+pub struct AssignSlabToFloorPlateRegion {
+    pub region: FloorPlateAssignmentRegionId,
+    pub plate: squid_n_core::model::SlabPlate,
 }
 
-impl EditCommand for AddSlab {
+impl EditCommand for AssignSlabToFloorPlateRegion {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if !self
-            .boundary
-            .iter()
-            .all(|&n| crate::refs::node_exists(model, n))
-            || !crate::refs::section_ref_ok(model, self.section)
-        {
+        let Some(region) = model.floor_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.plate().is_some() {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.plate.section) {
+            return Box::new(Noop);
+        }
+        if model.floor_assignment_region_nodes(self.region).is_none() {
             return Box::new(Noop);
         }
         let new_id = SlabId(model.slabs.len() as u32);
-        model.slabs.push(squid_n_core::model::Slab {
-            id: new_id,
-            shape: squid_n_core::model::SlabShape::Enclosed {
-                boundary: self.boundary.clone(),
-            },
-            plate: squid_n_core::model::SlabPlate {
-                section: self.section,
-                loads: self.loads.clone(),
-                usage: self.usage,
-                method: self.method,
-                one_way: None,
-            },
-        });
-        Box::new(DeleteSlab { id: new_id })
+        SetFloorPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::Plate(new_id),
+            slab: Some(squid_n_core::model::Slab {
+                id: new_id,
+                shape: squid_n_core::model::SlabShape::Enclosed,
+                plate: self.plate.clone(),
+            }),
+            region_refs: Vec::new(),
+        }
+        .apply(model)
     }
 
     fn label(&self) -> &str {
-        "床追加"
+        "床板の割当"
+    }
+}
+
+/// 床板割当領域を「版なし」にする。版ありなら床板の削除も同一 Undo 単位に含める。
+pub struct SetFloorPlateRegionNoPlate {
+    pub region: FloorPlateAssignmentRegionId,
+}
+
+impl EditCommand for SetFloorPlateRegionNoPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(region) = model.floor_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.is_no_plate() {
+            return Box::new(Noop);
+        }
+        SetFloorPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::NoPlate,
+            slab: None,
+            region_refs: Vec::new(),
+        }
+        .apply(model)
+    }
+
+    fn label(&self) -> &str {
+        "版なしにする"
+    }
+}
+
+/// 床板割当領域の割当を未設定へ戻す。版ありなら床板の削除も同一 Undo 単位に含める。
+pub struct UnsetFloorPlateRegion {
+    pub region: FloorPlateAssignmentRegionId,
+}
+
+impl EditCommand for UnsetFloorPlateRegion {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(region) = model.floor_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.is_unset() {
+            return Box::new(Noop);
+        }
+        SetFloorPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::Unset,
+            slab: None,
+            region_refs: Vec::new(),
+        }
+        .apply(model)
+    }
+
+    fn label(&self) -> &str {
+        "割当を未設定に戻す"
+    }
+}
+
+/// 割当領域の状態と、それに伴う床板の生成・削除をまとめて適用する内部コマンド。
+/// 逆操作は適用前の状態を復元する自分自身。
+///
+/// `retain_slabs` は取り除いた床板の `FloorRegion.slab_ids` の所属も落とすため、
+/// その所属位置を `region_refs` に控えて逆操作で戻す（直後の状態でも `FloorRegion` と
+/// 割当領域が食い違わないようにする）。
+struct SetFloorPlateRegionAssignment {
+    region: FloorPlateAssignmentRegionId,
+    assignment: squid_n_core::model::PlateAssignment<SlabId>,
+    slab: Option<squid_n_core::model::Slab>,
+    /// 適用時に取り除く床板が持っていた `FloorRegion.slab_ids` の所属位置
+    /// （床領域添字, リスト内位置）。
+    region_refs: Vec<(usize, usize)>,
+}
+
+impl EditCommand for SetFloorPlateRegionAssignment {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::PlateAssignment;
+        let Some(region) = model.floor_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        let previous_assignment = region.assignment;
+        let previous_slab = previous_assignment
+            .plate()
+            .and_then(|id| model.slab(id).cloned());
+        match (&self.assignment, &self.slab) {
+            (PlateAssignment::Plate(id), Some(slab)) if slab.id == *id => {}
+            (PlateAssignment::Unset | PlateAssignment::NoPlate, None) => {}
+            _ => return Box::new(Noop),
+        }
+        let previous_refs = if let Some(previous) = &previous_slab {
+            let refs: Vec<(usize, usize)> = model
+                .floor_regions
+                .iter()
+                .enumerate()
+                .flat_map(|(ri, region)| {
+                    region
+                        .slab_ids
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, sid)| **sid == previous.id)
+                        .map(move |(pos, _)| (ri, pos))
+                })
+                .collect();
+            model.retain_slabs(|slab| slab.id != previous.id);
+            refs
+        } else {
+            Vec::new()
+        };
+        if let Some(slab) = &self.slab {
+            let insert_at = slab.id.0 as usize;
+            if insert_at > model.slabs.len() {
+                return Box::new(Noop);
+            }
+            model.visit_slab_ids(|id| {
+                if id.0 as usize >= insert_at {
+                    id.0 += 1;
+                }
+            });
+            model.slabs.insert(insert_at, slab.clone());
+        }
+        if let Some(region) = model.floor_assignment_regions.get_mut(self.region) {
+            region.assignment = self.assignment;
+        }
+        if let Some(id) = self.assignment.plate() {
+            for &(ri, pos) in self.region_refs.iter().rev() {
+                if let Some(region) = model.floor_regions.get_mut(ri) {
+                    let insert_pos = pos.min(region.slab_ids.len());
+                    region.slab_ids.insert(insert_pos, id);
+                }
+            }
+        }
+        Box::new(SetFloorPlateRegionAssignment {
+            region: self.region,
+            assignment: previous_assignment,
+            slab: previous_slab,
+            region_refs: previous_refs,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "割当領域の状態変更"
     }
 }
 
@@ -272,6 +403,17 @@ impl EditCommand for DeleteSlab {
             }
         }
 
+        let mut assignment_refs: Vec<(
+            FloorPlateAssignmentRegionId,
+            squid_n_core::model::PlateAssignment<SlabId>,
+        )> = Vec::new();
+        for region in &mut model.floor_assignment_regions.regions {
+            if region.assignment == squid_n_core::model::PlateAssignment::Plate(self.id) {
+                assignment_refs.push((region.id, region.assignment));
+                region.assignment = squid_n_core::model::PlateAssignment::Unset;
+            }
+        }
+
         let removed = model.slabs.remove(idx);
         let target = self.id.0;
         shift_slab_ids(model, |id| {
@@ -284,6 +426,7 @@ impl EditCommand for DeleteSlab {
             index: idx,
             slab: removed,
             region_refs,
+            assignment_refs,
         })
     }
 
@@ -299,6 +442,11 @@ pub struct InsertSlab {
     pub slab: squid_n_core::model::Slab,
     /// 削除時に床領域から除去した参照の (床領域添字, リスト内位置)。
     pub region_refs: Vec<(usize, usize)>,
+    /// 削除時に未設定へ戻した割当領域の (領域 ID, 元の状態)。
+    pub assignment_refs: Vec<(
+        FloorPlateAssignmentRegionId,
+        squid_n_core::model::PlateAssignment<SlabId>,
+    )>,
 }
 
 impl EditCommand for InsertSlab {
@@ -320,6 +468,11 @@ impl EditCommand for InsertSlab {
             if let Some(region) = model.floor_regions.get_mut(ri) {
                 let insert_pos = pos.min(region.slab_ids.len());
                 region.slab_ids.insert(insert_pos, id);
+            }
+        }
+        for (region_id, assignment) in &self.assignment_refs {
+            if let Some(region) = model.floor_assignment_regions.get_mut(*region_id) {
+                region.assignment = *assignment;
             }
         }
 

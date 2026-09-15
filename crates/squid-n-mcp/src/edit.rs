@@ -1,19 +1,26 @@
 //! モデル編集（P8 T2: `model.edit`）。GUI と同一の `EditCommand` + `UndoStack` 経路。
 
 use super::*;
-use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, SlabId, WallPlateId, WallRegionId};
+use squid_n_core::ids::{
+    FloorPlateAssignmentRegionId, FloorRegionId, SectionId, SlabId, WallPlateAssignmentRegionId,
+    WallPlateId, WallRegionId,
+};
 use squid_n_core::model::EndSupport;
 use squid_n_core::model::SecondaryMember;
 use squid_n_core::model::{
     DistributionMethod, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
 };
+use squid_n_core::model::{SecondaryMemberEnds, SecondaryMemberKind};
 use squid_n_edit::EditCommand;
 use squid_n_edit::{
-    AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, AddUnassignedJoist,
-    AddUnassignedPost, DeleteSlab, DeleteUnassignedJoist, DeleteUnassignedPost, DeleteWallPlate,
-    SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent,
-    SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSecondaryMemberEndSupport, SetSlabOneWay,
-    SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
+    AddAttachedSlab, AddAttachedWallPlate, AddUnassignedJoist, AddUnassignedPost,
+    AssignSlabToFloorPlateRegion, AssignWallPlateToRegion, DeleteSecondaryMember, DeleteSlab,
+    DeleteUnassignedJoist, DeleteUnassignedPost, DeleteWallPlate, PlaceSecondaryMember,
+    SecondaryParent, SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor,
+    SetAttachedWallPlateExtent, SetFloorPlateRegionNoPlate, SetFloorRegionName,
+    SetFloorRegionSecondaryJoists, SetSecondaryMemberEndSupport, SetSecondaryMemberEnds,
+    SetSlabOneWay, SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateRegionNoPlate,
+    SetWallPlateSection, SetWallRegionPosts, UnsetFloorPlateRegion, UnsetWallPlateRegion,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -39,24 +46,29 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
         .and_then(|v| v.as_str())
         .ok_or("command が必要です")?;
     match command {
-        "AddEnclosedWallPlate" => {
-            let boundary = parse_node_ids(value.get("boundary").ok_or("boundary が必要です")?)?;
-            if boundary.len() != 4 {
-                return Err("boundary は 4 節点を指定してください".into());
-            }
-            let mut dedup = boundary.clone();
-            dedup.sort_by_key(|n| n.0);
-            dedup.dedup();
-            if dedup.len() != 4 {
-                return Err("boundary に重複した節点があります".into());
-            }
-            Ok(Box::new(AddEnclosedWallPlate {
-                boundary,
+        "AssignWallPlateToRegion" => {
+            let region = parse_wall_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?;
+            Ok(Box::new(AssignWallPlateToRegion {
+                region,
                 section: parse_optional_section_id(value.get("section"))?,
                 opening_area: parse_f64(value.get("opening_area"), "opening_area")?.unwrap_or(0.0),
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
                     .unwrap_or(0.0),
             }))
+        }
+        "SetWallPlateRegionNoPlate" => {
+            let region = parse_wall_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?;
+            Ok(Box::new(SetWallPlateRegionNoPlate { region }))
+        }
+        "UnsetWallPlateRegion" => {
+            let region = parse_wall_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?;
+            Ok(Box::new(UnsetWallPlateRegion { region }))
         }
         "AddAttachedWallPlate" => {
             let anchor: RegionAnchor =
@@ -113,24 +125,37 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 anchor,
             }))
         }
-        "AddSlab" => {
-            let boundary = parse_node_ids(value.get("boundary").ok_or("boundary が必要です")?)?;
-            if boundary.len() < 3 {
-                return Err("boundary は 3 節点以上を指定してください".into());
-            }
-            let loads = match value.get("loads") {
-                None | Some(serde_json::Value::Null) => Vec::new(),
-                Some(v) => serde_json::from_value(v.clone())
-                    .map_err(|e| format!("loads の解析に失敗: {e}"))?,
+        "AssignSlabToFloorPlateRegion" => {
+            let region = parse_floor_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?;
+            let plate: SlabPlate = if let Some(v) = value.get("plate") {
+                serde_json::from_value(v.clone()).map_err(|e| format!("plate の解析に失敗: {e}"))?
+            } else {
+                SlabPlate {
+                    section: parse_optional_section_id(value.get("section"))?,
+                    loads: match value.get("loads") {
+                        None | Some(serde_json::Value::Null) => Vec::new(),
+                        Some(v) => serde_json::from_value(v.clone())
+                            .map_err(|e| format!("loads の解析に失敗: {e}"))?,
+                    },
+                    usage: parse_optional_enum::<SlabUsage>(value.get("usage"))?,
+                    method: parse_distribution_method(value.get("method"))?,
+                    one_way: parse_optional_enum::<OneWayDir>(value.get("one_way"))?,
+                }
             };
-            Ok(Box::new(AddSlab {
-                boundary,
-                loads,
-                method: parse_distribution_method(value.get("method"))?,
-                usage: parse_optional_enum::<SlabUsage>(value.get("usage"))?,
-                section: parse_optional_section_id(value.get("section"))?,
-            }))
+            Ok(Box::new(AssignSlabToFloorPlateRegion { region, plate }))
         }
+        "SetFloorPlateRegionNoPlate" => Ok(Box::new(SetFloorPlateRegionNoPlate {
+            region: parse_floor_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?,
+        })),
+        "UnsetFloorPlateRegion" => Ok(Box::new(UnsetFloorPlateRegion {
+            region: parse_floor_assignment_region_id(
+                value.get("region").ok_or("region が必要です")?,
+            )?,
+        })),
         "AddAttachedSlab" => {
             let anchor: RegionAnchor =
                 serde_json::from_value(value.get("anchor").ok_or("anchor が必要です")?.clone())
@@ -264,10 +289,10 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
             Ok(Box::new(DeleteUnassignedJoist { index }))
         }
         "SetSecondaryMemberEndSupport" => {
-            let ids = parse_node_ids(value.get("nodes").ok_or("nodes が必要です")?)?;
-            let nodes: [NodeId; 2] = ids
-                .try_into()
-                .map_err(|_| "nodes は 2 つの節点が必要です".to_string())?;
+            let member = value
+                .get("member")
+                .and_then(|v| v.as_u64())
+                .ok_or("member が必要です（SecondaryMemberId）")? as u32;
             let end_support: [EndSupport; 2] = serde_json::from_value(
                 value
                     .get("end_support")
@@ -275,7 +300,68 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                     .ok_or("end_support が必要です（[Supported/Free; 2]）")?,
             )
             .map_err(|e| format!("end_support の解析に失敗: {e}"))?;
-            Ok(Box::new(SetSecondaryMemberEndSupport { nodes, end_support }))
+            Ok(Box::new(SetSecondaryMemberEndSupport {
+                member: squid_n_core::ids::SecondaryMemberId(member),
+                end_support,
+            }))
+        }
+        "PlaceSecondaryMember" => {
+            let kind: SecondaryMemberKind = parse_optional_enum::<SecondaryMemberKind>(
+                value.get("kind"),
+            )?
+            .ok_or("kind が必要です（Joist/Post）")?;
+            let ends: SecondaryMemberEnds = serde_json::from_value(
+                value.get("ends").cloned().ok_or("ends が必要です")?,
+            )
+            .map_err(|e| format!("ends の解析に失敗: {e}"))?;
+            let parent = match value
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .ok_or("parent が必要です（floor/wall/unassigned）")?
+            {
+                "floor" => SecondaryParent::Floor(parse_floor_region_id(
+                    value.get("region").ok_or("region が必要です")?,
+                )?),
+                "wall" => SecondaryParent::Wall(parse_wall_region_id(
+                    value.get("region").ok_or("region が必要です")?,
+                )?),
+                "unassigned" => SecondaryParent::Unassigned,
+                other => return Err(format!("parent が不正です: {other}")),
+            };
+            Ok(Box::new(PlaceSecondaryMember {
+                parent,
+                kind,
+                ends,
+                section: parse_optional_section_id(value.get("section"))?,
+                name: value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            }))
+        }
+        "DeleteSecondaryMember" => {
+            let member = value
+                .get("member")
+                .and_then(|v| v.as_u64())
+                .ok_or("member が必要です（SecondaryMemberId）")? as u32;
+            Ok(Box::new(DeleteSecondaryMember {
+                member: squid_n_core::ids::SecondaryMemberId(member),
+            }))
+        }
+        "SetSecondaryMemberEnds" => {
+            let member = value
+                .get("member")
+                .and_then(|v| v.as_u64())
+                .ok_or("member が必要です（SecondaryMemberId）")? as u32;
+            let ends: SecondaryMemberEnds = serde_json::from_value(
+                value.get("ends").cloned().ok_or("ends が必要です")?,
+            )
+            .map_err(|e| format!("ends の解析に失敗: {e}"))?;
+            Ok(Box::new(SetSecondaryMemberEnds {
+                member: squid_n_core::ids::SecondaryMemberId(member),
+                ends,
+            }))
         }
         "AddUnassignedPost" => {
             let sm: SecondaryMember = serde_json::from_value(
@@ -295,13 +381,15 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
             Ok(Box::new(DeleteUnassignedPost { index }))
         }
         other => Err(format!(
-            "未対応の command: {other}（壁版: AddEnclosedWallPlate, AddAttachedWallPlate, \
-             DeleteWallPlate, SetWallPlateSection, SetWallPlateAttrs, \
-             SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
-             床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
+            "未対応の command: {other}（壁版: AssignWallPlateToRegion, SetWallPlateRegionNoPlate, \
+             UnsetWallPlateRegion, AddAttachedWallPlate, DeleteWallPlate, SetWallPlateSection, \
+             SetWallPlateAttrs, SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
+             床板: AssignSlabToFloorPlateRegion, SetFloorPlateRegionNoPlate, UnsetFloorPlateRegion, \
+             AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
              床領域: SetFloorRegionName, SetFloorRegionSecondaryJoists / \
-             二次部材: SetSecondaryMemberEndSupport / \
+             二次部材: PlaceSecondaryMember, DeleteSecondaryMember, SetSecondaryMemberEnds, \
+             SetSecondaryMemberEndSupport / \
              壁領域: SetWallRegionPosts / \
              未割当: AddUnassignedJoist, DeleteUnassignedJoist, AddUnassignedPost, DeleteUnassignedPost）"
         )),
@@ -349,18 +437,6 @@ fn resolve_edit_payload(value: &serde_json::Value) -> &serde_json::Value {
     }
 }
 
-fn parse_node_ids(value: &serde_json::Value) -> Result<Vec<NodeId>, String> {
-    let arr = value.as_array().ok_or("節点 ID は配列で指定してください")?;
-    arr.iter().map(parse_node_id).collect()
-}
-
-fn parse_node_id(value: &serde_json::Value) -> Result<NodeId, String> {
-    value
-        .as_u64()
-        .map(|n| NodeId(n as u32))
-        .ok_or_else(|| format!("節点 ID は非負整数です: {value}"))
-}
-
 fn parse_wall_plate_id(value: &serde_json::Value) -> Result<WallPlateId, String> {
     value
         .as_u64()
@@ -380,6 +456,24 @@ fn parse_floor_region_id(value: &serde_json::Value) -> Result<FloorRegionId, Str
         .as_u64()
         .map(|n| FloorRegionId(n as u32))
         .ok_or_else(|| format!("床領域 ID は非負整数です: {value}"))
+}
+
+fn parse_floor_assignment_region_id(
+    value: &serde_json::Value,
+) -> Result<FloorPlateAssignmentRegionId, String> {
+    value
+        .as_u64()
+        .map(|n| FloorPlateAssignmentRegionId(n as u32))
+        .ok_or_else(|| format!("床板割当領域 ID は非負整数です: {value}"))
+}
+
+fn parse_wall_assignment_region_id(
+    value: &serde_json::Value,
+) -> Result<WallPlateAssignmentRegionId, String> {
+    value
+        .as_u64()
+        .map(|n| WallPlateAssignmentRegionId(n as u32))
+        .ok_or_else(|| format!("壁版割当領域 ID は非負整数です: {value}"))
 }
 
 fn parse_wall_region_id(value: &serde_json::Value) -> Result<WallRegionId, String> {

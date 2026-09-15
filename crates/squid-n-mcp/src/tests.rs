@@ -385,15 +385,12 @@ fn test_quantity_takeoff_json_column() {
 
 #[test]
 fn test_query_model_wall_plates() {
-    use squid_n_core::ids::NodeId;
     use squid_n_core::model::{WallPlate, WallPlateShape};
 
     let mut m = sample_model();
     m.wall_plates.push(WallPlate {
         id: squid_n_core::ids::WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
-        },
+        shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -417,7 +414,6 @@ fn test_query_model_wall_plates() {
 /// 耐震スリットは辺ごとに読み書きでき、省略時はどの辺も切れていない扱いになる。
 #[test]
 fn test_apply_edit_set_wall_plate_slit() {
-    use squid_n_core::ids::NodeId;
     use squid_n_core::model::{WallPlate, WallPlateShape};
 
     let mut state = ServerState {
@@ -431,9 +427,7 @@ fn test_apply_edit_set_wall_plate_slit() {
     };
     state.model.wall_plates.push(WallPlate {
         id: squid_n_core::ids::WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
-        },
+        shape: WallPlateShape::Enclosed,
         section: Some(SectionId(0)),
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -478,57 +472,87 @@ fn test_apply_edit_set_wall_plate_slit() {
 }
 
 #[test]
-fn test_apply_edit_add_enclosed_wall_plate() {
+fn test_apply_edit_wall_plate_region_assignment() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{Node, WallPlateShape};
+    use squid_n_core::ids::{NodeId, WallPlateId};
+    use squid_n_core::model::{Node, WallPlate, WallPlateShape};
 
-    let mut state = ServerState {
-        model: Model {
-            nodes: (0..4)
-                .map(|i| Node {
-                    id: NodeId(i),
-                    coord: match i {
-                        0 => [0.0, 0.0, 0.0],
-                        1 => [3000.0, 0.0, 0.0],
-                        2 => [3000.0, 0.0, 3000.0],
-                        _ => [0.0, 0.0, 3000.0],
-                    },
-                    restraint: Dof6Mask::FREE,
-                    mass: None,
-                    story: None,
-                    support_spring: None,
-                })
-                .collect(),
-            sections: sample_model().sections,
-            ..Default::default()
+    let mut model = Model {
+        nodes: (0..4)
+            .map(|i| Node {
+                id: NodeId(i),
+                coord: match i {
+                    0 => [0.0, 0.0, 0.0],
+                    1 => [3000.0, 0.0, 0.0],
+                    2 => [3000.0, 0.0, 3000.0],
+                    _ => [0.0, 0.0, 3000.0],
+                },
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            })
+            .collect(),
+        sections: sample_model().sections,
+        ..Default::default()
+    };
+    let first = model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
+    );
+    let region = model
+        .wall_plate_assignment_region(first)
+        .expect("割当領域")
+        .id;
+    let mut state = ServerState {
+        model,
         undo: squid_n_edit::UndoStack::new(),
         jobs: JobRegistry::new(),
-        results: squid_n_io::results::FsResultStore::open(
-            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_edit_test", std::process::id())),
-        )
+        results: squid_n_io::results::FsResultStore::open(std::env::temp_dir().join(format!(
+            "squid-n-test-{}/mcp_wall_assign",
+            std::process::id()
+        )))
         .expect("temp store"),
     };
 
+    // 未設定へ戻すと版も消える。
+    let body = serde_json::json!({ "command": "UnsetWallPlateRegion", "region": region.0 });
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
+    assert!(state.model.wall_plates.is_empty());
+
+    // 割り当て直すと生成される。
     let body = serde_json::json!({
-        "command": "AddEnclosedWallPlate",
-        "boundary": [0, 1, 2, 3],
+        "command": "AssignWallPlateToRegion",
+        "region": region.0,
         "section": null,
         "opening_area": 0.0,
         "opening_weight": 0.0
     });
-    let result = apply_edit(&mut state, &body).expect("apply");
-    assert!(result.applied);
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
     assert_eq!(state.model.wall_plates.len(), 1);
     assert!(matches!(
         state.model.wall_plates[0].shape,
-        WallPlateShape::Enclosed { .. }
+        WallPlateShape::Enclosed
     ));
-    assert!(state.model.elements.is_empty(), "Wall 要素を直接書かない");
+    assert_eq!(query_model(&state.model, "wall_plate", None).len(), 1);
 
-    let items = query_model(&state.model, "wall_plate", None);
-    assert_eq!(items.len(), 1);
+    // 版なしへ。
+    let body = serde_json::json!({ "command": "SetWallPlateRegionNoPlate", "region": region.0 });
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
+    assert!(state.model.wall_plates.is_empty());
+
+    // 領域不在は applied:false。
+    let body = serde_json::json!({ "command": "AssignWallPlateToRegion", "region": 99 });
+    assert!(!apply_edit(&mut state, &body).expect("parse ok").applied);
 }
 
 #[test]
@@ -543,8 +567,8 @@ fn test_apply_edit_noop_unknown_node() {
         .expect("temp store"),
     };
     let body = serde_json::json!({
-        "command": "AddEnclosedWallPlate",
-        "boundary": [0, 1, 2, 99]
+        "command": "AssignWallPlateToRegion",
+        "region": 99
     });
     let result = apply_edit(&mut state, &body).expect("parse ok");
     assert!(!result.applied);
@@ -559,9 +583,7 @@ fn test_query_model_slabs_and_floor_regions() {
     let mut m = sample_model();
     m.slabs.push(Slab {
         id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
-        },
+        shape: SlabShape::Enclosed,
         plate: SlabPlate {
             section: Some(SectionId(0)),
             method: DistributionMethod::TriTrapezoid,
@@ -582,51 +604,80 @@ fn test_query_model_slabs_and_floor_regions() {
 }
 
 #[test]
-fn test_apply_edit_add_slab() {
+fn test_apply_edit_assign_slab_to_floor_plate_region() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{Node, SlabShape};
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, PlateAssignment,
+        SlabShape,
+    };
+
+    let mut model = Model {
+        nodes: (0..4)
+            .map(|i| Node {
+                id: NodeId(i),
+                coord: match i {
+                    0 => [0.0, 0.0, 0.0],
+                    1 => [3000.0, 0.0, 0.0],
+                    2 => [3000.0, 3000.0, 0.0],
+                    _ => [0.0, 3000.0, 0.0],
+                },
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            })
+            .collect(),
+        sections: sample_model().sections,
+        ..Default::default()
+    };
+    for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.elements.push(ElementData {
+            id: ElemId(i as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    let report = model.rebuild_floor_assignment_regions();
+    assert_eq!(report.regions, 1, "正方形の大梁で 1 面");
+    let region = model.floor_assignment_regions.regions[0].id;
 
     let mut state = ServerState {
-        model: Model {
-            nodes: (0..4)
-                .map(|i| Node {
-                    id: NodeId(i),
-                    coord: match i {
-                        0 => [0.0, 0.0, 0.0],
-                        1 => [3000.0, 0.0, 0.0],
-                        2 => [3000.0, 3000.0, 0.0],
-                        _ => [0.0, 3000.0, 0.0],
-                    },
-                    restraint: Dof6Mask::FREE,
-                    mass: None,
-                    story: None,
-                    support_spring: None,
-                })
-                .collect(),
-            sections: sample_model().sections,
-            ..Default::default()
-        },
+        model,
         undo: squid_n_edit::UndoStack::new(),
         jobs: JobRegistry::new(),
-        results: squid_n_io::results::FsResultStore::open(
-            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_edit_slab", std::process::id())),
-        )
+        results: squid_n_io::results::FsResultStore::open(std::env::temp_dir().join(format!(
+            "squid-n-test-{}/mcp_edit_assign_slab",
+            std::process::id()
+        )))
         .expect("temp store"),
     };
 
     let body = serde_json::json!({
-        "command": "AddSlab",
-        "boundary": [0, 1, 2, 3],
+        "command": "AssignSlabToFloorPlateRegion",
+        "region": region.0,
         "section": null,
         "method": "TriTrapezoid"
     });
     let result = apply_edit(&mut state, &body).expect("apply");
     assert!(result.applied);
     assert_eq!(state.model.slabs.len(), 1);
+    assert!(matches!(state.model.slabs[0].shape, SlabShape::Enclosed));
     assert!(matches!(
-        state.model.slabs[0].shape,
-        SlabShape::Enclosed { .. }
+        state.model.floor_assignment_regions.regions[0].assignment,
+        PlateAssignment::Plate(_)
     ));
 }
 
@@ -670,8 +721,12 @@ fn test_apply_edit_nested_body_wrapper() {
     let mut state = four_node_edit_state("nested_body");
     let body = serde_json::json!({
         "body": {
-            "command": "AddEnclosedWallPlate",
-            "boundary": [0, 1, 2, 3]
+            "command": "AddAttachedWallPlate",
+            "anchor": {
+                "Line": { "nodes": [0, 1], "span": [0.0, 1.0], "transfer": "Anchor" }
+            },
+            "extent": [900.0, 900.0],
+            "section": null
         }
     });
     let result = apply_edit(&mut state, &body).expect("apply");
@@ -833,7 +888,7 @@ fn test_parse_requires_wall_region_posts() {
 fn test_parse_set_secondary_member_end_support() {
     let cmd = parse_edit_command(&serde_json::json!({
         "command": "SetSecondaryMemberEndSupport",
-        "nodes": [0, 1],
+        "member": 0,
         "end_support": ["Supported", "Free"]
     }))
     .expect("解析できる");
@@ -844,7 +899,7 @@ fn test_parse_set_secondary_member_end_support() {
 fn test_parse_requires_end_support() {
     let err = expect_parse_err(serde_json::json!({
         "command": "SetSecondaryMemberEndSupport",
-        "nodes": [0, 1]
+        "member": 0
     }));
     assert!(err.contains("end_support"), "{err}");
 }
@@ -866,4 +921,122 @@ fn test_parse_requires_unassigned_joist_body() {
         "command": "AddUnassignedJoist"
     }));
     assert!(err.contains("joist"), "{err}");
+}
+
+#[test]
+fn test_parse_place_secondary_member() {
+    let cmd = parse_edit_command(&serde_json::json!({
+        "command": "PlaceSecondaryMember",
+        "parent": "floor",
+        "region": 0,
+        "kind": "Joist",
+        "ends": {"Supported": [
+            {"support": {"Primary": 0}, "position": 0.5},
+            {"support": {"Primary": 2}, "position": 0.5}
+        ]},
+        "name": "J0"
+    }))
+    .expect("解析できる");
+    assert_eq!(cmd.label(), "二次部材配置");
+}
+
+#[test]
+fn test_parse_requires_place_secondary_member_parent() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "PlaceSecondaryMember",
+        "kind": "Joist",
+        "ends": {"Detached": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]}
+    }));
+    assert!(err.contains("parent"), "{err}");
+}
+
+#[test]
+fn test_parse_set_secondary_member_ends() {
+    let cmd = parse_edit_command(&serde_json::json!({
+        "command": "SetSecondaryMemberEnds",
+        "member": 0,
+        "ends": {"Supported": [
+            {"support": {"Primary": 0}, "position": 0.25},
+            {"support": {"Primary": 2}, "position": 0.75}
+        ]}
+    }))
+    .expect("解析できる");
+    assert_eq!(cmd.label(), "二次部材の端部移動");
+}
+
+/// 二次部材の配置は小梁を床領域へ入れ、割当領域を再構築する（MCP 経路）。
+#[test]
+fn test_apply_edit_place_secondary_member() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
+    };
+
+    let mut state = four_node_edit_state("place_secondary_member");
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: match i {
+                0 => [0.0, 0.0, 0.0],
+                1 => [3000.0, 0.0, 0.0],
+                2 => [3000.0, 3000.0, 0.0],
+                _ => [0.0, 3000.0, 0.0],
+            },
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.elements.push(ElementData {
+            id: ElemId(i as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        secondary_joists: Vec::new(),
+        slab_ids: Vec::new(),
+    });
+    model.rebuild_floor_assignment_regions();
+    state.model = model;
+
+    let body = serde_json::json!({
+        "command": "PlaceSecondaryMember",
+        "parent": "floor",
+        "region": 0,
+        "kind": "Joist",
+        "ends": {"Supported": [
+            {"support": {"Primary": 0}, "position": 0.5},
+            {"support": {"Primary": 2}, "position": 0.5}
+        ]},
+        "name": "J0"
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.joists().count(), 1);
+    assert_eq!(state.model.floor_assignment_regions.regions.len(), 2);
+    assert!(
+        state.model.validate().is_ok(),
+        "{:?}",
+        state.model.validate()
+    );
 }

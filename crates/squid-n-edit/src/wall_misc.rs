@@ -524,6 +524,17 @@ impl EditCommand for DeleteWallPlate {
             }
         }
 
+        let mut assignment_refs: Vec<(
+            WallPlateAssignmentRegionId,
+            squid_n_core::model::PlateAssignment<WallPlateId>,
+        )> = Vec::new();
+        for region in &mut model.wall_assignment_regions.regions {
+            if region.assignment == squid_n_core::model::PlateAssignment::Plate(self.id) {
+                assignment_refs.push((region.id, region.assignment));
+                region.assignment = squid_n_core::model::PlateAssignment::Unset;
+            }
+        }
+
         let removed = model.wall_plates.remove(idx);
         let target = self.id.0;
         model.visit_wall_plate_ids(|id| {
@@ -536,6 +547,7 @@ impl EditCommand for DeleteWallPlate {
             index: idx,
             plate: removed,
             region_refs,
+            assignment_refs,
         })
     }
 
@@ -550,6 +562,11 @@ pub struct InsertWallPlate {
     pub plate: squid_n_core::model::WallPlate,
     /// 削除時に壁領域から除去した参照の (壁領域添字, リスト内位置)。
     pub region_refs: Vec<(usize, usize)>,
+    /// 削除時に未設定へ戻した割当領域の (領域 ID, 元の状態)。
+    pub assignment_refs: Vec<(
+        WallPlateAssignmentRegionId,
+        squid_n_core::model::PlateAssignment<WallPlateId>,
+    )>,
 }
 
 impl EditCommand for InsertWallPlate {
@@ -571,6 +588,11 @@ impl EditCommand for InsertWallPlate {
             if let Some(region) = model.wall_regions.get_mut(ri) {
                 let insert_pos = pos.min(region.wall_plate_ids.len());
                 region.wall_plate_ids.insert(insert_pos, id);
+            }
+        }
+        for (region_id, assignment) in &self.assignment_refs {
+            if let Some(region) = model.wall_assignment_regions.get_mut(*region_id) {
+                region.assignment = *assignment;
             }
         }
 
@@ -627,45 +649,190 @@ impl EditCommand for AddAttachedWallPlate {
     }
 }
 
-/// 柱・梁で囲まれた壁版の追加。末尾に追加する。
-pub struct AddEnclosedWallPlate {
-    pub boundary: Vec<NodeId>,
+/// 壁版割当領域へ壁版を割り当てる。壁版を末尾に生成し、領域の状態を
+/// `Plate(生成した壁版)` へ変える。領域が無い、または既に版ありのときは Noop。
+pub struct AssignWallPlateToRegion {
+    pub region: WallPlateAssignmentRegionId,
     pub section: Option<SectionId>,
     pub opening_area: f64,
     pub opening_weight: f64,
 }
 
-impl EditCommand for AddEnclosedWallPlate {
+impl EditCommand for AssignWallPlateToRegion {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        use squid_n_core::model::{WallPlate, WallPlateShape};
-
-        if self.boundary.is_empty()
-            || !self
-                .boundary
-                .iter()
-                .all(|&n| crate::refs::node_exists(model, n))
-            || !crate::refs::section_ref_ok(model, self.section)
-        {
+        let Some(region) = model.wall_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.plate().is_some() {
             return Box::new(Noop);
         }
-        let id = WallPlateId(model.wall_plates.len() as u32);
-        model.wall_plates.push(WallPlate {
-            id,
-            shape: WallPlateShape::Enclosed {
-                boundary: self.boundary.clone(),
-            },
-            section: self.section,
-            opening_area: self.opening_area,
-            opening_weight: self.opening_weight,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
-        Box::new(DeleteWallPlate { id })
+        if !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        if model.wall_assignment_region_nodes(self.region).is_none() {
+            return Box::new(Noop);
+        }
+        let new_id = WallPlateId(model.wall_plates.len() as u32);
+        SetWallPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::Plate(new_id),
+            plate: Some(squid_n_core::model::WallPlate {
+                id: new_id,
+                shape: squid_n_core::model::WallPlateShape::Enclosed,
+                section: self.section,
+                opening_area: self.opening_area,
+                opening_weight: self.opening_weight,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
+            }),
+            region_refs: Vec::new(),
+        }
+        .apply(model)
     }
 
     fn label(&self) -> &str {
-        "囲まれた壁版追加"
+        "壁版の割当"
+    }
+}
+
+/// 壁版割当領域を「版なし」にする。版ありなら壁版の削除も同一 Undo 単位に含める。
+pub struct SetWallPlateRegionNoPlate {
+    pub region: WallPlateAssignmentRegionId,
+}
+
+impl EditCommand for SetWallPlateRegionNoPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(region) = model.wall_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.is_no_plate() {
+            return Box::new(Noop);
+        }
+        SetWallPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::NoPlate,
+            plate: None,
+            region_refs: Vec::new(),
+        }
+        .apply(model)
+    }
+
+    fn label(&self) -> &str {
+        "版なしにする"
+    }
+}
+
+/// 壁版割当領域の割当を未設定へ戻す。版ありなら壁版の削除も同一 Undo 単位に含める。
+pub struct UnsetWallPlateRegion {
+    pub region: WallPlateAssignmentRegionId,
+}
+
+impl EditCommand for UnsetWallPlateRegion {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(region) = model.wall_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        if region.assignment.is_unset() {
+            return Box::new(Noop);
+        }
+        SetWallPlateRegionAssignment {
+            region: self.region,
+            assignment: squid_n_core::model::PlateAssignment::Unset,
+            plate: None,
+            region_refs: Vec::new(),
+        }
+        .apply(model)
+    }
+
+    fn label(&self) -> &str {
+        "割当を未設定に戻す"
+    }
+}
+
+/// 割当領域の状態と、それに伴う壁版の生成・削除をまとめて適用する内部コマンド。
+/// 逆操作は適用前の状態を復元する自分自身。
+///
+/// `retain_wall_plates` は取り除いた壁版の `WallRegion.wall_plate_ids` の所属も落とすため、
+/// その所属位置を `region_refs` に控えて逆操作で戻す（直後の状態でも `WallRegion` と
+/// 割当領域が食い違わないようにする）。
+struct SetWallPlateRegionAssignment {
+    region: WallPlateAssignmentRegionId,
+    assignment: squid_n_core::model::PlateAssignment<WallPlateId>,
+    plate: Option<squid_n_core::model::WallPlate>,
+    /// 適用時に取り除く壁版が持っていた `WallRegion.wall_plate_ids` の所属位置
+    /// （壁領域添字, リスト内位置）。
+    region_refs: Vec<(usize, usize)>,
+}
+
+impl EditCommand for SetWallPlateRegionAssignment {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::PlateAssignment;
+        let Some(region) = model.wall_assignment_regions.get(self.region) else {
+            return Box::new(Noop);
+        };
+        let previous_assignment = region.assignment;
+        let previous_plate = previous_assignment
+            .plate()
+            .and_then(|id| model.wall_plate(id).cloned());
+        match (&self.assignment, &self.plate) {
+            (PlateAssignment::Plate(id), Some(plate)) if plate.id == *id => {}
+            (PlateAssignment::Unset | PlateAssignment::NoPlate, None) => {}
+            _ => return Box::new(Noop),
+        }
+        let previous_refs = if let Some(previous) = &previous_plate {
+            let previous_id = previous.id;
+            let refs: Vec<(usize, usize)> = model
+                .wall_regions
+                .iter()
+                .enumerate()
+                .flat_map(|(ri, region)| {
+                    region
+                        .wall_plate_ids
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pid)| **pid == previous_id)
+                        .map(move |(pos, _)| (ri, pos))
+                })
+                .collect();
+            model.retain_wall_plates(|plate| plate.id != previous_id);
+            refs
+        } else {
+            Vec::new()
+        };
+        if let Some(plate) = &self.plate {
+            let insert_at = plate.id.0 as usize;
+            if insert_at > model.wall_plates.len() {
+                return Box::new(Noop);
+            }
+            model.visit_wall_plate_ids(|id| {
+                if id.0 as usize >= insert_at {
+                    id.0 += 1;
+                }
+            });
+            model.wall_plates.insert(insert_at, plate.clone());
+        }
+        if let Some(region) = model.wall_assignment_regions.get_mut(self.region) {
+            region.assignment = self.assignment;
+        }
+        if let Some(id) = self.assignment.plate() {
+            for &(ri, pos) in self.region_refs.iter().rev() {
+                if let Some(region) = model.wall_regions.get_mut(ri) {
+                    let insert_pos = pos.min(region.wall_plate_ids.len());
+                    region.wall_plate_ids.insert(insert_pos, id);
+                }
+            }
+        }
+        Box::new(SetWallPlateRegionAssignment {
+            region: self.region,
+            assignment: previous_assignment,
+            plate: previous_plate,
+            region_refs: previous_refs,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "割当領域の状態変更"
     }
 }
 
