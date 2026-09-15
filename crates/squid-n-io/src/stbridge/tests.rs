@@ -1866,18 +1866,24 @@ fn test_import_slab_with_node_order_and_thickness() {
     </StbSecSlab_RC>
   </StbSections>
   <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
     <StbSlab id="0" name="S1" id_section="7" kind_structure="RC">
       <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
     </StbSlab>
   </StbMembers>
 </StbModel></ST_BRIDGE>"#;
-    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    let (m, _report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
     assert_eq!(m.slabs.len(), 1, "スラブを1件取り込む");
-    assert!(m.floor_regions.is_empty(), "大梁がないので床領域は0件");
+    assert_eq!(m.floor_regions.len(), 1, "大梁が囲む床領域へ割り当てる");
     let s = &m.slabs[0];
     assert_eq!(
-        s.boundary_nodes().unwrap(),
+        s.boundary_nodes(&m).unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界節点ループが順序どおり"
     );
@@ -1885,14 +1891,6 @@ fn test_import_slab_with_node_order_and_thickness() {
         m.slab_plate_thickness(s),
         Some(180.0),
         "断面参照から厚さを解決"
-    );
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|w| w.contains("床板") && w.contains("割り当て")),
-        "大梁なしの浮き床板は警告: {:?}",
-        report.warnings
     );
 }
 
@@ -1908,6 +1906,12 @@ fn test_import_slab_node_order_cdata() {
     <StbNode id="3" X="0" Y="3000" Z="0"/>
   </StbNodes>
   <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
     <StbSlab id="0" name="S1" kind_structure="RC">
       <StbNodeIdOrder><![CDATA[0 1 2 3]]></StbNodeIdOrder>
     </StbSlab>
@@ -1917,7 +1921,7 @@ fn test_import_slab_node_order_cdata() {
     assert!(m.validate().is_ok(), "{:?}", m.validate());
     assert_eq!(m.slabs.len(), 1, "CDATA の節点ループを取り込む");
     assert_eq!(
-        m.slabs[0].boundary_nodes().unwrap(),
+        m.slabs[0].boundary_nodes(&m).unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
     );
 }
@@ -1935,6 +1939,12 @@ fn test_import_slab_self_closing_node_order_does_not_capture_stray_text() {
     <StbNode id="3" X="0" Y="3000" Z="0"/>
   </StbNodes>
   <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
     <StbSlab id="0" name="S1" kind_structure="RC">
       <StbNodeIdOrder/>
       <Foo>999</Foo>
@@ -1947,7 +1957,7 @@ fn test_import_slab_self_closing_node_order_does_not_capture_stray_text() {
     assert_eq!(m.slabs.len(), 1);
     // 999 が混入せず、実 StbNodeIdOrder の 0 1 2 3 のみになる。
     assert_eq!(
-        m.slabs[0].boundary_nodes().unwrap(),
+        m.slabs[0].boundary_nodes(&m).unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "自己終了タグ後の無関係テキストを取り込まない"
     );
@@ -1972,6 +1982,10 @@ fn test_import_wall_with_node_order_and_thickness() {
     </StbSecWall_RC>
   </StbSections>
   <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="3"/>
+    <StbColumn id="1" id_node_bottom="1" id_node_top="2"/>
+    <StbGirder id="2" id_node_start="0" id_node_end="1"/>
+    <StbGirder id="3" id_node_start="3" id_node_end="2"/>
     <StbWall id="0" name="W1" id_section="9" kind_structure="RC">
       <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
     </StbWall>
@@ -1991,8 +2005,8 @@ fn test_import_wall_with_node_order_and_thickness() {
     assert_eq!(plates.len(), 1, "壁版を1件取り込む");
     let p = plates[0];
     assert_eq!(
-        p.boundary_nodes(),
-        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..]),
+        p.boundary_nodes(&m),
+        Some(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]),
         "境界節点ループが順序どおり"
     );
     let sec = p.section.and_then(|s| m.sections.get(s.index()));
@@ -2001,13 +2015,7 @@ fn test_import_wall_with_node_order_and_thickness() {
         Some(200.0),
         "壁断面の厚さを解決"
     );
-    // 本フィクスチャは柱・梁を持たないため壁領域（region_gen::wall の検出対象）は
-    // 検出されず、壁版はどの壁領域にも帰属しない（警告になる。壁版の帰属確認は
-    // full_model.rs の実フィクスチャで行う）。
-    assert_eq!(
-        report.warnings,
-        vec!["壁領域の作り直しで壁版 1 枚が領域に割り当てられなかった".to_string()]
-    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 }
 
 /// 頂部梁の上に立つパラペット（StbWall）は、どの壁領域にも収まらないが
@@ -2093,6 +2101,10 @@ fn test_self_closing_slab_does_not_steal_wall_nodes() {
     <StbNode id="3" X="0" Y="0" Z="3000"/>
   </StbNodes>
   <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="3"/>
+    <StbColumn id="1" id_node_bottom="1" id_node_top="2"/>
+    <StbGirder id="2" id_node_start="0" id_node_end="1"/>
+    <StbGirder id="3" id_node_start="3" id_node_end="2"/>
     <StbSlab id="0" name="S0" id_section="1"/>
     <StbWall id="1" name="W1" kind_structure="RC">
       <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
@@ -2107,8 +2119,8 @@ fn test_self_closing_slab_does_not_steal_wall_nodes() {
         "壁版が取り込まれる（節点を横取りされない）"
     );
     assert_eq!(
-        m.wall_plates[0].boundary_nodes(),
-        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..])
+        m.wall_plates[0].boundary_nodes(&m),
+        Some(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)])
     );
 }
 
@@ -2158,18 +2170,19 @@ fn test_wall_roundtrip_export_import() {
         shear_rebar_material: None,
         steel_material: None,
     });
-    model.wall_plates.push(WallPlate {
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -2190,11 +2203,14 @@ fn test_wall_roundtrip_export_import() {
     );
     let plates: Vec<_> = m2.wall_plates.iter().collect();
     assert_eq!(plates.len(), 1, "壁版1件");
-    assert_eq!(
-        plates[0].boundary_nodes(),
-        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..]),
-        "境界が往復"
-    );
+    let mut got: Vec<u32> = plates[0]
+        .boundary_nodes(&m2)
+        .expect("境界が往復")
+        .iter()
+        .map(|n| n.0)
+        .collect();
+    got.sort_unstable();
+    assert_eq!(got, vec![0, 1, 2, 3], "境界が往復");
     let t = plates[0].section.and_then(|s| m2.sections.get(s.index()));
     assert_eq!(t.and_then(|s| s.thickness), Some(250.0), "厚さが往復");
 
@@ -2261,18 +2277,19 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
         shear_rebar_material: None,
         steel_material: None,
     });
-    model.wall_plates.push(WallPlate {
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+        WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let xml = export_stbridge(&model).expect("export");
@@ -2284,7 +2301,7 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
     assert!(m2.validate().is_ok(), "{:?}", m2.validate());
     assert_eq!(m2.wall_plates.len(), 1);
     assert_eq!(
-        m2.wall_plates[0].boundary_nodes().map(|n| n.len()),
+        m2.wall_plates[0].boundary_nodes(&m2).map(|n| n.len()),
         Some(5),
         "5 節点が往復する"
     );
@@ -2302,8 +2319,7 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
 /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。
 #[test]
 fn test_slab_roundtrip_export_import() {
-    use squid_n_core::ids::SlabId;
-    use squid_n_core::model::{DistributionMethod, Slab, SlabShape};
+    use squid_n_core::model::DistributionMethod;
     let mut model = Model::default();
     for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
         .into_iter()
@@ -2358,19 +2374,16 @@ fn test_slab_roundtrip_export_import() {
         mk_beam(2, 2, 3),
         mk_beam(3, 3, 0),
     ]);
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: SlabPlate {
+    model.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        SlabPlate {
             section: Some(slab_sec),
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
         },
-    });
+    );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let xml = export_stbridge(&model).expect("export");
@@ -2378,7 +2391,7 @@ fn test_slab_roundtrip_export_import() {
     assert!(m2.validate().is_ok(), "{:?}", m2.validate());
     assert_eq!(m2.slabs.len(), 1, "スラブ1件");
     assert_eq!(
-        m2.slabs[0].boundary_nodes().unwrap(),
+        m2.slabs[0].boundary_nodes(&m2).unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界が往復"
     );
@@ -2440,7 +2453,10 @@ fn test_import_stbpost_bottom_top() {
     assert!(m.elements.is_empty(), "間柱は解析要素にしない");
     assert_eq!(m.unassigned_posts.len(), 1);
     assert_eq!(m.unassigned_posts[0].kind, SecondaryMemberKind::Post);
-    assert_eq!(m.unassigned_posts[0].nodes, [NodeId(0), NodeId(1)]);
+    assert_eq!(
+        m.secondary_member_end_points(&m.unassigned_posts[0]),
+        Some(([0.0, 0.0, 0.0], [0.0, 0.0, 3000.0]))
+    );
 }
 
 /// [高] SRC 内蔵鉄骨の参照が未解決なら警告する（無言のゼロ鉄骨を防ぐ）。
@@ -2768,14 +2784,9 @@ fn test_import_stbbeam_as_secondary_member() {
     assert_eq!(m.joists().count(), 1);
     let sm = m.joists().next().expect("小梁 1 本");
     assert_eq!(sm.kind, SecondaryMemberKind::Joist);
-    assert_eq!(sm.nodes, [NodeId(2), NodeId(3)]);
-    assert_eq!(
-        sm.end_support,
-        [
-            squid_n_core::model::EndSupport::Supported,
-            squid_n_core::model::EndSupport::Free
-        ],
-        "大梁に載る端は支持、自由端は Free として取り込む"
+    assert!(
+        sm.is_cantilever(),
+        "大梁に載る端は支持、自由端は片持ちとして取り込む"
     );
     assert!(
         report.notes.iter().any(|n| n.contains("自由端")),
@@ -2811,17 +2822,21 @@ fn test_secondary_members_roundtrip() {
     push_section(&mut m, h.to_section(SectionId(0), "G".into()));
     m.elements.push(member(0, false, 0));
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
+    let joist_ends =
+        squid_n_core::model::SecondaryMemberEnds::Detached([m.nodes[0].coord, m.nodes[1].coord]);
     m.unassigned_joists.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), NodeId(1)],
+        ends: joist_ends,
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
+    let post_ends =
+        squid_n_core::model::SecondaryMemberEnds::Detached([m.nodes[0].coord, m.nodes[2].coord]);
     m.unassigned_posts.push(SecondaryMember {
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Post,
-        nodes: [NodeId(0), NodeId(2)],
+        ends: post_ends,
         section: Some(SectionId(0)),
         name: "P1".into(),
     });
@@ -2841,6 +2856,51 @@ fn test_secondary_members_roundtrip() {
     assert!(back.validate().is_ok());
 }
 
+/// 材軸中間へアンカーした（両端に節点を持たない）二次部材は、ST-Bridge が材端を
+/// 節点 ID で表すため書き出せない。黙って落とさず、件数と ID を示すエラーにする。
+#[test]
+fn test_export_errors_when_secondary_has_no_end_node() {
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let mut m = frame_nodes();
+    let h = SectionShape::SteelH {
+        height: 300.0,
+        width: 150.0,
+        web_thick: 6.5,
+        flange_thick: 9.0,
+    };
+    push_section(&mut m, h.to_section(SectionId(0), "G".into()));
+    m.elements.push(member(0, false, 0));
+    let anchor = |position: f64| SecondaryMemberAnchor {
+        support: SupportMemberId::Primary(ElemId(0)),
+        position,
+    };
+    m.unassigned_joists.push(SecondaryMember {
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Supported([anchor(0.25), anchor(0.75)]),
+        section: Some(SectionId(0)),
+        name: "J-mid".into(),
+    });
+    let sm = &m.unassigned_joists[0];
+    let (a, b) = m.secondary_member_end_points(sm).expect("材軸");
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    assert!(
+        m.nodes
+            .iter()
+            .all(|n| squid_n_core::geom::vec3::dist(n.coord, a) > tol
+                && squid_n_core::geom::vec3::dist(n.coord, b) > tol),
+        "前提: 両端に一致する節点が無い"
+    );
+
+    let err = export_stbridge(&m).expect_err("節点の無い二次部材を黙って落とさない");
+    assert!(matches!(err, StbError::SecondaryWithoutNode(_)), "{err:?}");
+    assert!(err.to_string().contains("SM0"), "{err}");
+}
+
 /// 厚さが分かるスラブ（StbSecSlab_RC）には、取り込み時に自重
 /// 断面を共有する床が複数あっても、往復で断面が増えない。
 ///
@@ -2848,8 +2908,8 @@ fn test_secondary_members_roundtrip() {
 /// 同名の断面が枚数分並び、再取り込みのたびに符号が `S15`・`S15#2` … と増殖する。
 #[test]
 fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
-    use squid_n_core::ids::{SectionId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab, SlabShape};
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::DistributionMethod;
 
     let mut model = Model::default();
     // 2 スパン分の 6 節点で床 2 枚を作り、同じ断面を共有させる。
@@ -2878,20 +2938,17 @@ fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(slab_sec, "S15".into()),
     );
-    for (i, b) in [[0, 1, 4, 3], [1, 2, 5, 4]].into_iter().enumerate() {
-        model.slabs.push(Slab {
-            id: SlabId(i as u32),
-            shape: SlabShape::Enclosed {
-                boundary: b.into_iter().map(NodeId).collect(),
-            },
-            plate: SlabPlate {
+    for b in [[0, 1, 4, 3], [1, 2, 5, 4]] {
+        model.add_enclosed_slab_from_nodes(
+            &b.map(NodeId),
+            SlabPlate {
                 section: Some(slab_sec),
                 loads: Vec::new(),
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
-        });
+        );
     }
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
@@ -2933,6 +2990,12 @@ fn test_import_slab_section_and_self_weight() {
     </StbSecSlab_RC>
   </StbSections>
   <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
     <StbSlabs>
       <StbSlab id="0" name="S1" id_section="0" kind_structure="RC">
         <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
@@ -2966,6 +3029,106 @@ fn test_import_slab_section_and_self_weight() {
         "取り込みを通知: {:?}",
         report.notes
     );
+}
+
+/// 小梁の境界が StbSlab を分けるときは、割当領域ごとに床板を 1 枚ずつ作り、
+/// 元の版仕様（断面）を各片へ継承する。総面積は元の版と変わらない。
+#[test]
+fn test_import_splits_slab_across_assignment_regions() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+    <StbNode id="4" X="2000" Y="0" Z="0"/>
+    <StbNode id="5" X="2000" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecSlab_RC id="7" name="S1">
+      <StbSecFigureSlab_RC><StbSecSlab_RC_Straight depth="150"/></StbSecFigureSlab_RC>
+    </StbSecSlab_RC>
+  </StbSections>
+  <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
+    <StbBeams>
+      <StbBeam id="1" name="B1" id_node_start="4" id_node_end="5"/>
+    </StbBeams>
+    <StbSlab id="0" name="S1" id_section="7" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, _report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert_eq!(m.floor_assignment_regions.regions.len(), 2, "小梁で 2 領域");
+    assert_eq!(m.slabs.len(), 2, "元版を割当領域ごとに分割");
+    for slab in &m.slabs {
+        assert!(!slab.is_attached(), "囲まれた床板");
+        let coords = slab.boundary_coords(&m).expect("境界");
+        let area = squid_n_core::geom::polygon::area_xy(&coords);
+        assert!(
+            (area - 6_000_000.0).abs() < 1e-3,
+            "各領域 2000×3000: {area}"
+        );
+        assert!(
+            m.slab_section(slab)
+                .is_some_and(|s| s.thickness == Some(150.0)),
+            "元版の断面を継承する"
+        );
+    }
+    let total: f64 = m
+        .slabs
+        .iter()
+        .map(|s| squid_n_core::geom::polygon::area_xy(&s.boundary_coords(&m).unwrap()))
+        .sum();
+    assert!(
+        (total - 12_000_000.0).abs() < 1e-3,
+        "総面積が元の版と一致: {total}"
+    );
+}
+
+/// どの割当領域にも入らない面積が残る StbSlab は、境界節点と面積を含むエラーにして
+/// 取り込み全体を失敗させる（面積を黙って落とさない）。
+#[test]
+fn test_import_errors_when_slab_area_stays_unassigned() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+    <StbNode id="4" X="5000" Y="3000" Z="0"/>
+    <StbNode id="5" X="5000" Y="5000" Z="0"/>
+    <StbNode id="6" X="0" Y="5000" Z="0"/>
+  </StbNodes>
+  <StbMembers>
+    <StbGirders>
+      <StbGirder id="10" id_node_start="0" id_node_end="1"/>
+      <StbGirder id="11" id_node_start="1" id_node_end="2"/>
+      <StbGirder id="12" id_node_start="2" id_node_end="3"/>
+      <StbGirder id="13" id_node_start="3" id_node_end="0"/>
+    </StbGirders>
+    <StbSlab id="0" name="S1" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 4 5 6</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let err = import_stbridge_with_report(xml).expect_err("未帰属面積があればエラー");
+    match err {
+        StbError::SlabWithoutRegion(msg) => {
+            assert!(msg.contains("面積"), "面積を含む: {msg}");
+            assert!(msg.contains("0 1 2 4 5 6"), "境界節点を含む: {msg}");
+        }
+        other => panic!("SlabWithoutRegion を期待: {other:?}"),
+    }
 }
 
 /// 実 ST-Bridge の通り芯（`StbAxes` > `StbParallelAxes` > `StbParallelAxis`）を
@@ -3334,33 +3497,28 @@ fn test_export_skips_plateless_and_attached_orphan_sections() {
         }],
         ..Default::default()
     };
-    m.slabs = vec![
-        Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            plate: SlabPlate {
-                section: Some(SectionId(0)),
-                ..Default::default()
-            },
+    m.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        SlabPlate {
+            section: Some(SectionId(0)),
+            ..Default::default()
         },
-        Slab {
-            id: SlabId(1),
-            shape: SlabShape::Attached {
-                anchor: RegionAnchor::Line {
-                    nodes: [NodeId(0), NodeId(1)],
-                    span: [0.0, 1.0],
-                    transfer: LoadTransfer::Anchor,
-                },
-                extent: [-1500.0, -1500.0],
+    );
+    m.slabs.push(Slab {
+        id: SlabId(1),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
             },
-            plate: SlabPlate {
-                section: Some(SectionId(0)),
-                ..Default::default()
-            },
+            extent: [-1500.0, -1500.0],
         },
-    ];
+        plate: SlabPlate {
+            section: Some(SectionId(0)),
+            ..Default::default()
+        },
+    });
     let xml = export_stbridge(&m).expect("export");
     let n_slab = xml.matches("<StbSlab ").count();
     let n_sec = xml.matches("<StbSecSlab_RC ").count();

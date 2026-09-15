@@ -8,12 +8,13 @@ use super::{
     SecMatRef,
 };
 use squid_n_core::ids::{
-    ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId, WallPlateId,
+    ElemId, FloorPlateAssignmentRegionId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId,
+    StoryId, WallPlateId,
 };
 use squid_n_core::model::{
-    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, SlabPlate, SlabShape, Story,
-    WallPlate, WallPlateShape,
+    AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase,
+    LocalAxis, Material, MaterialCategory, Model, NodalLoad, Node, OneWayDir, Section, Slab,
+    SlabPlate, SlabShape, SlabUsage, Story, WallPlate, WallPlateShape,
 };
 use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
@@ -102,14 +103,14 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     );
     stats.push_warnings(&mut warnings);
 
-    let slab_section_count = build_slabs(
+    let (pending_slabs, slab_section_count) = build_slabs(
         &mut model,
         raw_slabs,
         &slab_secs,
         &node_index,
         &mut warnings,
     );
-    build_walls(
+    let pending_walls = build_walls(
         &mut model,
         raw_walls,
         &wall_sec_thickness,
@@ -117,6 +118,12 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &material_index,
         &mut warnings,
     );
+    model.rebuild_floor_assignment_regions();
+    assign_imported_slabs(&mut model, pending_slabs)?;
+    if !pending_walls.is_empty() {
+        model.rebuild_wall_assignment_regions();
+        assign_imported_walls(&mut model, pending_walls)?;
+    }
     let rebuild = rebuild_floor_regions(&mut model);
     if rebuild.unassigned_slabs != 0 {
         warnings.push(format!(
@@ -155,23 +162,22 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             wall_rebuild.unmatched_old_regions
         ));
     }
-    let inferred_free_ends = model.infer_secondary_end_supports();
-    if !inferred_free_ends.is_empty() {
-        let mut names: Vec<String> = inferred_free_ends
+    let anchorize = model.anchorize_secondary_members();
+    if !anchorize.inferred_free_ends.is_empty() {
+        let mut names: Vec<String> = anchorize
+            .inferred_free_ends
             .iter()
-            .map(|(nodes, _)| {
+            .map(|(id, _)| {
                 model
-                    .joists()
-                    .chain(model.posts())
-                    .find(|sm| sm.nodes == *nodes)
+                    .secondary_member(*id)
                     .map(|sm| {
                         if sm.name.is_empty() {
-                            format!("{}–{}", nodes[0].0, nodes[1].0)
+                            format!("SM{}", id.0)
                         } else {
                             sm.name.clone()
                         }
                     })
-                    .unwrap_or_else(|| format!("{}–{}", nodes[0].0, nodes[1].0))
+                    .unwrap_or_else(|| format!("SM{}", id.0))
             })
             .collect();
         names.sort();
@@ -185,7 +191,33 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         names.truncate(MAX_LIST);
         notes.push(format!(
             "幾何的に支持のない二次部材の端を自由端（片持ち）として {} 端取り込みました（{}{suffix}）",
-            inferred_free_ends.len(),
+            anchorize.inferred_free_ends.len(),
+            names.join("・")
+        ));
+    }
+    if !anchorize.unresolved.is_empty() {
+        let mut names: Vec<String> = anchorize
+            .unresolved
+            .iter()
+            .map(|id| {
+                model
+                    .secondary_member(*id)
+                    .map(|sm| {
+                        if sm.name.is_empty() {
+                            format!("SM{}", id.0)
+                        } else {
+                            sm.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("SM{}", id.0))
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        notes.push(format!(
+            "二次部材 {} 本の支持端を支持部材アンカーへ解決できず、端点座標のまま保持しました\
+             （重量・材軸長は欠落させず、解析前チェックでエラーにします。対象: {}）",
+            anchorize.unresolved.len(),
             names.join("・")
         ));
     }
@@ -553,11 +585,14 @@ fn build_secondaries(
             }
         }
         let sm = squid_n_core::model::SecondaryMember {
+            id: model.alloc_secondary_member_id(),
             kind: s.kind,
-            nodes: [NodeId(ni), NodeId(nj)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                model.node(NodeId(ni)).map(|n| n.coord).unwrap_or([0.0; 3]),
+                model.node(NodeId(nj)).map(|n| n.coord).unwrap_or([0.0; 3]),
+            ]),
             section,
             name: s.name,
-            end_support: Default::default(),
         };
         match s.kind {
             squid_n_core::model::SecondaryMemberKind::Joist => {
@@ -573,17 +608,25 @@ fn build_secondaries(
     (n_joists, n_posts)
 }
 
-/// スラブ（StbSlab）を格納する。返り値は自重を設定したスラブ数。
+/// 割当領域へ結びつける前のスラブ（境界節点と版仕様）。
+struct PendingSlab {
+    boundary: Vec<NodeId>,
+    plate: SlabPlate,
+}
+
+/// スラブ（StbSlab）を読み、割当領域へ結びつける前の一覧を返す。返り値は
+/// `(結びつけ前のスラブ, 追加したスラブ断面の数)`。
 fn build_slabs(
     model: &mut Model,
     raw_slabs: Vec<RawSlab>,
     slab_secs: &HashMap<u32, RawSlabSection>,
     node_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
-) -> usize {
+) -> (Vec<PendingSlab>, usize) {
     let mut skipped_slabs = 0u32;
     let mut sec_of_file: HashMap<u32, SectionId> = HashMap::new();
     let mut slab_section_count = 0usize;
+    let mut pending = Vec::new();
     for rs in raw_slabs {
         let mut boundary = Vec::with_capacity(rs.boundary.len());
         let mut resolved = true;
@@ -613,10 +656,8 @@ fn build_slabs(
             slab_section_count += 1;
             Some(sid)
         });
-        let new_id = SlabId(model.slabs.len() as u32);
-        model.slabs.push(Slab {
-            id: new_id,
-            shape: SlabShape::Enclosed { boundary },
+        pending.push(PendingSlab {
+            boundary,
             plate: SlabPlate {
                 section,
                 method: DistributionMethod::TriTrapezoid,
@@ -629,7 +670,294 @@ fn build_slabs(
             "境界節点が解決できない、または頂点数が不足するスラブを {skipped_slabs} 件スキップしました"
         ));
     }
-    slab_section_count
+    (pending, slab_section_count)
+}
+
+/// 取り込んだスラブを、覆う床板割当領域ごとの床板へ分割して割り当てる。
+///
+/// 各 StbSlab と各割当領域の交差面積を求め、交差面積が正の領域ごとに床板を 1 枚作る。
+/// 仕上げ荷重・積載は元 StbSlab の値へ交差面積比を掛けて領域ごとに合算し、領域面積で
+/// 割って面荷重強度へ戻す。躯体の断面・材料は元 StbSlab から継承する。
+/// どの領域にも入らない面積が残る StbSlab は、1 辺が大梁に全長覆われる取り付く床板を
+/// 除いて取り込み全体をエラーにする（面積を欠落させない）。
+fn assign_imported_slabs(model: &mut Model, pending: Vec<PendingSlab>) -> Result<(), StbError> {
+    struct Accum {
+        finish: Vec<(String, f64)>,
+        section: Option<SectionId>,
+        usage: Option<SlabUsage>,
+        method: DistributionMethod,
+        one_way: Option<OneWayDir>,
+    }
+
+    let regions: Vec<(FloorPlateAssignmentRegionId, Vec<[f64; 2]>, f64)> = model
+        .floor_assignment_regions
+        .regions
+        .iter()
+        .filter(|region| region.assignment.is_unset())
+        .filter_map(|region| {
+            let coords = model.floor_assignment_region_coords(region.id)?;
+            if coords.len() < 3 {
+                return None;
+            }
+            let z = coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64;
+            Some((region.id, coords.iter().map(|c| [c[0], c[1]]).collect(), z))
+        })
+        .collect();
+    let region_areas: Vec<f64> = regions
+        .iter()
+        .map(|(_, polygon, _)| squid_n_core::geom::polygon::area(polygon))
+        .collect();
+    let mut accum: Vec<Option<Accum>> = (0..regions.len()).map(|_| None).collect();
+    let mut attached: Vec<(SlabShape, SlabPlate)> = Vec::new();
+
+    for slab in pending {
+        let mut coords: Vec<[f64; 2]> = Vec::with_capacity(slab.boundary.len());
+        let mut z_sum = 0.0;
+        for id in &slab.boundary {
+            let Some(node) = model.node(*id) else {
+                coords.clear();
+                break;
+            };
+            coords.push([node.coord[0], node.coord[1]]);
+            z_sum += node.coord[2];
+        }
+        if coords.len() < 3 {
+            continue;
+        }
+        let source_z = z_sum / coords.len() as f64;
+        let source_area = squid_n_core::geom::polygon::area(&coords);
+        let hits: Vec<(usize, f64)> = regions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, polygon, z))| {
+                if (z - source_z).abs() > squid_n_core::geom::LEVEL_TOL_MM {
+                    return None;
+                }
+                let a = squid_n_core::geom::polygon::intersection_area(&coords, polygon);
+                (a > 0.0).then_some((i, a))
+            })
+            .collect();
+        let covered: f64 = hits.iter().map(|(_, a)| *a).sum();
+        if covered + area_tolerance(source_area) < source_area {
+            if hits.is_empty() {
+                if let Some(shape) = convert_to_attached(model, &slab.boundary) {
+                    attached.push((shape, slab.plate));
+                    continue;
+                }
+            }
+            let nodes = slab
+                .boundary
+                .iter()
+                .map(|n| n.0.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(StbError::SlabWithoutRegion(format!(
+                "節点 {nodes} が囲む床板の面積 {source_area:.1} mm² のうち \
+                 {:.1} mm² が床板割当領域に入りません",
+                source_area - covered
+            )));
+        }
+        for (ri, a) in hits {
+            let entry = accum[ri].get_or_insert_with(|| Accum {
+                finish: Vec::new(),
+                section: slab.plate.section,
+                usage: slab.plate.usage,
+                method: slab.plate.method,
+                one_way: slab.plate.one_way,
+            });
+            if matches!((entry.section, slab.plate.section), (Some(a), Some(b)) if a != b) {
+                return Err(StbError::SlabRegionConflict(format!(
+                    "床板割当領域 {} に厚さ・材料の異なる床板が重なります",
+                    regions[ri].0 .0
+                )));
+            }
+            if entry.section.is_none() {
+                entry.section = slab.plate.section;
+            }
+            if matches!((entry.usage, slab.plate.usage), (Some(a), Some(b)) if a != b) {
+                return Err(StbError::SlabRegionConflict(format!(
+                    "床板割当領域 {} に室用途の異なる床板が重なります",
+                    regions[ri].0 .0
+                )));
+            }
+            if entry.usage.is_none() {
+                entry.usage = slab.plate.usage;
+            }
+            for load in &slab.plate.loads {
+                match entry.finish.iter_mut().find(|(kind, _)| *kind == load.kind) {
+                    Some((_, value)) => *value += load.value * a,
+                    None => entry.finish.push((load.kind.clone(), load.value * a)),
+                }
+            }
+        }
+    }
+
+    for (shape, plate) in attached {
+        let slab_id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(Slab {
+            id: slab_id,
+            shape,
+            plate,
+        });
+    }
+    for (i, entry) in accum.into_iter().enumerate() {
+        let Some(entry) = entry else {
+            continue;
+        };
+        let region_area = region_areas[i];
+        if region_area <= 0.0 {
+            continue;
+        }
+        let plate = SlabPlate {
+            section: entry.section,
+            loads: entry
+                .finish
+                .into_iter()
+                .map(|(kind, weighted)| AreaLoad {
+                    kind,
+                    value: weighted / region_area,
+                })
+                .collect(),
+            usage: entry.usage,
+            method: entry.method,
+            one_way: entry.one_way,
+        };
+        let slab_id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(Slab {
+            id: slab_id,
+            shape: SlabShape::Enclosed,
+            plate,
+        });
+        model
+            .floor_assignment_regions
+            .get_mut(regions[i].0)
+            .expect("直前に確認した割当領域")
+            .assignment = squid_n_core::model::PlateAssignment::Plate(slab_id);
+    }
+    Ok(())
+}
+
+/// 交差面積の丸め誤差として許容する未帰属面積 [mm²]（面積比 ＋ 絶対下限）。
+fn area_tolerance(area: f64) -> f64 {
+    area.abs() * 1e-6 + 1e-3
+}
+
+/// 1 辺だけが大梁（2 節点 `Beam`）に全長覆われる多角形を、取り付く床板の形へ変換する。
+/// 変換できなければ `None`。
+fn convert_to_attached(model: &Model, boundary: &[NodeId]) -> Option<SlabShape> {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+    if boundary.len() < 3 {
+        return None;
+    }
+    let mut xy = Vec::with_capacity(boundary.len());
+    let mut z_sum = 0.0;
+    for id in boundary {
+        let node = model.node(*id)?;
+        xy.push([node.coord[0], node.coord[1]]);
+        z_sum += node.coord[2];
+    }
+    let z = z_sum / boundary.len() as f64;
+    let n = boundary.len();
+    let covered: Vec<usize> = (0..n)
+        .filter(|&i| edge_covered_by_beam(model, xy[i], xy[(i + 1) % n], z))
+        .collect();
+    if covered.len() != 1 {
+        return None;
+    }
+    let ei = covered[0];
+    let n0 = boundary[ei];
+    let n1 = boundary[(ei + 1) % n];
+    let a = xy[ei];
+    let b = xy[(ei + 1) % n];
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= f64::EPSILON {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let (nx, ny) = (-uy, ux);
+    let mut free = Vec::new();
+    for p in &xy {
+        if point_segment_dist(*p, a, b) <= squid_n_core::geom::MEMBER_AXIS_TOL_MM {
+            continue;
+        }
+        let d = (p[0] - a[0]) * nx + (p[1] - a[1]) * ny;
+        let t = (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+        free.push((t, d));
+    }
+    let extent = match free.len() {
+        1 => [free[0].1, free[0].1],
+        2 => {
+            if free[0].0 <= free[1].0 {
+                [free[0].1, free[1].1]
+            } else {
+                [free[1].1, free[0].1]
+            }
+        }
+        _ => return None,
+    };
+    Some(SlabShape::Attached {
+        anchor: RegionAnchor::Line {
+            nodes: [n0, n1],
+            span: [0.0, 1.0],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent,
+    })
+}
+
+fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    if len2 <= 1.0 {
+        return ((p[0] - a[0]).powi(2) + (p[1] - a[1]).powi(2)).sqrt();
+    }
+    let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0);
+    ((p[0] - (a[0] + d[0] * t)).powi(2) + (p[1] - (a[1] + d[1] * t)).powi(2)).sqrt()
+}
+
+/// 辺 `a`–`b`（レベル `z`）が、同一直線上で連結する 2 節点 `Beam` で全長覆われるか。
+fn edge_covered_by_beam(model: &Model, a: [f64; 2], b: [f64; 2], z: f64) -> bool {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= f64::EPSILON {
+        return false;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let (nx, ny) = (-uy, ux);
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
+    for e in &model.elements {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let (Some(p0), Some(p1)) = (model.node(e.nodes[0]), model.node(e.nodes[1])) else {
+            continue;
+        };
+        if (p0.coord[2] - z).abs() > squid_n_core::geom::LEVEL_TOL_MM
+            || (p1.coord[2] - z).abs() > squid_n_core::geom::LEVEL_TOL_MM
+        {
+            continue;
+        }
+        let da = (p0.coord[0] - a[0]) * nx + (p0.coord[1] - a[1]) * ny;
+        let db = (p1.coord[0] - a[0]) * nx + (p1.coord[1] - a[1]) * ny;
+        if da.abs() > tol || db.abs() > tol {
+            continue;
+        }
+        let ta = ((p0.coord[0] - a[0]) * ux + (p0.coord[1] - a[1]) * uy).clamp(0.0, len);
+        let tb = ((p1.coord[0] - a[0]) * ux + (p1.coord[1] - a[1]) * uy).clamp(0.0, len);
+        intervals.push((ta.min(tb), ta.max(tb)));
+    }
+    intervals.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut covered = 0.0_f64;
+    for (s, e) in intervals {
+        if s <= covered + tol {
+            covered = covered.max(e);
+        }
+    }
+    covered >= len - tol
 }
 
 /// 取り込んだスラブ断面を内部の [`Section`] として末尾へ追加し、その ID を返す。
@@ -692,7 +1020,13 @@ fn ensure_material_by_grade(model: &mut Model, grade: &str) -> Option<MaterialId
     Some(id)
 }
 
-/// 壁（StbWall）を囲まれた壁版として格納する。断面は厚さごとに 1 件とする。
+/// 割当領域へ結びつける前の壁（境界節点と断面）。
+struct PendingWall {
+    boundary: Vec<NodeId>,
+    section: Option<SectionId>,
+}
+
+/// 壁（StbWall）を読み、割当領域へ結びつける前の一覧を返す。断面は厚さごとに 1 件とする。
 fn build_walls(
     model: &mut Model,
     raw_walls: Vec<RawWall>,
@@ -700,9 +1034,10 @@ fn build_walls(
     node_index: &HashMap<u32, u32>,
     material_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
-) {
+) -> Vec<PendingWall> {
     let mut skipped_walls = 0u32;
     let mut no_section_walls = 0u32;
+    let mut pending = Vec::new();
     let mut wall_sections: HashMap<String, SectionId> = HashMap::new();
     for rw in raw_walls {
         let mut boundary: Vec<NodeId> = Vec::with_capacity(rw.boundary.len());
@@ -757,18 +1092,7 @@ fn build_walls(
         if section.is_none() {
             no_section_walls += 1;
         }
-        let id = WallPlateId(model.wall_plates.len() as u32);
-        let plate = WallPlate {
-            id,
-            shape: WallPlateShape::Enclosed { boundary },
-            section,
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        };
-        model.wall_plates.push(plate);
+        pending.push(PendingWall { boundary, section });
     }
     if skipped_walls > 0 {
         warnings.push(format!(
@@ -781,6 +1105,80 @@ fn build_walls(
              解析要素としては生成しません"
         ));
     }
+    pending
+}
+
+/// 取り込んだ壁を、境界が一致する壁版割当領域へ割り当てる。
+///
+/// どの割当領域とも境界が一致しない壁は、取り付く壁版（パラペット・腰壁・垂れ壁）へ
+/// 変換できるときだけ取り込み、それもできない場合は取り込み全体を失敗させる。
+/// 壁は任意の鉛直構面にあり、間柱で分割された領域への面積按分は未実装のため、
+/// 一致しない版を黙って落とさず安全側にエラーとする。
+fn assign_imported_walls(model: &mut Model, pending: Vec<PendingWall>) -> Result<(), StbError> {
+    for wall in pending {
+        let mut key: Vec<u32> = wall.boundary.iter().map(|n| n.0).collect();
+        key.sort_unstable();
+        let region = model
+            .wall_assignment_regions
+            .regions
+            .iter()
+            .find(|region| {
+                region.assignment.is_unset()
+                    && model
+                        .wall_assignment_region_nodes(region.id)
+                        .is_some_and(|nodes| {
+                            let mut k: Vec<u32> = nodes.iter().map(|n| n.0).collect();
+                            k.sort_unstable();
+                            k == key
+                        })
+            })
+            .map(|region| region.id);
+        let plate_id = WallPlateId(model.wall_plates.len() as u32);
+        if let Some(region_id) = region {
+            model.wall_plates.push(WallPlate {
+                id: plate_id,
+                shape: WallPlateShape::Enclosed,
+                section: wall.section,
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
+            });
+            model
+                .wall_assignment_regions
+                .get_mut(region_id)
+                .expect("直前に確認した割当領域")
+                .assignment = squid_n_core::model::PlateAssignment::Plate(plate_id);
+            continue;
+        }
+        if let Some(shape) = squid_n_core::wall_region_rebuild::wall_attached_shape_from_boundary(
+            model,
+            &wall.boundary,
+        ) {
+            model.wall_plates.push(WallPlate {
+                id: plate_id,
+                shape,
+                section: wall.section,
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
+            });
+            continue;
+        }
+        let nodes = wall
+            .boundary
+            .iter()
+            .map(|n| n.0.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(StbError::WallWithoutRegion(format!(
+            "節点 {nodes} が囲む壁版が、どの壁版割当領域とも一致しません"
+        )));
+    }
+    Ok(())
 }
 
 /// 荷重ケースを格納する（節点参照を正規化。存在しない節点への荷重は破棄して報告）。

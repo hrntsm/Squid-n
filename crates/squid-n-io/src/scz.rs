@@ -301,12 +301,22 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let model = make_3node_model();
+        let mut model = make_3node_model();
+        model.slab_thickness = 150.0;
+        model.next_secondary_member_id = 7;
         let dir = crate::test_util::test_tmp();
         let path = dir.join("p.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;
         assert_eq!(model.nodes.len(), back.nodes.len());
+        assert_eq!(
+            back.slab_thickness, model.slab_thickness,
+            "床スラブ厚は往復で保持される"
+        );
+        assert_eq!(
+            back.next_secondary_member_id, model.next_secondary_member_id,
+            "二次部材の次安定 ID は往復で保持される"
+        );
         assert!(model.eq_ignoring_dofmap(&back));
         let _ = std::fs::remove_file(&path);
     }
