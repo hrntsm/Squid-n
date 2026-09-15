@@ -624,16 +624,22 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .join(", ");
             issues.push(ModelIssue::model(format!(
                 "上下の梁際がともに切れた壁版があります（壁版 {ids}）。\
-                 柱際の辺は壁の重量を受けないため、自重の伝達先がありません。\
+                 対象は境界が 4 節点の囲まれた壁版です。\
+                 上下の梁際をともに切った納まりは想定していないため、\
+                 自重の支持先の指定によらず入力エラーとします。\
                  いずれかの梁際のスリットを外してください。"
             )));
         }
 
         let stranded = squid_n_load::wall_plate_load::wall_plates_without_load_path(model);
         if !stranded.is_empty() {
-            let n = stranded.len();
+            let ids = stranded
+                .iter()
+                .map(|id| id.0.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             issues.push(ModelIssue::model(format!(
-                "自重の行き先が決まらない壁版が {n} 枚あります。\
+                "自重の行き先が決まらない壁版があります（壁版 {ids}）。\
                  支持辺の負担率が未指定・不正、指定辺がスリットで縁切り、全長を支持する部材がない、または支持する主架構部材の区間が重複しています。\
                  壁版の自重負担率（合計100%）、境界、支持部材を確認してください。"
             )));
