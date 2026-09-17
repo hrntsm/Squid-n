@@ -416,10 +416,33 @@ mod tests {
         assert!((mn.n_allow - n_allow.max(1.0)).abs() < 1e-9);
 
         let mut rc_model = make_model(Some(rc_shape()), Some(24.0));
-        rc_model.materials[0].fy = Some(345.0);
+        rc_model.materials[0].category = MaterialCategory::Concrete;
+        rc_model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SD345".into(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(345.0),
+        });
+        rc_model.sections[0].rebar_material = Some(MaterialId(1));
+        rc_model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
         let rc_beam = elem(ElementKind::Beam, [NodeId(0), NodeId(1)]);
+        assert!(
+            crate::factory::input_check::member_strength_issue(&rc_beam, &rc_model).is_none(),
+            "正しい RC モデルは入力不備なし（早期 return 経路を通らない）"
+        );
         let rc_view = build_hinge_view(&rc_beam, &rc_model, basis, kind, 0.0, 8, 24);
         assert_eq!(rc_view.model, AnalysisHingeModel::ConcentratedSpring);
+        assert!(
+            rc_view.backbone.is_some(),
+            "武田型（履歴材料）でも M-θ 骨格は返す"
+        );
         assert!(
             rc_view.mn_linear.is_none(),
             "武田型（履歴材料）は N-M 線形相関を返さない"
