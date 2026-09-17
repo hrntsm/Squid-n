@@ -311,13 +311,14 @@ impl HingeViewCache {
 /// `generation`（`staleness.last_run` と `staleness.results_stale`）で無効化され、
 /// 断面・材料・履歴則の編集は `section`・`material`・`hysteresis` の
 /// フィンガープリントで無効化される。
+///
+/// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
+/// キーには含めない。表示時にキャッシュ済みのビューから決める。
 #[derive(Clone, PartialEq, Debug)]
 struct HingeViewKey {
     elem: ElemId,
     /// 解決後の選択ステップ添字（`records` 上の位置）。
     step: usize,
-    /// 採用曲げ面（強軸 Mz=true）。
-    bend_dir_z: bool,
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
     kind: ElementKind,
@@ -425,7 +426,6 @@ fn hinge_view_key(
     model: &Model,
     elem: &ElementData,
     step: usize,
-    bend_dir_z: bool,
     staleness: &Staleness,
 ) -> HingeViewKey {
     let rule = resolve_member_hysteresis(elem, model, AnalysisKind::Incremental);
@@ -433,7 +433,6 @@ fn hinge_view_key(
     HingeViewKey {
         elem: elem.id,
         step,
-        bend_dir_z,
         generation: (staleness.last_run, staleness.results_stale),
         kind: elem.kind,
         force_regime: elem.force_regime,
@@ -475,13 +474,32 @@ fn ensure_hinge_view(app: &mut App, key: HingeViewKey, elem: &ElementData, axial
     app.ui.scoped.hinge_view_cache = Some(HingeViewCache { key, view });
 }
 
-/// 部材の最終応答レコードから、採用する曲げ面（強軸 Mz／弱軸 My）を選ぶ
+/// 部材の最終応答レコードから、支配的な曲げ面（強軸 Mz／弱軸 My）を選ぶ
 /// （純粋関数）。i端・j端のうち絶対値が大きい方の成分を軸ごとに比較し、
 /// 大きい軸を採用する（同値なら強軸を採用）。
+///
+/// ファイバー／マルチスプリングの採用曲げ面（[`effective_bend_dir_z`]）を決める
+/// ために用いる。材端集中ばねは常に強軸へ固定するため、この関数は使わない。
 pub(super) fn dominant_bend_axis_z(last: &MemberStepState) -> bool {
     let mz_max = last.mz_i.abs().max(last.mz_j.abs());
     let my_max = last.my_i.abs().max(last.my_j.abs());
     mz_max >= my_max
+}
+
+/// ヒンジ詳細で表示する採用曲げ面（強軸 Mz=true）を決める（純粋関数）。
+///
+/// 材端集中ばねの非線形ばねは局所 z 回り（`Mz`）のみに作用し、弱軸（`My`）は弾性。
+/// N-M 線形相関も `Mz` に対する `My0` を用いるため、応答が弱軸支配でも表示は
+/// 強軸に固定する（`dominant_z` を無視する）。
+/// ファイバー／マルチスプリングは My・Mz の両軸をカバーする曲面を表示するため、
+/// 最終ステップの支配軸 `dominant_z`（[`dominant_bend_axis_z`]）に従う。
+fn effective_bend_dir_z(model: AnalysisHingeModel, dominant_z: bool) -> bool {
+    match model {
+        AnalysisHingeModel::ConcentratedSpring => true,
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring | AnalysisHingeModel::Other => {
+            dominant_z
+        }
+    }
 }
 
 /// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから
@@ -692,7 +710,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         .iter()
         .find(|(id, _)| *id == elem_id)
         .map(|(_, s)| s.clone());
-    let bend_dir_z = dominant_bend_axis_z(&records[records.len() - 1]);
+    let dominant_z = dominant_bend_axis_z(&records[records.len() - 1]);
 
     let step = hinge_step_selector(ui, app, &records);
     let axial_force_n = records[step].n as f64;
@@ -700,7 +718,6 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         &app.core.model,
         &elem_snapshot,
         step,
-        bend_dir_z,
         &app.core.scoped.staleness,
     );
     ensure_hinge_view(app, key, &elem_snapshot, axial_force_n);
@@ -711,6 +728,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         .as_ref()
         .map(|c| &c.view)
         .expect("ensure_hinge_view がキャッシュを設定する");
+    let bend_dir_z = effective_bend_dir_z(view.model, dominant_z);
 
     ui.label(format!("解析モデル: {}", analysis_model_label(view.model)));
     let rule_note = match view.model {
@@ -733,14 +751,22 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     if let Some(note) = rule_note {
         ui.label(note);
     }
-    ui.label(format!(
-        "採用曲げ面: {}",
-        if bend_dir_z {
-            "強軸(Mz)"
-        } else {
-            "弱軸(My)"
+    let bend_face_label = match view.model {
+        AnalysisHingeModel::ConcentratedSpring => {
+            "採用曲げ面: 強軸(Mz)固定（非線形ばねは強軸のみ。弱軸 My は弾性）。".to_string()
         }
-    ));
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring | AnalysisHingeModel::Other => {
+            format!(
+                "採用曲げ面: {}",
+                if bend_dir_z {
+                    "強軸(Mz)"
+                } else {
+                    "弱軸(My)"
+                }
+            )
+        }
+    };
+    ui.label(bend_face_label);
 
     ui.strong("M-θ カーブ（荷重変形カーブ）");
     ui.label(
@@ -2019,8 +2045,8 @@ mod tests {
         }
     }
 
-    fn key_of(model: &Model, elem: &ElementData, step: usize, bend_dir_z: bool) -> HingeViewKey {
-        hinge_view_key(model, elem, step, bend_dir_z, &Staleness::default())
+    fn key_of(model: &Model, elem: &ElementData, step: usize) -> HingeViewKey {
+        hinge_view_key(model, elem, step, &Staleness::default())
     }
 
     /// 選択ステップが変わればキーが変わる（集中ばねの骨格・N-M 線に使う軸力が変わる）。
@@ -2028,10 +2054,7 @@ mod tests {
     fn hinge_view_key_changes_with_step() {
         let model = key_test_model();
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
-        assert_ne!(
-            key_of(&model, &elem, 0, true),
-            key_of(&model, &elem, 1, true)
-        );
+        assert_ne!(key_of(&model, &elem, 0), key_of(&model, &elem, 1));
     }
 
     /// 同一ステップ数で再解析した場合（`last_run` のみ更新）もキーが変わる。
@@ -2046,13 +2069,13 @@ mod tests {
             last_run: Some(SystemTime::UNIX_EPOCH),
             ..Default::default()
         };
-        let k0 = hinge_view_key(&model, &elem, 2, true, &stale);
+        let k0 = hinge_view_key(&model, &elem, 2, &stale);
         stale.last_run = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
-        let k1 = hinge_view_key(&model, &elem, 2, true, &stale);
+        let k1 = hinge_view_key(&model, &elem, 2, &stale);
         assert_ne!(k0, k1, "同一 step 数でも再解析でキーが変わる");
 
         stale.results_stale = true;
-        let k2 = hinge_view_key(&model, &elem, 2, true, &stale);
+        let k2 = hinge_view_key(&model, &elem, 2, &stale);
         assert_ne!(k1, k2, "results_stale も世代に含める");
     }
 
@@ -2061,18 +2084,18 @@ mod tests {
     fn hinge_view_key_changes_with_section_material_and_hysteresis() {
         let mut model = key_test_model();
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
-        let k0 = key_of(&model, &elem, 1, true);
+        let k0 = key_of(&model, &elem, 1);
 
         model.sections[0].area += 1.0;
-        let k1 = key_of(&model, &elem, 1, true);
+        let k1 = key_of(&model, &elem, 1);
         assert_ne!(k0, k1, "断面編集でキーが変わる");
 
         model.materials[0].fy = Some(300.0);
-        let k2 = key_of(&model, &elem, 1, true);
+        let k2 = key_of(&model, &elem, 1);
         assert_ne!(k1, k2, "材料編集でキーが変わる");
 
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
-        let k3 = key_of(&model, &elem, 1, true);
+        let k3 = key_of(&model, &elem, 1);
         assert_ne!(k2, k3, "履歴則変更でキーが変わる");
         assert!(!k3.use_mn, "武田型は N-M 相関非対応");
     }
@@ -2133,13 +2156,55 @@ mod tests {
         assert_eq!(mn_display(&view), MnDisplay::None);
     }
 
+    /// 集中ばねは弱軸(My)支配の応答でも強軸(Mz)表示に固定し、ファイバー系は
+    /// 支配軸（`dominant_bend_axis_z`）に従う。
+    #[test]
+    fn effective_bend_dir_z_forces_strong_axis_for_concentrated_spring() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let concentrated = build_hinge_view(
+            &elem,
+            &model,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(concentrated.model, AnalysisHingeModel::ConcentratedSpring);
+
+        let weak_dominant = step(50.0, -10.0, 200.0, -150.0, 0.0);
+        assert!(!dominant_bend_axis_z(&weak_dominant), "弱軸支配の前提");
+        assert!(
+            effective_bend_dir_z(concentrated.model, dominant_bend_axis_z(&weak_dominant)),
+            "集中ばねは弱軸支配でも強軸(Mz)に固定"
+        );
+
+        let rc = key_test_model_rc();
+        let fiber = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        let fiber_view = build_hinge_view(
+            &fiber,
+            &rc,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(fiber_view.model, AnalysisHingeModel::Fiber);
+        assert!(
+            !effective_bend_dir_z(fiber_view.model, dominant_bend_axis_z(&weak_dominant)),
+            "ファイバーは支配軸（弱軸 My）に従う"
+        );
+    }
+
     /// キャッシュは同じキーのときだけ再利用され、キーが変われば作り直される
     /// （`ensure_hinge_view` の一致判定）。
     #[test]
     fn hinge_view_cache_reuses_only_matching_key() {
         let model = key_test_model();
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
-        let k0 = key_of(&model, &elem, 0, true);
+        let k0 = key_of(&model, &elem, 0);
         let cache = HingeViewCache {
             key: k0.clone(),
             view: HingeView {
@@ -2150,7 +2215,7 @@ mod tests {
             },
         };
         assert_eq!(cache.key(), &k0);
-        let k1 = key_of(&model, &elem, 1, true);
+        let k1 = key_of(&model, &elem, 1);
         assert_ne!(cache.key(), &k1);
     }
 
