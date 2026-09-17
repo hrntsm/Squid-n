@@ -13,7 +13,11 @@ ST-Bridge の主要要素ごとの変換状況です。
 書き出しは ST-Bridge 2.0.2 標準スキーマ準拠の 1 形式だけで、断面の表現を選ぶモードはありません。
 標準要素で表せない断面だけが、物性を直接持つ拡張要素 `StbSecRaw` へ落ちます。
 
-**実装**：書き出しは `squid_n_io::stbridge::export_stbridge`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。取り込みは節ごとに入口を示します。
+<div class="impl-ref">
+
+**実装参照**：書き出しは `squid_n_io::stbridge::export_stbridge`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。取り込みは節ごとに入口を示します。
+
+</div>
 
 ## 節点・階・材料
 
@@ -26,7 +30,11 @@ ST-Bridge の主要要素ごとの変換状況です。
 | `StbMaterial`（E・ν・密度・fc・fy） | ✅ | ❌ | ST-Bridge 2.0 の `StbModel` は材料表を持たないため、書き出しでは出力しない。材料表を持つファイルを読んだときに物性を捨てないよう、取り込みだけ受け付ける |
 | 部材の `id_material`（材料参照） | ⚠️ | ❌ | 材料は断面が持つため、取り込みでは参照先の断面へ移す（同じ断面を指す部材が別々の材料を指す場合は最初の 1 件を採り、件数を警告へ出す）。書き出しは断面のグレード名で表す |
 
-**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_nodes_and_stories, build_materials}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::assemble::{build_nodes_and_stories, build_materials}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
+</div>
 
 ## 部材
 
@@ -52,7 +60,11 @@ ST-Bridge の主要要素ごとの変換状況です。
 材端を節点 ID で表すため書き出せません。件数と対象 ID を含むエラーにして書き出し全体を
 失敗させ、黙って部材を落としません（ST-Bridge は二次部材の材軸途中の取付きを表現できない）。
 
-**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_members, build_secondaries}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。二次部材の両端は `Model::anchorize_secondary_members`（`crates/squid-n-core/src/model/secondary.rs`）が支持部材アンカー（どの支持部材の材軸上のどこに載るか）へ一括で解決し、幾何的に支持のない端は自由端と推定します。支持端のアンカーを解決できない二次部材は件数を notes に出し、端点座標のまま保持します（重量・材軸長は欠落させず、解析前チェックでエラーにして解析を止めます）。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::assemble::{build_members, build_secondaries}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。二次部材の両端は `Model::anchorize_secondary_members`（`crates/squid-n-core/src/model/secondary.rs`）が支持部材アンカー（どの支持部材の材軸上のどこに載るか）へ一括で解決し、幾何的に支持のない端は自由端と推定します。支持端のアンカーを解決できない二次部材は件数を notes に出し、端点座標のまま保持します（重量・材軸長は欠落させず、解析前チェックでエラーにして解析を止めます）。
+
+</div>
 
 ## 断面 — 鋼（形鋼ライブラリ `StbSecSteel`）
 
@@ -84,7 +96,11 @@ ST-Bridge の主要要素ごとの変換状況です。
 | テーパ・継手（`*_Taper` / `*_Joint` ほか始端を持つ図形） | ⚠️ | ❌ | 始端の形鋼を採り、材長方向に一様な断面として近似する。中間・終端の形鋼は取り込まない |
 | 上記 4 つの属性をいずれも持たない図形（柱の `*_NotSame` など） | ❌ | ❌ | 形鋼名を取れず、断面性能ゼロの断面として警告する |
 
-**実装**：取り込みは `squid_n_io::stbridge::import::steel::steel_shape_from`（`crates/squid-n-io/src/stbridge/import/steel.rs`）が形鋼を復元し、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::steel::steel_shape_from`（`crates/squid-n-io/src/stbridge/import/steel.rs`）が形鋼を復元し、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+
+</div>
 
 ## 断面 — RC・SRC・CFT
 
@@ -110,7 +126,11 @@ ST-Bridge の主要要素ごとの変換状況です。
 ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y 方向で径を変えた配筋は往復しません。
 書き出しでは 1 段の配筋へ丸めるため、多段配筋も段数を保てません。
 
-**実装**：取り込みは `squid_n_io::stbridge::import::rebar::parse_rebar`（`crates/squid-n-io/src/stbridge/import/rebar.rs`）が配筋を読み、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::rebar::parse_rebar`（`crates/squid-n-io/src/stbridge/import/rebar.rs`）が配筋を読み、`squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が断面を組み立てます。
+
+</div>
 
 ## 断面 — スラブ・壁
 
@@ -129,7 +149,11 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 壁の材料は取り込みでは `StbWall` の `id_material` から解決するため、書き出した
 `strength_concrete` を読み戻す経路はなく、材料は往復しません。
 
-**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_slabs, push_slab_section, build_walls}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::assemble::{build_slabs, push_slab_section, build_walls}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
+</div>
 
 ## 荷重・その他
 
@@ -144,7 +168,11 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 | `StbCommon` | ❌ | ✅ | 書き出しのみ。プロジェクト名・アプリ名は `Squid-n` 固定 |
 | `StbJoints` | ❌ | ✅ | 接合部は扱わないため、書き出しでは空要素だけを出す |
 
-**実装**：取り込みは `squid_n_io::stbridge::import::assemble::{build_load_cases, build_axes}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：取り込みは `squid_n_io::stbridge::import::assemble::{build_load_cases, build_axes}`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
+</div>
 
 ## 取り込み時の既定値
 
@@ -160,4 +188,8 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 - 支点を 1 つも持たないモデルは、最下レベルで柱脚が付く節点をピン支点にする
   （[支点の自動設定](./02_ST-Bridge_形式.md#支点の自動設定取り込み時)）
 
-**実装**：既定値の適用は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、支点の自動設定は `squid_n_io::stbridge::import::assemble::auto_assign_supports` が行います。
+<div class="impl-ref">
+
+**実装参照**：既定値の適用は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、支点の自動設定は `squid_n_io::stbridge::import::assemble::auto_assign_supports` が行います。
+
+</div>

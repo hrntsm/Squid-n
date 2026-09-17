@@ -2,14 +2,36 @@
 
 SRC/SRRC 梁のせん断終局耐力は、技術基準解説書（SRC 梁せん断終局）と SRC規準（SRC 梁せん断終局）に基づき、充腹と非充腹に分けて算定し、非充腹は荒川 mean 式系によります。
 
+**記号・単位**
+
+| 記号 | 意味 | 単位 |
+|------|------|------|
+| \\( Q\_u \\) | 充腹 SRC 梁の終局せん断耐力 | N |
+| \\( {}\_r Q\_u, {}\_s Q\_u \\) | RC 部・鉄骨部の終局せん断耐力 | N |
+| \\( Q\_{su} \\) | 非充腹 SRC 梁の終局せん断耐力 | N |
+| \\( {}\_s A\_w \\) | 鉄骨ウェブの断面積 | mm² |
+| \\( {}\_s \sigma\_y \\) | 鉄骨の降伏強度 | N/mm² |
+| \\( f\_s \\) | RC 部の許容せん断応力度 | N/mm² |
+| \\( F\_c \\) | コンクリートの設計基準強度 | N/mm² |
+| \\( p\_t \\) | 引張鉄筋比（\\( {}\_r p\_t + {}\_s p\_t \\)） | % |
+| \\( {}\_r p\_w, {}\_s p\_w \\) | RC 部・鉄骨部のせん断補強筋比 | - |
+| \\( {}\_r \sigma\_{wy}, {}\_s \sigma\_{wy} \\) | 帯筋・鉄骨ウェブの降伏強度 | N/mm² |
+| \\( b\_e \\) | 非充腹梁の有効幅 | mm |
+| \\( j \\) | 応力中心距離 | mm |
+| \\( \kappa \\) | 荒川式の係数（0.053／高強度 0.068） | - |
+
 **算定式**:
 
-- 充腹（累加）\\( Q_u = {}_r Q_u + {}_s Q_u \\)。`rQu`（コンクリート・RC）に `sQu`（鉄骨ウェブ \\( {}_s A_w \cdot {}_s \sigma_y/\sqrt{3} \\)）を累加する。
+- 充腹（累加）\\( Q\_u = {}\_r Q\_u + {}\_s Q\_u \\)。`rQu`（コンクリート・RC）に `sQu`（鉄骨ウェブ \\( {}\_s A\_w \cdot {}\_s \sigma\_y/\sqrt{3} \\)）を累加する。
   RC 部の許容せん断応力度 fs は工学単位（kgf/cm²）で定義された式を SI に換算して用いる:
-  技術基準解説書式 \\( f_s = \min(F_c/20, (0.49 + F_c/100) \cdot 1.5) \\)、
-  SRC規準式 \\( f_s = \min(0.15 \cdot F_c, 2.21 + 0.045 \cdot F_c) \\)（いずれも N/mm²）
-- 非充腹 格子材 \\( Q_{su} = \\{ \kappa \cdot p_t^{0.23} \cdot k_{cs} \cdot (18+F_c)/(M/Qd+0.12) + 0.85\sqrt{{}\_r p_w \cdot {}\_r \sigma_{wy} + 0.5 \cdot {}\_s p_w \cdot {}\_s \sigma_{wy}} \\} \cdot b_e \cdot j \\)
-  （√ は帯板項まで全体に掛かる。\\( p_t = {}_r p_t + {}_s p_t \\)、\\( j = 0.8D \\)、\\( M/Qd \in [1,3] \\)、\\( \kappa = 0.053 \\)／高強度0.068）
-- 非充腹 ラチス材 \\( Q_{su} = \\{\dots\\} \cdot b_e \cdot {}_r j + {}_s Q_u \\)
+  技術基準解説書式 \\( f\_s = \min(F\_c/20, (0.49 + F\_c/100) \cdot 1.5) \\)、
+  SRC規準式 \\( f\_s = \min(0.15 \cdot F\_c, 2.21 + 0.045 \cdot F\_c) \\)（いずれも N/mm²）
+- 非充腹 格子材 \\( Q\_{su} = \\{ \kappa \cdot p\_t^{0.23} \cdot k\_{cs} \cdot (18+F\_c)/(M/Qd+0.12) + 0.85\sqrt{{}\_r p\_w \cdot {}\_r \sigma\_{wy} + 0.5 \cdot {}\_s p\_w \cdot {}\_s \sigma\_{wy}} \\} \cdot b\_e \cdot j \\)
+  （√ は帯板項まで全体に掛かる。\\( p\_t = {}\_r p\_t + {}\_s p\_t \\)、\\( j = 0.8D \\)、\\( M/Qd \in [1,3] \\)、\\( \kappa = 0.053 \\)／高強度0.068）
+- 非充腹 ラチス材 \\( Q\_{su} = \\{\dots\\} \cdot b\_e \cdot {}\_r j + {}\_s Q\_u \\)
 
-**実装**：`squid_n_design_jp::srrc::beam_nonlinear`（`beam_nonlinear.rs`）。
+<div class="impl-ref">
+
+**実装参照**：`squid_n_design_jp::srrc::beam_nonlinear`（`beam_nonlinear.rs`）。
+
+</div>
