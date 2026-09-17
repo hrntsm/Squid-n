@@ -102,7 +102,11 @@
 同じ量は、どの画面でも同じ単位で表示します。
 該当する箇所は各ページで明記します。
 
-**実装**：画面表示の単位換算（上表）と単位ラベルは `squid_n_core::units::to_display`（`crates/squid-n-core/src/units.rs`）に量ごとに一元化しています。
+<div class="impl-ref">
+
+**実装参照**：画面表示の単位換算（上表）と単位ラベルは `squid_n_core::units::to_display`（`crates/squid-n-core/src/units.rs`）に量ごとに一元化しています。
+
+</div>
 
 主な記号は次のとおりです。
 

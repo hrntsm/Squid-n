@@ -33,5 +33,9 @@ CFT（充填コンクリートを鋼基準へ換算）:
 
 \\[ I\_y = I\_{y,\text{steel}} + {}\_c i\_y/n \\]
 
-**実装**：`squid_n_core::section_shape::SectionShape::{src_equivalent_props, cft_equivalent_props}`（`crates/squid-n-core/src/section_shape/composite.rs`）が算定します。
+<div class="impl-ref">
+
+**実装参照**：`squid_n_core::section_shape::SectionShape::{src_equivalent_props, cft_equivalent_props}`（`crates/squid-n-core/src/section_shape/composite.rs`）が算定します。
 ns の暫定既定は N_S_EQ = 15 とします。
+
+</div>

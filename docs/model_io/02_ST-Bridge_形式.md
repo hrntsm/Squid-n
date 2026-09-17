@@ -2,7 +2,11 @@
 
 [ST-Bridge](https://www.building-smart.or.jp/meeting/buildingsmart/st-bridge/)（XML, 2.0 系）で**読み込み・書き出し**ができ、他社の一貫計算プログラムや BIM ツールとモデルを受け渡すための入出力経路として機能します。
 
-**実装**：`squid_n_io::stbridge::{import_stbridge_with_report, export_stbridge}`（`crates/squid-n-io/src/stbridge/`）が取り込み・書き出しの入口です。
+<div class="impl-ref">
+
+**実装参照**：`squid_n_io::stbridge::{import_stbridge_with_report, export_stbridge}`（`crates/squid-n-io/src/stbridge/`）が取り込み・書き出しの入口です。
+
+</div>
 
 ## GUI からの操作
 
@@ -15,7 +19,11 @@
 - ST-Bridge 読込は `.scz` プロジェクトとは別系統であり、読み込んでもプロジェクトの保存先パスは設定されません（新規モデルとして開く扱い）。上書き保存するとネイティブの `.scz` として保存されます。
 - 書き出しは **ST-Bridge 2.0.2 標準スキーマ準拠**の 1 形式のみです（他ソフトとの相互運用が目的のため独自方言は用いません）。完全一致の保存にはネイティブの `.scz` を使います。
 
-**実装**：メニューは `squid_n_app`（`crates/squid-n-app/src/app/mod.rs`）が表示し、取り込みは `squid_n_app::app::App::import_stbridge_from`、書き出しは `squid_n_app::app::App::export_stbridge_to`（`crates/squid-n-app/src/app/actions/io.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：メニューは `squid_n_app`（`crates/squid-n-app/src/app/mod.rs`）が表示し、取り込みは `squid_n_app::app::App::import_stbridge_from`、書き出しは `squid_n_app::app::App::export_stbridge_to`（`crates/squid-n-app/src/app/actions/io.rs`）が担います。
+
+</div>
 
 ## 対応バージョン
 
@@ -23,7 +31,11 @@
 - 1.x 系や ST-Bridge でない XML は読み込みエラーになります。
 - ファイルの文字コードは、BOM 付き UTF-8・UTF-8・Shift_JIS（Windows-31J）の順に判定します。
 
-**実装**：文字コードは `squid_n_io::stbridge::read_stbridge_file`（`crates/squid-n-io/src/stbridge/import/mod.rs`）が判定し、`version` 属性の検証は `squid_n_io::stbridge::import::parser::parse`（`crates/squid-n-io/src/stbridge/import/parser.rs`）が行います。
+<div class="impl-ref">
+
+**実装参照**：文字コードは `squid_n_io::stbridge::read_stbridge_file`（`crates/squid-n-io/src/stbridge/import/mod.rs`）が判定し、`version` 属性の検証は `squid_n_io::stbridge::import::parser::parse`（`crates/squid-n-io/src/stbridge/import/parser.rs`）が行います。
+
+</div>
 
 ## 対応範囲（意味的往復を保証するサブセット）
 
@@ -41,7 +53,11 @@
 要素ごとの詳細な変換状況（取り込み／書き出し／往復・備考）は、
 [ST-Bridge 要素別 変換状況一覧](./03_ST-Bridge_要素別変換状況.md)を参照してください。
 
-**実装**：取り込みと書き出しは `squid_n_io::stbridge::{import, export}`（`crates/squid-n-io/src/stbridge/`）が担い、床板・壁版の床領域／壁領域への付け直しは `squid_n_core::{region_rebuild, wall_region_rebuild}` が行います。
+<div class="impl-ref">
+
+**実装参照**：取り込みと書き出しは `squid_n_io::stbridge::{import, export}`（`crates/squid-n-io/src/stbridge/`）が担い、床板・壁版の床領域／壁領域への付け直しは `squid_n_core::{region_rebuild, wall_region_rebuild}` が行います。
+
+</div>
 
 ## 非対応（対象外）
 
@@ -68,7 +84,11 @@
 > 新要素・ベンダー拡張も、部材グループ・断面の直属子であれば要素名で通知します。fail-loud）。
 > 属性の単位でも同じ扱いをします（下記「[属性の扱いの報告](#属性の扱いの報告)」）。
 
-**実装**：未対応要素の収集と警告への変換は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、`squid_n_io::stbridge::ImportReport` として返ります。
+<div class="impl-ref">
+
+**実装参照**：未対応要素の収集と警告への変換は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、`squid_n_io::stbridge::ImportReport` として返ります。
+
+</div>
 
 ### 属性の扱いの報告
 
@@ -96,7 +116,11 @@ GUI の「ST-Bridge 読込」では、扱いの全量を下ドックの「ログ
 > 対象外です。属性の扱いの報告に「未取り込み」として現れるため、偏心を持つモデルを
 > 取り込んだ場合はログで確認してください。
 
-**実装**：属性の出現・取り込み件数は `squid_n_io::stbridge::AttrDisposition` として集計し（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）、GUI のログ出力は `squid_n_app::app::App::log_attribute_dispositions`（`crates/squid-n-app/src/app/actions/io.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：属性の出現・取り込み件数は `squid_n_io::stbridge::AttrDisposition` として集計し（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）、GUI のログ出力は `squid_n_app::app::App::log_attribute_dispositions`（`crates/squid-n-app/src/app/actions/io.rs`）が担います。
+
+</div>
 
 ### 支点の自動設定（取り込み時）
 
@@ -109,7 +133,11 @@ ST-Bridge は境界条件（支点）を持たないため、支点が 1 つも�
 ピン支点にフォールバックします。設定した内容は `ImportReport` の通知（notes）で知らせ、
 モデルタブ→境界条件で変更できます。すでに拘束を持つモデルはそのまま尊重し、何もしません。
 
-**実装**：`squid_n_io::stbridge::import::assemble::auto_assign_supports`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が判定・設定し、通知は `squid_n_io::stbridge::ImportReport` の notes に積みます。
+<div class="impl-ref">
+
+**実装参照**：`squid_n_io::stbridge::import::assemble::auto_assign_supports`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が判定・設定し、通知は `squid_n_io::stbridge::ImportReport` の notes に積みます。
+
+</div>
 
 ## 断面の符号と階（取り込み）
 
@@ -141,7 +169,11 @@ ST-Bridge の `floor` は自由文字列で、階への id 参照を持たない
 1 件へ統合されます。
 小梁の断面定義が同じ内容で何件も並ぶファイルは実際にあるため、この統合で断面一覧が実態に近づきます。
 
-**実装**：重複の統合・連番付与・材料を含む一致判定は `squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：重複の統合・連番付与・材料を含む一致判定は `squid_n_io::stbridge::import::assemble::build_sections`（`crates/squid-n-io/src/stbridge/import/assemble.rs`）が担います。
+
+</div>
 
 ## 断面表現（書き出し）
 
@@ -185,7 +217,11 @@ ST-Bridge の `floor` は自由文字列で、階への id 参照を持たない
 Squid-n 固有の解析・設計属性や材料の物性値まで含めた完全一致での往復が必要な場合は
 [`.scz`](./01_プロジェクト形式_scz.md) を使います。
 
-**実装**：断面の写像は `squid_n_io::stbridge::section_std`（`crates/squid-n-io/src/stbridge/section_std.rs`）が、XML 全体の組み立ては `squid_n_io::stbridge::export`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。
+<div class="impl-ref">
+
+**実装参照**：断面の写像は `squid_n_io::stbridge::section_std`（`crates/squid-n-io/src/stbridge/section_std.rs`）が、XML 全体の組み立ては `squid_n_io::stbridge::export`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。
+
+</div>
 
 ## ライブラリからの利用
 
