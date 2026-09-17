@@ -1,25 +1,38 @@
 //! 要素にならない囲まれた壁版の自重を、明示された境界辺の負担率で分配する。
+//!
+//! 各辺の支持先は、床板と同じく壁版割当領域の境界
+//! （[`squid_n_core::model::SupportBoundary`]）を正本とする。境界の頂点にモデル節点が
+//! 無くても（間柱端が梁中間にある場合など）支持部材と材軸区間をそのまま使える。
 
 use std::collections::HashMap;
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
-use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, WallPlateId};
-use squid_n_core::model::{MemberLoadKind, Model, WallPlate, WallPlateShape};
+use squid_n_core::ids::{NodeId, SecondaryMemberId, WallPlateId};
+use squid_n_core::model::{MemberLoadKind, Model, SupportMemberId, WallPlate, WallPlateShape};
 
 use crate::cascade::SecondaryKey;
-use crate::secondary::project_on_segment;
 
 use crate::floor::{fem_uniform, BeamLoad, LoadShape, LoadTarget};
 
-/// 1 枚の壁版の自重のうち、1 つの辺が受け持つぶん。
+/// 1 枚の壁版の自重のうち、1 つの境界辺が受け持つぶん。
 #[derive(Clone, Copy, Debug)]
 pub struct WallEdgeShare {
-    /// 受け持つ辺の両端節点。
-    pub nodes: [NodeId; 2],
+    /// 辺が載る支持部材。
+    pub support: SupportMemberId,
+    /// 支持部材材軸上の無次元区間（割当領域の境界が持つ値）。
+    pub span: [f64; 2],
     /// この辺が受け持つ重量 [N]（下向きを正）。
     pub total: f64,
+}
+
+impl WallEdgeShare {
     /// 受け手が間柱ならその安定 ID。主架構（柱・梁）なら `None`。
-    pub post: Option<SecondaryMemberId>,
+    pub fn post(&self) -> Option<SecondaryMemberId> {
+        match self.support {
+            SupportMemberId::Secondary(key) => Some(key),
+            SupportMemberId::Primary(_) => None,
+        }
+    }
 }
 
 /// 間柱 1 本が壁版から受け持つ荷重。
@@ -49,74 +62,6 @@ fn is_vertical(a: [f64; 3], b: [f64; 3]) -> bool {
 fn is_horizontal(a: [f64; 3], b: [f64; 3]) -> bool {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     (b[2] - a[2]).abs() <= MEMBER_AXIS_TOL_MM && (dx * dx + dy * dy).sqrt() > MEMBER_AXIS_TOL_MM
-}
-
-/// 辺の支持部材。
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum EdgeSupport {
-    /// 主架構（柱・大梁）が覆っている。
-    Primary,
-    /// 間柱が覆っている。
-    Post(SecondaryMemberId),
-}
-
-/// 辺の支持部材を引くための索引。
-///
-/// 主架構の候補列と間柱の材軸を **1 回だけ**組み立てて使い回す。辺ごとに組み直すと、
-/// 呼び出しのたびに全要素を走査し直し、辺の本数 × 部材数になる（逐次伝達が
-/// `beam_span_candidates` を 1 回だけ構築しているのと同じ理由）。
-struct SupportIndex<'a> {
-    model: &'a Model,
-    beams: Vec<crate::secondary::BeamSpanCandidate>,
-    posts: Vec<(SecondaryKey, [f64; 3], [f64; 3])>,
-}
-
-impl<'a> SupportIndex<'a> {
-    fn new(model: &'a Model) -> Self {
-        let posts = model
-            .posts()
-            .filter_map(|sm| {
-                let (a, b) = model.secondary_member_end_points(sm)?;
-                Some((sm.id, a, b))
-            })
-            .collect();
-        SupportIndex {
-            model,
-            beams: crate::secondary::beam_span_candidates(model),
-            posts,
-        }
-    }
-
-    /// 線分 `p0`–`p1` を覆う支持部材。無ければ `None`。
-    ///
-    /// **主架構を優先する。** 辺が柱・大梁に覆われているなら、その部材が直接支持して
-    /// いるのだから、そこで終端する。10 mm 以内に並走する間柱が主架構の荷重を奪わない
-    /// ようにするためでもある（逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え）。
-    fn of(&self, p0: [f64; 3], p1: [f64; 3]) -> Option<EdgeSupport> {
-        let coverage =
-            crate::secondary::beams_along_segment_with(&self.beams, p0, p1, MEMBER_AXIS_TOL_MM);
-        let length_mm = squid_n_core::geom::vec3::dist(p0, p1);
-        let mut covered_end_mm: f64 = 0.0;
-        for part in &coverage {
-            if part.seg[0] < covered_end_mm - 1e-9 {
-                return None;
-            }
-            if part.seg[0] > covered_end_mm + MEMBER_AXIS_TOL_MM {
-                break;
-            }
-            covered_end_mm = covered_end_mm.max(part.seg[1]);
-        }
-        if !coverage.is_empty() && covered_end_mm >= length_mm - MEMBER_AXIS_TOL_MM {
-            return Some(EdgeSupport::Primary);
-        }
-        self.posts
-            .iter()
-            .find(|(_, a, b)| {
-                project_on_segment(p0, *a, *b, MEMBER_AXIS_TOL_MM).is_some()
-                    && project_on_segment(p1, *a, *b, MEMBER_AXIS_TOL_MM).is_some()
-            })
-            .map(|(key, _, _)| EdgeSupport::Post(*key))
-    }
 }
 
 /// 境界の辺ごとに、耐震スリットで縁が切れているかを返す（`boundary` と同じ並び）。
@@ -172,9 +117,50 @@ fn slit_edge_flags(
     out
 }
 
+/// 耐震スリット指定を境界辺へ対応付けたフラグ（`boundary_len` と同じ並び）。
+///
+/// 境界が 4 辺の囲まれた壁版で、境界の頂点にモデル節点があり、柱際・梁際の辺の
+/// 役割を決められるときだけ `Some` を返す。それ以外は `None`（指定を反映できない）。
+fn resolved_slit_edge_flags(
+    model: &Model,
+    plate: &WallPlate,
+    boundary_len: usize,
+) -> Option<Vec<bool>> {
+    if boundary_len != 4 {
+        return None;
+    }
+    let nodes = plate.boundary_nodes(model)?;
+    let coords = plate.boundary_coords(model)?;
+    (nodes.len() == 4 && coords.len() == 4).then(|| slit_edge_flags(model, plate, &nodes, &coords))
+}
+
+/// 壁版の耐震スリット指定が少なくとも 1 辺へ反映されるか。
+///
+/// 指定が無ければ常に `true`（警告対象にしない）。境界が 4 辺の囲まれた壁版で、
+/// 境界頂点のモデル節点から辺の役割（柱際・梁際）を決められ、指定した辺が
+/// 実際に対応付くときに `true`。境界が 4 辺でない、頂点にモデル節点が無い、
+/// 指定した辺を柱際・梁際へ対応付けられない場合は `false` となる。
+///
+/// [`edge_shares_with`] が同一の判定で指定を反映するかを決めるため、診断と
+/// 荷重分配で「スリットが効くか」の答えが食い違わない。
+pub fn slit_specification_is_reflected(model: &Model, plate: &WallPlate) -> bool {
+    if !plate.slit.any() {
+        return true;
+    }
+    let Some(region) = model.wall_plate_assignment_region(plate.id) else {
+        return false;
+    };
+    resolved_slit_edge_flags(model, plate, region.boundary.len())
+        .is_some_and(|flags| flags.iter().any(|flag| *flag))
+}
+
 /// 壁版 1 枚の自重を辺へ配る。
-fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShare> {
-    let model = index.model;
+///
+/// 各辺の支持部材と材軸区間は、壁版が割り当てられた壁版割当領域の境界をそのまま使う
+/// （境界の頂点にモデル節点が無くても支持先を引ける）。負担率の並びは境界の辺順に
+/// 対応する。スリットは 4 節点の囲まれた壁版でのみ意味を持ち、境界頂点の節点を
+/// 引けない場合は切れていない扱いとする。
+fn edge_shares_with(model: &Model, plate: &WallPlate) -> Vec<WallEdgeShare> {
     if !matches!(plate.shape, WallPlateShape::Enclosed) {
         return Vec::new();
     }
@@ -184,21 +170,18 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
     let Some(total) = model.wall_plate_self_weight(plate, model) else {
         return Vec::new();
     };
-    let Some(boundary) = plate.boundary_nodes(model) else {
-        return Vec::new();
-    };
-    if total <= 0.0 || boundary.len() < 3 {
+    if total <= 0.0 || !plate.has_valid_self_weight_shares(model) {
         return Vec::new();
     }
-    let Some(coords) = plate.boundary_coords(model) else {
+    let Some(region) = model.wall_plate_assignment_region(plate.id) else {
         return Vec::new();
     };
-
-    if !plate.has_valid_self_weight_shares(model) {
+    let boundary = &region.boundary;
+    if boundary.len() < 3 {
         return Vec::new();
     }
-    let n = boundary.len();
-    let slit_edge = slit_edge_flags(model, plate, &boundary, &coords);
+    let slit_edge = resolved_slit_edge_flags(model, plate, boundary.len())
+        .unwrap_or_else(|| vec![false; boundary.len()]);
     let mut shares = Vec::new();
     for (i, &ratio) in plate.self_weight_shares.iter().enumerate() {
         if ratio == 0.0 {
@@ -207,16 +190,11 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
         if slit_edge[i] {
             return Vec::new();
         }
-        let Some(support) = index.of(coords[i], coords[(i + 1) % n]) else {
-            return Vec::new();
-        };
+        let edge = boundary[i];
         shares.push(WallEdgeShare {
-            nodes: [boundary[i], boundary[(i + 1) % n]],
+            support: edge.support,
+            span: edge.span,
             total: total * ratio,
-            post: match support {
-                EdgeSupport::Primary => None,
-                EdgeSupport::Post(key) => Some(key),
-            },
         });
     }
     shares
@@ -224,11 +202,10 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
 
 /// 要素にならない全壁版の自重を分配する。
 pub fn distribute_enclosed_wall_plates(model: &Model) -> EnclosedWallLoads {
-    let index = SupportIndex::new(model);
     let mut out = EnclosedWallLoads::default();
     for plate in &model.wall_plates {
-        for share in edge_shares_with(&index, plate) {
-            match share.post {
+        for share in edge_shares_with(model, plate) {
+            match share.post() {
                 Some(key) => push_post_share(model, &mut out, key, &share),
                 None => push_primary_share(model, &mut out.primary, &share),
             }
@@ -238,6 +215,8 @@ pub fn distribute_enclosed_wall_plates(model: &Model) -> EnclosedWallLoads {
 }
 
 /// 間柱が受け持つぶんを、間柱の材軸局所の等分布荷重として積む。
+///
+/// 材軸区間は割当領域の境界が持つ無次元区間をそのまま材軸長へ写す。
 fn push_post_share(
     model: &Model,
     out: &mut EnclosedWallLoads,
@@ -247,21 +226,14 @@ fn push_post_share(
     let Some(sm) = model.posts().find(|sm| sm.id == key) else {
         return;
     };
-    let Some((pa, pb)) = model.secondary_member_end_points(sm) else {
+    let Some((_, _, len)) = model.secondary_member_axis(sm) else {
         return;
     };
-    let (Some(e0), Some(e1)) = (
-        model.nodes.get(share.nodes[0].index()).map(|n| n.coord),
-        model.nodes.get(share.nodes[1].index()).map(|n| n.coord),
-    ) else {
+    if len <= 1e-9 {
         return;
-    };
-    let (Some(s0), Some(s1)) = (
-        project_on_segment(e0, pa, pb, MEMBER_AXIS_TOL_MM),
-        project_on_segment(e1, pa, pb, MEMBER_AXIS_TOL_MM),
-    ) else {
-        return;
-    };
+    }
+    let s0 = share.span[0] * len;
+    let s1 = share.span[1] * len;
     let (lo, hi) = (s0.min(s1), s0.max(s1));
     if hi - lo <= 1e-9 {
         return;
@@ -278,31 +250,38 @@ fn push_post_share(
     });
 }
 
-/// 主架構が受け持つぶんを、辺に沿った等分布の `LoadTarget::Span` として積む。
+/// 主架構が受け持つぶんを、支持部材の材軸区間への等分布 `LoadTarget::Span` として積む。
 ///
-/// 実部材への割り付けは床板の辺荷重と同じ幾何解決
+/// 実部材への割り付けは床板の辺荷重と同じ解決
 /// （`squid-n-job::auto_loads::slab_load_case_content`）へ委ねる。
 fn push_primary_share(model: &Model, loads: &mut Vec<BeamLoad>, share: &WallEdgeShare) {
-    let (Some(a), Some(b)) = (
-        model.nodes.get(share.nodes[0].index()).map(|n| n.coord),
-        model.nodes.get(share.nodes[1].index()).map(|n| n.coord),
-    ) else {
+    let SupportMemberId::Primary(elem) = share.support else {
+        return;
+    };
+    let Some(element) = model.element(elem) else {
+        return;
+    };
+    if element.nodes.len() != 2 {
+        return;
+    }
+    let Some((a, b)) = model.support_member_axis(share.support) else {
         return;
     };
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if len <= 1e-9 || share.total.abs() <= 1e-9 {
+    let member_len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let loaded_len = (share.span[1] - share.span[0]).abs() * member_len;
+    if loaded_len <= 1e-9 || share.total.abs() <= 1e-9 {
         return;
     }
-    let w = share.total / len;
+    let w = share.total / loaded_len;
     loads.push(BeamLoad {
-        elem: ElemId(u32::MAX),
+        elem,
         target: LoadTarget::Span {
-            nodes: share.nodes,
-            t: [0.0, 1.0],
+            nodes: [element.nodes[0], element.nodes[1]],
+            t: share.span,
         },
         shape: LoadShape::Uniform { w },
-        cmq: fem_uniform(w, len),
+        cmq: fem_uniform(w, loaded_len),
     });
 }
 
@@ -322,32 +301,37 @@ pub fn accumulate_wall_and_secondary_seismic_weight(
     {
         return Err("二次部材の端部負担率または支持先が不正で、自重を伝えられません".into());
     }
-    let index = SupportIndex::new(model);
     for plate in &model.wall_plates {
-        for share in edge_shares_with(&index, plate)
+        for share in edge_shares_with(model, plate)
             .into_iter()
-            .filter(|s| s.post.is_none())
+            .filter(|s| s.post().is_none())
         {
-            let a = model.nodes[share.nodes[0].index()].coord;
-            let b = model.nodes[share.nodes[1].index()].coord;
-            let length_mm = squid_n_core::geom::vec3::dist(a, b);
-            let w = share.total / length_mm;
-            for part in
-                crate::secondary::beams_along_segment_with(&index.beams, a, b, MEMBER_AXIS_TOL_MM)
-            {
-                let Some(elem) = model.elements.iter().find(|e| e.id == part.elem) else {
-                    continue;
-                };
-                let load = MemberLoadKind::Distributed {
-                    a: part.elem_pos[0].min(part.elem_pos[1]),
-                    b: part.elem_pos[0].max(part.elem_pos[1]),
-                    w1: w,
-                    w2: w,
-                };
-                let (ri, rj) = crate::floor::simple_reactions(&load, model.member_length(elem));
-                node_weight[elem.nodes[0].index()] += ri;
-                node_weight[elem.nodes[1].index()] += rj;
+            let SupportMemberId::Primary(elem) = share.support else {
+                continue;
+            };
+            let Some(element) = model.element(elem) else {
+                continue;
+            };
+            if element.nodes.len() != 2 {
+                continue;
             }
+            let len = model.member_length(element);
+            let s0 = share.span[0] * len;
+            let s1 = share.span[1] * len;
+            let (lo, hi) = (s0.min(s1), s0.max(s1));
+            if hi - lo <= 1e-9 {
+                continue;
+            }
+            let w = share.total / (hi - lo);
+            let load = MemberLoadKind::Distributed {
+                a: lo,
+                b: hi,
+                w1: w,
+                w2: w,
+            };
+            let (ri, rj) = crate::floor::simple_reactions(&load, len);
+            node_weight[element.nodes[0].index()] += ri;
+            node_weight[element.nodes[1].index()] += rj;
         }
     }
     let (nodal, member) = transfer.primary_loads(model);
@@ -371,11 +355,12 @@ pub fn accumulate_wall_and_secondary_seismic_weight(
     Ok(())
 }
 
-/// 自重を持つ非要素の囲まれた壁版のうち、指定した支持辺へ伝達できないものを返す。負担率の
-/// 不備・支持欠落（区間重複含む）・正の負担率の辺がスリットで切れている場合のみを判定する。
+/// 自重を持つ非要素の囲まれた壁版のうち、支持先へ伝達できないものを返す。負担率の
+/// 不備・割当領域の境界欠落・正の負担率の辺がスリットで切れている場合のみを判定し、
+/// 支持部材の実在・種別・材軸解決・材端節点が 2 つであることは `Model::validate` が
+/// 保証する前提とする。
 /// 上下の梁際をともに切った納まりの可否はここでは判定せず、解析前チェックが入力方針として扱う。
 pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
-    let index = SupportIndex::new(model);
     model
         .wall_plates
         .iter()
@@ -388,7 +373,7 @@ pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
             model
                 .wall_plate_self_weight(plate, model)
                 .is_some_and(|w| w > 0.0)
-                && edge_shares_with(&index, plate).is_empty()
+                && edge_shares_with(model, plate).is_empty()
         })
         .map(|plate| plate.id)
         .collect()

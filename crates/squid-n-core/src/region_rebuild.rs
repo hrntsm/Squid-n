@@ -40,12 +40,12 @@ pub struct FloorRegionRebuildReport {
 }
 
 /// 床領域を大梁の区画から作り直し、名前を引き継ぎ、床板の帰属を
-/// 付け替え、小梁を入れ直し、参照 0 節点を削除する。
+/// 付け替え、小梁を入れ直す。
 ///
-/// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は、
-/// 1 辺が大梁に全長覆われていれば取り付く床板へ変換し、それもできなければ
-/// 帰属なしのまま残す（警告。落とさない）。取り付く床板は、直交して先端まで届く
-/// 小梁または実梁の位置で支持部材の間の床板ごとに分割し、部材がない隣り合う床板は統合する。
+/// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は帰属なしの
+/// まま残す（警告。落とさない）。取り付く床板への変換は ST-Bridge の取り込みが行い、
+/// ここでは既存の取り付く床板を、直交して先端まで届く小梁または実梁の位置で支持部材の
+/// 間の床板ごとに分割し、部材がない隣り合う床板は統合する。
 pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let scan = scan_region_boundaries(model);
     for r in &mut model.floor_regions {
@@ -927,9 +927,20 @@ mod tests {
             beam(5, 5, 0),
         ]);
         let sid = push_slab_section(&mut model, 150.0);
-        model
-            .unassigned_joists
-            .push(joist(0, [[2000.0, 0.0, 0.0], [2000.0, 4000.0, 0.0]]));
+        // 中央小梁は割当領域の境界支持部材になるため、両端を大梁へアンカーした
+        // `Supported` で持つ（`Detached` は境界支持部材にしない）。
+        let mut central = joist(0, [[2000.0, 0.0, 0.0], [2000.0, 4000.0, 0.0]]);
+        central.ends = crate::model::SecondaryMemberEnds::Supported([
+            crate::model::SecondaryMemberAnchor {
+                support: crate::model::SupportMemberId::Primary(ElemId(0)),
+                position: 1.0,
+            },
+            crate::model::SecondaryMemberAnchor {
+                support: crate::model::SupportMemberId::Primary(ElemId(3)),
+                position: 1.0,
+            },
+        ]);
+        model.unassigned_joists.push(central);
         push_enclosed(&mut model, &[0, 1, 4, 5], plate(Some(sid), Vec::new()));
         push_enclosed(&mut model, &[1, 2, 3, 4], plate(Some(sid), Vec::new()));
         model

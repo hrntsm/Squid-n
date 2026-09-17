@@ -135,10 +135,19 @@ impl WallSlit {
 
 impl WallPlate {
     /// 要素にならない囲まれた壁版の自重負担率が指定済みかつ妥当か。
+    ///
+    /// 負担率の要素数は、支持先の解決に使う壁版割当領域の境界辺数と一致していればよい
+    /// （境界の頂点にモデル節点が無い場合も、支持部材は割当領域から引けるため）。
     pub fn has_valid_self_weight_shares(&self, model: &Model) -> bool {
-        self.boundary_nodes(model).is_some_and(|boundary| {
-            boundary.len() >= 3
-                && self.self_weight_shares.len() == boundary.len()
+        let boundary_len = match self.shape {
+            WallPlateShape::Enclosed => model
+                .wall_plate_assignment_region(self.id)
+                .map(|region| region.boundary.len()),
+            WallPlateShape::Attached { .. } => self.boundary_nodes(model).map(|b| b.len()),
+        };
+        boundary_len.is_some_and(|len| {
+            len >= 3
+                && self.self_weight_shares.len() == len
                 && self
                     .self_weight_shares
                     .iter()
@@ -354,7 +363,7 @@ impl Model {
         for i in 0..boundary.len() {
             let a = boundary[i];
             let b = boundary[(i + 1) % boundary.len()];
-            let support = self.resolve_boundary_support(a, b);
+            let support = self.resolve_boundary_support(a, b, BoundarySecondaryKind::Post);
             let span = match self.support_member_nodes(support) {
                 Some([n0, n1]) if n0 == b && n1 == a => [1.0, 0.0],
                 _ => [0.0, 1.0],

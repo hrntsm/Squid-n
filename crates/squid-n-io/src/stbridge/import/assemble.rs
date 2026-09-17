@@ -118,6 +118,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &material_index,
         &mut warnings,
     );
+    let anchorize = model.anchorize_secondary_members();
     model.rebuild_floor_assignment_regions();
     assign_imported_slabs(&mut model, pending_slabs)?;
     if !pending_walls.is_empty() {
@@ -162,7 +163,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             wall_rebuild.unmatched_old_regions
         ));
     }
-    let anchorize = model.anchorize_secondary_members();
     if !anchorize.inferred_free_ends.is_empty() {
         let mut names: Vec<String> = anchorize
             .inferred_free_ends

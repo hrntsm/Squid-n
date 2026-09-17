@@ -253,6 +253,15 @@ impl Slab {
     }
 }
 
+/// 境界辺から二次部材の支持部材を選ぶときの期待種別。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BoundarySecondaryKind {
+    /// 床領域の境界辺。両端支持の小梁（[`Model::joists`]）だけを選ぶ。
+    Joist,
+    /// 壁領域の境界辺。両端支持の間柱（[`Model::posts`]）だけを選ぶ。
+    Post,
+}
+
 impl Model {
     /// 床板 ID から床板を引く。存在しなければ `None`。
     pub fn slab(&self, id: SlabId) -> Option<&Slab> {
@@ -328,7 +337,7 @@ impl Model {
         for i in 0..boundary.len() {
             let a = boundary[i];
             let b = boundary[(i + 1) % boundary.len()];
-            let support = self.resolve_boundary_support(a, b);
+            let support = self.resolve_boundary_support(a, b, BoundarySecondaryKind::Joist);
             let span = match self.support_member_nodes(support) {
                 Some([n0, n1]) if n0 == b && n1 == a => [1.0, 0.0],
                 _ => [0.0, 1.0],
@@ -394,8 +403,15 @@ impl Model {
     }
 
     /// 境界辺の両端節点に対応する支持部材を返す。既存の梁 → 既存の二次部材 →
-    /// 2 節点梁の新設、の順に解決する。
-    pub(crate) fn resolve_boundary_support(&mut self, a: NodeId, b: NodeId) -> SupportMemberId {
+    /// 2 節点梁の新設、の順に解決する。二次部材は `kind` の種別かつ両端支持
+    /// [`SecondaryMemberEnds::Supported`] のものだけを支持部材にし、荷重の伝達経路を
+    /// 持たない `Detached` と片持ちの `Cantilever` は支持部材にしない。
+    pub(crate) fn resolve_boundary_support(
+        &mut self,
+        a: NodeId,
+        b: NodeId,
+        kind: BoundarySecondaryKind,
+    ) -> SupportMemberId {
         let same_pair = |nodes: &[NodeId]| {
             nodes.len() == 2
                 && ((nodes[0] == a && nodes[1] == b) || (nodes[0] == b && nodes[1] == a))
@@ -411,14 +427,17 @@ impl Model {
         let secondary = match (self.node(a).map(|n| n.coord), self.node(b).map(|n| n.coord)) {
             (Some(ca), Some(cb)) => {
                 let near = |p: [f64; 3], q: [f64; 3]| crate::geom::vec3::dist(p, q) <= tol;
-                self.joists()
-                    .chain(self.posts())
-                    .find(|m| {
-                        self.secondary_member_end_points(m).is_some_and(|(p0, p1)| {
+                let supported_near = |m: &SecondaryMember| {
+                    matches!(m.ends, SecondaryMemberEnds::Supported(_))
+                        && self.secondary_member_end_points(m).is_some_and(|(p0, p1)| {
                             (near(p0, ca) && near(p1, cb)) || (near(p0, cb) && near(p1, ca))
                         })
-                    })
-                    .map(|m| m.id)
+                };
+                match kind {
+                    BoundarySecondaryKind::Joist => self.joists().find(|m| supported_near(m)),
+                    BoundarySecondaryKind::Post => self.posts().find(|m| supported_near(m)),
+                }
+                .map(|m| m.id)
             }
             _ => None,
         };
