@@ -84,6 +84,15 @@
 > 新要素・ベンダー拡張も、部材グループ・断面の直属子であれば要素名で通知します。fail-loud）。
 > 属性の単位でも同じ扱いをします（下記「[属性の扱いの報告](#属性の扱いの報告)」）。
 
+> **取り込みの欠落を確認する**: `import_stbridge_with_report` は `ImportReport` を返します。
+> 基礎・杭・開口などの未対応要素、テーパ等で図形を認識できない RC/SRC 断面、
+> 未解決の形鋼参照、存在しない節点を参照する部材が、警告として列挙されます。
+> 床領域の付け直しでは、どの床領域にも載らない版、所属の付かない小梁、
+> 面積が新しい床領域と合わなかった旧床領域の件数も警告します。
+> GUI の「ST-Bridge 読込」は警告があれば「⚠️ 取り込み時の注意」として表示します。
+
+囲まれた壁版の自重支持辺の負担率と間柱の端部負担率は ST-Bridge では取り込み・書き出しを行いません。取り込み後、解析要素にならない壁版には画面で支持辺の負担率を指定してください。値の保持には `.scz` を使用します。
+
 <div class="impl-ref">
 
 **実装参照**：未対応要素の収集と警告への変換は `squid_n_io::stbridge::import`（`crates/squid-n-io/src/stbridge/import/{parser.rs, assemble.rs}`）が担い、`squid_n_io::stbridge::ImportReport` として返ります。
@@ -223,7 +232,10 @@ Squid-n 固有の解析・設計属性や材料の物性値まで含めた完全
 
 </div>
 
-## ライブラリからの利用
+## 開発者向け: ライブラリ API（Rust）
+
+<details>
+<summary>Rust コード例（開発者向け）</summary>
 
 ```rust
 use squid_n_io::stbridge::{import_stbridge, import_stbridge_with_report, export_stbridge};
@@ -245,11 +257,4 @@ let xml = export_stbridge(&model)?;
 std::fs::write("model.stb", xml)?;
 ```
 
-> **取り込みの欠落を確認する**: `import_stbridge_with_report` は `ImportReport` を返します。
-> 基礎・杭・開口などの未対応要素、テーパ等で図形を認識できない RC/SRC 断面、
-> 未解決の形鋼参照、存在しない節点を参照する部材が、警告として列挙されます。
-> 床領域の付け直しでは、どの床領域にも載らない版、所属の付かない小梁、
-> 面積が新しい床領域と合わなかった旧床領域の件数も警告します。
-> GUI の「ST-Bridge 読込」は警告があれば「⚠️ 取り込み時の注意」として表示します。
-
-囲まれた壁版の自重支持辺の負担率と間柱の端部負担率は ST-Bridge では取り込み・書き出しを行いません。取り込み後、解析要素にならない壁版には画面で支持辺の負担率を指定してください。値の保持には `.scz` を使用します。
+</details>
