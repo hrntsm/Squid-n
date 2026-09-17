@@ -114,8 +114,13 @@ pub(crate) fn support_label(model: &Model, support: SupportMemberId) -> String {
     }
 }
 
-/// 配置先に選べる支持部材。主架構の 2 節点梁と、同じ種別の既存二次部材。
-fn support_candidates(model: &Model, kind: SecondaryMemberKind) -> Vec<SupportMemberId> {
+/// 配置先に選べる支持部材。主架構の 2 節点梁と、同じ種別の既存二次部材のうち、
+/// 材軸の両端が親領域（作業範囲）の内側または境界上にあるもの。
+fn support_candidates(
+    model: &Model,
+    kind: SecondaryMemberKind,
+    parent: SecondaryParent,
+) -> Vec<SupportMemberId> {
     let mut out = Vec::new();
     for e in &model.elements {
         if e.kind == ElementKind::Beam && e.nodes.len() == 2 {
@@ -130,7 +135,29 @@ fn support_candidates(model: &Model, kind: SecondaryMemberKind) -> Vec<SupportMe
             out.extend(model.posts().map(|sm| SupportMemberId::Secondary(sm.id)));
         }
     }
+    out.retain(|support| support_axis_in_parent(model, *support, parent));
     out
+}
+
+/// 支持部材の材軸が親領域の内側または境界上にあるか。材軸を解決できない場合は `false`。
+fn support_axis_in_parent(
+    model: &Model,
+    support: SupportMemberId,
+    parent: SecondaryParent,
+) -> bool {
+    let Some((a, b)) = model.support_member_axis(support) else {
+        return false;
+    };
+    [a, b].iter().all(|p| parent_contains(model, parent, *p))
+}
+
+/// 点 `p` [mm] が親領域（床領域・壁領域）の内側または境界上にあるか。
+fn parent_contains(model: &Model, parent: SecondaryParent, p: [f64; 3]) -> bool {
+    match parent {
+        SecondaryParent::Floor(id) => model.floor_region_contains_point_including_boundary(id, p),
+        SecondaryParent::Wall(id) => model.wall_region_contains_point_including_boundary(id, p),
+        SecondaryParent::Unassigned => true,
+    }
 }
 
 fn parse_position(text: &str) -> Option<f64> {
@@ -255,7 +282,6 @@ pub(crate) fn secondary_member_placement_form(
          決まらない端は配置できません（片持ちへの読み替えはしません）。",
     );
 
-    let candidates = support_candidates(&app.core.model, kind);
     let parents = parent_options(app, kind);
     {
         let draft = &mut app.ui.scoped.secondary_draft;
@@ -266,6 +292,22 @@ pub(crate) fn secondary_member_placement_form(
         {
             draft.parent = parents.first().map(|(id, _)| *id);
         }
+    }
+    let parent = {
+        let draft = &app.ui.scoped.secondary_draft;
+        if draft.unassigned {
+            SecondaryParent::Unassigned
+        } else {
+            match (kind, draft.parent) {
+                (SecondaryMemberKind::Joist, Some(id)) => SecondaryParent::Floor(FloorRegionId(id)),
+                (SecondaryMemberKind::Post, Some(id)) => SecondaryParent::Wall(WallRegionId(id)),
+                _ => SecondaryParent::Unassigned,
+            }
+        }
+    };
+    let candidates = support_candidates(&app.core.model, kind, parent);
+    {
+        let draft = &mut app.ui.scoped.secondary_draft;
         if !draft.support_a.is_some_and(|s| candidates.contains(&s)) {
             draft.support_a = candidates.first().copied();
         }
@@ -425,7 +467,7 @@ pub(crate) fn secondary_member_placement_form(
                 }
             }
         };
-        app.core.scoped.undo.run(
+        let applied = app.core.scoped.undo.run(
             &mut app.core.model,
             Box::new(PlaceSecondaryMember {
                 parent,
@@ -435,7 +477,15 @@ pub(crate) fn secondary_member_placement_form(
                 name: draft.name.clone(),
             }),
         );
-        app.core.scoped.staleness.mark_edited();
+        if applied {
+            app.core.scoped.staleness.mark_edited();
+        } else {
+            app.core.scoped.last_notice = Some(
+                "支持端が親領域の内側・境界上にないため配置しませんでした。\
+                 親領域の内側で支持部材を選んでください。"
+                    .to_string(),
+            );
+        }
     }
 }
 
@@ -633,5 +683,79 @@ mod tests {
             &ends,
             [EndSupport::Free, EndSupport::Supported]
         ));
+    }
+
+    #[test]
+    fn 支持部材候補は親領域内の材軸に絞る() {
+        use squid_n_core::model::{
+            ElementData, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
+        };
+
+        fn beam(id: u32, a: u32, b: u32) -> ElementData {
+            ElementData {
+                id: ElemId(id),
+                kind: ElementKind::Beam,
+                nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+                section: None,
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            }
+        }
+
+        let mut model = Model::default();
+        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(Node {
+                id: NodeId(i as u32),
+                coord: [x, y, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        for (i, (a, b)) in [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.elements.push(beam(i as u32, a, b));
+        }
+        model.nodes.push(Node {
+            id: NodeId(4),
+            coord: [-4000.0, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(5),
+            coord: [-4000.0, 4000.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.elements.push(beam(4, 4, 5));
+        model.floor_regions.push(FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        ));
+
+        let parent = SecondaryParent::Floor(FloorRegionId(0));
+        let candidates = support_candidates(&model, SecondaryMemberKind::Joist, parent);
+        assert!(candidates.contains(&SupportMemberId::Primary(ElemId(0))));
+        assert!(
+            !candidates.contains(&SupportMemberId::Primary(ElemId(4))),
+            "親領域の外にある大梁は候補にしない"
+        );
     }
 }

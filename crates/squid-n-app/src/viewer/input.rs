@@ -256,8 +256,8 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
                                     }
                                     _ => false,
                                 };
-                                if inside {
-                                    app.core.scoped.undo.run(
+                                let applied = inside
+                                    && app.core.scoped.undo.run(
                                         &mut app.core.model,
                                         Box::new(PlaceSecondaryMember {
                                             parent,
@@ -267,6 +267,7 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
                                             name: app.ui.scoped.secondary_draft.name.clone(),
                                         }),
                                     );
+                                if applied {
                                     app.core.scoped.staleness.mark_edited();
                                 } else {
                                     app.core.scoped.last_notice = Some(

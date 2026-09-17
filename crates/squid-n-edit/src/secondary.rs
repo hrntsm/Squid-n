@@ -573,6 +573,56 @@ fn anchor_ok(model: &Model, anchor: &SecondaryMemberAnchor) -> bool {
         && model.support_member_axis(anchor.support).is_some()
 }
 
+/// 点 `p` [mm] が親領域（床領域・壁領域）の内部または境界上にあるか。
+/// 親を持たない [`SecondaryParent::Unassigned`] は常に `true`。
+fn parent_contains_point(model: &Model, parent: SecondaryParent, p: [f64; 3]) -> bool {
+    match parent {
+        SecondaryParent::Floor(id) => model.floor_region_contains_point_including_boundary(id, p),
+        SecondaryParent::Wall(id) => model.wall_region_contains_point_including_boundary(id, p),
+        SecondaryParent::Unassigned => true,
+    }
+}
+
+/// 支持端が親領域（作業範囲）の内部または境界上にあるか。
+///
+/// 対象は [`SecondaryMemberEnds::Supported`] の 2 端と [`SecondaryMemberEnds::Cantilever`] の
+/// 支持端で、支持端を持たない [`SecondaryMemberEnds::Detached`] は `false`。片持ちの
+/// 自由端は親領域の内外を判定しない。
+fn support_ends_in_parent(
+    model: &Model,
+    parent: SecondaryParent,
+    ends: &SecondaryMemberEnds,
+) -> bool {
+    match ends {
+        SecondaryMemberEnds::Supported([a, b]) => {
+            let (Some(p0), Some(p1)) = (model.anchor_point(*a), model.anchor_point(*b)) else {
+                return false;
+            };
+            parent_contains_point(model, parent, p0) && parent_contains_point(model, parent, p1)
+        }
+        SecondaryMemberEnds::Cantilever { support, .. } => model
+            .anchor_point(*support)
+            .is_some_and(|p| parent_contains_point(model, parent, p)),
+        SecondaryMemberEnds::Detached(_) => false,
+    }
+}
+
+/// 安定 ID で二次部材が属する親領域。どの領域にも属さなければ
+/// [`SecondaryParent::Unassigned`]。
+fn secondary_parent_of(model: &Model, id: SecondaryMemberId) -> SecondaryParent {
+    if let Some(region) = model.floor_region_of_joist(id) {
+        return SecondaryParent::Floor(region.id);
+    }
+    if let Some(region) = model
+        .wall_regions
+        .iter()
+        .find(|r| r.posts.iter().any(|sm| sm.id == id))
+    {
+        return SecondaryParent::Wall(region.id);
+    }
+    SecondaryParent::Unassigned
+}
+
 /// 取付き位置表現が `Model::validate` を通るか。`Detached`（支持未解決）は配置を
 /// 拒否する対象なので常に不適とする。
 fn secondary_ends_ok(model: &Model, candidate: &SecondaryMember) -> bool {
@@ -596,8 +646,8 @@ fn secondary_ends_ok(model: &Model, candidate: &SecondaryMember) -> bool {
 /// 親領域（[`SecondaryParent`]）へ追加したうえで割当領域を再構築する。境界が
 /// 変わって参照先を失った囲まれた版は取り除かれ、新領域は未設定になる。
 /// 追加・再構築・版の除去は 1 つの Undo 単位で、取り消すと適用前へ戻る。
-/// 支持が決まらない端（[`SecondaryMemberEnds::Detached`]）や種別に合わない親は
-/// Noop とし、片持ちへの読み替えはしない。
+/// 支持が決まらない端（[`SecondaryMemberEnds::Detached`]）、種別に合わない親、
+/// 支持端が親領域の内側・境界上にない場合は Noop とし、片持ちへの読み替えはしない。
 pub struct PlaceSecondaryMember {
     pub parent: SecondaryParent,
     pub kind: SecondaryMemberKind,
@@ -619,7 +669,9 @@ impl EditCommand for PlaceSecondaryMember {
             section: self.section,
             name: self.name.clone(),
         };
-        if !secondary_ends_ok(model, &candidate) {
+        if !secondary_ends_ok(model, &candidate)
+            || !support_ends_in_parent(model, self.parent, &self.ends)
+        {
             return Box::new(Noop);
         }
         let snapshot = snapshot_secondary(model);
@@ -677,8 +729,9 @@ impl EditCommand for DeleteSecondaryMember {
 
 /// 安定 ID で二次部材の両端（取付き位置）を置き換える。
 ///
-/// 端の移動は `ends` の差し替えで表す。取付き位置表現が不正、または支持が決まらない
-/// 端（[`SecondaryMemberEnds::Detached`]）は Noop。配置と同様に割当領域を再構築する。
+/// 端の移動は `ends` の差し替えで表す。取付き位置表現が不正、支持が決まらない端
+/// （[`SecondaryMemberEnds::Detached`]）、または移動先の支持端が現在の所属領域の内側・
+/// 境界上にない場合は Noop。配置と同様に割当領域を再構築する。
 pub struct SetSecondaryMemberEnds {
     pub member: SecondaryMemberId,
     pub ends: SecondaryMemberEnds,
@@ -700,7 +753,10 @@ impl EditCommand for SetSecondaryMemberEnds {
             section: sm.section,
             name: sm.name.clone(),
         };
-        if !secondary_ends_ok(model, &candidate) {
+        let parent = secondary_parent_of(model, self.member);
+        if !secondary_ends_ok(model, &candidate)
+            || !support_ends_in_parent(model, parent, &self.ends)
+        {
             return Box::new(Noop);
         }
         let snapshot = snapshot_secondary(model);
@@ -907,11 +963,33 @@ impl EditCommand for ApplySecondaryAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId};
+    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, WallRegionId};
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Node,
-        SlabPlate, SupportMemberId,
+        SlabPlate, SupportMemberId, WallRegion,
     };
+
+    /// 4 辺を柱・梁で囲んだ 1 壁領域のモデル（XY ではなく XZ 面内）。
+    fn wall_model() -> Model {
+        let mut model = Model::default();
+        for (i, (x, z)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(node(i as u32, [x, 0.0, z]));
+        }
+        for (i, (a, b)) in [(0u32, 3u32), (1, 2), (3, 2), (0, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            model.elements.push(beam(i as u32, a, b));
+        }
+        model.wall_regions.push(WallRegion::new(
+            WallRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        ));
+        model
+    }
 
     fn node(id: u32, coord: [f64; 3]) -> Node {
         Node {
@@ -1113,6 +1191,155 @@ mod tests {
         assert_eq!(model.joists().next().unwrap().ends, ends);
         assert_eq!(model.floor_assignment_regions.regions.len(), 2);
         assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    /// 床領域の外側に、アンカー先になるだけの大梁を 1 本足す。
+    fn add_outside_floor_beam(model: &mut Model) {
+        let base = model.nodes.len() as u32;
+        model.nodes.push(node(base, [-4000.0, 0.0, 0.0]));
+        model.nodes.push(node(base + 1, [-4000.0, 4000.0, 0.0]));
+        model.elements.push(beam(base, base, base + 1));
+    }
+
+    #[test]
+    fn 親領域外の支持部材へアンカーした配置は拒否する() {
+        let mut model = square_model();
+        add_outside_floor_beam(&mut model);
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Floor(FloorRegionId(0)),
+                kind: SecondaryMemberKind::Joist,
+                ends: SecondaryMemberEnds::Supported([anchor(4, 0.5), anchor(0, 0.5)]),
+                section: None,
+                name: "J-out".into(),
+            }),
+        );
+        assert!(!applied, "支持端が親領域の外にある配置は拒否する");
+        assert_eq!(model.joists().count(), 0);
+    }
+
+    #[test]
+    fn 親領域内の支持部材へアンカーした配置は成功する() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        assert!(place_joist(&mut model, &mut undo));
+        let j0 = model.joists().next().unwrap().id;
+
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Floor(FloorRegionId(0)),
+                kind: SecondaryMemberKind::Joist,
+                ends: SecondaryMemberEnds::Supported([
+                    SecondaryMemberAnchor {
+                        support: SupportMemberId::Secondary(j0),
+                        position: 0.5,
+                    },
+                    anchor(1, 0.5),
+                ]),
+                section: None,
+                name: "J1".into(),
+            }),
+        );
+        assert!(applied, "支持端が親領域の内側にある配置は成功する");
+        assert_eq!(model.joists().count(), 2);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    #[test]
+    fn 親領域外へ支持端を動かす端部移動は拒否する() {
+        let mut model = square_model();
+        let mut undo = crate::UndoStack::new();
+        assert!(place_joist(&mut model, &mut undo));
+        let id = model.joists().next().unwrap().id;
+        let before = model.joists().next().unwrap().ends;
+
+        add_outside_floor_beam(&mut model);
+        let moved = SecondaryMemberEnds::Supported([anchor(4, 0.5), anchor(2, 0.5)]);
+        let applied = undo.run(
+            &mut model,
+            Box::new(SetSecondaryMemberEnds {
+                member: id,
+                ends: moved,
+            }),
+        );
+        assert!(!applied, "所属床領域の外へ支持端を動かす端部移動は拒否する");
+        assert_eq!(model.joists().next().unwrap().ends, before);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    #[test]
+    fn 壁領域外の支持部材へアンカーした間柱配置は拒否する() {
+        let mut model = wall_model();
+        let base = model.nodes.len() as u32;
+        model.nodes.push(node(base, [-4000.0, 0.0, 0.0]));
+        model.nodes.push(node(base + 1, [-4000.0, 0.0, 3000.0]));
+        model.elements.push(beam(base, base, base + 1));
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Wall(WallRegionId(0)),
+                kind: SecondaryMemberKind::Post,
+                ends: SecondaryMemberEnds::Supported([anchor(base, 0.5), anchor(3, 0.5)]),
+                section: None,
+                name: "P-out".into(),
+            }),
+        );
+        assert!(!applied, "支持端が壁領域の外にある配置は拒否する");
+        assert_eq!(model.posts().count(), 0);
+    }
+
+    #[test]
+    fn 壁領域内の支持部材へアンカーした間柱配置は成功する() {
+        let mut model = wall_model();
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Wall(WallRegionId(0)),
+                kind: SecondaryMemberKind::Post,
+                ends: SecondaryMemberEnds::Supported([anchor(3, 0.5), anchor(2, 0.5)]),
+                section: None,
+                name: "P-in".into(),
+            }),
+        );
+        assert!(applied, "支持端が壁領域の内側・境界上にある配置は成功する");
+        assert_eq!(model.posts().count(), 1);
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
+
+    #[test]
+    fn 片持ち間柱は自由端が解決できなくても支持端が親領域にあれば配置できる() {
+        let mut model = wall_model();
+        // 構面を一意に決められないよう、鉛直材を 1 本だけ残す。
+        model.elements.retain(|e| e.id != ElemId(1));
+        let mut undo = crate::UndoStack::new();
+        let applied = undo.run(
+            &mut model,
+            Box::new(PlaceSecondaryMember {
+                parent: SecondaryParent::Wall(WallRegionId(0)),
+                kind: SecondaryMemberKind::Post,
+                ends: SecondaryMemberEnds::Cantilever {
+                    support: SecondaryMemberAnchor {
+                        support: SupportMemberId::Primary(ElemId(0)),
+                        position: 0.5,
+                    },
+                    free_end_vector: [1000.0, 0.0],
+                },
+                section: None,
+                name: "Pc".into(),
+            }),
+        );
+        assert!(applied, "支持端が壁領域の境界上なら配置できる");
+        assert_eq!(model.posts().count(), 1);
+        let post = model.posts().next().expect("配置した間柱");
+        assert!(
+            model.secondary_member_end_points(post).is_none(),
+            "構面が一意に決まらず自由端は解決できない"
+        );
     }
 
     /// 大梁（主架構要素）の削除で割当領域の境界が変わり、そこだけに載っていた
