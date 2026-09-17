@@ -1,18 +1,8 @@
-//! ヒンジ図（増分解析のヒンジ発生位置の可視化）の描画。
+//! ヒンジ図（増分解析のヒンジ発生位置の可視化）と、ヒンジ詳細ウィンドウ
+//! （M-θ カーブ・N-M 相関図・ファイバー断面の塑性化マップ）の描画。
 //!
-//! 増分解析（プッシュオーバー解析）の結果 [`PushoverResult::hinges`] は、閾値
-//! （ひび割れ／降伏／終局）を超過している間、同じ (部材, 端) が毎ステップ
-//! push されるため単純な件数集計はできない。本モジュールはまず
-//! [`aggregate_hinges`] で (部材, 端) ごとに 1 件へ集約し（最高レベル・最大
-//! 塑性率・初出 step を保持）、その集約結果を材端の少し内側にマーカーとして描く。
-//!
-//! マーカーは節点直上ではなく材軸に沿って 10% 内側へ寄せて描く。節点直上に描くと、
-//! 同一節点に集まる複数部材のヒンジが重なって判別できなくなるため。
-//!
-//! ヒンジ図で部材をクリックすると、[`show_hinge_detail_window`] がその部材の
-//! ヒンジ詳細ウィンドウ（M-θ カーブ・N-M 相関図・ファイバー断面の塑性化マップ）
-//! を開く。データは [`PushoverResult::member_history`]（材端応答の全ステップ
-//! 履歴）・[`PushoverResult::fiber_states`]（終局時のファイバー断面状態）を使う。
+//! 応答履歴は [`PushoverResult::member_history`]、終局時のファイバー断面状態は
+//! [`PushoverResult::fiber_states`] を用いる。
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -40,9 +30,6 @@ use squid_n_section::mn_surface::MnSurface;
 use squid_n_solver::nonlinear::pushover::{HingeEvent, HingeLevel, MemberStepState};
 
 /// (部材, 端) ごとに集約したヒンジ情報。
-///
-/// `HingeLevel`（squid-n-solver）は `PartialEq` を持たないため、本構造体も
-/// `PartialEq` は導出しない（比較はフィールド単位・`level_rank` 経由で行う）。
 #[derive(Clone, Debug)]
 pub(super) struct HingeMarker {
     pub elem: ElemId,
@@ -68,12 +55,8 @@ fn level_rank(level: &HingeLevel) -> u8 {
 
 /// ヒンジ発生履歴 `hinges` を (部材, 端) ごとに集約する（純粋関数）。
 ///
-/// 同一 (部材, 端) は、その端が閾値を超過している限り毎ステップ重複記録される
-/// ため（`crates/squid-n-solver/src/nonlinear/pushover/mechanism.rs` の
-/// `determine_mechanism` と同様の重複排除）、以下を保持する 1 件へまとめる。
-/// - 最高レベル（Crack < Yield < Ultimate）
-/// - 最大塑性率（`ductility`）
-/// - 初めてヒンジ（Crack 以上）が記録された step（最小 step）
+/// 各端について、最高レベル（Crack < Yield < Ultimate）・最大塑性率・初出 step
+/// （最小 step）を保持する 1 件へまとめる。
 pub(super) fn aggregate_hinges(hinges: &[HingeEvent]) -> Vec<HingeMarker> {
     let mut map: HashMap<(ElemId, bool), HingeMarker> = HashMap::new();
     for h in hinges {
@@ -306,51 +289,32 @@ impl HingeViewCache {
     }
 }
 
-/// [`HingeViewCache`] のキー。骨格・曲面の生成に影響する入力を一意に識別する。
-///
-/// 同一ステップ数で再解析した場合も `generation`（`staleness.last_run` と
-/// `staleness.results_stale`）で無効化され、断面・材料の編集は `section`・
-/// `material` のフィンガープリント、要素の移動・局所軸の変更は `geometry` で
-/// 無効化される。集中ばね／ファイバー／側柱の分岐は `concentrated`・
-/// `wall_side_column` で無効化される。
-///
-/// [`build_hinge_view`] が参照しない入力はキーに含めない。指定レジーム
-/// （`ForceRegime`）の解決結果は `concentrated`・`wall_side_column` に、
-/// `plastic_zone` はどの分岐でも表示に効かないためキーに含めない。
-///
-/// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
-/// キーには含めない。表示時にキャッシュ済みのビューから決める。
+/// [`HingeViewCache`] のキー。骨格・曲面の生成に影響する入力を識別する。
 #[derive(Clone, PartialEq, Debug)]
 struct HingeViewKey {
     elem: ElemId,
-    /// キャッシュが生成された選択ステップ添字（`records` 上の位置）。
-    /// 材端集中ばねは常に実 step を保持する（解析側は降伏モーメント不定でも
-    /// N-M 相関を適用しうるため）。それ以外は常に 0。
+    /// 選択ステップ添字（`records` 上の位置）。材端集中ばね以外は常に 0。
     step: usize,
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
     kind: ElementKind,
-    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。`f64` の厳密比較でよい。
+    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。
     geometry: Option<ElementGeometry>,
-    /// [`resolves_to_concentrated_spring`] の解決値。剛床・壁の編集で
-    /// 集中ばね⇔ファイバーの分岐が変わればキーが変わる。
+    /// [`resolves_to_concentrated_spring`] の解決値。
     concentrated: bool,
-    /// 自要素が耐震壁の側柱（面内解放）か。レジームが同じでも側柱は
-    /// 非線形ヒンジを持たず別ビューになる。
+    /// 自要素が耐震壁の側柱（面内解放）か。
     wall_side_column: bool,
-    /// 材端集中ばねの剛域（曲げばね初期剛性に効く）。それ以外は `None`。
+    /// 材端集中ばねの剛域。それ以外は `None`。
     rigid_zone: Option<RigidZone>,
     section: Option<SectionFingerprint>,
     material: Option<MaterialFingerprint>,
     rebar_material: Option<MaterialFingerprint>,
     steel_material: Option<MaterialFingerprint>,
-    /// 材端集中ばねの履歴則（[`resolve_member_hysteresis`] の解決値）。
-    /// ファイバー／マルチスプリングの曲面は履歴則に依存しないため `None`。
+    /// 材端集中ばねの履歴則。それ以外は `None`。
     hysteresis: Option<HysteresisModel>,
 }
 
-/// 要素の両端節点座標と局所軸の基準ベクトル。`f64` の厳密比較でキャッシュを
-/// 無効化するために用いる。
+/// 要素の両端節点座標と局所軸の基準ベクトル。
 #[derive(Clone, PartialEq, Debug)]
 struct ElementGeometry {
     coord_i: [f64; 3],
@@ -441,10 +405,8 @@ impl From<&Material> for MaterialFingerprint {
 }
 
 /// 骨格・曲面生成に影響する入力からキャッシュキーを組み立てる（純粋関数）。
-///
-/// 強度基準は [`StrengthBasis::MaterialStrength`]、解析種別は
-/// [`AnalysisKind::Incremental`] 固定（プッシュオーバー結果の表示）のため、
-/// キーには含めない。
+/// 強度基準（[`StrengthBasis::MaterialStrength`]）と解析種別
+/// （[`AnalysisKind::Incremental`]）は固定のため含めない。
 fn hinge_view_key(
     model: &Model,
     elem: &ElementData,
@@ -501,11 +463,7 @@ fn ensure_hinge_view(
 }
 
 /// 部材の最終応答レコードから、支配的な曲げ面（強軸 Mz／弱軸 My）を選ぶ
-/// （純粋関数）。i端・j端のうち絶対値が大きい方の成分を軸ごとに比較し、
-/// 大きい軸を採用する（同値なら強軸を採用）。
-///
-/// ファイバー／マルチスプリングの採用曲げ面（[`effective_bend_dir_z`]）を決める
-/// ために用いる。材端集中ばねは常に強軸へ固定するため、この関数は使わない。
+/// （純粋関数）。i端・j端のうち絶対値が大きい方の成分で比較し、同値なら強軸。
 pub(super) fn dominant_bend_axis_z(last: &MemberStepState) -> bool {
     let mz_max = last.mz_i.abs().max(last.mz_j.abs());
     let my_max = last.my_i.abs().max(last.my_j.abs());
@@ -514,11 +472,8 @@ pub(super) fn dominant_bend_axis_z(last: &MemberStepState) -> bool {
 
 /// ヒンジ詳細で表示する採用曲げ面（強軸 Mz=true）を決める（純粋関数）。
 ///
-/// 材端集中ばねの非線形ばねは局所 z 回り（`Mz`）のみに作用し、弱軸（`My`）は弾性。
-/// N-M 線形相関も `Mz` に対する `My0` を用いるため、応答が弱軸支配でも表示は
-/// 強軸に固定する（`dominant_z` を無視する）。
-/// ファイバー／マルチスプリングは My・Mz の両軸をカバーする曲面を表示するため、
-/// 最終ステップの支配軸 `dominant_z`（[`dominant_bend_axis_z`]）に従う。
+/// 材端集中ばねは非線形ばねが強軸（局所 z）のみに作用するため、応答が弱軸支配でも
+/// 強軸に固定する。ファイバー／マルチスプリングは最終ステップの支配軸に従う。
 fn effective_bend_dir_z(model: AnalysisHingeModel, dominant_z: bool) -> bool {
     match model {
         AnalysisHingeModel::ConcentratedSpring => true,
@@ -528,14 +483,9 @@ fn effective_bend_dir_z(model: AnalysisHingeModel, dominant_z: bool) -> bool {
     }
 }
 
-/// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから
-/// 抽出する（純粋関数）。M は剛域フェイス位置の局所曲げ。
-///
-/// θ はファイバー・マルチスプリングでは弦からの材端回転、材端集中ばねでは
-/// 解析が実際に使う端ばね変形（`use_spring_rot=true`。記録の
-/// `spring_rz_i`／`spring_rz_j`）を用いる。集中ばねの M-θ 骨格は端ばね変形に
-/// 対して定義されるため、応答経路と基準を揃える。端ばね変形が記録されていない
-/// 場合は弦からの材端回転へフォールバックする（強軸のみ。弱軸は端ばねを持たない）。
+/// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから抽出する
+/// （純粋関数）。`use_spring_rot=true` では端ばね変形 `spring_rz_i`／`spring_rz_j`、
+/// それ以外は弦からの材端回転 `rz_*`（弱軸は `ry_*`）を用いる。
 pub(super) fn m_theta_series(
     records: &[MemberStepState],
     bend_dir_z: bool,
@@ -1039,11 +989,6 @@ fn draw_mn_plot(
 }
 
 /// N-M 相関図の 3D ワイヤーフレーム（N-My-Mz 曲面）＋ 3D 応答経路。
-///
-/// 曲面そのものの描き方（格子解像度・正規化基準・投影スケール・座標軸・
-/// ワイヤーフレーム）は断面詳細ビュー（`crate::mn_view`）と同じで、
-/// [`crate::viewer::mn_draw`] に集約してある。この関数が持つのは、
-/// そこへ応答経路を重ねるという本画面固有の部分だけである。
 fn draw_mn_plot_3d(
     ui: &mut egui::Ui,
     surface: &MnSurface,
@@ -1096,11 +1041,8 @@ fn draw_mn_response_path_3d(
     }
 }
 
-/// N-M 相関図の 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路）
-/// を egui_plot で描く（3D ワイヤーフレームの下段）。
-///
-/// `Plot` の ID に `elem_id` を含める理由は [`draw_m_theta_plot`] のドキュメント
-/// コメントを参照（固定 ID だと部材切替時に前の部材の表示範囲を引き継いでしまう）。
+/// N-M 相関図の 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路）。
+/// `Plot` の ID に `elem_id` を含め、部材切替時に表示範囲を引き継がない。
 fn draw_mn_plot_2d(
     ui: &mut egui::Ui,
     surface: &MnSurface,
@@ -1241,11 +1183,8 @@ fn draw_fiber_maps(
     });
 }
 
-/// ファイバー断面 1 断面分の塑性化マップ（散布図）を描く。`id_suffix` は
-/// `egui_plot::Plot` の ID 重複を避けるための識別子（"i"/"j"）。`elem_id` も
-/// ID に含める理由は [`draw_m_theta_plot`] のドキュメントコメントを参照
-/// （固定 ID だと部材切替時に前の部材のズーム状態を引き継いでしまう）。
-/// `outline` は断面外形線（外形, 内形（中空断面のみ）。[`fiber_frame_outline`]）。
+/// ファイバー断面 1 断面分の塑性化マップ（散布図）を描く。`id_suffix`（"i"/"j"）と
+/// `elem_id` は `egui_plot::Plot` の ID に含める。`outline` は断面外形線。
 fn draw_one_fiber_map(
     ui: &mut egui::Ui,
     elem_id: ElemId,
@@ -1290,9 +1229,7 @@ fn draw_one_fiber_map(
         });
 }
 
-/// 断面外形線（閉多角形）を、ファイバー点より目立たない中間色の細線で描く
-/// （凡例には出さない）。ファイバー配置ミス（例: 角形鋼管なのに中実配置）を
-/// 外形線との対比で判別できるようにするための背景ガイド。
+/// 断面外形線（閉多角形）を中間色の細線で描く（凡例には出さない）。
 fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
     if pts.is_empty() {
         return;
@@ -1307,24 +1244,9 @@ fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
     );
 }
 
-/// 断面 `sec` の外形線を、ファイバー座標系（[`FiberStateSample`] の y/z。
-/// `build_gauss_fibers` の 90°回転後: y=せい方向、z=−幅方向）へ変換して返す
-/// （外形, 内形（中空断面のみ）。断面を描けなければ None）。
-///
-/// [`super::solid::section_outline`]／[`super::solid::section_inner_outline`]
-/// が返す輪郭は「局所 y=せい, z=幅」の生の形状座標（重心補正なし）であり、
-/// ファイバー側とは 2 点で異なる:
-/// - 山形・溝形・T形・リップ溝形鋼・上下非対称ビルトH は、ファイバー生成時に
-///   断面積重心が原点に来るよう平行移動されている
-///   （`squid_n_section::mn_surface::fibers::plastic_fibers_at` 末尾の補正）。
-/// - `build_gauss_fibers` の 90°回転 `(y,z)←(z,−y)` により、幅方向の符号が
-///   反転している（輪郭の z=+幅方向、ファイバーの z=−幅方向）。
-///
-/// 生の輪郭多角形自身の面積重心を求めて原点へ平行移動する処理は、上記の
-/// 断面積重心補正と数学的に同値（同一形状の連続体面積重心は求め方によらず
-/// 一致する。多角形の場合はシューレース法の重心公式で厳密に求まる）ため、
-/// 山形等の個別実装をせずに済む。対称断面（矩形・H・箱・円）は多角形重心が
-/// 元々 (0,0) 付近になるため実質的に補正は効かない（下記のテストで検証）。
+/// 断面 `sec` の外形線をファイバー座標系（`build_gauss_fibers` の 90°回転後:
+/// y=せい方向、z=−幅方向）へ変換して返す（外形, 内形（中空断面のみ））。
+/// 断面を描けなければ `None`。非対称断面は輪郭多角形の面積重心を原点へ合わせる。
 fn fiber_frame_outline(sec: &Section) -> Option<SectionOutline> {
     let outer_raw = super::solid::section_outline(sec)?;
     let inner_raw = super::solid::section_inner_outline(sec);
@@ -1362,13 +1284,8 @@ fn fiber_material_color(material: usize) -> egui::Color32 {
     }
 }
 
-/// ファイバー断面の散布図を材料別・降伏状態別に描く。
-///
-/// 色は材料区分（コンクリート=グレー系／主筋=赤系／鋼材=青系）で分け、
-/// 降伏状態は明度と形状で重ねて表現する: 未降伏=材料色の淡色（小さい円）、
-/// 降伏(引張)=材料色そのまま＋外周リング（円）、降伏(圧縮)=材料色そのまま＋
-/// 外周リング（ひし形）。主筋・鋼材はコンクリートより大きい円で強調する
-/// （点ファイバーであり本数が少ないため、視認性を優先）。
+/// ファイバー断面の散布図を材料別・降伏状態別に描く。降伏は引張=円、
+/// 圧縮=ひし形、未降伏=淡色で表す。
 fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateSample]) {
     for &(material, mat_label, radius) in FIBER_MATERIALS {
         let color = fiber_material_color(material);

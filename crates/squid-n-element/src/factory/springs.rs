@@ -1,11 +1,6 @@
 //! バネ / 履歴則パラメータ算定。
 //!
-//! - [`build_fiber`] — ファイバー梁の生成
-//! - [`build_flexural_springs`] — 材端曲げバネ（履歴則別・非線形解析用）
-//! - [`yield_moment_and_axial`] — 集中バネの My0 と N許容（N-M 相関用）
-//! - [`resolve_member_hysteresis`] — 部材の履歴則を解決（UI 表示にも用いる）
-//! - [`flexural_yield_moment`] / [`crack_moment`] / [`flexural_alpha_y`] — 骨格の折れ点算定
-//! - [`rotational_spring_params`] / [`flexible_length`] / [`is_rc_like_section`] — 補助算定
+//! 材端曲げバネの構築は [`build_flexural_springs`]。
 
 use squid_n_core::model::{
     default_fiber_concrete_hysteresis, default_member_hysteresis, AnalysisKind, ElementData,

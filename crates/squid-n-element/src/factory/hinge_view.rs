@@ -1,10 +1,6 @@
 //! 解析で実際に使用した非線形特性（M-θ 骨格 / N-M 相関 / N-M 曲面）の
-//! 読み取り専用ビュー。
-//!
-//! GUI（`squid-n-app`）が解析と同じ計算経路・同じパラメータ解決でヒンジの
-//! 背景曲線を描くための API。表示側に解析の式・既定値を複製しない。
-//! 断面・材料の不足などでモデルを再現できない場合は該当フィールドを `None` とし、
-//! 近似は返さない。
+//! 読み取り専用ビュー。GUI が解析と同じ計算経路・パラメータ解決でヒンジの
+//! 背景曲線を描くための API。
 //!
 //! 単位: 長さ [mm]、力 [N]、モーメント [N·mm]、回転角 [rad]。
 
@@ -92,10 +88,7 @@ pub fn build_hinge_view(
 }
 
 /// [`build_hinge_view`] が `Beam` に対して材端集中ばね分岐を取るか。
-///
-/// `Beam` かつ壁側柱の面内解放がなく、[`resolve_force_regime`] が
-/// [`ResolvedRegime::ConcentratedSpring`] を返す場合に `true`。断面・材料の
-/// 不足で骨格を返せない場合も分岐自体は材端集中ばねのため `true` とする。
+/// 壁側柱の面内解放がある場合と、ファイバー／MS に解決される場合は `false`。
 pub fn resolves_to_concentrated_spring(data: &ElementData, model: &Model) -> bool {
     data.kind == ElementKind::Beam
         && crate::wall::side_column::wall_side_column_release(data, model).is_none()
@@ -193,12 +186,8 @@ fn surface_view(
     }
 }
 
-/// 解析が実際に生成する端部ファイバ断面を、解析と同じ解像度・強度解決で
-/// `PlasticFiber` 群へ変換する（N-M 曲面の単一情報源）。
-///
-/// 断面未定義、または材料強度（Fc・fy）を解決できない場合は `None` を返す。
-/// 後者はファイバ材料の生成（[`build_gauss_fiber_pair`]）が panic する条件
-/// であり、表示のために解析入力を変更せず `None` で「近似しない」を表す。
+/// 解析が実際に生成する端部ファイバ断面を `PlasticFiber` 群へ変換する。
+/// 断面未定義、または材料強度（Fc・fy）を解決できない場合は `None`。
 pub(crate) fn analysis_plastic_fibers(
     data: &ElementData,
     model: &Model,
