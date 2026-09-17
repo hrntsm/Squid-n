@@ -1762,9 +1762,15 @@ mod cascade_tests {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(4),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [3000.0, 0.0, 0.0],
-                [3000.0, 6000.0, 0.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                    position: 0.5,
+                },
             ]),
             section: Some(SectionId(0)),
             name: "A".into(),
@@ -1773,9 +1779,17 @@ mod cascade_tests {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(6),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [3000.0, 3000.0, 0.0],
-                [6000.0, 3000.0, 0.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Secondary(
+                        squid_n_core::ids::SecondaryMemberId(4),
+                    ),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(1)),
+                    position: 0.5,
+                },
             ]),
             section: Some(SectionId(0)),
             name: "B".into(),

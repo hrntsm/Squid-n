@@ -146,9 +146,15 @@ mod tests {
                 gravity_end_shares: None,
                 id: squid_n_core::ids::SecondaryMemberId(0),
                 kind: squid_n_core::model::SecondaryMemberKind::Joist,
-                ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                    [2000.0, 0.0, 0.0],
-                    [2000.0, 4000.0, 0.0],
+                ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                    squid_n_core::model::SecondaryMemberAnchor {
+                        support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                        position: 1.0,
+                    },
+                    squid_n_core::model::SecondaryMemberAnchor {
+                        support: squid_n_core::model::SupportMemberId::Primary(ElemId(4)),
+                        position: 0.0,
+                    },
                 ]),
                 section: None,
                 name: "J".into(),

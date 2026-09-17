@@ -1010,3 +1010,112 @@ fn test_distribute_region_conserves_total_over_multiple_slabs() {
         "total={total} expected={expected}"
     );
 }
+
+/// 大梁の材軸中間にモデル節点を作らず小梁を架けた床でも、辺荷重は割当領域の
+/// `SupportBoundary` から解決され、脱落しない（総和保存）。小梁支持の辺荷重は
+/// `LoadTarget::Secondary` で小梁を指す（Blocker 1 の回帰）。
+#[test]
+fn test_midspan_joist_edge_loads_resolve_from_support_boundary() {
+    use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, SlabId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, PlateAssignment,
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let w = 0.005_f64;
+    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mut model = Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, 6000.0, 0.0),
+            mk_node(2, 0.0, 4000.0),
+            mk_node(3, 6000.0, 4000.0),
+        ],
+        elements: vec![
+            mk_beam(0, 0, 1),
+            mk_beam(1, 1, 3),
+            mk_beam(2, 3, 2),
+            mk_beam(3, 2, 0),
+        ],
+        ..Default::default()
+    };
+    // 中央小梁は上下の大梁（e0: 0-1、e2: 3-2）の中間にアンカーする。
+    // アンカー位置にはモデル節点が無い。
+    model.unassigned_joists.push(SecondaryMember {
+        id: SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Supported([
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(2)),
+                position: 0.5,
+            },
+        ]),
+        ..Default::default()
+    });
+    let report = model.rebuild_floor_assignment_regions();
+    assert_eq!(report.regions, 2, "中央小梁で 2 面");
+
+    let region_ids: Vec<_> = model
+        .floor_assignment_regions
+        .regions
+        .iter()
+        .map(|region| region.id)
+        .collect();
+    for (i, region_id) in region_ids.iter().enumerate() {
+        let slab_id = SlabId(i as u32);
+        model.slabs.push(Slab {
+            id: slab_id,
+            shape: SlabShape::Enclosed,
+            plate: SlabPlate {
+                loads: vec![squid_n_core::model::AreaLoad {
+                    kind: "DL".into(),
+                    value: w,
+                }],
+                method: DistributionMethod::TriTrapezoid,
+                ..Default::default()
+            },
+        });
+        model
+            .floor_assignment_regions
+            .get_mut(*region_id)
+            .expect("直前に作った割当領域")
+            .assignment = PlateAssignment::Plate(slab_id);
+    }
+
+    let loads: Vec<BeamLoad> = model
+        .slabs
+        .iter()
+        .flat_map(|slab| distribute_slab_resolved(&model, slab, w))
+        .collect();
+    let total: f64 = loads.iter().map(|bl| bl.cmq.q_i + bl.cmq.q_j).sum();
+    let expected = w * 6000.0 * 4000.0;
+    assert!(
+        (total - expected).abs() / expected < 1e-9,
+        "脱落せず総和保存する: total={total} expected={expected}"
+    );
+    assert!(
+        loads.iter().any(|bl| matches!(
+            bl.target,
+            LoadTarget::Secondary { member, .. } if member == SecondaryMemberId(0)
+        )),
+        "小梁境界の辺荷重は Secondary で小梁を指す: {loads:?}"
+    );
+}

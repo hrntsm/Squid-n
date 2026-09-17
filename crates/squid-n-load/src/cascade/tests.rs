@@ -717,3 +717,144 @@ fn attached_slab_load_reaches_side_joist() {
         "取付き辺 {leftover_total} expected={rest}"
     );
 }
+
+/// 小梁端が大梁材軸中間（モデル節点なし）にある床板で、`distribute_slab_resolved`
+/// からカスケードを経て主架構へ渡る荷重の総和が `w × 全床面積` と一致する。
+///
+/// 床板の小梁境界の辺荷重は `LoadTarget::Secondary` で小梁を指し、小梁の両端反力は
+/// 節点の無い大梁材軸中間へ中間集中荷重として渡る。分配（`distribute_slab_resolved`）
+/// の総和と、カスケード後の主架構への総和の両方を確かめ、取り落とし・二重計上が
+/// 無いことを固定する。
+#[test]
+fn midspan_joist_floor_conserves_total_through_cascade() {
+    use crate::floor::{distribute_slab_resolved, LoadTarget};
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{
+        AreaLoad, DistributionMethod, PlateAssignment, Slab, SlabPlate, SlabShape, SupportMemberId,
+    };
+
+    let w = 0.005_f64;
+    let area = 6000.0 * 4000.0;
+    let mut m = base_model();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],       // 0
+        [6000.0, 0.0, 0.0],    // 1
+        [6000.0, 4000.0, 0.0], // 2
+        [0.0, 4000.0, 0.0],    // 3
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.elements.push(beam(1, 1, 2));
+    m.elements.push(beam(2, 2, 3));
+    m.elements.push(beam(3, 3, 0));
+    // 中央小梁は下辺大梁（0-1）と上辺大梁（2-3）の材軸中間にアンカーする。
+    // アンカー位置にはモデル節点が無い。
+    let joist_key = squid_n_core::ids::SecondaryMemberId(0);
+    m.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: joist_key,
+        kind: SecondaryMemberKind::Joist,
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(2)),
+                position: 0.5,
+            },
+        ]),
+        section: Some(SectionId(0)),
+        name: "SB".into(),
+    });
+    let report = m.rebuild_floor_assignment_regions();
+    assert_eq!(report.regions, 2, "中央小梁で 2 面");
+
+    let region_ids: Vec<_> = m
+        .floor_assignment_regions
+        .regions
+        .iter()
+        .map(|region| region.id)
+        .collect();
+    for (i, region_id) in region_ids.iter().enumerate() {
+        let slab_id = SlabId(i as u32);
+        m.slabs.push(Slab {
+            id: slab_id,
+            shape: SlabShape::Enclosed,
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: w,
+                }],
+                method: DistributionMethod::TriTrapezoid,
+                ..Default::default()
+            },
+        });
+        m.floor_assignment_regions
+            .get_mut(*region_id)
+            .expect("直前に作った割当領域")
+            .assignment = PlateAssignment::Plate(slab_id);
+    }
+
+    // ① 分配（Blocker 1 の経路）だけで総和保存する。
+    let resolved: Vec<BeamLoad> = m
+        .slabs
+        .iter()
+        .flat_map(|slab| distribute_slab_resolved(&m, slab, w))
+        .collect();
+    let resolved_total: f64 = resolved.iter().map(|bl| bl.cmq.q_i + bl.cmq.q_j).sum();
+    assert!(
+        (resolved_total - w * area).abs() / (w * area) < 1e-9,
+        "分配の総和 {resolved_total} != {}",
+        w * area
+    );
+    assert!(
+        resolved.iter().any(
+            |bl| matches!(bl.target, LoadTarget::Secondary { member, .. } if member == joist_key)
+        ),
+        "小梁境界の辺荷重は Secondary で小梁を指す: {resolved:?}"
+    );
+
+    // ② カスケードを経て主架構へ渡る荷重（残りの辺荷重 + 小梁の反力）の総和。
+    let transfer = solve(&m, |_| w, false);
+    assert!(transfer.unresolved.is_empty(), "{:?}", transfer.unresolved);
+    assert!(transfer.cyclic.is_empty());
+    let (nodal, member) = transfer.primary_loads(&m);
+    assert!(
+        nodal.is_empty(),
+        "アンカー位置に節点が無いので節点荷重は無い: {nodal:?}"
+    );
+    let leftover_total: f64 = transfer
+        .leftover_region_loads
+        .iter()
+        .map(|bl| bl.cmq.q_i + bl.cmq.q_j)
+        .sum();
+    let primary_total: f64 = member.iter().map(|bl| bl.cmq.q_i + bl.cmq.q_j).sum();
+    let joist = transfer
+        .members
+        .get(&joist_key)
+        .expect("小梁がカスケードの対象になっている");
+    assert!(
+        !joist.member_loads.is_empty(),
+        "小梁が受け持つ荷重が空でない: {joist:?}"
+    );
+    assert!(
+        joist.reactions[0].abs() + joist.reactions[1].abs() > 0.0,
+        "小梁の反力が主架構へ渡る: {:?}",
+        joist.reactions
+    );
+    assert!(
+        primary_total > 0.0,
+        "主架構への中間集中荷重が含まれる: {member:?}"
+    );
+    let total = leftover_total + primary_total;
+    assert!(
+        (total - w * area).abs() / (w * area) < 1e-9,
+        "カスケード後の総和 {total} != {}（取り落とし・二重計上）",
+        w * area
+    );
+}

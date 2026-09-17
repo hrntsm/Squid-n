@@ -1533,8 +1533,8 @@ fn test_model_issues_warns_floating_plate() {
         .to_section(sid, "S15".into());
     sec.material = Some(mid);
     model.sections.push(sec);
-    // 支持部材を解決できない割当領域を持つ床板。床領域（大梁の区画）には入らないため
-    // 「浮き床板」として警告される。
+    // 大梁の区画（面走査が作る床領域）に入らない位置の床板。割当領域は実在する
+    // 支持部材で妥当に構成しつつ、幾何が床領域の外にあるため「浮き床板」として警告される。
     let slab_id = SlabId(0);
     model.slabs.push(Slab {
         id: slab_id,
@@ -1555,7 +1555,7 @@ fn test_model_issues_warns_floating_plate() {
             boundary: vec![
                 squid_n_core::model::SupportBoundary {
                     support: squid_n_core::model::SupportMemberId::Primary(
-                        squid_n_core::ids::ElemId(9999),
+                        squid_n_core::ids::ElemId(0),
                     ),
                     span: [0.0, 1.0],
                 };
@@ -1818,6 +1818,141 @@ fn test_model_issues_warns_ignored_slit_on_non_quad_plate() {
             .any(|i| i.message.contains("上下の梁際がともに切れた壁版")),
         "効かない指定でエラーにしない"
     );
+}
+
+/// 同じ位置に重なった同種の支持部材は、解析前チェックのエラーとして止める。
+#[test]
+fn test_model_issues_errors_on_same_kind_support_overlap() {
+    use super::precheck::{model_issues, IssueSeverity};
+
+    let mut model = make_cantilever_model();
+    // 既存大梁（ElemId 0）とまったく同じ材軸・区間の大梁を重ねる。
+    let mut duplicate = model.elements[0].clone();
+    duplicate.id = ElemId(1);
+    model.elements.push(duplicate);
+
+    let issues = model_issues(&model);
+    let hit = issues
+        .iter()
+        .find(|i| i.message.contains("同じ位置に重なった同種の支持部材"))
+        .expect("エラーが出る");
+    assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
+    assert!(hit.message.contains("主架構 部材 0"), "{}", hit.message);
+    assert!(hit.message.contains("主架構 部材 1"), "{}", hit.message);
+}
+
+/// 境界が 4 辺でも、境界頂点にモデル節点が無く柱際・梁際の辺対応を決められない
+/// 壁版のスリット指定は、エラーではなく警告で知らせる。
+#[test]
+fn test_model_issues_warns_ignored_slit_without_boundary_nodes() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::{SecondaryMemberId, WallPlateId};
+    use squid_n_core::model::{
+        PlateAssignment, SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds,
+        SecondaryMemberKind, SupportMemberId, WallPlate, WallPlateShape, WallSlit,
+    };
+
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [4000.0, 0.0, 0.0],
+        [4000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mk_beam = |id: u32, a: u32, b: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(mk_beam(0, 0, 1));
+    model.elements.push(mk_beam(1, 1, 2));
+    model.elements.push(mk_beam(2, 2, 3));
+    model.elements.push(mk_beam(3, 3, 0));
+    // 中央間柱は上下の梁の材軸中間にアンカーし、その位置にモデル節点が無い。
+    model.unassigned_posts.push(SecondaryMember {
+        id: SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Post,
+        ends: SecondaryMemberEnds::Supported([
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(2)),
+                position: 0.5,
+            },
+        ]),
+        ..Default::default()
+    });
+    model.rebuild_wall_assignment_regions();
+    let region_id = model
+        .wall_assignment_regions
+        .regions
+        .iter()
+        .find(|region| {
+            region.boundary.len() == 4
+                && region
+                    .boundary
+                    .iter()
+                    .any(|edge| edge.support == SupportMemberId::Secondary(SecondaryMemberId(0)))
+        })
+        .map(|region| region.id)
+        .expect("間柱を辺に持つ 4 辺の壁版割当領域");
+    let plate_id = WallPlateId(0);
+    model.wall_plates.push(WallPlate {
+        self_weight_shares: vec![1.0, 0.0, 0.0, 0.0],
+        id: plate_id,
+        shape: WallPlateShape::Enclosed,
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        loads: vec![],
+        slit: WallSlit {
+            column_face: [true, false],
+            beam_face: [false, false],
+        },
+    });
+    model
+        .wall_assignment_regions
+        .get_mut(region_id)
+        .expect("直前に見つけた割当領域")
+        .assignment = PlateAssignment::Plate(plate_id);
+    assert!(
+        !squid_n_load::wall_plate_load::slit_specification_is_reflected(
+            &model,
+            &model.wall_plates[0]
+        ),
+        "境界頂点にモデル節点が無いので指定を反映できない"
+    );
+
+    let issues = model_issues(&model);
+    let hit = issues
+        .iter()
+        .find(|i| i.message.contains("耐震スリットの指定が効かない壁版"))
+        .expect("警告が出る");
+    assert_eq!(hit.severity, IssueSeverity::Warning, "{}", hit.message);
 }
 
 /// 4 節点でない壁版・断面未割当の壁版は警告し、解析は止めない。

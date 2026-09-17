@@ -3446,9 +3446,15 @@ fn test_floor_design_checks_secondary_member_joist() {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [2000.0, 0.0, 0.0],
-                [2000.0, 4000.0, 0.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                    position: 0.5,
+                },
             ]),
             section: Some(SectionId(0)),
             name: "J1".into(),
@@ -3531,9 +3537,23 @@ fn test_floor_design_checks_cantilever_joist() {
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    // 中央線を 2 要素に分ける節点。中央線の大梁を 1 要素で置くと、片持ち小梁の
+    // 両端を結ぶ実梁とみなされ（`secondary_member_materialized`）設計対象から外れる。
+    model.nodes.push(mk_mid(6, 2000.0, 2000.0));
     let plate = model.slabs[0].plate.clone();
     model.slabs.clear();
     model.floor_assignment_regions = Default::default();
+    // 片持ち小梁は両端支持の境界にならないため、割当領域の分割は中央の大梁
+    // （囲まれた床板の支持辺として新設される）で作る。小梁は分割後へ置く。
+    let first = model.add_enclosed_slab_from_nodes(
+        &[NodeId(0), NodeId(4), NodeId(6), NodeId(5), NodeId(3)],
+        plate.clone(),
+    );
+    let second = model.add_enclosed_slab_from_nodes(
+        &[NodeId(4), NodeId(1), NodeId(2), NodeId(5), NodeId(6)],
+        plate,
+    );
+    model.floor_regions[0].slab_ids = vec![first, second];
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
@@ -3548,20 +3568,6 @@ fn test_floor_design_checks_cantilever_joist() {
         section: Some(SectionId(0)),
         name: "J1".into(),
     });
-    model.rebuild_floor_assignment_regions();
-    let first = model
-        .assign_enclosed_slab_to_matching_region(
-            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-            plate.clone(),
-        )
-        .expect("左半分");
-    let second = model
-        .assign_enclosed_slab_to_matching_region(
-            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
-            plate,
-        )
-        .expect("右半分");
-    model.floor_regions[0].slab_ids = vec![first, second];
     model.validate().expect("validate");
     let app = App {
         core: AppCore {
@@ -3631,9 +3637,15 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [2000.0, 0.0, 0.0],
-                [2000.0, 4000.0, 0.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                    position: 0.5,
+                },
             ]),
             section: None,
             name: "J-no-sec".into(),
@@ -3742,9 +3754,15 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-            model.nodes[8].coord,
-            model.nodes[9].coord,
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(4)),
+                position: 0.5,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(6)),
+                position: 0.5,
+            },
         ]),
         section: Some(SectionId(0)),
         name: "J1".into(),
@@ -3872,9 +3890,15 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
         gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-            model.nodes[4].coord,
-            model.nodes[5].coord,
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                position: 1.0 / 3.0,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                position: 2.0 / 3.0,
+            },
         ]),
         section: Some(SectionId(0)),
         name: "J1".into(),
@@ -3978,9 +4002,15 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [2000.0, 0.0, 0.0],
-                [2000.0, 4000.0, 0.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                    position: 0.5,
+                },
             ]),
             section: Some(SectionId(0)),
             name: "J-edge".into(),
@@ -5748,9 +5778,15 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
             gravity_end_shares: None,
             id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [4000.0, 0.0, 3500.0],
-                [4000.0, 6000.0, 3500.0],
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(4)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(6)),
+                    position: 0.5,
+                },
             ]),
             section: Some(SectionId(0)),
             name: "B1".into(),

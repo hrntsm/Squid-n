@@ -1701,6 +1701,20 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
         });
     }
     let mut stack = UndoStack::new();
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
     for (i, kind) in ["A", "B", "C"].iter().enumerate() {
         model.slabs.push(Slab {
             id: SlabId(i as u32),
@@ -5748,7 +5762,7 @@ fn test_set_attached_extent_and_anchor_noop() {
     use squid_n_core::ids::{NodeId, SlabId};
     use squid_n_core::model::{LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
 
-    let mut model = seeded_model(4, 0);
+    let mut model = seeded_model(4, 1);
     model.slabs.push(Slab {
         id: SlabId(0),
         shape: SlabShape::Enclosed,

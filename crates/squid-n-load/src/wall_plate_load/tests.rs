@@ -288,7 +288,7 @@ fn 指定した辺がスリットで切れていれば別の辺へ振り替え�
     m.wall_plates[0].slit.column_face[k] = true;
 
     assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+    assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
 }
 
 /// 負担率を指定した梁際の辺がスリットで切れていると、その壁版は自重を伝えられない。
@@ -303,7 +303,7 @@ fn 梁際スリットで切れた辺に負担率を指定すると振り替え�
     m.wall_plates[0].slit.beam_face = [true, false];
 
     assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+    assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
 }
 
 /// 明示した負担率どおりの辺へ配る。左右に柱があっても、指定した辺だけが受ける。
@@ -311,10 +311,10 @@ fn 梁際スリットで切れた辺に負担率を指定すると振り替え�
 fn 指定した辺の負担率どおりに壁自重を配る() {
     let mut m = bay();
     add_plate(&mut m, 0, [0, 1, 2, 3], [0.75, 0.0, 0.25, 0.0]);
-    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    let out = edge_shares_with(&m, &m.wall_plates[0]);
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0].nodes, [NodeId(0), NodeId(1)]);
-    assert_eq!(out[1].nodes, [NodeId(2), NodeId(3)]);
+    assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(2)));
+    assert_eq!(out[1].support, SupportMemberId::Primary(ElemId(3)));
     assert!((out[0].total - full_weight() * 0.75).abs() < 1e-6);
     assert!((out[1].total - full_weight() * 0.25).abs() < 1e-6);
 }
@@ -329,10 +329,10 @@ fn 負担率を明示すれば下辺のみ梁際スリットの非要素壁版�
     add_plate(&mut m, 0, [0, 1, 2, 3], [0.0, 0.0, 1.0, 0.0]);
     m.wall_plates[0].slit.beam_face = [true, false];
 
-    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    let out = edge_shares_with(&m, &m.wall_plates[0]);
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].nodes, [NodeId(2), NodeId(3)]);
-    assert!(out[0].post.is_none(), "上辺は大梁が受ける");
+    assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(3)));
+    assert!(out[0].post().is_none(), "上辺は大梁が受ける");
     assert!(
         (out[0].total - full_weight()).abs() / full_weight() < 1e-9,
         "全量が切れていない上辺へ渡る: {}",
@@ -350,10 +350,10 @@ fn 負担率を明示すれば上辺のみ梁際スリットの非要素壁版�
     add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
     m.wall_plates[0].slit.beam_face = [false, true];
 
-    let out = edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]);
+    let out = edge_shares_with(&m, &m.wall_plates[0]);
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].nodes, [NodeId(0), NodeId(1)]);
-    assert!(out[0].post.is_none(), "下辺は大梁が受ける");
+    assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(2)));
+    assert!(out[0].post().is_none(), "下辺は大梁が受ける");
     assert!(
         (out[0].total - full_weight()).abs() / full_weight() < 1e-9,
         "全量が切れていない下辺へ渡る: {}",
@@ -379,19 +379,56 @@ fn 未指定や不正な負担率は配らず診断する() {
         let mut m = split_by_post();
         m.wall_plates[0].self_weight_shares = shares;
         assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-        assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+        assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
     }
 }
 
-/// 指定した辺を全長で支持できない壁版は、自重の行き先なしとして診断する。
+/// 境界の支持先は割当領域が正本である。辺の全長を覆う大梁に重ねて半分だけ覆う大梁を
+/// 足しても、割当領域を再構築すると重複コリニアの辺は 1 本の大梁へまとまり、そこへ
+/// 配る（幾何からの支持先再推定をしない）。
+///
+/// 同じ種類どうしの重なりは解析前チェックがエラーにする（ADR 0021）。面走査は主架構を
+/// 先頭にするだけで同種どうしの選択順を定めないため、残る大梁は要素順に依存する。
+/// ここでは荷重モジュール単体が割当領域の支持部材をそのまま使うことだけを確かめる。
 #[test]
-fn 支持区間が重複する壁版は配らず診断する() {
+fn 支持区間が重複しても割当領域の支持部材へ配る() {
     let mut m = bay();
     add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
-    // 下辺を全長で覆う大梁に重ねて、半分だけ覆う大梁を足す（支持区間が重複する）。
+
+    // 下辺を全長で覆う大梁に重ねて、半分だけ覆う大梁を足す。
     m.elements.push(beam(4, 0, 4));
-    assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-    assert!(edge_shares_with(&SupportIndex::new(&m), &m.wall_plates[0]).is_empty());
+    m.rebuild_wall_assignment_regions();
+
+    assert_eq!(m.wall_assignment_regions.regions.len(), 1, "1 面のまま");
+    let boundary = &m.wall_assignment_regions.regions[0].boundary;
+    assert_eq!(
+        boundary
+            .iter()
+            .filter(|edge| edge.support == SupportMemberId::Primary(ElemId(2)))
+            .count(),
+        1,
+        "重複コリニアの下辺は要素順で先の大梁 1 本が残る: {boundary:?}"
+    );
+    assert!(
+        !boundary
+            .iter()
+            .any(|edge| edge.support == SupportMemberId::Primary(ElemId(4))),
+        "半分だけ覆う大梁は境界に残らない: {boundary:?}"
+    );
+
+    assert!(wall_plates_without_load_path(&m).is_empty());
+    let out = edge_shares_with(&m, &m.wall_plates[0]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].support,
+        SupportMemberId::Primary(ElemId(2)),
+        "重複する大梁ではなく割当領域の支持部材へ配る"
+    );
+    assert!(
+        (out[0].total - full_weight()).abs() / full_weight() < 1e-9,
+        "全量を配る: {}",
+        out[0].total
+    );
 }
 
 fn edge_len(model: &Model, bl: &BeamLoad) -> f64 {
@@ -439,25 +476,51 @@ fn 地震用重量は辺の両端へ半分ずつ配り総和を保存する() {
     }
 }
 
-/// 柱の材軸に並走する間柱は、柱の荷重を奪わない（主架構を優先する）。
+/// 柱の材軸に並走する間柱は、割当領域の再構築で境界から外れ、柱（主架構）が残る。
 ///
-/// 逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え方で、辺が柱・大梁に
-/// 覆われていればそこで終端する。
+/// 逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え方で、辺が柱に覆われていれば
+/// 主架構が支持部材として選ばれる。
 #[test]
 fn 柱に並走する間柱は柱の荷重を奪わない() {
     let mut m = split_by_post();
-    // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
+    // 左の柱（節点 0-3）と同じ材軸に、柱へアンカーした間柱を 1 本足す（重複モデル化）。
     m.wall_regions[0].posts.push(SecondaryMember {
         gravity_end_shares: None,
         id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Post,
-        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 3000.0],
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.0,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 1.0,
+            },
         ]),
         section: Some(SectionId(1)),
         name: "P0".into(),
     });
+    m.rebuild_wall_assignment_regions();
+
+    let boundaries: Vec<_> = m
+        .wall_assignment_regions
+        .regions
+        .iter()
+        .map(|region| region.boundary.as_slice())
+        .collect();
+    assert!(
+        boundaries.iter().any(|boundary| boundary
+            .iter()
+            .any(|edge| edge.support == SupportMemberId::Primary(ElemId(0)))),
+        "柱側の鉛直辺は主架構が受け続ける: {boundaries:?}"
+    );
+    assert!(
+        !boundaries.iter().any(|boundary| boundary
+            .iter()
+            .any(|edge| { edge.support == SupportMemberId::Secondary(SecondaryMemberId(1)) })),
+        "柱に並走する間柱は割当領域の境界に残らない: {boundaries:?}"
+    );
 
     let out = distribute_enclosed_wall_plates(&m);
     assert!(
@@ -472,4 +535,93 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
 #[test]
 fn 行き先のある壁版は診断に出ない() {
     assert!(wall_plates_without_load_path(&split_by_post()).is_empty());
+}
+
+/// 中央間柱が梁の材軸中間にアンカーし、その位置にモデル節点が無い 1 構面。
+/// ノードは四隅のみで、間柱端は節点を持たない。
+fn midspan_post_bay() -> Model {
+    let mut m = bay();
+    // 間柱端の節点（4, 5）を除き、間柱が梁中間にだけ載る状態にする。
+    m.nodes.retain(|n| n.id.0 < 4);
+    m.unassigned_posts.push(SecondaryMember {
+        gravity_end_shares: Some([0.5, 0.5]),
+        id: SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Post,
+        ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(2)),
+                position: 0.5,
+            },
+            squid_n_core::model::SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(3)),
+                position: 0.5,
+            },
+        ]),
+        section: Some(SectionId(1)),
+        name: "P1".into(),
+    });
+    m
+}
+
+/// 間柱端が梁の材軸中間にありモデル節点が無くても、割当領域の `SupportBoundary` から
+/// 支持先を解決して自重を配る（幾何からの支持先再推定を撤去したことの回帰）。
+#[test]
+fn 間柱端が梁中間にある壁版も割当領域の支持部材へ自重を配る() {
+    let mut m = midspan_post_bay();
+    m.rebuild_wall_assignment_regions();
+    let regions: Vec<_> = m
+        .wall_assignment_regions
+        .regions
+        .iter()
+        .map(|region| (region.id, region.boundary.clone()))
+        .collect();
+    assert_eq!(regions.len(), 2, "中央間柱で 2 面");
+
+    for (i, (region_id, boundary)) in regions.iter().enumerate() {
+        let post_edge = boundary
+            .iter()
+            .position(|edge| edge.support == SupportMemberId::Secondary(SecondaryMemberId(0)))
+            .expect("間柱が割当領域の境界辺になっている");
+        let plate_id = WallPlateId(i as u32);
+        let mut p = plate(i as u32);
+        let mut shares = vec![0.0; boundary.len()];
+        shares[post_edge] = 1.0;
+        p.self_weight_shares = shares;
+        m.wall_plates.push(p);
+        m.wall_assignment_regions
+            .get_mut(*region_id)
+            .expect("直前に作った割当領域")
+            .assignment = squid_n_core::model::PlateAssignment::Plate(plate_id);
+    }
+
+    // 支持先は割当領域の SupportBoundary（間柱）と一致する。
+    let shares = edge_shares_with(&m, &m.wall_plates[0]);
+    assert_eq!(shares.len(), 1);
+    assert_eq!(
+        shares[0].support,
+        SupportMemberId::Secondary(SecondaryMemberId(0))
+    );
+
+    let out = distribute_enclosed_wall_plates(&m);
+    let post = out
+        .posts
+        .get(&SecondaryMemberId(0))
+        .expect("間柱が自重を受ける");
+    let post_total: f64 = post
+        .member_loads
+        .iter()
+        .map(|l| match *l {
+            MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+            MemberLoadKind::Point { p, .. } => p,
+        })
+        .sum();
+    assert!(
+        (post_total - full_weight()).abs() / full_weight() < 1e-9,
+        "2 枚合計で壁全体の自重が間柱へ渡る: {post_total}"
+    );
+    assert!(
+        out.primary.is_empty(),
+        "支持先を間柱に指定した辺は主架構へ配らない: {:?}",
+        out.primary
+    );
 }
