@@ -337,8 +337,6 @@ struct HingeViewKey {
     steel_material: Option<MaterialFingerprint>,
     /// 材端集中ばねの履歴則（[`resolve_member_hysteresis`] の解決値）。
     hysteresis: HysteresisModel,
-    /// 材端集中ばねが N-M 相関を用いるか（`HingeView::mn_linear` の有無に対応）。
-    use_mn: bool,
 }
 
 /// 要素の両端節点座標と局所軸の基準ベクトル。`f64` の厳密比較でキャッシュを
@@ -432,18 +430,6 @@ impl From<&Material> for MaterialFingerprint {
     }
 }
 
-/// 材端集中ばねが N-M 線形相関を用いる履歴則か。
-///
-/// [`build_hinge_view`] が返す `mn_linear` の有無と一致する（標準型・辻山田型・
-/// 座屈考慮型は `set_yield` 対応、履歴材料は非対応）。キャッシュキーの識別にのみ
-/// 用い、表示の可否は `HingeView::mn_linear` から判定する。
-fn concentrated_uses_mn(rule: HysteresisModel) -> bool {
-    matches!(
-        rule,
-        HysteresisModel::Standard | HysteresisModel::TsujiYamada | HysteresisModel::SteelBuckling
-    )
-}
-
 /// [`build_hinge_view`] が材端集中ばねを返す要素か（要素生成と同じ判定）。
 ///
 /// 選択ステップの軸力が M-θ 骨格へ影響するのは、N-M 相関を用いる集中ばねのみ。
@@ -471,7 +457,6 @@ fn hinge_view_key(
 ) -> HingeViewKey {
     let rule = resolve_member_hysteresis(elem, model, AnalysisKind::Incremental);
     let concentrated = is_concentrated_spring(model, elem);
-    let use_mn = concentrated_uses_mn(rule);
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
         elem: elem.id,
@@ -491,7 +476,6 @@ fn hinge_view_key(
             .element_steel_material(elem)
             .map(MaterialFingerprint::from),
         hysteresis: rule,
-        use_mn,
     }
 }
 
@@ -2265,14 +2249,12 @@ mod tests {
             "テストモデルは集中ばねに判定される"
         );
         let k0 = key_of(&model, &elem, 0);
-        assert!(!k0.use_mn, "武田型は N-M 相関非対応");
         assert_ne!(k0, key_of(&model, &elem, 1));
     }
 
     /// 解析側は降伏モーメント不定・初期回転剛性ゼロの場合は履歴則でも N-M 相関を
-    /// 適用する（キー側の `use_mn` 判定は false のままでも実ビューは相関を持つ）。
-    /// この縮退ケースでも選択ステップの軸力が骨格に影響するため、キーが step を
-    /// 常に含むことを固定する。
+    /// 適用する。この縮退ケースでも選択ステップの軸力が骨格に影響するため、
+    /// キーが step を常に含むことを実ビューの `mn_linear` の有無と併せて固定する。
     #[test]
     fn hinge_view_key_uses_step_for_degenerate_concentrated_spring_with_history_rule() {
         let mut model = key_test_model();
@@ -2294,7 +2276,6 @@ mod tests {
             "縮退ケースでも解析は N-M 相関を適用する"
         );
         let k0 = key_of(&model, &elem, 0);
-        assert!(!k0.use_mn, "キー側の use_mn は履歴則では false のまま");
         assert_ne!(k0, key_of(&model, &elem, 1));
     }
 
@@ -2359,7 +2340,6 @@ mod tests {
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
         let k3 = key_of(&model, &elem, 1);
         assert_ne!(k2, k3, "履歴則変更でキーが変わる");
-        assert!(!k3.use_mn, "武田型は N-M 相関非対応");
     }
 
     /// 軸力が大きいほど集中ばね骨格の降伏モーメントが低下する
