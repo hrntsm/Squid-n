@@ -30,10 +30,11 @@ use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_core::units::ConcreteClass;
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
 use squid_n_element::factory::{
-    build_hinge_view, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
-    AnalysisHingeModel, HingeView, StrengthBasis,
+    build_hinge_view, resolve_fiber_concrete_hysteresis, resolve_force_regime,
+    resolve_member_hysteresis, AnalysisHingeModel, HingeView, ResolvedRegime, StrengthBasis,
 };
 use squid_n_element::frame::concentrated::MnInteraction;
+use squid_n_element::wall::side_column::wall_side_column_release;
 use squid_n_element::wall::wall_element::wall_element_geometry;
 use squid_n_section::mn_surface::MnSurface;
 use squid_n_solver::nonlinear::pushover::{HingeEvent, HingeLevel, MemberStepState};
@@ -307,17 +308,17 @@ impl HingeViewCache {
 
 /// [`HingeViewCache`] のキー。骨格・曲面の生成に影響する入力を一意に識別する。
 ///
-/// `step_count` 単独には依存しない。同一ステップ数で再解析した場合も
-/// `generation`（`staleness.last_run` と `staleness.results_stale`）で無効化され、
-/// 断面・材料・履歴則の編集は `section`・`material`・`hysteresis` の
-/// フィンガープリントで無効化される。
+/// 同一ステップ数で再解析した場合も `generation`（`staleness.last_run` と
+/// `staleness.results_stale`）で無効化され、断面・材料・履歴則の編集は
+/// `section`・`material`・`hysteresis` のフィンガープリントで無効化される。
 ///
 /// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
 /// キーには含めない。表示時にキャッシュ済みのビューから決める。
 #[derive(Clone, PartialEq, Debug)]
 struct HingeViewKey {
     elem: ElemId,
-    /// 解決後の選択ステップ添字（`records` 上の位置）。
+    /// キャッシュが生成された選択ステップ添字（`records` 上の位置）。
+    /// 非集中ばねは軸力に依存せず選択ステップにも依らないため常に 0。
     step: usize,
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
@@ -417,6 +418,19 @@ fn concentrated_uses_mn(rule: HysteresisModel) -> bool {
     )
 }
 
+/// [`build_hinge_view`] が材端集中ばねを返す要素か（要素生成と同じ判定）。
+///
+/// 集中ばねだけが選択ステップの軸力で M-θ 骨格を変えるため、キャッシュキーへ
+/// ステップを含めるかの判定に用いる。壁側柱（面内解放）は集中ばねではない。
+fn is_concentrated_spring(model: &Model, elem: &ElementData) -> bool {
+    elem.kind == ElementKind::Beam
+        && wall_side_column_release(elem, model).is_none()
+        && matches!(
+            resolve_force_regime(elem, model),
+            ResolvedRegime::ConcentratedSpring
+        )
+}
+
 /// 骨格・曲面生成に影響する入力からキャッシュキーを組み立てる（純粋関数）。
 ///
 /// 強度基準は [`StrengthBasis::MaterialStrength`]、解析種別は
@@ -432,7 +446,11 @@ fn hinge_view_key(
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
         elem: elem.id,
-        step,
+        step: if is_concentrated_spring(model, elem) {
+            step
+        } else {
+            0
+        },
         generation: (staleness.last_run, staleness.results_stale),
         kind: elem.kind,
         force_regime: elem.force_regime,
@@ -2055,6 +2073,17 @@ mod tests {
         let model = key_test_model();
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
         assert_ne!(key_of(&model, &elem, 0), key_of(&model, &elem, 1));
+    }
+
+    /// ファイバー／マルチスプリングのビューは選択ステップの軸力に依存しないため、
+    /// ステップが変わってもキーは変わらない（重い曲面を再生成しない）。
+    #[test]
+    fn hinge_view_key_ignores_step_for_non_concentrated() {
+        let model = key_test_model();
+        let fiber = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        assert_eq!(key_of(&model, &fiber, 0), key_of(&model, &fiber, 1));
+        let ms = key_test_elem(ElementKind::MultiSpring, ForceRegime::AxialBendingInteract);
+        assert_eq!(key_of(&model, &ms, 0), key_of(&model, &ms, 1));
     }
 
     /// 同一ステップ数で再解析した場合（`last_run` のみ更新）もキーが変わる。
