@@ -310,7 +310,8 @@ impl HingeViewCache {
 ///
 /// 同一ステップ数で再解析した場合も `generation`（`staleness.last_run` と
 /// `staleness.results_stale`）で無効化され、断面・材料・履歴則の編集は
-/// `section`・`material`・`hysteresis` のフィンガープリントで無効化される。
+/// `section`・`material`・`hysteresis` のフィンガープリント、要素の移動・
+/// 局所軸の変更は `geometry` で無効化される。
 ///
 /// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
 /// キーには含めない。表示時にキャッシュ済みのビューから決める。
@@ -318,12 +319,15 @@ impl HingeViewCache {
 struct HingeViewKey {
     elem: ElemId,
     /// キャッシュが生成された選択ステップ添字（`records` 上の位置）。
-    /// 選択ステップの軸力が骨格に影響する N-M 相関ありの集中ばねのみ実 step を
-    /// 保持し、それ以外（非集中ばね、N-M 相関非対応の履歴材料）は常に 0。
+    /// 材端集中ばねは常に実 step を保持する（解析側は降伏モーメント不定でも
+    /// N-M 相関を適用しうるため）。それ以外は常に 0。
     step: usize,
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
     kind: ElementKind,
+    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。剛床所属や壁側柱判定の
+    /// 変化を検出する。`f64` の厳密比較でよい。
+    geometry: Option<ElementGeometry>,
     force_regime: ForceRegime,
     rigid_zone: RigidZone,
     plastic_zone: Option<f64>,
@@ -335,6 +339,27 @@ struct HingeViewKey {
     hysteresis: HysteresisModel,
     /// 材端集中ばねが N-M 相関を用いるか（`HingeView::mn_linear` の有無に対応）。
     use_mn: bool,
+}
+
+/// 要素の両端節点座標と局所軸の基準ベクトル。`f64` の厳密比較でキャッシュを
+/// 無効化するために用いる。
+#[derive(Clone, PartialEq, Debug)]
+struct ElementGeometry {
+    coord_i: [f64; 3],
+    coord_j: [f64; 3],
+    ref_vector: [f64; 3],
+}
+
+/// 要素の両端節点座標と局所軸基準ベクトルをキー用に取り出す（純粋関数）。
+/// 節点が取得できない場合は `None`。
+fn element_geometry(model: &Model, elem: &ElementData) -> Option<ElementGeometry> {
+    let pi = model.nodes.get(elem.nodes.first()?.index())?;
+    let pj = model.nodes.get(elem.nodes.get(1)?.index())?;
+    Some(ElementGeometry {
+        coord_i: pi.coord,
+        coord_j: pj.coord,
+        ref_vector: elem.local_axis.ref_vector,
+    })
 }
 
 /// 断面のうち骨格・曲面生成に用いるフィールド。
@@ -450,9 +475,10 @@ fn hinge_view_key(
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
         elem: elem.id,
-        step: if concentrated && use_mn { step } else { 0 },
+        step: if concentrated { step } else { 0 },
         generation: (staleness.last_run, staleness.results_stale),
         kind: elem.kind,
+        geometry: element_geometry(model, elem),
         force_regime: elem.force_regime,
         rigid_zone: elem.rigid_zone,
         plastic_zone: elem.plastic_zone,
@@ -2226,10 +2252,11 @@ mod tests {
         assert_eq!(key_of(&model, &ms, 0), key_of(&model, &ms, 1));
     }
 
-    /// N-M 相関非対応の集中ばね（履歴材料）も選択ステップの軸力に依存しないため、
-    /// ステップが変わってもキーは変わらない（軸力に依らない骨格を再生成しない）。
+    /// 材端集中ばねは N-M 相関非対応の履歴則でも選択ステップの軸力が骨格に
+    /// 影響しうる（解析側は降伏モーメント不定・初期回転剛性ゼロで N-M 相関を
+    /// 適用するため）。ステップが変わればキーも変わる。
     #[test]
-    fn hinge_view_key_ignores_step_for_history_rule_concentrated_spring() {
+    fn hinge_view_key_uses_step_for_history_rule_concentrated_spring() {
         let mut model = key_test_model();
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
@@ -2239,7 +2266,57 @@ mod tests {
         );
         let k0 = key_of(&model, &elem, 0);
         assert!(!k0.use_mn, "武田型は N-M 相関非対応");
-        assert_eq!(k0, key_of(&model, &elem, 1));
+        assert_ne!(k0, key_of(&model, &elem, 1));
+    }
+
+    /// 解析側は降伏モーメント不定・初期回転剛性ゼロの場合は履歴則でも N-M 相関を
+    /// 適用する（キー側の `use_mn` 判定は false のままでも実ビューは相関を持つ）。
+    /// この縮退ケースでも選択ステップの軸力が骨格に影響するため、キーが step を
+    /// 常に含むことを固定する。
+    #[test]
+    fn hinge_view_key_uses_step_for_degenerate_concentrated_spring_with_history_rule() {
+        let mut model = key_test_model();
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        model.sections[0].iy = 0.0;
+        model.sections[0].iz = 0.0;
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let view = build_hinge_view(
+            &elem,
+            &model,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert!(
+            view.mn_linear.is_some(),
+            "縮退ケースでも解析は N-M 相関を適用する"
+        );
+        let k0 = key_of(&model, &elem, 0);
+        assert!(!k0.use_mn, "キー側の use_mn は履歴則では false のまま");
+        assert_ne!(k0, key_of(&model, &elem, 1));
+    }
+
+    /// 要素の両端節点座標・局所軸基準ベクトルが変わればキーが変わる
+    /// （幾何由来の解決レジーム変化＝剛床所属や壁側柱判定の変化を検出する）。
+    #[test]
+    fn hinge_view_key_changes_with_element_geometry() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let k0 = key_of(&model, &elem, 1);
+
+        let mut moved = model.clone();
+        moved.nodes[1].coord[2] += 100.0;
+        assert_ne!(k0, key_of(&moved, &elem, 1), "節点座標の変更でキーが変わる");
+
+        let mut rotated = elem.clone();
+        rotated.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        assert_ne!(
+            k0,
+            key_of(&model, &rotated, 1),
+            "局所軸基準ベクトルの変更でキーが変わる"
+        );
     }
 
     /// 同一ステップ数で再解析した場合（`last_run` のみ更新）もキーが変わる。
