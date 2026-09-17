@@ -886,7 +886,7 @@ fn mn_unavailable_message(model: AnalysisHingeModel) -> &'static str {
             "この解析モデルでは N-M 相関を使用していません（履歴材料は N-M 相関非対応）。"
         }
         AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring => {
-            "断面形状が未定義のため N-M 相関図を表示できません。"
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
         }
         AnalysisHingeModel::Other => "この要素種別では N-M 相関図を表示しません。",
     }
