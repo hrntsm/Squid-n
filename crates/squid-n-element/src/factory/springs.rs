@@ -248,6 +248,8 @@ pub struct FlexuralSpringBackbone {
     pub k_rot: f64,
     /// 材料構築に用いた降伏モーメント [N·mm]。
     pub yield_moment: f64,
+    /// 材料構築に渡した降伏後接線剛性 [N·mm/rad]（バイリニア系のみ。他は 0）。
+    pub post_yield_stiffness: f64,
     /// N-M 相関なしの折れ点 [theta(rad), moment(N·mm)]。
     pub points: Vec<[f64; 2]>,
     /// N-M 相関（`set_yield`）を適用可能か。
@@ -271,7 +273,7 @@ impl FlexuralSpringBackbone {
         match self.kind {
             FlexuralBackboneKind::Bilinear | FlexuralBackboneKind::TsujiYamada => {
                 if self.k_rot > 0.0 {
-                    vec![[0.0, 0.0], [m / self.k_rot, m]]
+                    bilinear_backbone_points(self.k_rot, m, self.post_yield_stiffness)
                 } else {
                     self.points.clone()
                 }
@@ -291,13 +293,19 @@ impl FlexuralSpringBackbone {
     }
 }
 
-/// バイリニア（標準型）の折れ点 `[(0,0), (My/k, My)]`。
-fn bilinear_backbone_points(k_rot: f64, my: f64) -> Vec<[f64; 2]> {
-    if k_rot > 0.0 {
-        vec![[0.0, 0.0], [my / k_rot, my]]
-    } else {
-        vec![[0.0, 0.0]]
+/// バイリニア系の折れ点 `[(0,0), (My/k, My), (4θy, My + k2·3θy)]`。
+/// `k2` は材料構築に渡した降伏後接線 [N·mm/rad]。`k_rot<=0` は原点のみ。
+fn bilinear_backbone_points(k_rot: f64, my: f64, k2: f64) -> Vec<[f64; 2]> {
+    if k_rot <= 0.0 {
+        return vec![[0.0, 0.0]];
     }
+    let theta_y = my / k_rot;
+    let theta_end = 4.0 * theta_y;
+    vec![
+        [0.0, 0.0],
+        [theta_y, my],
+        [theta_end, my + k2 * (theta_end - theta_y)],
+    ]
 }
 
 /// 座屈考慮型（`SteelBuckling::with_defaults(k, my, 1.1)`）の折れ点。
@@ -332,7 +340,8 @@ pub(super) fn build_flexural_springs(
         let backbone = FlexuralSpringBackbone {
             k_rot,
             yield_moment: my,
-            points: bilinear_backbone_points(k_rot, my),
+            post_yield_stiffness: 0.01 * k_rot,
+            points: bilinear_backbone_points(k_rot, my, 0.01 * k_rot),
             use_mn: true,
             kind: FlexuralBackboneKind::Bilinear,
         };
@@ -348,7 +357,8 @@ pub(super) fn build_flexural_springs(
         let backbone = FlexuralSpringBackbone {
             k_rot,
             yield_moment: my,
-            points: bilinear_backbone_points(k_rot, my),
+            post_yield_stiffness: k2,
+            points: bilinear_backbone_points(k_rot, my, k2),
             use_mn: true,
             kind: FlexuralBackboneKind::TsujiYamada,
         };
@@ -360,6 +370,7 @@ pub(super) fn build_flexural_springs(
         let backbone = FlexuralSpringBackbone {
             k_rot,
             yield_moment: my,
+            post_yield_stiffness: 0.0,
             points: steel_buckling_backbone_points(k_rot, my),
             use_mn: true,
             kind: FlexuralBackboneKind::SteelBuckling,
@@ -413,6 +424,7 @@ pub(super) fn build_flexural_springs(
     let backbone = FlexuralSpringBackbone {
         k_rot,
         yield_moment: my,
+        post_yield_stiffness: 0.0,
         points,
         use_mn: false,
         kind: FlexuralBackboneKind::Explicit,
