@@ -122,6 +122,23 @@ pub(crate) fn resolve_fiber_yield(
     FiberYield { main, rebar, steel }
 }
 
+/// 断面形状が生成するファイバ領域の降伏点が [`FiberYield`] から解決できるか。
+///
+/// `false` は形状ファイバの材料生成が panic する条件を表す。コンクリート領域の
+/// Fc は [`FiberYield`] の対象外であり入力チェックで確認する。
+pub(crate) fn fiber_yield_covers_shape(shape: Option<&SectionShape>, yield_: &FiberYield) -> bool {
+    let rebar = yield_.rebar.or(yield_.main).is_some_and(|fy| fy > 0.0);
+    let steel = yield_.steel.is_some_and(|fy| fy > 0.0);
+    match shape {
+        Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcCircle { .. }) => rebar,
+        Some(SectionShape::SrcRect { .. }) => rebar && steel,
+        Some(SectionShape::CftBox { .. }) | Some(SectionShape::CftPipe { .. }) => steel,
+        Some(SectionShape::RcWall { .. }) | None => true,
+        Some(SectionShape::RcSlab { .. }) => true,
+        Some(_) => steel,
+    }
+}
+
 /// ファイバ断面の実効材料強度。解析用 [`build_gauss_fibers`] と表示 API が共有する。
 pub(crate) fn fiber_strength_params(
     data: &squid_n_core::model::ElementData,

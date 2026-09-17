@@ -19,7 +19,10 @@ use super::regime::{resolve_force_regime, ResolvedRegime};
 use super::springs::{build_flexural_springs, yield_moment_and_axial};
 use super::{resolve_member_hysteresis, StrengthBasis};
 use crate::frame::concentrated::MnInteraction;
-use crate::frame::fiber::{build_gauss_fiber_pair, fiber_strength_params, FIBER_ND, FIBER_NW};
+use crate::frame::fiber::{
+    build_gauss_fiber_pair, fiber_strength_params, fiber_yield_covers_shape, resolve_fiber_yield,
+    FIBER_ND, FIBER_NW,
+};
 use crate::frame::multi_spring::{MS_ND, MS_NW};
 
 /// 解析が要素ごとに使用する非線形モデルの種別。
@@ -210,6 +213,9 @@ pub(crate) fn analysis_plastic_fibers(
     if super::input_check::member_strength_issue(data, model).is_some() {
         return None;
     }
+    if !fiber_yield_covers_shape(sec.shape.as_ref(), &resolve_fiber_yield(model, data)) {
+        return None;
+    }
     let strength = fiber_strength_params(data, model, basis);
     let [(section, _mats), _] =
         build_gauss_fiber_pair(data, model, basis, kind, sec.width, sec.depth, nw, nd);
@@ -379,6 +385,35 @@ mod tests {
                     legs: 2,
                 },
             },
+        }
+    }
+
+    fn src_shape() -> SectionShape {
+        SectionShape::SrcRect {
+            b: 500.0,
+            d: 700.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
         }
     }
 
@@ -868,6 +903,59 @@ mod tests {
             FIBER_ND,
         )
         .is_none());
+        let view = build_hinge_view(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            0.0,
+            8,
+            24,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::Fiber);
+        assert!(view.mn_surface.is_none());
+    }
+
+    /// SRC 矩形で内蔵鉄骨材料が未割当のとき、入力チェックは要素材料 fy で
+    /// 不備なしと判定するが、ファイバ生成の鋼材領域は降伏点を解決できない。
+    /// 表示 API は panic せず曲面を返さない。
+    #[test]
+    fn src_shape_without_steel_material_returns_no_surface() {
+        let mut model = make_model(Some(src_shape()), Some(24.0));
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SD345".into(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(345.0),
+        });
+        model.sections[0].rebar_material = Some(MaterialId(1));
+        let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
+
+        assert!(
+            crate::factory::input_check::member_strength_issue(&col, &model).is_none(),
+            "内蔵鉄骨材料が未割当でも要素材料 fy で入力不備なしと判定される"
+        );
+        assert!(
+            resolve_fiber_yield(&model, &col).steel.is_none(),
+            "ファイバ生成が要求する鋼材降伏点は解決できない"
+        );
+        assert!(analysis_plastic_fibers(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            FIBER_NW,
+            FIBER_ND,
+        )
+        .is_none());
+
         let view = build_hinge_view(
             &col,
             &model,
