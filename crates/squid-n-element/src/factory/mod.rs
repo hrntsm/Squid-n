@@ -20,7 +20,9 @@ mod regime;
 mod springs;
 mod wall_opening;
 
-pub use hinge_view::{build_hinge_view, AnalysisHingeModel, HingeView};
+pub use hinge_view::{
+    build_hinge_view, resolves_to_concentrated_spring, AnalysisHingeModel, HingeView,
+};
 pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
 pub use springs::{

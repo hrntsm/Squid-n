@@ -88,6 +88,20 @@ pub fn build_hinge_view(
     }
 }
 
+/// [`build_hinge_view`] が `Beam` に対して材端集中ばね分岐を取るか。
+///
+/// `Beam` かつ壁側柱の面内解放がなく、[`resolve_force_regime`] が
+/// [`ResolvedRegime::ConcentratedSpring`] を返す場合に `true`。断面・材料の
+/// 不足で骨格を返せない場合も分岐自体は材端集中ばねのため `true` とする。
+pub fn resolves_to_concentrated_spring(data: &ElementData, model: &Model) -> bool {
+    data.kind == ElementKind::Beam
+        && crate::wall::side_column::wall_side_column_release(data, model).is_none()
+        && matches!(
+            resolve_force_regime(data, model),
+            ResolvedRegime::ConcentratedSpring
+        )
+}
+
 /// `Beam` はフォースレジームで材端集中ばね／ファイバーに分岐する。
 /// 壁側柱の面内解放は非線形ヒンジを持たないため `Other`。
 #[allow(clippy::too_many_arguments)]
@@ -100,28 +114,26 @@ fn beam_view(
     n_alpha: usize,
     n_beta: usize,
 ) -> HingeView {
+    if resolves_to_concentrated_spring(data, model) {
+        if super::input_check::member_strength_issue(data, model).is_some() {
+            return HingeView::none(AnalysisHingeModel::ConcentratedSpring);
+        }
+        let rule = resolve_member_hysteresis(data, model, kind);
+        let (_i, _j, backbone) = build_flexural_springs(data, model, rule, basis);
+        let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
+        let mn = backbone.use_mn.then(|| MnInteraction::new(my0, n_allow));
+        let points = backbone.points_with_mn(mn.as_ref(), axial_force_compression_positive);
+        return HingeView {
+            model: AnalysisHingeModel::ConcentratedSpring,
+            backbone: Some(points),
+            mn_linear: mn,
+            mn_surface: None,
+        };
+    }
     if crate::wall::side_column::wall_side_column_release(data, model).is_some() {
         return HingeView::none(AnalysisHingeModel::Other);
     }
-    match resolve_force_regime(data, model) {
-        ResolvedRegime::ConcentratedSpring => {
-            if super::input_check::member_strength_issue(data, model).is_some() {
-                return HingeView::none(AnalysisHingeModel::ConcentratedSpring);
-            }
-            let rule = resolve_member_hysteresis(data, model, kind);
-            let (_i, _j, backbone) = build_flexural_springs(data, model, rule, basis);
-            let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
-            let mn = backbone.use_mn.then(|| MnInteraction::new(my0, n_allow));
-            let points = backbone.points_with_mn(mn.as_ref(), axial_force_compression_positive);
-            HingeView {
-                model: AnalysisHingeModel::ConcentratedSpring,
-                backbone: Some(points),
-                mn_linear: mn,
-                mn_surface: None,
-            }
-        }
-        ResolvedRegime::Fiber => fiber_view(data, model, basis, kind, n_alpha, n_beta),
-    }
+    fiber_view(data, model, basis, kind, n_alpha, n_beta)
 }
 
 /// ファイバー要素（解析の `nw=12`, `nd=20`）の N-M 曲面。
@@ -735,6 +747,98 @@ mod tests {
         );
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
+    }
+
+    /// 耐震壁とその側柱（鉛直な `Beam`）を持つモデル。返り値は側柱要素。
+    fn wall_side_column_model() -> (Model, ElementData) {
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut model = Model {
+            nodes: vec![
+                node(NodeId(0), [0.0, 0.0, 0.0]),
+                node(NodeId(1), [4000.0, 0.0, 0.0]),
+                node(NodeId(2), [4000.0, 0.0, 3000.0]),
+                node(NodeId(3), [0.0, 0.0, 3000.0]),
+            ],
+            sections: vec![SectionShape::RcWall {
+                thickness: 150.0,
+                ps: 0.0025,
+            }
+            .to_section(SectionId(0), "W150".into())],
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            ..Default::default()
+        };
+        let wall = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        model.elements.push(wall.clone());
+        crate::wall::add_surrounding_frame(&mut model, &wall);
+        let mut column = elem(ElementKind::Beam, [NodeId(0), NodeId(3)]);
+        column.id = ElemId(9);
+        model.elements.push(column.clone());
+        (model, column)
+    }
+
+    /// [`resolves_to_concentrated_spring`] の判定が [`build_hinge_view`] の分岐
+    /// （`Beam` に材端集中ばねビューを返すか）と一致する。
+    #[test]
+    fn resolves_to_concentrated_spring_matches_build_hinge_view() {
+        let basis = StrengthBasis::Nominal;
+        let kind = AnalysisKind::Incremental;
+        let check = |data: &ElementData, model: &Model| {
+            let view = build_hinge_view(data, model, basis, kind, 0.0, 8, 24);
+            assert_eq!(
+                resolves_to_concentrated_spring(data, model),
+                view.model == AnalysisHingeModel::ConcentratedSpring,
+                "要素種別・レジーム {:?} でヘルパーとビューの分岐が不一致",
+                data.kind
+            );
+        };
+
+        let model = make_model(None, None);
+        check(&elem(ElementKind::Beam, [NodeId(0), NodeId(1)]), &model);
+        check(&elem(ElementKind::Beam, [NodeId(0), NodeId(2)]), &model);
+        check(&elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]), &model);
+        check(
+            &elem(ElementKind::MultiSpring, [NodeId(0), NodeId(2)]),
+            &model,
+        );
+
+        let (wall_model, column) = wall_side_column_model();
+        check(&column, &wall_model);
+        assert!(
+            !resolves_to_concentrated_spring(&column, &wall_model),
+            "壁側柱は集中ばね分岐を取らない"
+        );
     }
 
     /// 鋼材断面で fy が未設定のとき、ファイバ材料の生成で panic せず曲面を
