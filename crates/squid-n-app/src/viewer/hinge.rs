@@ -569,6 +569,19 @@ pub(super) fn m_theta_series(
     (i_pts, j_pts)
 }
 
+/// 材端集中ばねの端ばね変形（`spring_rz_i`／`spring_rz_j`）が、表示する端の
+/// 全ステップに記録されているか。記録の無い旧結果ファイルでは弦からの材端回転へ
+/// フォールバックするため、端ばね変形基準の M-θ 骨格を重ねてはならない。
+fn spring_rotation_recorded(records: &[MemberStepState], end_j: bool) -> bool {
+    records.iter().all(|r| {
+        if end_j {
+            r.spring_rz_j.is_some()
+        } else {
+            r.spring_rz_i.is_some()
+        }
+    })
+}
+
 /// 採用軸の端最大 |M|（絶対値が大きい方の端の符号付き値）と軸力から、
 /// 応答経路 [M(kN·m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
 /// `member_history` の軸力は既に圧縮正のため、N-M 曲線側の符号変換のみで
@@ -808,7 +821,19 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     ui.label(
         "横軸: 材端回転角 |θ| [rad]（弦からの回転）、縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。",
     );
-    draw_m_theta_plot(ui, elem_id, &records, view, bend_dir_z, &mine, step);
+    let spring_rot_axis = view.model == AnalysisHingeModel::ConcentratedSpring
+        && (!mine.iter().any(|m| !m.end_j) || spring_rotation_recorded(&records, false))
+        && (!mine.iter().any(|m| m.end_j) || spring_rotation_recorded(&records, true));
+    draw_m_theta_plot(
+        ui,
+        elem_id,
+        &records,
+        view,
+        bend_dir_z,
+        &mine,
+        step,
+        spring_rot_axis,
+    );
     ui.separator();
 
     if view.model != AnalysisHingeModel::Other {
@@ -944,24 +969,36 @@ fn draw_m_theta_plot(
     bend_dir_z: bool,
     mine: &[HingeMarker],
     selected_step: usize,
+    spring_rot_axis: bool,
 ) {
     let use_spring_rot = view.model == AnalysisHingeModel::ConcentratedSpring;
     let (i_pts, j_pts) = m_theta_series(records, bend_dir_z, use_spring_rot);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
+    if view.backbone.is_some() && !spring_rot_axis {
+        ui.colored_label(
+            theme::GRAY_600,
+            "端ばね変形が未記録のため M-θ 骨格を重ねません（再解析してください）。",
+        );
+    }
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
         .x_axis_label("|θ| [rad]")
         .y_axis_label("|M| [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
-            if let Some(bp) = view.backbone.as_deref() {
-                let xy: Vec<[f64; 2]> = bp.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
-                plot_ui.line(
-                    egui_plot::Line::new("M-θ 骨格（解析モデル）", egui_plot::PlotPoints::from(xy))
+            if spring_rot_axis {
+                if let Some(bp) = view.backbone.as_deref() {
+                    let xy: Vec<[f64; 2]> = bp.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
+                    plot_ui.line(
+                        egui_plot::Line::new(
+                            "M-θ 骨格（解析モデル）",
+                            egui_plot::PlotPoints::from(xy),
+                        )
                         .color(theme::GRAY_600)
                         .width(1.5_f32),
-                );
+                    );
+                }
             }
             if has_i {
                 plot_m_theta_end(plot_ui, "i端", &i_pts, theme::DATA_BLUE, selected_step);
@@ -1607,6 +1644,25 @@ mod tests {
         let (i_pts, j_pts) = m_theta_series(&records, true, true);
         assert_pts_near(&i_pts, &[[0.03, 100.0]]);
         assert_pts_near(&j_pts, &[[0.04, 50.0]]);
+    }
+
+    /// 端ばね変形は表示する端ごとに全ステップ分を確認する（1 ステップでも
+    /// 欠ければ骨格を重ねない）。
+    #[test]
+    fn spring_rotation_recorded_requires_all_steps_for_selected_end() {
+        let mut records = vec![step(0.0, 0.0, 0.0, 0.0, 0.0), step(0.0, 0.0, 0.0, 0.0, 0.0)];
+        assert!(!spring_rotation_recorded(&records, false));
+        records[0].spring_rz_i = Some(0.01);
+        assert!(
+            !spring_rotation_recorded(&records, false),
+            "1 ステップでも欠ければ false"
+        );
+        records[1].spring_rz_i = Some(0.02);
+        assert!(spring_rotation_recorded(&records, false));
+        assert!(
+            !spring_rotation_recorded(&records, true),
+            "j端は独立に判定する"
+        );
     }
 
     /// 弱軸採用時は ry/my を抽出する。
