@@ -22,8 +22,8 @@ use crate::theme;
 use crate::viewer::mn_draw;
 use squid_n_core::ids::{ElemId, MaterialId};
 use squid_n_core::model::{
-    AnalysisKind, ElementData, ElementKind, ForceRegime, HysteresisModel, Material,
-    MaterialCategory, Model, RigidZone, Section,
+    AnalysisKind, ElementData, ElementKind, HysteresisModel, Material, MaterialCategory, Model,
+    RigidZone, Section,
 };
 use squid_n_core::section_shape::SectionShape;
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
@@ -309,10 +309,14 @@ impl HingeViewCache {
 /// [`HingeViewCache`] のキー。骨格・曲面の生成に影響する入力を一意に識別する。
 ///
 /// 同一ステップ数で再解析した場合も `generation`（`staleness.last_run` と
-/// `staleness.results_stale`）で無効化され、断面・材料・履歴則の編集は
-/// `section`・`material`・`hysteresis` のフィンガープリント、要素の移動・
-/// 局所軸の変更は `geometry` で無効化される。解決レジームと側柱判定は
-/// `concentrated`・`wall_side_column` で無効化される。
+/// `staleness.results_stale`）で無効化され、断面・材料の編集は `section`・
+/// `material` のフィンガープリント、要素の移動・局所軸の変更は `geometry` で
+/// 無効化される。集中ばね／ファイバー／側柱の分岐は `concentrated`・
+/// `wall_side_column` で無効化される。
+///
+/// [`build_hinge_view`] が参照しない入力はキーに含めない。指定レジーム
+/// （`ForceRegime`）の解決結果は `concentrated`・`wall_side_column` に、
+/// `plastic_zone` はどの分岐でも表示に効かないためキーに含めない。
 ///
 /// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
 /// キーには含めない。表示時にキャッシュ済みのビューから決める。
@@ -328,23 +332,21 @@ struct HingeViewKey {
     kind: ElementKind,
     /// 要素幾何（両端節点座標と局所軸基準ベクトル）。`f64` の厳密比較でよい。
     geometry: Option<ElementGeometry>,
-    /// 指定レジーム（[`ForceRegime`]）。`Auto` の解決結果は `concentrated` と
-    /// `wall_side_column` で捕捉する。
-    force_regime: ForceRegime,
     /// [`resolves_to_concentrated_spring`] の解決値。剛床・壁の編集で
     /// 集中ばね⇔ファイバーの分岐が変わればキーが変わる。
     concentrated: bool,
     /// 自要素が耐震壁の側柱（面内解放）か。レジームが同じでも側柱は
     /// 非線形ヒンジを持たず別ビューになる。
     wall_side_column: bool,
-    rigid_zone: RigidZone,
-    plastic_zone: Option<f64>,
+    /// 材端集中ばねの剛域（曲げばね初期剛性に効く）。それ以外は `None`。
+    rigid_zone: Option<RigidZone>,
     section: Option<SectionFingerprint>,
     material: Option<MaterialFingerprint>,
     rebar_material: Option<MaterialFingerprint>,
     steel_material: Option<MaterialFingerprint>,
     /// 材端集中ばねの履歴則（[`resolve_member_hysteresis`] の解決値）。
-    hysteresis: HysteresisModel,
+    /// ファイバー／マルチスプリングの曲面は履歴則に依存しないため `None`。
+    hysteresis: Option<HysteresisModel>,
 }
 
 /// 要素の両端節点座標と局所軸の基準ベクトル。`f64` の厳密比較でキャッシュを
@@ -449,7 +451,6 @@ fn hinge_view_key(
     step: usize,
     staleness: &Staleness,
 ) -> HingeViewKey {
-    let rule = resolve_member_hysteresis(elem, model, AnalysisKind::Incremental);
     let concentrated = resolves_to_concentrated_spring(elem, model);
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
@@ -458,11 +459,9 @@ fn hinge_view_key(
         generation: (staleness.last_run, staleness.results_stale),
         kind: elem.kind,
         geometry: element_geometry(model, elem),
-        force_regime: elem.force_regime,
         concentrated,
         wall_side_column: wall_side_column_release(elem, model).is_some(),
-        rigid_zone: elem.rigid_zone,
-        plastic_zone: elem.plastic_zone,
+        rigid_zone: concentrated.then_some(elem.rigid_zone),
         section: section.map(SectionFingerprint::from),
         material: model.element_material(elem).map(MaterialFingerprint::from),
         rebar_material: model
@@ -471,7 +470,8 @@ fn hinge_view_key(
         steel_material: model
             .element_steel_material(elem)
             .map(MaterialFingerprint::from),
-        hysteresis: rule,
+        hysteresis: concentrated
+            .then(|| resolve_member_hysteresis(elem, model, AnalysisKind::Incremental)),
     }
 }
 
@@ -1495,6 +1495,7 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
 mod tests {
     use super::*;
     use crate::viewer::wall_expanded_view_model;
+    use squid_n_core::model::ForceRegime;
     use squid_n_core::units::to_display::moment_kn_m;
 
     /// テスト用のヒンジ発生イベントを組み立てる。
@@ -2528,6 +2529,99 @@ mod tests {
         assert_eq!(view(&model), AnalysisHingeModel::Fiber);
         let expanded = squid_n_load::wall_expand::expand_wall_elements(&model).0;
         assert_eq!(view(&expanded), AnalysisHingeModel::Other);
+    }
+
+    /// ファイバーの N-M 曲面は剛域・塑性化域長・履歴則に依存しないため、
+    /// これらを編集してもキーは変わらない（重い曲面を再生成しない）。
+    #[test]
+    fn hinge_view_key_ignores_non_display_fields_for_fiber() {
+        let model = key_test_model_rc();
+        let elem = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        let k0 = key_of(&model, &elem, 0);
+
+        let mut rigid = elem.clone();
+        rigid.rigid_zone.length_i = 500.0;
+        assert_eq!(k0, key_of(&model, &rigid, 0), "剛域は曲面に効かない");
+
+        let mut plastic = elem.clone();
+        plastic.plastic_zone = Some(900.0);
+        assert_eq!(
+            k0,
+            key_of(&model, &plastic, 0),
+            "塑性化域長は曲面に効かない"
+        );
+
+        let mut hist = model.clone();
+        hist.set_member_hysteresis(ElemId(0), HysteresisModel::Retrograde);
+        assert_eq!(k0, key_of(&hist, &elem, 0), "履歴則は曲面に効かない");
+    }
+
+    /// 材端集中ばねでは剛域・履歴則が表示骨格に効くためキーに含め、
+    /// 塑性化域長は効かないため含めない。
+    #[test]
+    fn hinge_view_key_includes_concentrated_display_fields_only() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(
+            resolves_to_concentrated_spring(&elem, &model),
+            "テストモデルは集中ばねに判定される"
+        );
+        let k0 = key_of(&model, &elem, 0);
+
+        let mut plastic = elem.clone();
+        plastic.plastic_zone = Some(900.0);
+        assert_eq!(
+            k0,
+            key_of(&model, &plastic, 0),
+            "塑性化域長は骨格に効かない"
+        );
+
+        let mut rigid = elem.clone();
+        rigid.rigid_zone.length_i = 500.0;
+        assert_ne!(k0, key_of(&model, &rigid, 0), "剛域は骨格に効く");
+
+        let mut hist = model.clone();
+        hist.set_member_hysteresis(ElemId(0), HysteresisModel::Retrograde);
+        assert_ne!(k0, key_of(&hist, &elem, 0), "履歴則は骨格に効く");
+    }
+
+    /// 指定レジームそのものはキーに含めない。同じ分岐（材端集中ばね）に解決される
+    /// `Auto` と明示指定は表示ビューが同一のためキーも一致する。
+    #[test]
+    fn hinge_view_key_treats_force_regime_via_resolved_branch() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, StoryId};
+        use squid_n_core::model::{Constraint, Node};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [5000.0, 0.0, 0.0]),
+            node(NodeId(2), [0.0, 0.0, 3000.0]),
+        ];
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        ));
+
+        let auto = key_test_elem(ElementKind::Beam, ForceRegime::Auto);
+        let explicit = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(resolves_to_concentrated_spring(&auto, &model));
+        assert!(resolves_to_concentrated_spring(&explicit, &model));
+        assert_eq!(
+            key_of(&model, &auto, 0),
+            key_of(&model, &explicit, 0),
+            "同じ分岐に解決されるレジームは同じキー"
+        );
     }
 
     /// 軸力が大きいほど集中ばね骨格の降伏モーメントが低下する
