@@ -30,8 +30,8 @@ use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_core::units::ConcreteClass;
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
 use squid_n_element::factory::{
-    build_hinge_view, resolve_fiber_concrete_hysteresis, resolve_force_regime,
-    resolve_member_hysteresis, AnalysisHingeModel, HingeView, ResolvedRegime, StrengthBasis,
+    build_hinge_view, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
+    resolves_to_concentrated_spring, AnalysisHingeModel, HingeView, StrengthBasis,
 };
 use squid_n_element::frame::concentrated::MnInteraction;
 use squid_n_element::wall::side_column::wall_side_column_release;
@@ -311,7 +311,8 @@ impl HingeViewCache {
 /// 同一ステップ数で再解析した場合も `generation`（`staleness.last_run` と
 /// `staleness.results_stale`）で無効化され、断面・材料・履歴則の編集は
 /// `section`・`material`・`hysteresis` のフィンガープリント、要素の移動・
-/// 局所軸の変更は `geometry` で無効化される。
+/// 局所軸の変更は `geometry` で無効化される。解決レジームと側柱判定は
+/// `concentrated`・`wall_side_column` で無効化される。
 ///
 /// 採用曲げ面（[`effective_bend_dir_z`]）は [`HingeView`] を入力に取らないため
 /// キーには含めない。表示時にキャッシュ済みのビューから決める。
@@ -325,10 +326,17 @@ struct HingeViewKey {
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
     kind: ElementKind,
-    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。剛床所属や壁側柱判定の
-    /// 変化を検出する。`f64` の厳密比較でよい。
+    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。`f64` の厳密比較でよい。
     geometry: Option<ElementGeometry>,
+    /// 指定レジーム（[`ForceRegime`]）。`Auto` の解決結果は `concentrated` と
+    /// `wall_side_column` で捕捉する。
     force_regime: ForceRegime,
+    /// [`resolves_to_concentrated_spring`] の解決値。剛床・壁の編集で
+    /// 集中ばね⇔ファイバーの分岐が変わればキーが変わる。
+    concentrated: bool,
+    /// 自要素が耐震壁の側柱（面内解放）か。レジームが同じでも側柱は
+    /// 非線形ヒンジを持たず別ビューになる。
+    wall_side_column: bool,
     rigid_zone: RigidZone,
     plastic_zone: Option<f64>,
     section: Option<SectionFingerprint>,
@@ -430,20 +438,6 @@ impl From<&Material> for MaterialFingerprint {
     }
 }
 
-/// [`build_hinge_view`] が材端集中ばねを返す要素か（要素生成と同じ判定）。
-///
-/// 選択ステップの軸力が M-θ 骨格へ影響するのは、N-M 相関を用いる集中ばねのみ。
-/// キャッシュキーへステップを含めるかの判定に用いる。壁側柱（面内解放）は
-/// 集中ばねではない。
-fn is_concentrated_spring(model: &Model, elem: &ElementData) -> bool {
-    elem.kind == ElementKind::Beam
-        && wall_side_column_release(elem, model).is_none()
-        && matches!(
-            resolve_force_regime(elem, model),
-            ResolvedRegime::ConcentratedSpring
-        )
-}
-
 /// 骨格・曲面生成に影響する入力からキャッシュキーを組み立てる（純粋関数）。
 ///
 /// 強度基準は [`StrengthBasis::MaterialStrength`]、解析種別は
@@ -456,7 +450,7 @@ fn hinge_view_key(
     staleness: &Staleness,
 ) -> HingeViewKey {
     let rule = resolve_member_hysteresis(elem, model, AnalysisKind::Incremental);
-    let concentrated = is_concentrated_spring(model, elem);
+    let concentrated = resolves_to_concentrated_spring(elem, model);
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
         elem: elem.id,
@@ -465,6 +459,8 @@ fn hinge_view_key(
         kind: elem.kind,
         geometry: element_geometry(model, elem),
         force_regime: elem.force_regime,
+        concentrated,
+        wall_side_column: wall_side_column_release(elem, model).is_some(),
         rigid_zone: elem.rigid_zone,
         plastic_zone: elem.plastic_zone,
         section: section.map(SectionFingerprint::from),
@@ -2245,7 +2241,7 @@ mod tests {
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
         let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
         assert!(
-            is_concentrated_spring(&model, &elem),
+            resolves_to_concentrated_spring(&elem, &model),
             "テストモデルは集中ばねに判定される"
         );
         let k0 = key_of(&model, &elem, 0);
@@ -2340,6 +2336,143 @@ mod tests {
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
         let k3 = key_of(&model, &elem, 1);
         assert_ne!(k2, k3, "履歴則変更でキーが変わる");
+    }
+
+    /// stale 中に剛床を追加→削除してもキーが変化する。`results_stale` は bool で
+    /// 単調増加しないため、剛床所属に由来する解決レジームがファイバー⇔材端集中ばねと
+    /// 変わっても、レジームをキーに含めなければ同一キーになりうる。
+    #[test]
+    fn hinge_view_key_changes_with_rigid_diaphragm_toggle() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, StoryId};
+        use squid_n_core::model::{Constraint, Node};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [5000.0, 0.0, 0.0]),
+            node(NodeId(2), [0.0, 0.0, 3000.0]),
+        ];
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::Auto);
+        let stale = Staleness {
+            results_stale: true,
+            last_run: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+
+        let fiber = hinge_view_key(&model, &elem, 0, &stale);
+        assert!(
+            !resolves_to_concentrated_spring(&elem, &model),
+            "剛床に所属しない水平梁はファイバー"
+        );
+
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        ));
+        let concentrated = hinge_view_key(&model, &elem, 0, &stale);
+        assert!(
+            resolves_to_concentrated_spring(&elem, &model),
+            "剛床所属の水平梁は材端集中ばね"
+        );
+        assert_ne!(fiber, concentrated, "剛床の追加でキーが変わる");
+
+        model.constraints.clear();
+        let fiber_again = hinge_view_key(&model, &elem, 0, &stale);
+        assert_ne!(
+            concentrated, fiber_again,
+            "stale のまま剛床を削除しても解決レジームの変化でキーが変わる"
+        );
+        assert_eq!(fiber, fiber_again, "剛床を戻せば元のキーと一致する");
+    }
+
+    /// stale 中に壁を追加→削除してもキーが変化する。側柱判定は鉛直材のレジームを
+    /// 変えずにビューを非線形ヒンジなしへ変えるため、レジームだけでは追随できない。
+    #[test]
+    fn hinge_view_key_changes_with_wall_side_column_toggle() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{ElementData, EndCondition, LocalAxis, Node, RigidZone};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let line = |id: u32, nodes: [NodeId; 2]| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![nodes[0], nodes[1]],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [4000.0, 0.0, 0.0]),
+            node(NodeId(2), [4000.0, 0.0, 3000.0]),
+            node(NodeId(3), [0.0, 0.0, 3000.0]),
+        ];
+        let wall = ElementData {
+            id: ElemId(9),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let column = line(3, [NodeId(0), NodeId(3)]);
+        model.elements.push(line(1, [NodeId(0), NodeId(1)]));
+        model.elements.push(line(2, [NodeId(3), NodeId(2)]));
+        model.elements.push(column.clone());
+        let stale = Staleness {
+            results_stale: true,
+            last_run: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+
+        let without_wall = hinge_view_key(&model, &column, 0, &stale);
+
+        model.elements.push(wall);
+        let with_wall = hinge_view_key(&model, &column, 0, &stale);
+        assert!(
+            !resolves_to_concentrated_spring(&column, &model),
+            "壁側柱は集中ばねではない"
+        );
+        assert_ne!(without_wall, with_wall, "壁の追加でキーが変わる");
+
+        model.elements.retain(|e| e.kind != ElementKind::Wall);
+        let wall_removed = hinge_view_key(&model, &column, 0, &stale);
+        assert_ne!(
+            with_wall, wall_removed,
+            "stale のまま壁を削除しても側柱判定の変化でキーが変わる"
+        );
+        assert_eq!(without_wall, wall_removed, "壁を戻せば元のキーと一致する");
     }
 
     /// 軸力が大きいほど集中ばね骨格の降伏モーメントが低下する
