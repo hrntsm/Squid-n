@@ -686,8 +686,12 @@ mod tests {
     /// 曲面を返さない（表示 API の「近似は返さない」契約）。
     #[test]
     fn concrete_shape_without_fc_returns_no_surface() {
-        let model = make_model(Some(rc_shape()), None);
+        let mut model = make_model(Some(rc_shape()), None);
+        model.materials[0].category = MaterialCategory::Concrete;
         let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
+        let issue = crate::factory::input_check::member_strength_issue(&col, &model)
+            .expect("Fc 未設定は不備と判定される");
+        assert!(issue.contains("Fc"), "Fc 未設定の経路を通る: {issue}");
         assert!(analysis_plastic_fibers(
             &col,
             &model,
