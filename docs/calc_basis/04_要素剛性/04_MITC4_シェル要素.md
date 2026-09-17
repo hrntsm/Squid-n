@@ -15,6 +15,20 @@
   直交座標へ射影
 - 剛性は 2×2 Gauss 積分 \\( B^T \cdot D \cdot B \\)、ドリリング安定化 \\( \text{scale} = \gamma \cdot G \cdot t \cdot A \\)（既定 \\( \gamma = 10^{-3} \\)）
 
+**記号・単位**
+
+| 記号 | 意味 | 単位 |
+|------|------|------|
+| \\( D\_m \\) | 膜の構成則マトリクス | N/mm |
+| \\( D\_b \\) | 曲げの構成則マトリクス | N·mm |
+| \\( D\_s \\) | せん断の構成則マトリクス | N/mm |
+| \\( \text{scale} \\) | ドリリング安定化の剛性 | N·mm |
+| \\( E \\) | ヤング係数 | N/mm² |
+| \\( G \\) | せん断弾性係数 | N/mm² |
+| \\( \nu \\) | ポアソン比 | - |
+| \\( t \\) | シェル要素の板厚 | mm |
+| \\( \gamma \\) | ドリリング安定化の係数（既定 \\( 10^{-3} \\)） | - |
+
 <div class="impl-ref">
 
 **実装参照**：`squid_n_element::shell::ShellElement::{local_stiffness, add_drilling}`（`crates/squid-n-element/src/shell/stiffness.rs`）と `squid_n_element::shell::ShellElement::shear_b_mitc4`（`crates/squid-n-element/src/shell/bmatrix.rs`）が算定します。
