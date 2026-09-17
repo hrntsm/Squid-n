@@ -808,16 +808,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     ui.label(
         "横軸: 材端回転角 |θ| [rad]（弦からの回転）、縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。",
     );
-    draw_m_theta_plot(
-        ui,
-        elem_id,
-        &records,
-        bend_dir_z,
-        view.model == AnalysisHingeModel::ConcentratedSpring,
-        &mine,
-        view.backbone.as_deref(),
-        step,
-    );
+    draw_m_theta_plot(ui, elem_id, &records, view, bend_dir_z, &mine, step);
     ui.separator();
 
     if view.model != AnalysisHingeModel::Other {
@@ -946,12 +937,12 @@ fn draw_m_theta_plot(
     ui: &mut egui::Ui,
     elem_id: ElemId,
     records: &[MemberStepState],
+    view: &HingeView,
     bend_dir_z: bool,
-    use_spring_rot: bool,
     mine: &[HingeMarker],
-    backbone: Option<&[[f64; 2]]>,
     selected_step: usize,
 ) {
+    let use_spring_rot = view.model == AnalysisHingeModel::ConcentratedSpring;
     let (i_pts, j_pts) = m_theta_series(records, bend_dir_z, use_spring_rot);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
@@ -961,7 +952,7 @@ fn draw_m_theta_plot(
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
-            if let Some(bp) = backbone {
+            if let Some(bp) = view.backbone.as_deref() {
                 let xy: Vec<[f64; 2]> = bp.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
                 plot_ui.line(
                     egui_plot::Line::new("M-θ 骨格（解析モデル）", egui_plot::PlotPoints::from(xy))
