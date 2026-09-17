@@ -521,31 +521,49 @@ fn effective_bend_dir_z(model: AnalysisHingeModel, dominant_z: bool) -> bool {
 }
 
 /// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから
-/// 抽出する（純粋関数）。θ は弦からの材端回転、M は剛域フェイス位置の局所曲げ。
+/// 抽出する（純粋関数）。M は剛域フェイス位置の局所曲げ。
+///
+/// θ はファイバー・マルチスプリングでは弦からの材端回転、材端集中ばねでは
+/// 解析が実際に使う端ばね変形（`use_spring_rot=true`。記録の
+/// `spring_rz_i`／`spring_rz_j`）を用いる。集中ばねの M-θ 骨格は端ばね変形に
+/// 対して定義されるため、応答経路と基準を揃える。端ばね変形が記録されていない
+/// 場合は弦からの材端回転へフォールバックする（強軸のみ。弱軸は端ばねを持たない）。
 pub(super) fn m_theta_series(
     records: &[MemberStepState],
     bend_dir_z: bool,
+    use_spring_rot: bool,
 ) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let theta = |r: &MemberStepState, end_j: bool| -> f64 {
+        if bend_dir_z {
+            if use_spring_rot {
+                let g = if end_j { r.spring_rz_j } else { r.spring_rz_i };
+                if let Some(g) = g {
+                    return g as f64;
+                }
+            }
+            if end_j {
+                r.rz_j as f64
+            } else {
+                r.rz_i as f64
+            }
+        } else if end_j {
+            r.ry_j as f64
+        } else {
+            r.ry_i as f64
+        }
+    };
     let i_pts = records
         .iter()
         .map(|r| {
-            let (theta, m) = if bend_dir_z {
-                (r.rz_i, r.mz_i)
-            } else {
-                (r.ry_i, r.my_i)
-            };
-            [theta.abs() as f64, m.abs() as f64]
+            let m = if bend_dir_z { r.mz_i } else { r.my_i };
+            [theta(r, false).abs(), m.abs() as f64]
         })
         .collect();
     let j_pts = records
         .iter()
         .map(|r| {
-            let (theta, m) = if bend_dir_z {
-                (r.rz_j, r.mz_j)
-            } else {
-                (r.ry_j, r.my_j)
-            };
-            [theta.abs() as f64, m.abs() as f64]
+            let m = if bend_dir_z { r.mz_j } else { r.my_j };
+            [theta(r, true).abs(), m.abs() as f64]
         })
         .collect();
     (i_pts, j_pts)
@@ -795,6 +813,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         elem_id,
         &records,
         bend_dir_z,
+        view.model == AnalysisHingeModel::ConcentratedSpring,
         &mine,
         view.backbone.as_deref(),
         step,
@@ -928,11 +947,12 @@ fn draw_m_theta_plot(
     elem_id: ElemId,
     records: &[MemberStepState],
     bend_dir_z: bool,
+    use_spring_rot: bool,
     mine: &[HingeMarker],
     backbone: Option<&[[f64; 2]]>,
     selected_step: usize,
 ) {
-    let (i_pts, j_pts) = m_theta_series(records, bend_dir_z);
+    let (i_pts, j_pts) = m_theta_series(records, bend_dir_z, use_spring_rot);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
@@ -1513,6 +1533,8 @@ mod tests {
             rz_i: 0.0,
             ry_j: 0.0,
             rz_j: 0.0,
+            spring_rz_i: None,
+            spring_rz_j: None,
         }
     }
 
@@ -1563,9 +1585,34 @@ mod tests {
         let mut records = records;
         records[0].rz_i = -0.01;
         records[0].rz_j = 0.02;
-        let (i_pts, j_pts) = m_theta_series(&records, true);
+        let (i_pts, j_pts) = m_theta_series(&records, true, false);
         assert_pts_near(&i_pts, &[[0.01, 100.0]]);
         assert_pts_near(&j_pts, &[[0.02, 50.0]]);
+    }
+
+    /// 材端集中ばね（`use_spring_rot=true`）では、弦からの材端回転ではなく
+    /// 解析が実際に使う端ばね変形を横軸に使う。
+    #[test]
+    fn m_theta_series_uses_spring_rotation_for_concentrated_spring() {
+        let mut records = vec![step(100.0, -50.0, 1.0, 1.0, 0.0)];
+        records[0].rz_i = -0.10;
+        records[0].rz_j = 0.20;
+        records[0].spring_rz_i = Some(-0.01);
+        records[0].spring_rz_j = Some(0.02);
+        let (i_pts, j_pts) = m_theta_series(&records, true, true);
+        assert_pts_near(&i_pts, &[[0.01, 100.0]]);
+        assert_pts_near(&j_pts, &[[0.02, 50.0]]);
+    }
+
+    /// 端ばね変形が記録されていない場合は弦からの材端回転へフォールバックする。
+    #[test]
+    fn m_theta_series_falls_back_without_spring_rotation() {
+        let mut records = vec![step(100.0, 50.0, 1.0, 1.0, 0.0)];
+        records[0].rz_i = -0.03;
+        records[0].rz_j = 0.04;
+        let (i_pts, j_pts) = m_theta_series(&records, true, true);
+        assert_pts_near(&i_pts, &[[0.03, 100.0]]);
+        assert_pts_near(&j_pts, &[[0.04, 50.0]]);
     }
 
     /// 弱軸採用時は ry/my を抽出する。
@@ -1574,7 +1621,7 @@ mod tests {
         let mut records = vec![step(0.0, 0.0, 30.0, -20.0, 0.0)];
         records[0].ry_i = 0.005;
         records[0].ry_j = -0.006;
-        let (i_pts, j_pts) = m_theta_series(&records, false);
+        let (i_pts, j_pts) = m_theta_series(&records, false, false);
         assert_pts_near(&i_pts, &[[0.005, 30.0]]);
         assert_pts_near(&j_pts, &[[0.006, 20.0]]);
     }
@@ -1582,7 +1629,7 @@ mod tests {
     /// 空入力は空の点列を返す。
     #[test]
     fn m_theta_series_empty_input() {
-        let (i_pts, j_pts) = m_theta_series(&[], true);
+        let (i_pts, j_pts) = m_theta_series(&[], true, false);
         assert!(i_pts.is_empty());
         assert!(j_pts.is_empty());
     }

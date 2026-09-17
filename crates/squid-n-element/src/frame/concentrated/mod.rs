@@ -262,6 +262,10 @@ impl ElementBehavior for ConcentratedSpringBeam {
         ))
     }
 
+    fn end_spring_rotations(&self) -> Option<[f64; 2]> {
+        Some([self.rot_i, self.rot_j])
+    }
+
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
         let du_global: [f64; 12] = std::array::from_fn(|i| du.data[i]);
         let du_local = self.elastic.axis.rotate_to_local(&du_global);

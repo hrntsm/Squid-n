@@ -130,6 +130,7 @@ pub(crate) fn record_member_step(
             let rz_i = dot3(r_i, ez) - chord_v;
             let ry_j = dot3(r_j, ey) + chord_w;
             let rz_j = dot3(r_j, ez) - chord_v;
+            let end_spring = b.end_spring_rotations();
 
             MemberStepState {
                 n: n as f32,
@@ -141,6 +142,8 @@ pub(crate) fn record_member_step(
                 rz_i: rz_i as f32,
                 ry_j: ry_j as f32,
                 rz_j: rz_j as f32,
+                spring_rz_i: end_spring.map(|g| g[0] as f32),
+                spring_rz_j: end_spring.map(|g| g[1] as f32),
             }
         })
         .collect()

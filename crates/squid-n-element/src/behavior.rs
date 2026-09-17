@@ -323,6 +323,11 @@ pub trait ElementBehavior: Send + Sync {
     fn fiber_section_states(&self) -> Option<Vec<FiberSectionState>> {
         None
     }
+    /// 材端集中ばねの確定した端ばね変形 [rad]（[i端, j端]、局所 z まわり）。
+    /// 端ばねを持たない要素は `None`。
+    fn end_spring_rotations(&self) -> Option<[f64; 2]> {
+        None
+    }
     /// 時刻歴解析の時間刻み Δt [s] を要素へ通知する。
     /// `dt<=0` では減衰要素は不活性となる。対応しない要素は何もしない。
     fn set_time_step(&mut self, _dt: f64) {}
@@ -358,6 +363,7 @@ macro_rules! forward_element_behavior {
         panel_moments_from: $m_panel_moments_from:ident,
         ductility_probe: $m_ductility_probe:ident,
         fiber_section_states: $m_fiber_section_states:ident,
+        end_spring_rotations: $m_end_spring_rotations:ident,
         set_time_step: $m_set_time_step:ident $(,)?
     } $(, custom { $($custom:tt)* })? $(,)?) => {
         impl $crate::behavior::ElementBehavior for $ty {
@@ -512,6 +518,13 @@ macro_rules! forward_element_behavior {
                     #[allow(unused_imports)]
                     use $crate::behavior::ElementBehavior as _;
                     self.$inner.fiber_section_states()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_end_spring_rotations
+                fn end_spring_rotations(&self) -> Option<[f64; 2]> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.end_spring_rotations()
                 }
             );
             $crate::forward_element_behavior!(@opt $m_set_time_step

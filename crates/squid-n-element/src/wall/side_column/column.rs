@@ -97,6 +97,7 @@ crate::behavior::forward_element_behavior!(InPlaneReleasedColumn, inner, {
     panel_moments_from: forward,
     ductility_probe: forward,
     fiber_section_states: forward,
+    end_spring_rotations: forward,
     set_time_step: forward,
 }, custom {
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
