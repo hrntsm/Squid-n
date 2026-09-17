@@ -434,18 +434,19 @@ mod tests {
 
         let (si, _sj, backbone) =
             build_flexural_springs(&beam, &model, HysteresisModel::Standard, basis);
-        let theta_y = backbone.yield_moment / backbone.k_rot;
+        let (yield_moment, _) = yield_moment_and_axial(&beam, &model, basis);
+        let theta_y = yield_moment / backbone.k_rot;
         assert!((points[1][0] - theta_y).abs() < 1e-12);
-        assert!((points[1][1] - backbone.yield_moment).abs() < 1e-9);
+        assert!((points[1][1] - yield_moment).abs() < 1e-9);
         assert!((points[2][0] - 4.0 * theta_y).abs() < 1e-12);
-        let expected_end = backbone.yield_moment + backbone.post_yield_stiffness * 3.0 * theta_y;
-        assert!((points[2][1] - expected_end).abs() < 1e-9 * backbone.yield_moment);
+        let expected_end = yield_moment + backbone.post_yield_stiffness * 3.0 * theta_y;
+        assert!((points[2][1] - expected_end).abs() < 1e-9 * yield_moment);
 
         let (m_at_yield, k0) = si.probe(theta_y);
         assert!((k0 - backbone.k_rot).abs() < 1e-9 * backbone.k_rot);
-        assert!((m_at_yield - backbone.yield_moment).abs() < 1e-6 * backbone.yield_moment);
+        assert!((m_at_yield - yield_moment).abs() < 1e-6 * yield_moment);
         let (m_end, _) = si.probe(points[2][0]);
-        assert!((m_end - points[2][1]).abs() < 1e-6 * backbone.yield_moment);
+        assert!((m_end - points[2][1]).abs() < 1e-6 * yield_moment);
     }
 
     /// N-M 線形相関は `yield_moment_and_axial` と一致し、履歴材料では返さない。
