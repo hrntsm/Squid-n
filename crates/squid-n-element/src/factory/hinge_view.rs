@@ -105,6 +105,9 @@ fn beam_view(
     }
     match resolve_force_regime(data, model) {
         ResolvedRegime::ConcentratedSpring => {
+            if super::input_check::member_strength_issue(data, model).is_some() {
+                return HingeView::none(AnalysisHingeModel::ConcentratedSpring);
+            }
             let rule = resolve_member_hysteresis(data, model, kind);
             let (_i, _j, backbone) = build_flexural_springs(data, model, rule, basis);
             let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
@@ -421,6 +424,46 @@ mod tests {
             rc_view.mn_linear.is_none(),
             "武田型（履歴材料）は N-M 線形相関を返さない"
         );
+    }
+
+    /// 断面未定義の集中ばねは骨格・N-M 線形相関を返さない（既定値で近似しない）。
+    #[test]
+    fn concentrated_spring_without_section_returns_no_backbone() {
+        let model = make_model(None, None);
+        let mut beam = elem(ElementKind::Beam, [NodeId(0), NodeId(1)]);
+        beam.section = None;
+        let view = build_hinge_view(
+            &beam,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            0.0,
+            8,
+            24,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
+        assert!(view.backbone.is_none());
+        assert!(view.mn_linear.is_none());
+    }
+
+    /// 材料強度（fy・Fc）を解決できない集中ばねは骨格・N-M 線形相関を返さない。
+    #[test]
+    fn concentrated_spring_without_strength_returns_no_backbone() {
+        let mut model = make_model(None, None);
+        model.materials[0].fy = None;
+        let beam = elem(ElementKind::Beam, [NodeId(0), NodeId(1)]);
+        let view = build_hinge_view(
+            &beam,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            0.0,
+            8,
+            24,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
+        assert!(view.backbone.is_none());
+        assert!(view.mn_linear.is_none());
     }
 
     /// 履歴則を変えると use_nm と折れ点が対応して変わる。

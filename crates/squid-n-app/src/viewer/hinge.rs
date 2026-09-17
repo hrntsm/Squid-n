@@ -833,7 +833,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
                 app.ui.view.hinge_mn_camera = cam;
             }
             MnDisplay::None => {
-                ui.colored_label(theme::GRAY_600, mn_unavailable_message(view.model));
+                ui.colored_label(theme::GRAY_600, mn_unavailable_message(view));
             }
         }
         ui.separator();
@@ -871,8 +871,11 @@ fn mn_display(view: &HingeView) -> MnDisplay {
 }
 
 /// N-M 図を表示できないときの案内文。
-fn mn_unavailable_message(model: AnalysisHingeModel) -> &'static str {
-    match model {
+fn mn_unavailable_message(view: &HingeView) -> &'static str {
+    match view.model {
+        AnalysisHingeModel::ConcentratedSpring if view.backbone.is_none() => {
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
+        }
         AnalysisHingeModel::ConcentratedSpring => {
             "この解析モデルでは N-M 相関を使用していません（履歴材料は N-M 相関非対応）。"
         }
@@ -2372,5 +2375,32 @@ mod tests {
         );
         assert_eq!(other_view.model, AnalysisHingeModel::Other);
         assert_eq!(mn_display(&other_view), MnDisplay::None);
+    }
+
+    /// 集中ばねで骨格が無い（断面・材料不足）場合は「履歴材料が非対応」ではなく
+    /// 情報不足を案内する。
+    #[test]
+    fn mn_unavailable_message_distinguishes_input_shortage_from_history_rule() {
+        let input_shortage = HingeView {
+            model: AnalysisHingeModel::ConcentratedSpring,
+            backbone: None,
+            mn_linear: None,
+            mn_surface: None,
+        };
+        assert_eq!(
+            mn_unavailable_message(&input_shortage),
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
+        );
+
+        let history = HingeView {
+            model: AnalysisHingeModel::ConcentratedSpring,
+            backbone: Some(vec![[0.0, 0.0]]),
+            mn_linear: None,
+            mn_surface: None,
+        };
+        assert_eq!(
+            mn_unavailable_message(&history),
+            "この解析モデルでは N-M 相関を使用していません（履歴材料は N-M 相関非対応）。"
+        );
     }
 }
