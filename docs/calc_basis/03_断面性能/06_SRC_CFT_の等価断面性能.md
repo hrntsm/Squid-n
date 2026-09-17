@@ -13,19 +13,19 @@ CFT は SRC 柱に準じ、鋼基準の 1/n 換算で累加します。
 
 **算定式**
 
-換算係数（\\( \nu_s = 0.3 \\)、\\( \nu_c = 0.2 \\)）:
+換算係数（\\( \nu\_s = 0.3 \\)、\\( \nu\_c = 0.2 \\)）:
 
-\\[ n_s = E_{\text{steel}}/E_c \\]
+\\[ n\_s = E\_{\text{steel}}/E\_c \\]
 
-\\[ n_{gs} = n_s \cdot \frac{1 + \nu_c}{1 + \nu_s} \\]
+\\[ n\_{gs} = n\_s \cdot \frac{1 + \nu\_c}{1 + \nu\_s} \\]
 
 SRC 軸剛性用:
 
-\\[ A = b \cdot d + (n_s - 1) \cdot {}_s a \\]
+\\[ A = b \cdot d + (n\_s - 1) \cdot {}\_s a \\]
 
 SRC 曲げ:
 
-\\[ I_y = \frac{b \cdot d^3}{12} + (n_s - 1) \cdot {}_s i_y \\]
+\\[ I\_y = \frac{b \cdot d^3}{12} + (n\_s - 1) \cdot {}\_s i\_y \\]
 
 CFT（充填コンクリートを鋼基準へ換算）:
 
