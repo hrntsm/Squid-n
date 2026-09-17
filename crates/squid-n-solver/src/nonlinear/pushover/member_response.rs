@@ -142,8 +142,8 @@ pub(crate) fn record_member_step(
                 rz_i: rz_i as f32,
                 ry_j: ry_j as f32,
                 rz_j: rz_j as f32,
-                spring_rz_i: end_spring.map(|g| g[0] as f32),
-                spring_rz_j: end_spring.map(|g| g[1] as f32),
+                spring_rz_i: end_spring.map_or(0.0, |g| g[0] as f32),
+                spring_rz_j: end_spring.map_or(0.0, |g| g[1] as f32),
             }
         })
         .collect()

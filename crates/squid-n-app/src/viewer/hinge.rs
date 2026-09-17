@@ -544,10 +544,11 @@ pub(super) fn m_theta_series(
     let theta = |r: &MemberStepState, end_j: bool| -> f64 {
         if bend_dir_z {
             if use_spring_rot {
-                let g = if end_j { r.spring_rz_j } else { r.spring_rz_i };
-                if let Some(g) = g {
-                    return g as f64;
-                }
+                return if end_j {
+                    r.spring_rz_j as f64
+                } else {
+                    r.spring_rz_i as f64
+                };
             }
             if end_j {
                 r.rz_j as f64
@@ -577,28 +578,9 @@ pub(super) fn m_theta_series(
     (i_pts, j_pts)
 }
 
-/// 材端集中ばねの端ばね変形（`spring_rz_i`／`spring_rz_j`）が、表示する端の
-/// 全ステップに記録されているか。記録の無い旧結果ファイルでは弦からの材端回転へ
-/// フォールバックするため、端ばね変形基準の M-θ 骨格を重ねてはならない。
-fn spring_rotation_recorded(records: &[MemberStepState], end_j: bool) -> bool {
-    records.iter().all(|r| {
-        if end_j {
-            r.spring_rz_j.is_some()
-        } else {
-            r.spring_rz_i.is_some()
-        }
-    })
-}
-
 /// 採用軸の端最大 |M|（絶対値が大きい方の端の符号付き値）と軸力から、
 /// 応答経路 [M(kN·m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
-/// `member_history` の軸力は既に圧縮正のため、N-M 曲線側の符号変換のみで
-/// 済む（[`extract_mn_meridian`] 参照）。
-///
-/// 先頭に原点 [0.0, 0.0]（無載荷状態）を前置する。`member_history` の記録は
-/// 最初の記録ステップから始まるため、これがないと経路の始点が分からない。
-/// 長期荷重の初期載荷が実装されれば最初の記録ステップは長期荷重時点になるが、
-/// その場合も「無載荷→長期荷重→水平力」の経路として原点前置のままで正しい。
+/// 先頭に無載荷状態の原点 [0.0, 0.0] を前置する。
 pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -> Vec<[f64; 2]> {
     let mut path = vec![[0.0, 0.0]];
     path.extend(records.iter().map(|r| {
@@ -831,21 +813,9 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     };
     ui.label(bend_face_label);
 
-    let spring_rot_axis = view.model == AnalysisHingeModel::ConcentratedSpring
-        && (!mine.iter().any(|m| !m.end_j) || spring_rotation_recorded(&records, false))
-        && (!mine.iter().any(|m| m.end_j) || spring_rotation_recorded(&records, true));
     ui.strong("M-θ カーブ（荷重変形カーブ）");
-    ui.label(m_theta_axis_label(view.model, spring_rot_axis));
-    draw_m_theta_plot(
-        ui,
-        elem_id,
-        &records,
-        view,
-        bend_dir_z,
-        &mine,
-        step,
-        spring_rot_axis,
-    );
+    ui.label(m_theta_axis_label(view.model));
+    draw_m_theta_plot(ui, elem_id, &records, view, bend_dir_z, &mine, step);
     ui.separator();
 
     if view.model != AnalysisHingeModel::Other {
@@ -962,15 +932,11 @@ fn hinge_step_selector(
     step
 }
 
-/// M-θ カーブの横軸の説明文。材端集中ばねは解析が使う端ばね変形基準のため、
-/// 横軸の実態（端ばね変形／端ばね変形が未記録な旧結果は弦からの材端回転）と
-/// 文言を一致させる。
-fn m_theta_axis_label(model: AnalysisHingeModel, spring_rot_axis: bool) -> &'static str {
-    if model == AnalysisHingeModel::ConcentratedSpring && spring_rot_axis {
+/// M-θ カーブの横軸の説明文。材端集中ばねは端ばね変形、それ以外は弦からの
+/// 材端回転を横軸に用いる。
+fn m_theta_axis_label(model: AnalysisHingeModel) -> &'static str {
+    if model == AnalysisHingeModel::ConcentratedSpring {
         "横軸: 端ばね変形 |θs| [rad]、\
-         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
-    } else if model == AnalysisHingeModel::ConcentratedSpring {
-        "横軸: 材端回転角 |θ| [rad]（弦からの回転。端ばね変形が未記録）、\
          縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
     } else {
         "横軸: 材端回転角 |θ| [rad]（弦からの回転）、\
@@ -980,15 +946,8 @@ fn m_theta_axis_label(model: AnalysisHingeModel, spring_rot_axis: bool) -> &'sta
 
 /// M-θ カーブ（i端・j端の (|θ|,|M|) 骨格）を egui_plot で描く。
 ///
-/// `Plot` の ID に `elem_id` を含める。egui_plot はズーム／パン状態
-/// （`PlotMemory`）を ID だけで永続化するため、固定 ID のままだと、ある部材の
-/// グラフを操作（ドラッグ／スクロールでのズーム）した後に別の部材のヒンジ詳細を
-/// 開くと、その操作で確定した表示範囲を新しい部材のデータにそのまま流用してしまい
-/// 「カーブが描画領域の一部にしか収まらない／余白が過大」に見える。部材ごとに ID を
-/// 分ければ、選択部材の切替時は必ず新規の `PlotMemory`（既定=自動フィット）から
-/// 始まるため、デフォルト表示は常に 5%（`egui_plot` 既定の `margin_fraction`）の
-/// 余白付きでカーブ全体を収める。
-#[allow(clippy::too_many_arguments)]
+/// `Plot` の ID に `elem_id` を含め、部材切替時に前の部材のズーム状態を
+/// 引き継がないようにする。集中ばねの応答経路には M-θ 骨格を重ねる。
 fn draw_m_theta_plot(
     ui: &mut egui::Ui,
     elem_id: ElemId,
@@ -997,20 +956,13 @@ fn draw_m_theta_plot(
     bend_dir_z: bool,
     mine: &[HingeMarker],
     selected_step: usize,
-    spring_rot_axis: bool,
 ) {
     let use_spring_rot = view.model == AnalysisHingeModel::ConcentratedSpring;
     let (i_pts, j_pts) = m_theta_series(records, bend_dir_z, use_spring_rot);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
-    if view.backbone.is_some() && !spring_rot_axis {
-        ui.colored_label(
-            theme::GRAY_600,
-            "端ばね変形が未記録のため M-θ 骨格を重ねません（再解析してください）。",
-        );
-    }
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
-        .x_axis_label(if spring_rot_axis {
+        .x_axis_label(if use_spring_rot {
             "|θs| [rad]"
         } else {
             "|θ| [rad]"
@@ -1019,7 +971,7 @@ fn draw_m_theta_plot(
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
-            if spring_rot_axis {
+            if use_spring_rot {
                 if let Some(bp) = view.backbone.as_deref() {
                     let xy: Vec<[f64; 2]> = bp.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
                     plot_ui.line(
@@ -1598,8 +1550,8 @@ mod tests {
             rz_i: 0.0,
             ry_j: 0.0,
             rz_j: 0.0,
-            spring_rz_i: None,
-            spring_rz_j: None,
+            spring_rz_i: 0.0,
+            spring_rz_j: 0.0,
         }
     }
 
@@ -1656,60 +1608,24 @@ mod tests {
     }
 
     /// 材端集中ばね（`use_spring_rot=true`）では、弦からの材端回転ではなく
-    /// 解析が実際に使う端ばね変形を横軸に使う。
+    /// 端ばね変形を横軸に使う。
     #[test]
     fn m_theta_series_uses_spring_rotation_for_concentrated_spring() {
         let mut records = vec![step(100.0, -50.0, 1.0, 1.0, 0.0)];
         records[0].rz_i = -0.10;
         records[0].rz_j = 0.20;
-        records[0].spring_rz_i = Some(-0.01);
-        records[0].spring_rz_j = Some(0.02);
+        records[0].spring_rz_i = -0.01;
+        records[0].spring_rz_j = 0.02;
         let (i_pts, j_pts) = m_theta_series(&records, true, true);
         assert_pts_near(&i_pts, &[[0.01, 100.0]]);
         assert_pts_near(&j_pts, &[[0.02, 50.0]]);
     }
 
-    /// 端ばね変形が記録されていない場合は弦からの材端回転へフォールバックする。
-    #[test]
-    fn m_theta_series_falls_back_without_spring_rotation() {
-        let mut records = vec![step(100.0, 50.0, 1.0, 1.0, 0.0)];
-        records[0].rz_i = -0.03;
-        records[0].rz_j = 0.04;
-        let (i_pts, j_pts) = m_theta_series(&records, true, true);
-        assert_pts_near(&i_pts, &[[0.03, 100.0]]);
-        assert_pts_near(&j_pts, &[[0.04, 50.0]]);
-    }
-
-    /// 端ばね変形は表示する端ごとに全ステップ分を確認する（1 ステップでも
-    /// 欠ければ骨格を重ねない）。
-    #[test]
-    fn spring_rotation_recorded_requires_all_steps_for_selected_end() {
-        let mut records = vec![step(0.0, 0.0, 0.0, 0.0, 0.0), step(0.0, 0.0, 0.0, 0.0, 0.0)];
-        assert!(!spring_rotation_recorded(&records, false));
-        records[0].spring_rz_i = Some(0.01);
-        assert!(
-            !spring_rotation_recorded(&records, false),
-            "1 ステップでも欠ければ false"
-        );
-        records[1].spring_rz_i = Some(0.02);
-        assert!(spring_rotation_recorded(&records, false));
-        assert!(
-            !spring_rotation_recorded(&records, true),
-            "j端は独立に判定する"
-        );
-    }
-
-    /// M-θ 説明文は材端集中ばねの実軸（端ばね変形／未記録時は弦回転）に合わせる。
+    /// M-θ 説明文は材端集中ばねとファイバー系の横軸の基準に合わせる。
     #[test]
     fn m_theta_axis_label_matches_axis() {
-        assert!(
-            m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring, true).contains("端ばね変形")
-        );
-        assert!(
-            m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring, false)
-                .contains("端ばね変形が未記録")
-        );
-        assert!(m_theta_axis_label(AnalysisHingeModel::Fiber, false).contains("弦からの回転"));
+        assert!(m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring).contains("端ばね変形"));
+        assert!(m_theta_axis_label(AnalysisHingeModel::Fiber).contains("弦からの回転"));
     }
 
     /// 弱軸採用時は ry/my を抽出する。

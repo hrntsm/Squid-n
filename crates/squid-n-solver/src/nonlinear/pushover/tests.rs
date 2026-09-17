@@ -2204,6 +2204,29 @@ fn test_axial_force_signed_sign_and_representative_value() {
     );
 }
 
+/// 旧結果（`spring_rz_i`／`spring_rz_j` を持たない）はフィールド欠落で
+/// デシリアライズに失敗し、再解析が必要になる。
+#[test]
+fn test_member_step_state_requires_spring_rotation_fields() {
+    let old_json = r#"{
+        "n": 1000.0, "my_i": 0.0, "mz_i": 0.0, "my_j": 0.0, "mz_j": 0.0,
+        "ry_i": 0.0, "rz_i": 0.0, "ry_j": 0.0, "rz_j": 0.0
+    }"#;
+    assert!(
+        serde_json::from_str::<MemberStepState>(old_json).is_err(),
+        "旧結果は spring_rz_i/j 欠落でデシリアライズに失敗する"
+    );
+
+    let new_json = r#"{
+        "n": 1000.0, "my_i": 0.0, "mz_i": 0.0, "my_j": 0.0, "mz_j": 0.0,
+        "ry_i": 0.0, "rz_i": 0.0, "ry_j": 0.0, "rz_j": 0.0,
+        "spring_rz_i": 0.01, "spring_rz_j": 0.02
+    }"#;
+    let state: MemberStepState = serde_json::from_str(new_json).expect("新結果は読める");
+    assert!((state.spring_rz_i - 0.01).abs() < 1e-9);
+    assert!((state.spring_rz_j - 0.02).abs() < 1e-9);
+}
+
 /// `ElementBehavior::internal_force` が固定のグローバル材端力を返すだけのテスト
 /// スタブ（`track_shear_yield` は `global_dofs`/剛性を使わないため他は無関係）。
 struct FixedForceBehavior {

@@ -264,12 +264,11 @@ pub struct MemberStepState {
     /// j 端の弦からの材端回転（局所 z まわり）[rad]。
     pub rz_j: f32,
     /// i 端の材端集中ばねのばね変形（局所 z まわり）[rad]。
-    /// 端ばねを持たない要素は `None`。
-    #[serde(default)]
-    pub spring_rz_i: Option<f32>,
+    /// 端ばねを持たない要素は 0。
+    pub spring_rz_i: f32,
     /// j 端の材端集中ばねのばね変形（局所 z まわり）[rad]。
-    #[serde(default)]
-    pub spring_rz_j: Option<f32>,
+    /// 端ばねを持たない要素は 0。
+    pub spring_rz_j: f32,
 }
 
 /// プッシュオーバー解析結果
