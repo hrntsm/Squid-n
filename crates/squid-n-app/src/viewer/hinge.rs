@@ -561,7 +561,7 @@ pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -
 /// （√(My²+Mz²)）が大きい方の端を採用する（[`n_m_response_path`] は採用軸
 /// 1 成分のみを追うのに対し、3D 表示は My・Mz の両成分をそのまま使える）。
 ///
-/// `MnSurface`（[`build_mn_curve_cache`]）は引張正の N 規約のため、圧縮正の
+/// N-M 曲面 [`MnSurface`] は引張正の N 規約のため、圧縮正の
 /// `member_history` の軸力符号を反転して揃える。先頭に原点
 /// [0.0, 0.0, 0.0]（無載荷状態）を前置する（[`n_m_response_path`] と同じ理由）。
 pub(super) fn n_my_mz_response_path_3d(records: &[MemberStepState]) -> Vec<[f64; 3]> {
