@@ -364,20 +364,17 @@ fn test_girder_formwork_slab_deduction() {
     model.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
     model.nodes.push(node(6, 0.0, -5_000.0, 3_500.0));
     model.nodes.push(node(7, 6_000.0, -5_000.0, 3_500.0));
-    for (sid, (a, b)) in [(0u32, (5u32, 4u32)), (1u32, (6u32, 7u32))] {
-        model.slabs.push(Slab {
-            id: SlabId(sid),
-            shape: SlabShape::Enclosed {
-                boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
-            },
-            plate: SlabPlate {
+    for (a, b) in [(5u32, 4u32), (6u32, 7u32)] {
+        model.add_enclosed_slab_from_nodes(
+            &[NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
+            SlabPlate {
                 section: Some(SectionId(2)),
                 loads: vec![],
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
-        });
+        );
     }
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
@@ -495,19 +492,16 @@ fn test_slab_quantity() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(slab_sec, "S15".into()),
     );
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
-        },
-        plate: SlabPlate {
+    model.add_enclosed_slab_from_nodes(
+        &[NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
+        SlabPlate {
             section: Some(slab_sec),
             loads: vec![],
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
         },
-    });
+    );
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
     let slab = q
@@ -586,19 +580,20 @@ fn test_wall_quantity_via_wall_plate_is_included() {
     model.sections.push(sec);
     // 柱・梁で囲まれた4節点壁（節点 0-1-3-2）を壁版として構築する
     // （`test_wall_quantity_with_opening` の直接 `ElementData` 構築と同じ幾何）。
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+        WallPlate {
+            self_weight_shares: Vec::new(),
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(2)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(2)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
         name: String::new(),

@@ -57,24 +57,28 @@ pub fn prepare_model_for_analysis(
     settings: &AnalysisSettings,
     design_period: Option<f64>,
 ) -> PrepareReport {
+    let _ = model.anchorize_secondary_members();
+    model.rebuild_floor_assignment_regions();
+    model.rebuild_wall_assignment_regions();
     rebuild_floor_regions(model);
     rebuild_wall_regions(model);
     let panels = apply_rigid_zones_and_panels(model);
     let computed = compute_auto_load_cases(model, settings, design_period);
     apply_auto_load_cases(model, &computed.cases);
-    PrepareReport {
-        panels,
-        notices: computed.notices,
+    let mut notices = computed.notices;
+    if let Some(warning) = model.unset_plate_assignment_warning() {
+        notices.push(warning);
     }
+    PrepareReport { panels, notices }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::{ElemId, NodeId, SectionId, SlabId};
+    use squid_n_core::ids::{ElemId, NodeId, SectionId};
     use squid_n_core::model::{
         DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
-        SlabPlate, SlabShape,
+        SlabPlate,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -136,21 +140,45 @@ mod tests {
         model
             .sections
             .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S150".into()));
-        for (i, b) in [vec![0, 1, 4, 5], vec![1, 2, 3, 4]].into_iter().enumerate() {
-            model.slabs.push(squid_n_core::model::Slab {
-                id: SlabId(i as u32),
-                shape: SlabShape::Enclosed {
-                    boundary: b.into_iter().map(NodeId).collect(),
-                },
-                plate: SlabPlate {
-                    section: Some(sid),
-                    loads: Vec::new(),
-                    usage: None,
-                    method: DistributionMethod::TriTrapezoid,
-                    one_way: None,
-                },
+        model
+            .unassigned_joists
+            .push(squid_n_core::model::SecondaryMember {
+                gravity_end_shares: None,
+                id: squid_n_core::ids::SecondaryMemberId(0),
+                kind: squid_n_core::model::SecondaryMemberKind::Joist,
+                ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                    squid_n_core::model::SecondaryMemberAnchor {
+                        support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                        position: 1.0,
+                    },
+                    squid_n_core::model::SecondaryMemberAnchor {
+                        support: squid_n_core::model::SupportMemberId::Primary(ElemId(4)),
+                        position: 0.0,
+                    },
+                ]),
+                section: None,
+                name: "J".into(),
             });
-        }
+        model.rebuild_floor_assignment_regions();
+        let plate = SlabPlate {
+            section: Some(sid),
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+        };
+        model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(0), NodeId(1), NodeId(4), NodeId(5)],
+                plate.clone(),
+            )
+            .expect("左半分");
+        model
+            .assign_enclosed_slab_to_matching_region(
+                &[NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+                plate,
+            )
+            .expect("右半分");
         assert_eq!(model.slabs.len(), 2);
         prepare_model_for_analysis(&mut model, &AnalysisSettings::default(), None);
         assert_eq!(model.slabs.len(), 2, "床板は畳まずそのまま残る");
@@ -163,6 +191,15 @@ mod tests {
             model.floor_regions[0].slab_ids.len(),
             2,
             "2 枚とも同じ床領域へ帰属"
+        );
+
+        // 2 回連続で実行しても結果が変わらない（割当領域を先に再構築してから
+        // 旧床領域・壁領域を再構築する順序が、実行回数に依存しないことの回帰）。
+        let after_first = model.clone();
+        prepare_model_for_analysis(&mut model, &AnalysisSettings::default(), None);
+        assert!(
+            after_first.eq_ignoring_dofmap(&model),
+            "前処理が 2 回目で結果を変えている"
         );
     }
 
@@ -303,19 +340,20 @@ mod tests {
         .to_section(wall_section_id(), "耐震壁 t150".into());
         wall_sec.material = Some(MaterialId(0));
         with_wall.sections.push(wall_sec);
-        with_wall.wall_plates.push(WallPlate {
-            self_weight_shares: Vec::new(),
-            id: WallPlateId(0),
-            shape: WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+        with_wall.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(wall_section_id()),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
             },
-            section: Some(wall_section_id()),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            loads: vec![],
-            slit: Default::default(),
-        });
+        );
         with_wall.wall_regions.push(WallRegion {
             id: WallRegionId(0),
             name: String::new(),

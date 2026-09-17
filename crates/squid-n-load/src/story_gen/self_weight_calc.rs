@@ -41,14 +41,25 @@ fn node_adjacency(model: &Model) -> HashMap<NodeId, Vec<usize>> {
 /// `wall_clear_area_factor` の元の照合と同じ）→ `Beam` 要素の `model.elements`
 /// 添字。壁の各辺→柱梁対応付けを O(壁の辺数×要素数) から O(1) 参照へ落とすための
 /// 事前索引（`enumerate_self_weight` で1回構築し使い回す）。同一節点対に複数の
-/// 候補がある場合は要素順で最初に見つかったものを採用する（元の
-/// `elements.iter().find` の挙動を保つため `entry().or_insert` を使う）。
+/// 候補がある場合は断面を持つ要素を優先し、どちらも同じなら要素順で最初に
+/// 見つかったものを採用する（断面未割当の仮の支持部材が実際の柱梁の内法控除を
+/// 打ち消さないようにするため）。
 fn beam_pair_map(model: &Model) -> HashMap<(NodeId, NodeId), usize> {
     let mut map = HashMap::new();
     for (idx, e) in model.elements.iter().enumerate() {
         if e.kind == ElementKind::Beam && e.nodes.len() >= 2 {
             let (a, b) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
-            map.entry(ordered_pair(a, b)).or_insert(idx);
+            match map.entry(ordered_pair(a, b)) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(idx);
+                }
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    let prev = &model.elements[*o.get()];
+                    if prev.section.is_none() && e.section.is_some() {
+                        o.insert(idx);
+                    }
+                }
+            }
         }
     }
     map
@@ -323,8 +334,8 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
 /// 壁エレメントの自重を頂点へ配る（§壁自重）。
 ///
 /// 縁が切れていない梁際の辺へ伝える。上下とも一体なら四隅へ等分し、片側だけ切れて
-/// いれば反対側の 2 節点へ全量を寄せる。上下とも切れた壁（伝達先が無い）は四隅へ
-/// 等分して重量を落とさず、解析前チェックのエラーに委ねる。
+/// いれば反対側の 2 節点へ全量を寄せる。上下とも切れた壁は四隅へ等分して重量を落とさず、
+/// 解析前チェックのエラーに委ねる。
 ///
 /// 上下の別は標高で決める。同じ標高の節点はまとめて 1 つの辺として扱う
 /// （台形壁で上辺の 2 節点の標高がわずかに異なる場合も、[`LEVEL_TOL_MM`] 以内なら

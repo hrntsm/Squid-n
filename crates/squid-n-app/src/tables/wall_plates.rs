@@ -7,7 +7,8 @@
 //!
 //! 編集は `squid_n_edit::{SetWallPlateSection, SetWallPlateAttrs,
 //! SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent, AddAttachedWallPlate,
-//! AddEnclosedWallPlate, DeleteWallPlate}` 経由（undo 対応）。
+//! AssignWallPlateToRegion, SetWallPlateRegionNoPlate, UnsetWallPlateRegion,
+//! DeleteWallPlate}` 経由（undo 対応）。
 //! 併せて、建物一律の複数開口の取り扱い（`Model.multi_opening_mode`）を
 //! `squid_n_edit::SetMultiOpeningMode` 経由で編集する（undo 対応）。
 //!
@@ -19,14 +20,16 @@
 //! 「適用」で 1 つの `SetWallPlateAttrs` として発行する。
 
 use crate::app::App;
-use squid_n_core::ids::{NodeId, SectionId, WallPlateId};
+use squid_n_core::ids::{NodeId, SectionId, WallPlateAssignmentRegionId, WallPlateId};
 use squid_n_core::model::{
-    AreaLoad, LoadTransfer, MultiOpeningMode, RegionAnchor, WallOpening, WallPlate, WallPlateShape,
+    AreaLoad, LoadTransfer, MultiOpeningMode, PlateAssignment, RegionAnchor, WallOpening,
+    WallPlate, WallPlateShape,
 };
 use squid_n_core::units::{to_display, to_internal};
 use squid_n_edit::{
-    AddAttachedWallPlate, AddEnclosedWallPlate, DeleteWallPlate, SetAttachedWallPlateAnchor,
-    SetAttachedWallPlateExtent, SetMultiOpeningMode, SetWallPlateAttrs, SetWallPlateSection,
+    AddAttachedWallPlate, AssignWallPlateToRegion, DeleteWallPlate, SetAttachedWallPlateAnchor,
+    SetAttachedWallPlateExtent, SetMultiOpeningMode, SetWallPlateAttrs, SetWallPlateRegionNoPlate,
+    SetWallPlateSection, UnsetWallPlateRegion,
 };
 
 /// 複数開口の取り扱い（`MultiOpeningMode`）の選択肢一覧（UI 表示順）。
@@ -189,7 +192,7 @@ pub fn format_openings(openings: &[WallOpening]) -> String {
 /// 壁版の種別ラベル。
 fn shape_label(plate: &WallPlate) -> &'static str {
     match plate.shape {
-        WallPlateShape::Enclosed { .. } => "囲まれた",
+        WallPlateShape::Enclosed => "囲まれた",
         WallPlateShape::Attached { .. } => "取り付く",
     }
 }
@@ -265,31 +268,21 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
         let posts: Vec<_> = app.core.model.posts().cloned().collect();
         for post in posts {
             let model = &app.core.model;
-            let (Some(a), Some(b)) = (
-                model.nodes.get(post.nodes[0].index()),
-                model.nodes.get(post.nodes[1].index()),
-            ) else {
+            let Some((a, b)) = model.secondary_member_end_points(&post) else {
                 continue;
             };
-            if (a.coord[0] - b.coord[0]).hypot(a.coord[1] - b.coord[1])
-                > squid_n_core::geom::MEMBER_AXIS_TOL_MM
-            {
+            if (a[0] - b[0]).hypot(a[1] - b[1]) > squid_n_core::geom::MEMBER_AXIS_TOL_MM {
                 continue;
             }
-            let lower = usize::from(a.coord[2] > b.coord[2]);
+            let lower = usize::from(a[2] > b[2]);
             let mut bottom_percent = post
                 .valid_gravity_end_shares()
                 .map(|r| r[lower] * 100.0)
                 .unwrap_or(0.0);
             let mut chosen = None;
-            ui.push_id(post.nodes, |ui| {
+            ui.push_id(post.id, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "{}（下端 {}／上端 {}）",
-                        post.name,
-                        post.nodes[lower].0,
-                        post.nodes[1 - lower].0
-                    ));
+                    ui.label(format!("{}（下端／上端）", post.name));
                     if post.valid_gravity_end_shares().is_none() {
                         ui.colored_label(crate::theme::ERROR_RED, "未指定・不正");
                     }
@@ -322,7 +315,7 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
                 app.core.scoped.undo.run(
                     &mut app.core.model,
                     Box::new(squid_n_edit::SetPostGravityEndShares {
-                        nodes: post.nodes,
+                        member: post.id,
                         shares: Some(shares),
                     }),
                 );
@@ -369,6 +362,24 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
     wall_plates_list(ui, app);
     attrs_form(ui, app);
     add_enclosed_form(ui, app);
+    ui.separator();
+    ui.strong("間柱（二次部材）");
+    ui.label(
+        "間柱は解析要素ではなく、壁版から受けた荷重を柱・梁へ伝えます。端部支持条件「自由」は\
+         片持ち間柱（基端支持・先端自由）を表します。配置すると壁版割当領域が再構築され、\
+         境界が変わった領域の壁版は取り除かれます。",
+    );
+    crate::tables::secondary::secondary_member_placement_form(
+        app,
+        ui,
+        squid_n_core::model::SecondaryMemberKind::Post,
+    );
+    ui.add_space(4.0);
+    crate::tables::secondary::secondary_member_list(
+        app,
+        ui,
+        squid_n_core::model::SecondaryMemberKind::Post,
+    );
     add_attached_form(ui, app);
 }
 
@@ -459,12 +470,20 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             });
             let resolved_extent = app.core.model.wall_plate_extent(plate);
             row.col(|ui| match &plate.shape {
-                WallPlateShape::Enclosed { boundary } => {
-                    let s = boundary
-                        .iter()
-                        .map(|n| n.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join("-");
+                WallPlateShape::Enclosed => {
+                    let s = app
+                        .core
+                        .model
+                        .wall_plate_assignment_region(plate.id)
+                        .and_then(|region| app.core.model.wall_assignment_region_nodes(region.id))
+                        .map(|nodes| {
+                            nodes
+                                .iter()
+                                .map(|n| n.0.to_string())
+                                .collect::<Vec<_>>()
+                                .join("-")
+                        })
+                        .unwrap_or_else(|| "―".to_string());
                     table_util::text_cell(ui, &s);
                 }
                 WallPlateShape::Attached { anchor, extent } => {
@@ -846,7 +865,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         .is_some_and(|p| p.is_attached());
 
     if let Some(plate) = app.core.model.wall_plate(target) {
-        if let Some(boundary) = plate.boundary_nodes() {
+        if let Some(boundary) = plate.boundary_nodes(&app.core.model) {
             ui.label("自重の支持先：各辺の負担率を合計 100% で指定してください。");
             ui.label("解析要素にならない壁版に適用します。0% の辺へは伝えません。");
             let shares = &mut app.ui.scoped.wall_plate_draft.self_weight_shares;
@@ -909,7 +928,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             .core
             .model
             .wall_plate(target)
-            .is_some_and(|p| p.has_quad_boundary());
+            .is_some_and(|p| p.has_quad_boundary(&app.core.model));
         let faces = app
             .core
             .model
@@ -1065,49 +1084,20 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
 
 /// 柱・梁で囲まれた壁版の追加フォーム。
 ///
-/// 主架構に囲まれた壁版は、取り付く壁版と違って境界を節点 4 点で指定する。
-/// 所属する壁領域は準備計算（`rebuild_wall_regions`）が自動で結びつける。
+/// 壁版割当領域の一覧と、未設定／版なし領域への割当・版なし・未設定操作。
+///
+/// 割当領域は柱・梁・間柱から準備計算が作る派生データで、利用者はそこへ壁版を
+/// 割り当てる。境界を節点で直接指定する経路は持たない（ADR 0018）。
 fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
-    ui.strong("囲まれた壁版を追加（柱・梁で囲まれた構面内の版）");
+    ui.strong("壁版割当領域へ壁版を割り当てる（柱・梁・間柱で囲まれた領域）");
     ui.label(
-        "柱・梁が囲む鉛直構面内の壁版です。境界は 4 節点を反時計回りに指定します。\
-         所属する壁領域は準備計算が自動で結びつけます。",
+        "壁版割当領域は準備計算が支持部材から作ります。未設定・版なしの領域へ壁版を\
+         割り当て、割当済みの領域は版なし・未設定へ戻せます。",
     );
 
-    if app.core.model.nodes.len() < 4 {
-        ui.label("囲まれた壁版を追加するには節点が4つ以上必要です");
-        return;
-    }
-
-    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
-
-    ui.label("境界節点（反時計回り。下辺 2 節点 → 上辺 2 節点の順を推奨）:");
-    ui.horizontal_wrapped(|ui| {
-        for (k, slot) in app
-            .ui
-            .scoped
-            .wall_plate_draft
-            .add_enclosed_nodes
-            .iter_mut()
-            .enumerate()
-        {
-            let text = slot
-                .map(|n| format!("N{}", n.0))
-                .unwrap_or_else(|| "―".to_string());
-            egui::ComboBox::from_id_salt(("wp_enc_node", k))
-                .selected_text(format!("節点{}: {}", k, text))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(slot, None, "―");
-                    for &nid in &node_ids {
-                        ui.selectable_value(slot, Some(nid), format!("N{}", nid.0));
-                    }
-                });
-        }
-    });
-
     ui.horizontal(|ui| {
-        ui.label("断面:");
+        ui.label("割り当てる断面:");
         let resolved = app
             .ui
             .scoped
@@ -1143,44 +1133,81 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
     .response
     .on_hover_text("壁の板厚と自重は断面から決まります。断面が未割当の壁版は自重が 0 になります");
 
-    let selected: Vec<NodeId> = app
-        .ui
-        .scoped
-        .wall_plate_draft
-        .add_enclosed_nodes
-        .iter()
-        .filter_map(|n| *n)
-        .collect();
-    let mut dedup = selected.clone();
-    dedup.sort_by_key(|n| n.0);
-    dedup.dedup();
-    let can_add = selected.len() == 4 && dedup.len() == 4;
-
-    if !can_add {
-        ui.label("境界節点 4 点をすべて選び、重複がないようにしてください");
+    struct RegionRow {
+        id: WallPlateAssignmentRegionId,
+        assignment: PlateAssignment<WallPlateId>,
+        nodes: usize,
     }
-    if ui
-        .add_enabled(can_add, egui::Button::new("+ 囲まれた壁版を追加"))
-        .on_hover_text("4 節点すべてが選択され、重複がない場合に追加できます")
-        .clicked()
-    {
-        let boundary: Vec<NodeId> = app
-            .ui
-            .scoped
-            .wall_plate_draft
-            .add_enclosed_nodes
-            .iter()
-            .map(|n| n.expect("can_add で全スロット Some を確認済み"))
-            .collect();
-        app.core.scoped.undo.run(
-            &mut app.core.model,
-            Box::new(AddEnclosedWallPlate {
-                boundary,
-                section: app.ui.scoped.wall_plate_draft.add_enclosed_section,
-                opening_area: 0.0,
-                opening_weight: 0.0,
-            }),
-        );
+    let rows: Vec<RegionRow> = app
+        .core
+        .model
+        .wall_assignment_regions
+        .regions
+        .iter()
+        .map(|region| RegionRow {
+            id: region.id,
+            assignment: region.assignment,
+            nodes: app
+                .core
+                .model
+                .wall_assignment_region_nodes(region.id)
+                .map(|n| n.len())
+                .unwrap_or(0),
+        })
+        .collect();
+
+    if rows.is_empty() {
+        ui.label("壁版割当領域がありません。柱・梁・間柱を配置し準備計算を実行してください");
+        return;
+    }
+
+    let mut action: Option<Box<dyn squid_n_edit::EditCommand>> = None;
+    egui::Grid::new("wp_assignment_regions")
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("領域");
+            ui.strong("状態");
+            ui.strong("境界");
+            ui.strong("操作");
+            ui.end_row();
+            for row in &rows {
+                ui.label(format!("#{}", row.id.0));
+                match row.assignment {
+                    PlateAssignment::Unset => ui.label("未設定"),
+                    PlateAssignment::NoPlate => ui.label("版なし"),
+                    PlateAssignment::Plate(pid) => ui.label(format!("壁版 N{}", pid.0)),
+                };
+                ui.label(format!("{} 節点", row.nodes));
+                ui.horizontal(|ui| match row.assignment {
+                    PlateAssignment::Plate(_) => {
+                        if ui.button("版なし").clicked() {
+                            action = Some(Box::new(SetWallPlateRegionNoPlate { region: row.id }));
+                        }
+                        if ui.button("未設定へ").clicked() {
+                            action = Some(Box::new(UnsetWallPlateRegion { region: row.id }));
+                        }
+                    }
+                    PlateAssignment::Unset | PlateAssignment::NoPlate => {
+                        let enabled = row.nodes >= 3;
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("割当"))
+                            .on_hover_text("この領域へ壁版を割り当てます")
+                            .clicked()
+                        {
+                            action = Some(Box::new(AssignWallPlateToRegion {
+                                region: row.id,
+                                section: app.ui.scoped.wall_plate_draft.add_enclosed_section,
+                                opening_area: 0.0,
+                                opening_weight: 0.0,
+                            }));
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    if let Some(command) = action {
+        app.core.scoped.undo.run(&mut app.core.model, command);
         app.core.scoped.staleness.mark_edited();
     }
 }
@@ -1446,11 +1473,11 @@ mod tests {
         (m, ids)
     }
 
-    fn enclosed(id: u32, boundary: Vec<NodeId>, section: Option<SectionId>) -> WallPlate {
+    fn enclosed(id: u32, section: Option<SectionId>) -> WallPlate {
         WallPlate {
             self_weight_shares: Vec::new(),
             id: WallPlateId(id),
-            shape: WallPlateShape::Enclosed { boundary },
+            shape: WallPlateShape::Enclosed,
             section,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -1470,8 +1497,7 @@ mod tests {
         let (mut m, ids) = plate_model();
 
         // どの壁領域からも参照されていない。
-        m.wall_plates
-            .push(enclosed(0, ids.clone(), Some(SectionId(0))));
+        m.add_enclosed_wall_plate_from_nodes(&ids, enclosed(0, Some(SectionId(0))));
         assert!(
             not_element_reason(&m.wall_plates[0], &m).contains("どの壁領域にも帰属していません")
         );
@@ -1480,24 +1506,19 @@ mod tests {
         m.wall_regions.push(squid_n_core::model::WallRegion {
             id: squid_n_core::ids::WallRegionId(0),
             name: String::new(),
-            boundary: ids.clone(),
+            boundary: ids[..3].to_vec(),
             wall_plate_ids: vec![WallPlateId(0)],
             posts: Vec::new(),
         });
-        m.wall_plates[0].shape = WallPlateShape::Enclosed {
-            boundary: ids[..3].to_vec(),
-        };
         assert!(not_element_reason(&m.wall_plates[0], &m).contains("4 節点ではありません"));
 
         // 覆っているが断面が無い。
-        m.wall_plates[0].shape = WallPlateShape::Enclosed {
-            boundary: ids.clone(),
-        };
+        m.wall_regions[0].boundary = ids.clone();
         m.wall_plates[0].section = None;
         assert!(not_element_reason(&m.wall_plates[0], &m).contains("断面が割り当たっていません"));
 
         // 取り付く壁版。
-        let mut attached = enclosed(1, Vec::new(), None);
+        let mut attached = enclosed(1, None);
         attached.shape = WallPlateShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [ids[0], ids[1]],

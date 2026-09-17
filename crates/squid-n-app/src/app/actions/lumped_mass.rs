@@ -131,7 +131,12 @@ impl App {
     pub fn start_lumped_mass_sample_th_job(&mut self) {
         let wave = squid_n_job::sample_lumped_ground_motion(&self.core.analysis_cfg);
         match squid_n_job::lumped_accel_from_wave(&wave, self.core.analysis_cfg.lumped_dir) {
-            Ok(accel) => self.start_lumped_mass_th_job(accel),
+            Ok(accel) => {
+                #[cfg(feature = "gui")]
+                self.request_analysis(PendingAnalysis::LumpedMassTimeHistory(accel));
+                #[cfg(not(feature = "gui"))]
+                self.start_lumped_mass_th_job(accel);
+            }
             Err(e) => self.report_error(e),
         }
     }
@@ -157,7 +162,7 @@ impl App {
         self.core.scoped.lumped_wave_library_selected_sha256 =
             squid_n_io::wave_library::wave_sha256(&dir, &name).ok();
         match squid_n_job::lumped_accel_from_wave(&wave, self.core.analysis_cfg.lumped_dir) {
-            Ok(accel) => self.start_lumped_mass_th_job(accel),
+            Ok(accel) => self.request_analysis(PendingAnalysis::LumpedMassTimeHistory(accel)),
             Err(e) => self.report_error(e),
         }
     }

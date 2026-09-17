@@ -10,8 +10,10 @@ use squid_n_core::frame::Frame;
 use crate::app::App;
 
 use super::camera::CameraState;
-use super::pick::{member_load_pickable, pick_nearest_member, pick_nearest_node};
-use super::scene::order_wall_nodes;
+use super::pick::{
+    member_load_pickable, pick_assignment_region, pick_nearest_member, pick_nearest_node,
+    pick_parent_region, pick_support_anchor, ParentRegionPick, RegionPick,
+};
 use super::wall_expanded_view_model;
 use super::{frame_view, space_grid, viewcube, FrameFilter, Projector, ViewMode};
 
@@ -177,60 +179,106 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
                 }
             }
         } else if app.ui.scoped.wall_draw_mode {
-            let best = pick_nearest_node(pts, node_visible, click_pos);
-            const NODE_PICK_THRESHOLD: f32 = 10.0;
-            if let Some((i, d)) = best {
-                if d <= NODE_PICK_THRESHOLD {
-                    let node_id = app.core.model.nodes[i].id;
-                    if !app.ui.scoped.wall_draw_nodes.contains(&node_id) {
-                        app.ui.scoped.wall_draw_nodes.push(node_id);
-                    }
-                    if app.ui.scoped.wall_draw_nodes.len() == 4 {
-                        let ordered =
-                            order_wall_nodes(&app.core.model, &app.ui.scoped.wall_draw_nodes);
-                        let mut dedup = ordered.clone();
-                        dedup.sort_by_key(|n| n.0);
-                        dedup.dedup();
-                        if dedup.len() == 4 {
-                            let section = app
-                                .ui
-                                .scoped
-                                .wall_plate_draft
-                                .add_enclosed_section
-                                .filter(|sid| {
-                                    app.core
-                                        .model
-                                        .sections
-                                        .get(sid.index())
-                                        .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
-                                });
-                            if app.core.scoped.undo.run(
-                                &mut app.core.model,
-                                Box::new(squid_n_edit::AddEnclosedWallPlate {
-                                    boundary: ordered,
-                                    section,
-                                    opening_area: 0.0,
-                                    opening_weight: 0.0,
-                                }),
-                            ) {
-                                squid_n_core::wall_region_rebuild::rebuild_wall_regions(
-                                    &mut app.core.model,
-                                );
-                                app.core.scoped.staleness.mark_edited();
-                            }
-                        }
-                        app.ui.scoped.wall_draw_nodes.clear();
-                    }
-                }
+            if let Some(RegionPick::Wall(id)) =
+                pick_assignment_region(&app.core.model, proj, click_pos, false, true)
+            {
+                app.ui.scoped.region_assign_dialog = Some(crate::app::RegionAssignTarget::Wall(id));
             }
         } else if app.ui.scoped.slab_draw_mode {
-            let best = pick_nearest_node(pts, node_visible, click_pos);
-            const NODE_PICK_THRESHOLD: f32 = 10.0;
-            if let Some((i, d)) = best {
-                if d <= NODE_PICK_THRESHOLD {
-                    let node_id = app.core.model.nodes[i].id;
-                    if !app.ui.scoped.slab_draw_nodes.contains(&node_id) {
-                        app.ui.scoped.slab_draw_nodes.push(node_id);
+            if let Some(RegionPick::Floor(id)) =
+                pick_assignment_region(&app.core.model, proj, click_pos, true, false)
+            {
+                app.ui.scoped.region_assign_dialog =
+                    Some(crate::app::RegionAssignTarget::Floor(id));
+            }
+        } else if app.ui.scoped.joist_place_mode || app.ui.scoped.post_place_mode {
+            use crate::app::WorkScope;
+            use squid_n_core::model::{SecondaryMemberEnds, SecondaryMemberKind};
+            use squid_n_edit::{PlaceSecondaryMember, SecondaryParent};
+            let kind = if app.ui.scoped.joist_place_mode {
+                SecondaryMemberKind::Joist
+            } else {
+                SecondaryMemberKind::Post
+            };
+            if app.ui.scoped.work_scope.is_none() {
+                let include_floor = kind == SecondaryMemberKind::Joist;
+                let include_wall = kind == SecondaryMemberKind::Post;
+                if let Some(pick) = pick_parent_region(
+                    &app.core.model,
+                    proj,
+                    click_pos,
+                    include_floor,
+                    include_wall,
+                ) {
+                    app.ui.scoped.work_scope = Some(match pick {
+                        ParentRegionPick::Floor(id) => WorkScope::Floor(id),
+                        ParentRegionPick::Wall(id) => WorkScope::Wall(id),
+                    });
+                    app.ui.scoped.member_place_first = None;
+                }
+            } else if let Some(anchor) =
+                pick_support_anchor(&app.core.model, proj, click_pos, kind, 12.0)
+            {
+                match app.ui.scoped.member_place_first {
+                    None => app.ui.scoped.member_place_first = Some(anchor),
+                    Some(first) => {
+                        if first != anchor {
+                            let parent = match app.ui.scoped.work_scope {
+                                Some(WorkScope::Floor(id)) => Some(SecondaryParent::Floor(id)),
+                                Some(WorkScope::Wall(id)) => Some(SecondaryParent::Wall(id)),
+                                None => None,
+                            };
+                            if let Some(parent) = parent {
+                                let inside = match (
+                                    app.ui.scoped.work_scope,
+                                    app.core.model.anchor_point(first),
+                                    app.core.model.anchor_point(anchor),
+                                ) {
+                                    (Some(WorkScope::Floor(id)), Some(a), Some(b)) => {
+                                        app.core.model.floor_region_contains_point(
+                                            id,
+                                            [
+                                                (a[0] + b[0]) * 0.5,
+                                                (a[1] + b[1]) * 0.5,
+                                                (a[2] + b[2]) * 0.5,
+                                            ],
+                                        )
+                                    }
+                                    (Some(WorkScope::Wall(id)), Some(a), Some(b)) => {
+                                        app.core.model.wall_region_contains_point(
+                                            id,
+                                            [
+                                                (a[0] + b[0]) * 0.5,
+                                                (a[1] + b[1]) * 0.5,
+                                                (a[2] + b[2]) * 0.5,
+                                            ],
+                                        )
+                                    }
+                                    _ => false,
+                                };
+                                let applied = inside
+                                    && app.core.scoped.undo.run(
+                                        &mut app.core.model,
+                                        Box::new(PlaceSecondaryMember {
+                                            parent,
+                                            kind,
+                                            ends: SecondaryMemberEnds::Supported([first, anchor]),
+                                            section: app.ui.scoped.secondary_draft.section,
+                                            name: app.ui.scoped.secondary_draft.name.clone(),
+                                        }),
+                                    );
+                                if applied {
+                                    app.core.scoped.staleness.mark_edited();
+                                } else {
+                                    app.core.scoped.last_notice = Some(
+                                        "両端が作業範囲の外側をつなぐため配置しませんでした。\
+                                         作業範囲（親領域）の内側で支持部材を選んでください。"
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                        }
+                        app.ui.scoped.member_place_first = None;
                     }
                 }
             }

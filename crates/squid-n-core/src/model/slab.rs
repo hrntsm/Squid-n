@@ -58,10 +58,13 @@ impl SlabPlate {
 }
 
 /// 床板の形。
+///
+/// 囲まれた床板の境界は床板自身に持たず、[`Model::slab_assignment_region`] が返す
+/// 床板割当領域から解決する（[`Slab::boundary_coords`] 等）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SlabShape {
-    /// 大梁または小梁で囲まれた領域。境界は反時計回りの節点列（始点は繰り返さない）。
-    Enclosed { boundary: Vec<NodeId> },
+    /// 大梁または小梁で囲まれた領域（境界は床板割当領域が保持する）。
+    Enclosed,
     /// 主架構に取り付く領域（片持ち・バルコニー・出隅）。
     Attached {
         /// 取付き先。荷重の出口は取付き先の種類ごとに決まる（[`RegionAnchor`] 参照）。
@@ -88,18 +91,29 @@ impl Slab {
     }
 
     /// 境界の節点列。**大梁または小梁で囲まれた床板のみ**（取り付く床板は
-    /// 自由端に節点を持たないため `None`）。
-    pub fn boundary_nodes(&self) -> Option<&[NodeId]> {
-        match &self.shape {
-            SlabShape::Enclosed { boundary } => Some(boundary),
+    /// 自由端に節点を持たないため `None`）。囲まれた床板は割当領域から解決する。
+    pub fn boundary_nodes(&self, model: &Model) -> Option<Vec<NodeId>> {
+        match self.shape {
+            SlabShape::Enclosed => {
+                let region = model.slab_assignment_region(self.id)?;
+                model.floor_assignment_region_nodes(region.id)
+            }
             SlabShape::Attached { .. } => None,
         }
     }
 
     /// 境界多角形の座標列 [mm]。取り付く床板は取付き先と張り出し量から算出する。
-    /// 節点が引けない（陳腐化した参照）場合は `None`。
+    /// 囲まれた床板は割当領域の支持部材材軸から解決する。引けない場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
-        self.boundary_coords_with(|n| model.nodes.get(n.index()).map(|n| n.coord))
+        match self.shape {
+            SlabShape::Enclosed => {
+                let region = model.slab_assignment_region(self.id)?;
+                model.assignment_region_boundary_coords(&region.boundary)
+            }
+            SlabShape::Attached { .. } => {
+                self.boundary_coords_with(model, |n| model.nodes.get(n.index()).map(|n| n.coord))
+            }
+        }
     }
 
     /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
@@ -110,10 +124,14 @@ impl Slab {
     /// 差し替えられるようにして実装を 1 つに保つ。
     pub fn boundary_coords_with(
         &self,
+        model: &Model,
         coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
     ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
-            SlabShape::Enclosed { boundary } => boundary.iter().map(|n| coord_of(*n)).collect(),
+            SlabShape::Enclosed => {
+                let nodes = self.boundary_nodes(model)?;
+                nodes.iter().map(|n| coord_of(*n)).collect()
+            }
             SlabShape::Attached { anchor, extent } => match anchor {
                 RegionAnchor::Line { nodes, span, .. } => {
                     let a = coord_of(nodes[0])?;
@@ -157,14 +175,15 @@ impl Slab {
     /// 境界の辺 `k` の両端節点。荷重分配の結果（`LoadTarget::Edge`）を主架構の梁へ
     /// 結びつけるために使う。
     ///
-    /// 大梁または小梁で囲まれた床板は `boundary[k]`→`boundary[k+1]`、取り付く床板
-    /// （線）は辺 0 が取付き線そのもの（それ以外の辺は自由端なので `None`）。
+    /// 大梁または小梁で囲まれた床板は割当領域境界の頂点 `k`→`k+1`、
+    /// 取り付く床板（線）は辺 0 が取付き線そのもの（それ以外の辺は自由端なので `None`）。
     /// 取り付く床板（点）は辺を持たない。
-    pub fn edge_nodes(&self, k: usize) -> Option<[NodeId; 2]> {
+    pub fn edge_nodes(&self, model: &Model, k: usize) -> Option<[NodeId; 2]> {
         match &self.shape {
-            SlabShape::Enclosed { boundary } => {
-                let n = boundary.len();
-                (n >= 3 && k < n).then(|| [boundary[k], boundary[(k + 1) % n]])
+            SlabShape::Enclosed => {
+                let nodes = self.boundary_nodes(model)?;
+                let n = nodes.len();
+                (n >= 3 && k < n).then(|| [nodes[k], nodes[(k + 1) % n]])
             }
             SlabShape::Attached { anchor, .. } => match anchor {
                 RegionAnchor::Line { nodes, .. } if k == 0 => Some(*nodes),
@@ -176,9 +195,9 @@ impl Slab {
 
     /// 床板を代表する節点。大梁または小梁で囲まれた床板は境界の先頭、
     /// 取り付く床板は取付き先の節点。
-    pub fn reference_node(&self) -> Option<NodeId> {
+    pub fn reference_node(&self, model: &Model) -> Option<NodeId> {
         match &self.shape {
-            SlabShape::Enclosed { boundary } => boundary.first().copied(),
+            SlabShape::Enclosed => self.boundary_nodes(model)?.first().copied(),
             SlabShape::Attached { anchor, .. } => match anchor {
                 RegionAnchor::Line { nodes, .. } => Some(nodes[0]),
                 RegionAnchor::Point(n) => Some(*n),
@@ -225,13 +244,22 @@ impl Slab {
     /// 大梁または小梁で囲まれた床板、値が非有限、または 0 以下のときは `None`。
     pub fn attached_design_span(&self) -> Option<f64> {
         match &self.shape {
-            SlabShape::Enclosed { .. } => None,
+            SlabShape::Enclosed => None,
             SlabShape::Attached { extent, .. } => {
                 let span = extent[0].abs().max(extent[1].abs());
                 (span.is_finite() && span > 0.0).then_some(span)
             }
         }
     }
+}
+
+/// 境界辺から二次部材の支持部材を選ぶときの期待種別。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BoundarySecondaryKind {
+    /// 床領域の境界辺。両端支持の小梁（[`Model::joists`]）だけを選ぶ。
+    Joist,
+    /// 壁領域の境界辺。両端支持の間柱（[`Model::posts`]）だけを選ぶ。
+    Post,
 }
 
 impl Model {
@@ -287,6 +315,162 @@ impl Model {
     /// 長期骨組解析は `Frame`、地震用重量は `Seismic`、床・小梁設計は `Floor`。
     pub fn slab_intensity(&self, slab: &Slab, purpose: LoadPurpose) -> f64 {
         self.slab_dead_intensity(slab) + slab.plate.live_intensity(purpose)
+    }
+
+    /// 境界節点で囲まれた床板を 1 枚追加し、境界辺を支持部材とする床板割当領域へ割り当てる。
+    ///
+    /// 同じ境界でまだ版が割り当たっていない（未設定または版なし）床板割当領域が既にあれば
+    /// それを再利用し、境界が重複する領域を増やさない。一致が無ければ境界辺ごとに、
+    /// 既存の 2 節点梁または既存の二次部材を支持部材として使い、
+    /// どちらも無ければ 2 節点梁を追加して新しい領域を作る。テスト・フィクスチャで
+    /// 支持部材を明示せずに囲まれた床板を作るための補助。
+    pub fn add_enclosed_slab_from_nodes(
+        &mut self,
+        boundary: &[NodeId],
+        plate: SlabPlate,
+    ) -> SlabId {
+        assert!(boundary.len() >= 3, "境界は 3 節点以上");
+        if let Some(id) = self.assign_enclosed_slab_to_matching_region(boundary, plate.clone()) {
+            return id;
+        }
+        let mut support_boundary = Vec::with_capacity(boundary.len());
+        for i in 0..boundary.len() {
+            let a = boundary[i];
+            let b = boundary[(i + 1) % boundary.len()];
+            let support = self.resolve_boundary_support(a, b, BoundarySecondaryKind::Joist);
+            let span = match self.support_member_nodes(support) {
+                Some([n0, n1]) if n0 == b && n1 == a => [1.0, 0.0],
+                _ => [0.0, 1.0],
+            };
+            support_boundary.push(SupportBoundary { support, span });
+        }
+        let slab_id = SlabId(self.slabs.len() as u32);
+        self.slabs.push(Slab {
+            id: slab_id,
+            shape: SlabShape::Enclosed,
+            plate,
+        });
+        let region_id = FloorPlateAssignmentRegionId(self.floor_assignment_regions.next_free_id());
+        self.floor_assignment_regions
+            .regions
+            .push(FloorPlateAssignmentRegion {
+                id: region_id,
+                boundary: support_boundary,
+                assignment: PlateAssignment::Plate(slab_id),
+            });
+        slab_id
+    }
+
+    /// 境界節点に一致する、まだ版が割り当たっていない（未設定または版なし）床板割当領域へ
+    /// 床板を割り当てる。一致が無ければ `None`。
+    ///
+    /// 版なし（利用者が明示的に版を置かないと決めた状態）の領域も対象に含めるのは、
+    /// 同じ境界の領域が既にあるのに新しい領域を追加すると境界が重複して `validate` に
+    /// 落ちるためである。小梁などで分割済みの割当領域へ床板を作るテスト・フィクスチャ用の補助。
+    pub fn assign_enclosed_slab_to_matching_region(
+        &mut self,
+        boundary: &[NodeId],
+        plate: SlabPlate,
+    ) -> Option<SlabId> {
+        let mut key: Vec<u32> = boundary.iter().map(|n| n.0).collect();
+        key.sort_unstable();
+        let region_id = self
+            .floor_assignment_regions
+            .regions
+            .iter()
+            .find(|region| {
+                region.assignment.plate().is_none()
+                    && self
+                        .floor_assignment_region_nodes(region.id)
+                        .is_some_and(|nodes| {
+                            let mut k: Vec<u32> = nodes.iter().map(|n| n.0).collect();
+                            k.sort_unstable();
+                            k == key
+                        })
+            })
+            .map(|region| region.id)?;
+        let slab_id = SlabId(self.slabs.len() as u32);
+        self.slabs.push(Slab {
+            id: slab_id,
+            shape: SlabShape::Enclosed,
+            plate,
+        });
+        self.floor_assignment_regions
+            .get_mut(region_id)
+            .expect("直前に確保した割当領域")
+            .assignment = PlateAssignment::Plate(slab_id);
+        Some(slab_id)
+    }
+
+    /// 境界辺の両端節点に対応する支持部材を返す。既存の梁 → 既存の二次部材 →
+    /// 2 節点梁の新設、の順に解決する。二次部材は `kind` の種別かつ両端支持
+    /// [`SecondaryMemberEnds::Supported`] のものだけを支持部材にし、荷重の伝達経路を
+    /// 持たない `Detached` と片持ちの `Cantilever` は支持部材にしない。
+    pub(crate) fn resolve_boundary_support(
+        &mut self,
+        a: NodeId,
+        b: NodeId,
+        kind: BoundarySecondaryKind,
+    ) -> SupportMemberId {
+        let same_pair = |nodes: &[NodeId]| {
+            nodes.len() == 2
+                && ((nodes[0] == a && nodes[1] == b) || (nodes[0] == b && nodes[1] == a))
+        };
+        if let Some(e) = self
+            .elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Beam && same_pair(&e.nodes))
+        {
+            return SupportMemberId::Primary(e.id);
+        }
+        let tol = crate::geom::MEMBER_AXIS_TOL_MM;
+        let secondary = match (self.node(a).map(|n| n.coord), self.node(b).map(|n| n.coord)) {
+            (Some(ca), Some(cb)) => {
+                let near = |p: [f64; 3], q: [f64; 3]| crate::geom::vec3::dist(p, q) <= tol;
+                let supported_near = |m: &SecondaryMember| {
+                    matches!(m.ends, SecondaryMemberEnds::Supported(_))
+                        && self.secondary_member_end_points(m).is_some_and(|(p0, p1)| {
+                            (near(p0, ca) && near(p1, cb)) || (near(p0, cb) && near(p1, ca))
+                        })
+                };
+                match kind {
+                    BoundarySecondaryKind::Joist => self.joists().find(|m| supported_near(m)),
+                    BoundarySecondaryKind::Post => self.posts().find(|m| supported_near(m)),
+                }
+                .map(|m| m.id)
+            }
+            _ => None,
+        };
+        if let Some(id) = secondary {
+            return SupportMemberId::Secondary(id);
+        }
+        SupportMemberId::Primary(self.push_boundary_beam(a, b))
+    }
+
+    /// 境界辺の支持部材が無いときに 2 節点梁を新設して返す。
+    fn push_boundary_beam(&mut self, a: NodeId, b: NodeId) -> ElemId {
+        let id = ElemId(
+            self.elements
+                .iter()
+                .map(|e| e.id.0)
+                .max()
+                .map_or(0, |m| m + 1),
+        );
+        self.elements.push(ElementData {
+            id,
+            kind: ElementKind::Beam,
+            nodes: [a, b].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+        id
     }
 }
 
@@ -534,7 +718,7 @@ mod tests {
             plate: SlabPlate::default(),
         };
         assert_eq!(slab.boundary_coords(&model), None);
-        assert_eq!(slab.reference_node(), None);
-        assert_eq!(slab.edge_nodes(0), None);
+        assert_eq!(slab.reference_node(&model), None);
+        assert_eq!(slab.edge_nodes(&model, 0), None);
     }
 }

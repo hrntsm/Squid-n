@@ -3,6 +3,7 @@ use crate::ids::*;
 use smallvec::SmallVec;
 
 mod aggregate;
+mod assignment_region;
 mod axis;
 mod constraint;
 mod element;
@@ -23,6 +24,7 @@ mod wall_plate;
 mod wall_region;
 
 pub use aggregate::*;
+pub use assignment_region::*;
 pub use axis::*;
 pub use constraint::*;
 pub use element::*;

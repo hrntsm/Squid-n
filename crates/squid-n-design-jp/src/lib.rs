@@ -458,9 +458,9 @@ pub fn beam_has_attached_slab(
         if model.slab_plate_thickness(s).is_none() {
             return false;
         }
-        if let Some(b) = s.boundary_nodes() {
+        if let Some(b) = s.boundary_nodes(model) {
             b.contains(&n0) && b.contains(&n1)
-        } else if let Some([a, b]) = s.edge_nodes(0) {
+        } else if let Some([a, b]) = s.edge_nodes(model, 0) {
             (a == n0 && b == n1) || (a == n1 && b == n0)
         } else {
             false

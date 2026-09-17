@@ -81,15 +81,54 @@ impl Model {
         })
     }
 
-    /// 二次部材（端点対で識別）が属する床領域。どこにも属さなければ `None`。
-    pub fn floor_region_of_joist(&self, nodes: [NodeId; 2]) -> Option<&FloorRegion> {
-        let key = |a: NodeId, b: NodeId| (a.0.min(b.0), a.0.max(b.0));
-        let want = key(nodes[0], nodes[1]);
-        self.floor_regions.iter().find(|r| {
-            r.secondary_joists
-                .iter()
-                .any(|j| key(j.nodes[0], j.nodes[1]) == want)
-        })
+    /// 二次部材（安定 ID）が属する床領域。どこにも属さなければ `None`。
+    pub fn floor_region_of_joist(&self, id: SecondaryMemberId) -> Option<&FloorRegion> {
+        self.floor_regions
+            .iter()
+            .find(|r| r.secondary_joists.iter().any(|j| j.id == id))
+    }
+
+    /// 床領域の境界多角形の内側（境界を除く）に点 `p` [mm] があるか。
+    /// 境界座標やレベルが引けない場合は `false`。
+    pub fn floor_region_contains_point(&self, id: FloorRegionId, p: [f64; 3]) -> bool {
+        let Some((poly, z)) = self.floor_region_polygon(id) else {
+            return false;
+        };
+        if (p[2] - z).abs() > crate::geom::LEVEL_TOL_MM {
+            return false;
+        }
+        crate::geom::polygon::contains_excluding_boundary(&poly, [p[0], p[1]])
+    }
+
+    /// 床領域の境界多角形の内側または境界上（[`crate::geom::MEMBER_AXIS_TOL_MM`] 以内）に
+    /// 点 `p` [mm] があるか。境界座標やレベルが引けない場合は `false`。
+    pub fn floor_region_contains_point_including_boundary(
+        &self,
+        id: FloorRegionId,
+        p: [f64; 3],
+    ) -> bool {
+        let Some((poly, z)) = self.floor_region_polygon(id) else {
+            return false;
+        };
+        if (p[2] - z).abs() > crate::geom::LEVEL_TOL_MM {
+            return false;
+        }
+        crate::geom::polygon::contains_within_tol(
+            &poly,
+            [p[0], p[1]],
+            crate::geom::MEMBER_AXIS_TOL_MM,
+        )
+    }
+
+    /// 床領域の境界多角形を XY 投影と代表レベル Z [mm] で返す。3 点未満は `None`。
+    fn floor_region_polygon(&self, id: FloorRegionId) -> Option<(Vec<[f64; 2]>, f64)> {
+        let region = self.floor_regions.iter().find(|r| r.id == id)?;
+        let coords = region.boundary_coords(self)?;
+        if coords.len() < 3 {
+            return None;
+        }
+        let z = coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64;
+        Some((coords.iter().map(|c| [c[0], c[1]]).collect(), z))
     }
 }
 

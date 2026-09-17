@@ -16,11 +16,11 @@
 //!
 //! 床領域（大梁の 1 スパン区画）は、床領域内が小梁でさらに細かい打設単位に分かれていれば
 //! 複数の床板（[`Slab`]）を持つ。[`distribute_region`] は床領域内の各床板を**独立に**
-//! [`distribute_slab`] へ渡す。床板の境界辺が大梁でなければ（＝隣の床板と共有する小梁の辺）、
-//! その辺荷重は実部材が見つからず `LoadTarget::Span` へ落ち、呼び出し側
-//! （`squid-n-job::auto_loads`）が小梁の両端節点への集中荷重（単純梁反力）へ変換する。
-//! 同じ小梁を挟む両側の床板がそれぞれ寄与を出すため、小梁の両端に立つ集中荷重は
-//! 自然に合算される（総和保存。追加の合成処理を要らない）。
+//! [`distribute_slab_w`] へ渡し、各辺荷重を床板割当領域の境界に従って実支持部材へ解決する
+//! （[`resolve_edges_to_span`]）。主架構の辺は `LoadTarget::Span`、二次部材の辺は
+//! `LoadTarget::Secondary` となり、二次部材が受け持った荷重は逐次伝達（[`crate::cascade`]）が
+//! 両端反力へ変換して主架構へ渡す。支持先を解決できない辺は `LoadTarget::Edge` のまま残り、
+//! 呼び出し側（`squid-n-job::auto_loads`）が捨てる。
 
 mod cantilever;
 mod fem;
@@ -52,7 +52,9 @@ use cantilever::{distribute_cantilever, distribute_to_node};
 use geometry::boundary_coords;
 use polygon::distribute_polygon;
 use rect::distribute_rect;
-use squid_n_core::model::{FloorRegion, LoadTransfer, Model, RegionAnchor, Slab, SlabShape};
+use squid_n_core::model::{
+    FloorRegion, LoadTransfer, Model, RegionAnchor, Slab, SlabShape, SupportMemberId,
+};
 
 #[cfg(test)]
 use fem::{fem_trapezoid, fem_triangle};
@@ -109,7 +111,7 @@ pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
             distribute_attached(model, &coords, w, *anchor, &mut loads);
             return loads;
         }
-        SlabShape::Enclosed { .. } => {}
+        SlabShape::Enclosed => {}
     }
 
     match slab_dimensions_of(&coords) {
@@ -164,37 +166,69 @@ fn distribute_attached(
     }
 }
 
-/// 局所辺インデックス（`Edge(k)`）を、床板自身の境界から引いた実節点対の
-/// `Span` へ解決する。床領域は複数の床板を束ねるため、`Edge(k)` の `k` は
-/// どの床板を指すかによって別々の辺を意味する。呼び出し側（`squid-n-job`）へ
-/// 渡す前に、ここで床板の文脈ごと解決してしまう（`Node`/`Span` だけにする）。
+/// 局所辺インデックス（`Edge(k)`）を、実支持部材への作用（`Span`/`Secondary`）へ解決する。
 ///
-/// 取り付く床板（[`SlabShape::Attached`]）の辺 0（取付き線）は、取付き先が持つ
-/// 無次元区間 `span`（[`RegionAnchor::Line::span`]）をそのまま `Span::t` へ引き継ぐ。
-/// 大梁または小梁で囲まれた床板の境界辺は常に全長（`t = [0.0, 1.0]`）である。
-fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
-    let anchor_t = match &slab.shape {
+/// 取り付く床板の辺 0 は取付き先の無次元区間を `Span::t` へ引き継ぎ、囲まれた床板は
+/// 床板割当領域の境界（[`squid_n_core::model::SupportBoundary`]）を正本として辺の支持部材と
+/// 材軸区間を引く。解決できない辺は `Edge` のまま返し、`elem` は `Primary` の `Span` では
+/// 実要素 ID、それ以外は呼び出し側が解決する番兵 `ElemId(u32::MAX)` とする。
+fn resolve_edges_to_span(model: &Model, slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
+    let attached_anchor_t = match &slab.shape {
         SlabShape::Attached {
             anchor: RegionAnchor::Line { span, .. },
             ..
-        } => *span,
-        _ => [0.0, 1.0],
+        } => Some(*span),
+        _ => None,
+    };
+    let region = match slab.shape {
+        SlabShape::Enclosed => model.slab_assignment_region(slab.id),
+        SlabShape::Attached { .. } => None,
     };
     loads
         .into_iter()
-        .filter_map(|mut bl| match bl.target {
-            LoadTarget::Edge(k) => {
-                let [n0, n1] = slab.edge_nodes(k)?;
+        .map(|mut bl| {
+            let LoadTarget::Edge(k) = bl.target else {
+                return bl;
+            };
+            if let Some(anchor_t) = attached_anchor_t {
+                let Some([n0, n1]) = slab.edge_nodes(model, k) else {
+                    bl.elem = squid_n_core::ids::ElemId(u32::MAX);
+                    return bl;
+                };
                 let t = if k == 0 { anchor_t } else { [0.0, 1.0] };
                 bl.target = LoadTarget::Span { nodes: [n0, n1], t };
-                // `push_edge` は `elem` に辺インデックスを入れている（実要素とは無関係）。
-                // 番兵 `ElemId(u32::MAX)` に戻し、呼び出し側の `find_beam`／幾何割付に
-                // 解決させる（さもないと辺インデックスが偶然実在する ElemId と衝突し、
-                // 無関係な要素へ全荷重が載ってしまう）。
                 bl.elem = squid_n_core::ids::ElemId(u32::MAX);
-                Some(bl)
+                return bl;
             }
-            _ => Some(bl),
+            let Some(boundary) = region.and_then(|region| region.boundary.get(k)) else {
+                bl.elem = squid_n_core::ids::ElemId(u32::MAX);
+                return bl;
+            };
+            match boundary.support {
+                SupportMemberId::Secondary(member) => {
+                    bl.target = LoadTarget::Secondary {
+                        member,
+                        t: boundary.span,
+                    };
+                    bl.elem = squid_n_core::ids::ElemId(u32::MAX);
+                }
+                SupportMemberId::Primary(elem) => {
+                    let Some(element) = model.element(elem) else {
+                        bl.elem = squid_n_core::ids::ElemId(u32::MAX);
+                        return bl;
+                    };
+                    if element.nodes.len() != 2 {
+                        bl.elem = squid_n_core::ids::ElemId(u32::MAX);
+                        return bl;
+                    }
+                    bl.target = LoadTarget::Span {
+                        nodes: [element.nodes[0], element.nodes[1]],
+                        t: boundary.span,
+                    };
+                    bl.elem = elem;
+                }
+            }
+            bl
         })
         .collect()
 }
@@ -203,9 +237,10 @@ fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
 ///
 /// どの床領域からも参照されない床板（片持ち・バルコニー・出隅、または帰属先が
 /// 見つからない浮き床板）を、床領域とは独立に分配する用途に使う
-/// （`squid-n-job::auto_loads` 参照）。戻り値の `LoadTarget` は `Node`/`Span` のみ。
+/// （`squid-n-job::auto_loads` 参照）。戻り値の `LoadTarget` は `Node`/`Span`/
+/// `Secondary` と、支持先を解決できなかった辺の `Edge`。
 pub fn distribute_slab_resolved(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
-    resolve_edges_to_span(slab, distribute_slab_w(model, slab, w))
+    resolve_edges_to_span(model, slab, distribute_slab_w(model, slab, w))
 }
 
 /// 床領域（大梁の 1 スパン区画）の面荷重を、床領域内の床板へ束ねて分配する。
@@ -213,7 +248,8 @@ pub fn distribute_slab_resolved(model: &Model, slab: &Slab, w: f64) -> Vec<BeamL
 /// 床領域内が小梁でさらに細かい打設単位に分かれていれば、各床板を独立に
 /// [`distribute_slab_w`] へ渡す（[`Self`] のモジュールドキュメント参照）。
 /// `w_of` は床板ごとの面荷重強度 [N/mm²] を返す関数（DL/LL を分けるため）。
-/// 戻り値の `LoadTarget` は `Node`/`Span` のみ（[`resolve_edges_to_span`]）。
+/// 戻り値の `LoadTarget` は `Node`/`Span`/`Secondary` と、支持先を解決できなかった辺の
+/// `Edge`（[`resolve_edges_to_span`]）。
 pub fn distribute_region(
     model: &Model,
     region: &FloorRegion,
@@ -225,7 +261,7 @@ pub fn distribute_region(
             continue;
         };
         let slab_loads = distribute_slab_w(model, slab, w_of(slab));
-        loads.extend(resolve_edges_to_span(slab, slab_loads));
+        loads.extend(resolve_edges_to_span(model, slab, slab_loads));
     }
     loads
 }

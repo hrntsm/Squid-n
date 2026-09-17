@@ -78,12 +78,26 @@ pub struct PreparationResult {
     pub diag_errors: usize,
     /// モデル整合性チェックの警告件数。
     pub diag_warnings: usize,
+    /// 未設定の床板割当領域（計算前に確認し、結果・帳票へ常時記載する）。
+    #[serde(default)]
+    pub unset_floor_regions: Vec<squid_n_core::ids::FloorPlateAssignmentRegionId>,
+    /// 未設定の壁版割当領域（計算前に確認し、結果・帳票へ常時記載する）。
+    #[serde(default)]
+    pub unset_wall_regions: Vec<squid_n_core::ids::WallPlateAssignmentRegionId>,
 }
 
 impl PreparationResult {
     /// 解析を進めてよい状態か（整合性チェックにエラーがないか）。
+    ///
+    /// 未設定の割当領域は警告であり、解析の可否には影響しない
+    /// （[`Self::has_unset_regions`] で確認する）。
     pub fn is_ready(&self) -> bool {
         self.diag_errors == 0
+    }
+
+    /// 未設定の割当領域が残っているか。
+    pub fn has_unset_regions(&self) -> bool {
+        !self.unset_floor_regions.is_empty() || !self.unset_wall_regions.is_empty()
     }
 }
 
@@ -409,8 +423,11 @@ impl App {
 
     /// 剛域の反映・荷重の同期・整合性チェックを行い、結果を集計して
     /// `self.core.scoped.preparation` へ格納する。モデルの階構成は変更しない。
+    ///
+    /// 割当領域の再構築は解析ジョブと同じ順で行い、GUI の表示・操作対象を解析入力と一致させる。
     fn refresh_preparation(&mut self) {
         self.apply_parallelism_setting();
+        let _ = self.core.model.anchorize_secondary_members();
         self.sync_auto_load_cases_action();
         self.run_diagnostics();
         self.core.scoped.preparation = Some(self.build_preparation_result());
@@ -420,6 +437,8 @@ impl App {
     /// 現在のモデル・解析設定から準備計算の結果を集計する（モデルは変更しない）。
     fn build_preparation_result(&self) -> PreparationResult {
         let (diag_errors, diag_warnings) = self.diagnostics_counts();
+        let (unset_floor_regions, unset_wall_regions) =
+            self.core.model.unset_plate_assignment_regions();
         let (seismic, seismic_note) = self.build_prep_seismic();
         let (rigid_zones, rigid_zone_candidates) = self.build_prep_rigid_zones();
         let (member_stiffness, member_stiffness_candidates) = self.build_prep_member_stiffness();
@@ -457,6 +476,8 @@ impl App {
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,
+            unset_floor_regions,
+            unset_wall_regions,
         }
     }
 

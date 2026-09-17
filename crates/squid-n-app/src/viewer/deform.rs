@@ -195,8 +195,9 @@ fn interpolate_unreferenced_disp(
 
     let mut sec_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for sm in model.joists().chain(model.posts()) {
-        let a = sm.nodes[0].index();
-        let b = sm.nodes[1].index();
+        let Some([a, b]) = super::secondary_end_node_indices(model, sm) else {
+            continue;
+        };
         if a < n && b < n {
             sec_adj[a].push(b);
             sec_adj[b].push(a);
@@ -571,13 +572,16 @@ mod tests {
         }
     }
 
-    /// 補間テスト用の二次部材（小梁）を作る。
-    fn test_secondary(i: u32, j: u32) -> SecondaryMember {
+    /// 補間テスト用の二次部材（小梁）を作る。両端は節点 `i`・`j` の座標。
+    fn test_secondary(model: &Model, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(i),
             gravity_end_shares: None,
-            end_support: Default::default(),
             kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(i), NodeId(j)],
+            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                model.nodes[i as usize].coord,
+                model.nodes[j as usize].coord,
+            ]),
             section: None,
             name: String::new(),
         }
@@ -864,7 +868,7 @@ mod tests {
         model.nodes.push(test_node(5, [8000.0, 5000.0, 0.0])); // G2 端
         model.elements.push(test_beam(0, 0, 1)); // G1
         model.elements.push(test_beam(1, 4, 5)); // G2
-        model.unassigned_joists.push(test_secondary(2, 3)); // 二次部材 2-3
+        model.unassigned_joists.push(test_secondary(&model, 2, 3)); // 二次部材 2-3
 
         // G1 は大きく水平移動、G2 は変位ゼロ。
         let disp = vec![
@@ -896,8 +900,8 @@ mod tests {
         model.nodes.push(test_node(5, [8000.0, 5000.0, 0.0])); // G2 端
         model.elements.push(test_beam(0, 0, 1)); // G1
         model.elements.push(test_beam(1, 4, 5)); // G2（変位ゼロ）
-        model.unassigned_joists.push(test_secondary(1, 2));
-        model.unassigned_joists.push(test_secondary(2, 3));
+        model.unassigned_joists.push(test_secondary(&model, 1, 2));
+        model.unassigned_joists.push(test_secondary(&model, 2, 3));
 
         let disp = vec![
             [8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // 0

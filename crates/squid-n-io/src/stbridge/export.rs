@@ -27,6 +27,24 @@ fn sid(internal_id: u32) -> u32 {
     internal_id + 1
 }
 
+/// 二次部材の両端に一致するモデル節点。対応する節点が無ければ `None`
+/// （ST-Bridge は材端を節点 ID で表すため）。
+fn secondary_end_nodes(
+    model: &Model,
+    sm: &squid_n_core::model::SecondaryMember,
+) -> Option<[NodeId; 2]> {
+    let (a, b) = model.secondary_member_end_points(sm)?;
+    let tol = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+    let find = |p: [f64; 3]| {
+        model
+            .nodes
+            .iter()
+            .find(|n| squid_n_core::geom::vec3::dist(n.coord, p) <= tol)
+            .map(|n| n.id)
+    };
+    Some([find(a)?, find(b)?])
+}
+
 /// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     let std = standard_sections(model);
@@ -93,7 +111,7 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     s.push_str("    </StbStories>\n");
 
     s.push_str("    <StbMembers>\n");
-    s.push_str(&members_body(model, &col_map, &beam_map));
+    s.push_str(&members_body(model, &col_map, &beam_map)?);
     s.push_str("    </StbMembers>\n");
 
     let slab_sec_base = slab_section_id_base(model, &col_map, &beam_map);
@@ -136,9 +154,10 @@ fn members_body(
     model: &Model,
     col_map: &std::collections::HashMap<u32, u32>,
     beam_map: &std::collections::HashMap<u32, u32>,
-) -> String {
+) -> Result<String, StbError> {
     let mut columns = String::new();
     let mut girders = String::new();
+    let mut unexported_secondary_ids: Vec<u32> = Vec::new();
     let mut braces = String::new();
 
     for e in &model.elements {
@@ -236,21 +255,25 @@ fn members_body(
                 }
             })
             .unwrap_or_else(|| "S".to_string());
+        let Some(nodes) = secondary_end_nodes(model, sm) else {
+            unexported_secondary_ids.push(sm.id.0);
+            continue;
+        };
         match sm.kind {
             squid_n_core::model::SecondaryMemberKind::Joist => {
                 sec_beams.push_str(&format!(
                     "        <StbBeam id=\"{}\" name=\"B{}\" id_node_start=\"{}\" id_node_end=\"{}\" \
                      rotate=\"0\" id_section=\"{}\" kind_structure=\"{}\" isFoundation=\"false\"/>\n",
-                    sid(mid), sid(mid), sid(sm.nodes[0].0), sid(sm.nodes[1].0), sec_ref(sec), ks,
+                    sid(mid), sid(mid), sid(nodes[0].0), sid(nodes[1].0), sec_ref(sec), ks,
                 ));
             }
             squid_n_core::model::SecondaryMemberKind::Post => {
-                let n0 = &model.nodes[sm.nodes[0].index()];
-                let n1 = &model.nodes[sm.nodes[1].index()];
+                let n0 = &model.nodes[nodes[0].index()];
+                let n1 = &model.nodes[nodes[1].index()];
                 let (bot, top) = if n0.coord[2] <= n1.coord[2] {
-                    (sm.nodes[0], sm.nodes[1])
+                    (nodes[0], nodes[1])
                 } else {
-                    (sm.nodes[1], sm.nodes[0])
+                    (nodes[1], nodes[0])
                 };
                 posts.push_str(&format!(
                     "        <StbPost id=\"{}\" name=\"P{}\" id_node_bottom=\"{}\" id_node_top=\"{}\" \
@@ -266,7 +289,7 @@ fn members_body(
     let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();
     for slab in &model.slabs {
-        let Some(boundary) = slab.boundary_nodes() else {
+        let Some(boundary) = slab.boundary_nodes(model) else {
             continue;
         };
         let mid = slab_member_base + slab.id.0;
@@ -351,7 +374,19 @@ fn members_body(
         body.push_str(&walls);
         body.push_str("      </StbWalls>\n");
     }
-    body
+    if !unexported_secondary_ids.is_empty() {
+        return Err(StbError::SecondaryWithoutNode(format!(
+            "{} 本（SM{}）。ST-Bridge は材端を節点 ID で表すため、材軸中間へアンカーした\
+             二次部材は書き出せません。節点を持つ位置へアンカーし直してください。",
+            unexported_secondary_ids.len(),
+            unexported_secondary_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", SM")
+        )));
+    }
+    Ok(body)
 }
 
 /// 断面参照属性値。負（未参照）は -1、そうでなければ +1 した positiveInteger。
@@ -493,8 +528,8 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     squid_n_core::geom::vec3::unit(v).unwrap_or([0.0, 0.0, 1.0])
 }
 
-fn exports_stb_slab(slab: &squid_n_core::model::Slab) -> bool {
-    slab.boundary_nodes().is_some()
+fn exports_stb_slab(model: &Model, slab: &squid_n_core::model::Slab) -> bool {
+    slab.boundary_nodes(model).is_some()
 }
 
 /// 各スラブが参照する `StbSecSlab_RC` の id を決める。
@@ -513,7 +548,7 @@ fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<SlabI
     let mut out: std::collections::HashMap<SlabId, u32> = std::collections::HashMap::new();
     let mut next = base;
     for slab in &model.slabs {
-        if !exports_stb_slab(slab) {
+        if !exports_stb_slab(model, slab) {
             continue;
         }
         let id = match slab.section() {
@@ -545,7 +580,7 @@ fn slab_sections(model: &Model, base: u32) -> String {
     let mut body = String::new();
     let mut written: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for slab in &model.slabs {
-        if !exports_stb_slab(slab) {
+        if !exports_stb_slab(model, slab) {
             continue;
         }
         let Some(&s) = ids.get(&slab.id) else {
@@ -623,7 +658,10 @@ struct StbWallOut {
 fn stb_walls_for_export(model: &Model) -> Vec<StbWallOut> {
     let mut out = Vec::new();
     for plate in &model.wall_plates {
-        let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+        if !matches!(plate.shape, WallPlateShape::Enclosed) {
+            continue;
+        }
+        let Some(boundary) = plate.boundary_nodes(model) else {
             continue;
         };
         if boundary.len() < 3 {
@@ -631,7 +669,7 @@ fn stb_walls_for_export(model: &Model) -> Vec<StbWallOut> {
         }
         out.push(StbWallOut {
             id: plate.id.0,
-            nodes: boundary.clone(),
+            nodes: boundary,
             section: plate.section,
         });
     }

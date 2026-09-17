@@ -124,6 +124,7 @@ fn gen_slaves(gen: &StoryGenResult, story: StoryId) -> Vec<NodeId> {
 /// 階は床であり、最下レベル（基部）も階として作る。したがって下から順に
 /// `1F`・`2F` … となる。ST-Bridge の `StbStory` も床基準のため、取り込んだ
 /// モデルとアプリ内で作ったモデルで階名の意味が一致する。
+/// 利用者が名前を付けた階は上書きしない。
 #[test]
 fn test_generated_story_names_are_floor_based() {
     let model = two_story_model();
@@ -131,6 +132,88 @@ fn test_generated_story_names_are_floor_based() {
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     let names: Vec<&str> = gen.stories.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, vec!["1F", "2F", "3F"]);
+
+    // 利用者が付けた階名は再生成でも保たれる。
+    let mut named = model.clone();
+    named.stories = gen.stories.clone();
+    named.stories[1].name = "2FL".into();
+    let regen = generate_stories(&named, Some(LoadCaseId(0))).unwrap();
+    let names: Vec<&str> = regen.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["1F", "2FL", "3F"]);
+}
+
+/// 階（床）は基部を含めて 3 つ、層はその間の 2 つ。
+#[test]
+fn test_generate_two_stories() {
+    let model = two_story_model();
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert_eq!(gen.stories.len(), 3, "基部の床を含めて 3 階");
+    assert_eq!(gen.stories[0].elevation, 0.0, "先頭は基部の床");
+    assert_eq!(gen.stories[1].elevation, 3500.0);
+    assert_eq!(gen.stories[2].elevation, 7000.0);
+    // 各階 2 節点 → 代表節点(慣性力重心)を新規生成 + スレーブ2（既存節点は全てスレーブ）
+    assert_eq!(gen.stories[1].node_ids.len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2, "基部の床の剛床");
+    assert_eq!(gen_slaves(&gen, StoryId(1)).len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(2)).len(), 2);
+    assert_eq!(gen.constraints.len(), 3);
+    // 基部節点は基部の床に属する（柱脚・基礎梁の伏図と数量のため）。
+    assert_eq!(gen.node_story[0], Some(StoryId(0)));
+    assert_eq!(gen.node_story[2], Some(StoryId(1)));
+    assert_eq!(gen.node_story[4], Some(StoryId(2)));
+    // 重量: 1F = 梁分布荷重 10 N/mm × 6000 = 60 kN + 自重、2F = 節点荷重 50 kN + 自重
+    let w1 = gen.stories[1].seismic_weight.unwrap();
+    let w2 = gen.stories[2].seismic_weight.unwrap();
+    assert!(w1 > 60000.0, "w1={}", w1);
+    assert!(w2 > 50000.0, "w2={}", w2);
+
+    // 代表節点は新規生成（既存節点数=6 の末尾連番）。基部の床の分を含めて 3 つ。
+    assert_eq!(gen.rep_nodes.len(), 3);
+    assert_eq!(gen.generated_masters, vec![NodeId(6), NodeId(7), NodeId(8)]);
+    // 基部の代表節点は水平にも拘束する（柱脚が全て支点で拘束されており、
+    // 剛床を通じて水平剛性が写らないため。自由なままだと特異行列になる）。
+    // 面内回転 Rz も拘束する。並進が写らない以上、剛床としての剛性は Rz にも
+    // 写らず、回転慣性 j だけを持つ自由度が残って偽の低次モードを生むため。
+    let base_rep = &gen.rep_nodes[0];
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz));
+
+    for rep in &gen.rep_nodes[1..] {
+        // CorrectedLumped(既定): 柱梁の密度自重は解析の質量行列に部材密度質量として
+        // 計上されるため控除され、荷重ケース分（節点・部材荷重）のみが質点質量として残る。
+        let mass = rep
+            .mass
+            .expect("CorrectedLumped: 荷重ケース分の質点質量が設定される");
+        assert_eq!(mass[0], mass[1], "並進質量 Ux=Uy");
+        assert_eq!(mass[2], 0.0);
+        assert_eq!(mass[3], 0.0);
+        assert_eq!(mass[4], 0.0);
+        assert!(mass[0] > 0.0, "mass[0]={}", mass[0]);
+        assert!(rep.restraint.is_fixed(squid_n_core::dof::Dof::Uz));
+        assert!(rep.restraint.is_fixed(squid_n_core::dof::Dof::Rx));
+        assert!(rep.restraint.is_fixed(squid_n_core::dof::Dof::Ry));
+        assert!(!rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
+        assert!(!rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+        assert!(!rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz));
+    }
+    assert_eq!(gen.rep_nodes[0].story, Some(StoryId(0)));
+    assert_eq!(gen.rep_nodes[1].story, Some(StoryId(1)));
+    assert_eq!(gen.rep_nodes[2].story, Some(StoryId(2)));
+    // 2FL は左右対称な自重＋分布荷重のみなので慣性力重心の X は中央(3000)になる。
+    assert!((gen.rep_nodes[1].coord[0] - 3000.0).abs() < 1e-6);
+    // 3FL は節点荷重(50kN)が NodeId(4)(x=0)側のみに掛かる非対称配置なので、
+    // 慣性力重心は x=0 側へ偏る(単純な幾何重心 3000 とは一致しない)。
+    // 手計算(g=9806.65, §1.11): nw4=53656.6546..., nw5=3656.6546...,
+    // gx = nw5*6000/(nw4+nw5) = 382.806855936086
+    assert!(
+        (gen.rep_nodes[2].coord[0] - 382.806855936086).abs() < 1e-6,
+        "{}",
+        gen.rep_nodes[2].coord[0]
+    );
+    assert_eq!(gen.rep_nodes[0].coord[2], 0.0);
+    assert_eq!(gen.rep_nodes[1].coord[2], 3500.0);
+    assert_eq!(gen.rep_nodes[2].coord[2], 7000.0);
 }
 
 /// 非構造節点（要素が接続しない床・小梁の節点）は、剛床のスレーブに含まれていても
@@ -153,11 +236,15 @@ fn test_base_master_ignores_non_structural_slaves() {
         story: None,
         support_spring: None,
     });
+    let ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        model.nodes[0].coord,
+        model.nodes[free_id.index()].coord,
+    ]);
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), free_id],
+        ends,
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
@@ -198,10 +285,6 @@ fn test_base_master_stays_free_when_supported_by_springs() {
         !base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz),
         "並進が動ける階では面内回転も剛床が担う"
     );
-    // rep_restraint_base 相当: 水平以外（Uz・Rx・Ry）は柱脚ばね支持でも固定。
-    assert!(base_rep.restraint.is_fixed(Dof::Uz));
-    assert!(base_rep.restraint.is_fixed(Dof::Rx));
-    assert!(base_rep.restraint.is_fixed(Dof::Ry));
 }
 
 #[test]
@@ -304,45 +387,13 @@ fn test_generate_weighted_centroid_matches_hand_calc() {
     assert!(rep.restraint.is_fixed(Dof::Ry));
     // このモデルは重心の手計算だけを見るため要素を持たず、全節点が非構造節点である。
     // 剛床を通じて写る剛性が無いので、代表節点は面内 3 成分とも拘束される
-    // （可動性の判定規則は `master_restraint`）。要素を持つモデルで自由に残ることは
-    // 後段の `two_story_model` のケースが確かめている。
+    // （可動性の判定規則は `master_restraint`）。上の階の代表節点が自由に残ること自体は
+    // 要素を持つ `two_story_model` の `test_generate_two_stories` が確かめている。
     assert!(rep.restraint.is_fixed(Dof::Ux));
     assert!(rep.restraint.is_fixed(Dof::Uy));
     assert!(rep.restraint.is_fixed(Dof::Rz));
     // 既存節点数=4 の末尾連番で新規生成される（基部の床の分を含めて 2 つ）。
     assert_eq!(gen.generated_masters, vec![NodeId(4), NodeId(5)]);
-
-    // 部材荷重と自重が混在する two_story_model の最上階は、50kN 節点荷重が
-    // NodeId(4)(x=0)側のみに掛かる非対称配置なので、慣性力重心は幾何重心 3000
-    // ではなく x=0 側へ偏る。
-    // 手計算(g=9806.65, §1.11): nw4=53656.6546..., nw5=3656.6546...,
-    // gx = nw5*6000/(nw4+nw5) = 382.806855936086
-    let model = two_story_model();
-    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 3, "基部の床を含めて 3 階");
-    // 1F は梁分布荷重 10 N/mm × 6000 = 60 kN + 自重、2F は節点荷重 50 kN + 自重。
-    assert!(gen.stories[1].seismic_weight.unwrap() > 60000.0);
-    assert!(gen.stories[2].seismic_weight.unwrap() > 50000.0);
-    assert_eq!(gen.node_story[0], Some(StoryId(0)));
-    assert_eq!(gen.node_story[2], Some(StoryId(1)));
-    assert_eq!(gen.node_story[4], Some(StoryId(2)));
-    // 上階の代表節点は自由な構造節点をスレーブに持つため、水平も面内回転も自由に残る。
-    for rep in &gen.rep_nodes[1..] {
-        assert!(!rep.restraint.is_fixed(Dof::Ux));
-        assert!(!rep.restraint.is_fixed(Dof::Uy));
-        assert!(!rep.restraint.is_fixed(Dof::Rz));
-        // CorrectedLumped: 荷重ケース分（節点・部材荷重）の質量が 0/None 化しない。
-        let mass = rep
-            .mass
-            .expect("CorrectedLumped: 荷重ケース分の質点質量が設定される");
-        assert!(mass[0] > 0.0, "mass[0]={}", mass[0]);
-    }
-    assert!(
-        (gen.rep_nodes[2].coord[0] - 382.806855936086).abs() < 1e-6,
-        "{}",
-        gen.rep_nodes[2].coord[0]
-    );
-    assert_eq!(gen.generated_masters, vec![NodeId(6), NodeId(7), NodeId(8)]);
 }
 
 #[test]
@@ -468,24 +519,24 @@ fn two_columns_with_dl_model() -> Model {
 }
 
 #[test]
-fn test_master_mass_method_controls_density_self_weight() {
+fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
     let model = two_columns_with_dl_model();
+    let gen =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::CorrectedLumped)
+            .unwrap();
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
-    // 柱の自重（1本あたり。両柱とも同一断面・材料・長さ）。柱の自重は両端
-    // （基部の床・上端の床）へ半分ずつ配分され、基部側の 1/2 は基部の床の階重量へ
-    // 入る。この階（上端の床）には上端側の 1/2 が残る。
+    // 柱の自重（1本あたり。両柱とも同一断面・材料・長さ）。柱は両端(基部+上端)へ
+    // 半分ずつ配分されるが、基部は階に含まれないため上端の質量にのみ効く。
     let sw_per_column = 7.85e-9 * 10000.0 * 3000.0 * GRAVITY_MM_S2;
     let sw_half = sw_per_column / 2.0;
     let w2 = sw_half + 100000.0; // NodeId(2), x=0
     let w3 = sw_half + 300000.0; // NodeId(3), x=4000
     let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
 
-    let corrected =
-        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::CorrectedLumped)
-            .unwrap();
-    assert_eq!(corrected.rep_nodes.len(), 2, "基部の床の分を含む");
-    let rep = &corrected.rep_nodes[1];
+    let rep = &gen.rep_nodes[1];
     assert!((rep.coord[0] - gx).abs() < 1e-6, "Gx={}", rep.coord[0]);
+
     // CorrectedLumped: 柱の自重は解析の質量行列に部材密度質量として計上されるため
     // 控除され、net_i は DL 節点荷重分のみが残る（sw_half が各節点でちょうど相殺する）。
     let mass = rep
@@ -502,6 +553,7 @@ fn test_master_mass_method_controls_density_self_weight() {
     assert_eq!(mass[2], 0.0);
     assert_eq!(mass[3], 0.0);
     assert_eq!(mass[4], 0.0);
+
     let expected_j =
         (100000.0 * (0.0 - gx).powi(2) + 300000.0 * (4000.0 - gx).powi(2)) / GRAVITY_MM_S2;
     assert!(
@@ -510,11 +562,23 @@ fn test_master_mass_method_controls_density_self_weight() {
         mass[5],
         expected_j
     );
+}
 
-    // LumpedOnly: 控除せず、柱の自重を含む地震用重量の全量が質点質量になる。
-    let lumped =
+#[test]
+fn test_master_mass_lumped_only_keeps_density_self_weight() {
+    let model = two_columns_with_dl_model();
+    let gen =
         generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::LumpedOnly).unwrap();
-    let rep = &lumped.rep_nodes[1];
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
+
+    let sw_per_column = 7.85e-9 * 10000.0 * 3000.0 * GRAVITY_MM_S2;
+    let sw_half = sw_per_column / 2.0;
+    let w2 = sw_half + 100000.0;
+    let w3 = sw_half + 300000.0;
+    let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
+
+    let rep = &gen.rep_nodes[1];
+    // LumpedOnly: 控除せず、柱の自重を含む地震用重量の全量が質点質量になる。
     let mass = rep
         .mass
         .expect("LumpedOnly: 地震用重量の全量が質点質量になる");
@@ -526,6 +590,7 @@ fn test_master_mass_method_controls_density_self_weight() {
         expected_mt
     );
     assert_eq!(mass[0], mass[1], "並進質量 Ux=Uy");
+
     let expected_j = (w2 * (0.0 - gx).powi(2) + w3 * (4000.0 - gx).powi(2)) / GRAVITY_MM_S2;
     assert!(
         (mass[5] - expected_j).abs() < 1e-9 * expected_j,
@@ -535,7 +600,7 @@ fn test_master_mass_method_controls_density_self_weight() {
     );
 }
 
-/// 両端を柱で支持した二次部材（小梁）1本を持つ1層モデル。
+/// 二次部材（小梁）1 本のみを持つ 1 層モデル（主架構要素なし）。
 /// 二次部材の自重は解析の質量行列（部材密度質量）に算入されないことの確認用。
 fn secondary_joist_model() -> Model {
     let mut model = Model::default();
@@ -596,11 +661,15 @@ fn secondary_joist_model() -> Model {
         fc: None,
         fy: None,
     });
+    let ends = squid_n_core::model::SecondaryMemberEnds::Detached([
+        model.nodes[1].coord,
+        model.nodes[2].coord,
+    ]);
     model.unassigned_joists.push(SecondaryMember {
         gravity_end_shares: None,
-        end_support: Default::default(),
+        id: squid_n_core::ids::SecondaryMemberId(1),
         kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(1), NodeId(2)],
+        ends,
         section: Some(SectionId(0)),
         name: "G1".into(),
     });
@@ -632,6 +701,149 @@ fn test_master_mass_corrected_lumped_does_not_deduct_secondary_member_self_weigh
         "mt={} expected={}",
         mass[0],
         expected_mt
+    );
+}
+
+/// 2 本の並行大梁（いずれも材軸中間に節点を持たない 1 部材）を持ち、
+/// その材軸位置 0.5 に小梁がアンカーするモデル。小梁の両端に一致する節点は無い。
+fn secondary_joist_on_girder_midspan_model(with_joist: bool) -> Model {
+    let mut model = Model::default();
+    for (i, (x, y, z)) in [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 3000.0),
+        (4000.0, 0.0, 3000.0),
+        (0.0, 4000.0, 3000.0),
+        (4000.0, 4000.0, 3000.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [x, y, z],
+            restraint: if i == 0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "G".into(),
+        area: 8000.0,
+        iy: 1.0e7,
+        iz: 1.0e7,
+        j: 1.0e7,
+        depth: 300.0,
+        width: 200.0,
+        as_y: 4000.0,
+        as_z: 4000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "J".into(),
+        area: 5000.0,
+        iy: 1.0e7,
+        iz: 1.0e7,
+        j: 1.0e7,
+        depth: 200.0,
+        width: 100.0,
+        as_y: 4000.0,
+        as_z: 4000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "S".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: None,
+    });
+    for (id, (a, b), sec) in [
+        (0u32, (1u32, 2u32), 0u32),
+        (1, (3, 4), 0),
+        (2, (1, 3), 0),
+        (3, (2, 4), 0),
+    ] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(sec)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    if with_joist {
+        model.unassigned_joists.push(SecondaryMember {
+            gravity_end_shares: None,
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(1)),
+                    position: 0.5,
+                },
+            ]),
+            section: Some(SectionId(1)),
+            name: "J0".into(),
+        });
+    }
+    model
+}
+
+/// 大梁の材軸中間へアンカーした小梁（両端に節点が無い）の自重が、DL ケースが
+/// 無く密度から直接算入する経路でも階の地震用重量へ含まれること（欠落させない）。
+#[test]
+fn test_secondary_member_on_midspan_is_seismic_weight_in_density_path() {
+    let with = secondary_joist_on_girder_midspan_model(true);
+    let without = secondary_joist_on_girder_midspan_model(false);
+
+    let sw = 7.85e-9 * 5000.0 * 4000.0 * GRAVITY_MM_S2;
+    let gen_with = generate_stories_with_opts(&with, &[], true, MassMethod::default()).unwrap();
+    let gen_without =
+        generate_stories_with_opts(&without, &[], true, MassMethod::default()).unwrap();
+
+    let upper = |gen: &StoryGenResult| gen.stories.last().unwrap().seismic_weight.unwrap();
+    let delta = upper(&gen_with) - upper(&gen_without);
+    assert!(
+        (delta - sw).abs() < 1e-9 * sw.max(1.0),
+        "小梁自重が階の地震用重量へ含まれない: delta={delta} expected={sw}"
     );
 }
 
@@ -714,7 +926,7 @@ fn single_beam_model(
 }
 
 #[test]
-fn test_static_reactions_hand_calc() {
+fn test_static_reactions_point_load_hand_calc() {
     // 単純梁 L=4000, a=1000, p=800: Ri=p(L-a)/L=600, Rj=p*a/L=200
     let (ri, rj) = static_reactions(
         &MemberLoadKind::Point {
@@ -726,8 +938,10 @@ fn test_static_reactions_hand_calc() {
     assert!((ri - 600.0).abs() < 1e-9, "ri={}", ri);
     assert!((rj - 200.0).abs() < 1e-9, "rj={}", rj);
     assert!((ri + rj - 800.0).abs() < 1e-9);
+}
 
-    // 対称な等分布荷重は両端 1/2 ずつ。
+#[test]
+fn test_static_reactions_symmetric_distributed_is_half_half() {
     let (ri, rj) = static_reactions(
         &MemberLoadKind::Distributed {
             a: 0.0,
@@ -739,7 +953,10 @@ fn test_static_reactions_hand_calc() {
     );
     assert!((ri - 30000.0).abs() < 1e-9, "ri={}", ri);
     assert!((rj - 30000.0).abs() < 1e-9, "rj={}", rj);
+}
 
+#[test]
+fn test_static_reactions_asymmetric_distributed_hand_calc() {
     // 三角形分布(w1=0→w2=20)、a=0,b=4000,L=4000。
     // W=(0+20)/2*4000=40000, xbar=4000*(0+40)/(3*20)=2666.666...,
     // Rj=W*xbar/L=26666.666..., Ri=W-Rj=13333.333...
@@ -1113,19 +1330,45 @@ fn wall_model() -> Model {
     // 壁の解析要素は入力の正ではなく生成物（D5）のため、壁版（`WallPlate`）と
     // それが属する壁領域（`WallRegion`）を直接構築する。`enumerate_self_weight`
     // が内部で壁展開モデルを組み立て、そこから `ElementKind::Wall` を生成する。
-    model.wall_plates.push(WallPlate {
-        self_weight_shares: Vec::new(),
-        id: WallPlateId(0),
-        shape: WallPlateShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    //
+    // 囲まれた壁版の境界は割当領域（支持部材）が持つため、境界辺の支持部材を
+    // 断面なしの梁として先に置く（テストが後から足す断面付きの部材と衝突しない
+    // よう ID は 100 番台にする）。
+    for (id, (a, b)) in [
+        (100u32, (0u32, 1u32)),
+        (101, (1, 2)),
+        (102, (2, 3)),
+        (103, (3, 0)),
+    ] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.add_enclosed_wall_plate_from_nodes(
+        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        WallPlate {
+            self_weight_shares: Vec::new(),
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed,
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: Default::default(),
         },
-        section: Some(SectionId(0)),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        openings: Vec::new(),
-        loads: vec![],
-        slit: Default::default(),
-    });
+    );
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
         name: String::new(),
@@ -1154,17 +1397,14 @@ fn test_wall_self_weight_included_in_story_weight() {
     );
 }
 
-/// 壁エレメントになる壁版の仕上げ・増打ちの面荷重は、階の地震用重量へ算入し、
-/// `CorrectedLumped` の補正質点としても残る。
+/// 壁エレメントになる壁版の仕上げ・増打ちの面荷重も、階の地震用重量へ算入する。
 ///
 /// 壁エレメントの自重は要素経由で算定するため、合成する `WallAttr` へ面荷重を
 /// 写し忘れると**要素になる壁版だけ**この重さが黙って落ちる。要素にならない
 /// 壁版は `Model::wall_plate_self_weight` を直接使うので落ちず、差が出るのが
-/// 一部の壁だけという気づきにくい形になる。また解析の質量行列は要素の**密度**から
-/// しか質量を作らないので、仕上げ・増打ちの面荷重はそこに現れない。補正質点の控除を
-/// 総重量で行うと、控除だけされて分布質量としては現れず、質量が黙って消える。
+/// 一部の壁だけという気づきにくい形になる。
 #[test]
-fn test_wall_finish_load_included_in_weight_and_corrected_lumped_mass() {
+fn test_wall_finish_load_included_in_story_weight() {
     use squid_n_core::model::AreaLoad;
 
     let base = generate_stories(&wall_model(), None).unwrap();
@@ -1186,6 +1426,24 @@ fn test_wall_finish_load_included_in_weight_and_corrected_lumped_mass() {
         "増分比={} expected={ratio}",
         (w1 - w0) / w0
     );
+}
+
+/// 壁の仕上げ・増打ちの分は、`CorrectedLumped` の補正質点として残る。
+///
+/// 解析の質量行列は要素の**密度**からしか質量を作らないので、仕上げ・増打ちの
+/// 面荷重はそこに現れない。補正質点の控除を総重量で行うと、控除だけされて分布質量
+/// としては現れず、質量が黙って消える。控除は躯体（密度）分に限る必要がある。
+#[test]
+fn test_wall_finish_load_survives_corrected_lumped_mass() {
+    use squid_n_core::model::AreaLoad;
+
+    let base = generate_stories(&wall_model(), None).unwrap();
+    let mut model = wall_model();
+    model.wall_plates[0].loads = vec![AreaLoad {
+        kind: "増打ち".into(),
+        value: 5.0e-4,
+    }];
+    let gen = generate_stories(&model, None).unwrap();
 
     // 上の床の代表節点の質点質量。躯体分は控除されて 0 のままなので、増えた分は
     // そのまま仕上げ・増打ちの質量になる。
@@ -1197,7 +1455,7 @@ fn test_wall_finish_load_included_in_weight_and_corrected_lumped_mass() {
     );
 
     // 増分は「仕上げ分の重量の上端 2 節点ぶん ÷ g」に一致する。
-    let dw = w1 - w0;
+    let dw = gen.stories[1].seismic_weight.unwrap() - base.stories[1].seismic_weight.unwrap();
     assert!(
         ((m1 - m0) - dw / GRAVITY_MM_S2).abs() / (dw / GRAVITY_MM_S2) < 1e-9,
         "質点質量の増分={} 期待={}",
@@ -1273,22 +1531,17 @@ fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
     model.elements.push(line(3, 2, 0, 1)); // 下梁
     model.elements.push(line(4, 2, 2, 3)); // 上梁
 
-    for order in [[0, 1, 2, 3], [0, 3, 2, 1], [0, 3, 1, 2], [2, 0, 3, 1]] {
-        let boundary: Vec<_> = order.into_iter().map(NodeId).collect();
-        model.wall_regions[0].boundary = boundary.clone();
-        model.wall_plates[0].shape = WallPlateShape::Enclosed { boundary };
-        let gen = generate_stories(&model, None).unwrap();
-        let (l, h) = (4000.0_f64, 3000.0_f64);
-        let factor = ((l - 2.0 * 250.0) / l) * ((h - 2.0 * 350.0) / h);
-        let w_total = 2.4e-9 * 150.0 * (l * h * factor) * GRAVITY_MM_S2;
-        let expected = w_total / 2.0; // 上端2節点分のみ階重量に算入
-        assert!(
-            (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
-            "got={}, expected={}",
-            gen.stories[1].seismic_weight.unwrap(),
-            expected
-        );
-    }
+    let gen = generate_stories(&model, None).unwrap();
+    let (l, h) = (4000.0_f64, 3000.0_f64);
+    let factor = ((l - 2.0 * 250.0) / l) * ((h - 2.0 * 350.0) / h);
+    let w_total = 2.4e-9 * 150.0 * (l * h * factor) * GRAVITY_MM_S2;
+    let expected = w_total / 2.0; // 上端2節点分のみ階重量に算入
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        "got={}, expected={}",
+        gen.stories[1].seismic_weight.unwrap(),
+        expected
+    );
 }
 
 #[test]
@@ -1364,12 +1617,75 @@ fn test_generate_stories_with_opts_self_weight_via_case_matches_density() {
     );
 }
 
+/// DL が無く密度から直接算入する経路でも、取り付く壁版の自重が階重量へ入る
+/// （囲まれた壁・フレーム外雑壁と同じ。抜け落ちは危険側）。
+#[test]
+fn test_density_seismic_weight_includes_attached_wall_plate() {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    let mut model = two_story_model();
+    let baseline = generate_stories(&model, None).unwrap();
+
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "壁 t150".into(),
+        area: 0.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 0.0,
+        width: 0.0,
+        as_y: 1.0,
+        as_z: 1.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: Some(150.0),
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let plate = WallPlate {
+        self_weight_shares: Vec::new(),
+        id: WallPlateId(0),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(4), NodeId(5)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: Some([1000.0, 1000.0]),
+        },
+        section: Some(SectionId(1)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        loads: vec![],
+        slit: Default::default(),
+    };
+    let expected = model
+        .wall_plate_self_weight(&plate, &model)
+        .expect("自重が求まる");
+    model.wall_plates.push(plate);
+
+    let with_wall = generate_stories(&model, None).unwrap();
+    let w0 = baseline.stories[2].seismic_weight.unwrap();
+    let w1 = with_wall.stories[2].seismic_weight.unwrap();
+    assert!(
+        ((w1 - w0) - expected).abs() / expected < 1e-6,
+        "屋根階の増分={} expected={}",
+        w1 - w0,
+        expected
+    );
+}
+
 // ------------------------------------------------------------------
 // §壁開口・柱際スリット
 // ------------------------------------------------------------------
 
 #[test]
-fn test_wall_opening_deduction_and_clamp() {
+fn test_wall_opening_deduction_and_opening_weight() {
     let mut model = wall_model();
     model.wall_plates[0].opening_area = 1_000_000.0;
     model.wall_plates[0].opening_weight = 5000.0;
@@ -1383,44 +1699,60 @@ fn test_wall_opening_deduction_and_clamp() {
         "{}",
         gen.stories[1].seismic_weight.unwrap()
     );
+}
 
+#[test]
+fn test_wall_opening_deduction_clamped_non_negative() {
     // 開口面積が壁面積を超える極端な入力でも自重が負にならない(clamp)。
     let mut model = wall_model();
-    model.wall_plates[0].opening_area = area * 2.0; // 壁面積を超える
+    model.wall_plates[0].opening_area = 4000.0 * 3000.0 * 2.0; // 壁面積を超える
     let gen = generate_stories(&model, None).unwrap();
     assert_eq!(gen.stories[1].seismic_weight, Some(0.0));
 }
 
-/// §壁自重: 柱際スリットは自重の行き先を変えず、梁際スリットだけが行き先を
-/// 上下いずれかの辺へ寄せる（柱際の鉛直辺は壁の重量を受けない）。
-///
-/// `wall_model()` の頂点は下 2 節点・上 2 節点で、上位 2 節点はどちらも階に属する。
-/// 通常配分は上端 2 節点で w/2。下辺が切れると階の地震用重量は w 全量（垂れ壁型）、
-/// 上辺が切れると 0（腰壁型。下端 2 節点は階に属さない基部）になる。
 #[test]
-fn test_wall_self_weight_moves_only_by_beam_face_slit() {
-    let area = 4000.0 * 3000.0;
-    let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
-
+fn test_column_face_slit_does_not_change_self_weight_destination() {
+    // §壁自重: 柱際スリットは要素壁の自重の行き先を変えない。行き先を変えるのは
+    // 梁際のスリットだけである。
     let base = generate_stories(&wall_model(), None).unwrap().stories[1]
         .seismic_weight
         .unwrap();
-    assert!((base - w_total / 2.0).abs() < 1e-6, "{base}");
 
     let mut model = wall_model();
     model.wall_plates[0].slit.column_face = [true, true];
     let slit = generate_stories(&model, None).unwrap().stories[1]
         .seismic_weight
         .unwrap();
-    assert!((slit - base).abs() < 1e-9, "{slit} != {base}");
 
+    let area = 4000.0 * 3000.0;
+    let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
+    // 上端 2 節点分（4 節点等分の半分）。
+    assert!((base - w_total / 2.0).abs() < 1e-6, "{base}");
+    assert!((slit - base).abs() < 1e-9, "{slit} != {base}");
+}
+
+/// §壁自重: 下辺の梁際スリットは、自重を全量上辺へ寄せる（三方スリットの垂れ壁型）。
+///
+/// `wall_model()` の頂点は下 2 節点・上 2 節点で、上位 2 節点はどちらも階に属する。
+/// 通常配分（上端 2 節点で w/2）に対し、下辺が切れると階の地震用重量は w 全量になる。
+#[test]
+fn test_bottom_beam_face_slit_sends_self_weight_to_top() {
     let mut model = wall_model();
     model.wall_plates[0].slit.beam_face = [true, false];
     let got = generate_stories(&model, None).unwrap().stories[1]
         .seismic_weight
         .unwrap();
-    assert!((got - w_total).abs() < 1e-6, "{got}");
 
+    let area = 4000.0 * 3000.0;
+    let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
+    assert!((got - w_total).abs() < 1e-6, "{got}");
+}
+
+/// §壁自重: 上辺の梁際スリットは、自重を全量下辺へ寄せる（三方スリットの腰壁型）。
+///
+/// 下端 2 節点は柱脚（階に属さない基部）なので、階の地震用重量は 0 になる。
+#[test]
+fn test_top_beam_face_slit_sends_self_weight_to_bottom() {
     let mut model = wall_model();
     model.wall_plates[0].slit.beam_face = [false, true];
     let got = generate_stories(&model, None).unwrap().stories[1]
@@ -1536,24 +1868,27 @@ fn single_column_with_attached_wall(transfer: LoadTransfer) -> (Model, f64) {
     (model, total)
 }
 
-/// 取付き壁版の重量は、伝達方法（取付き線への分布 / 両端の柱への集中）によらず、
-/// 全量がその階に残る。
+/// 取付き線へ分布させる壁版の重量は、全量がその階に残る。
+#[test]
+fn test_attached_wall_anchor_transfer_conserves_total_weight() {
+    let (model, total) = single_column_with_attached_wall(LoadTransfer::Anchor);
+    let gen = generate_stories(&model, None).unwrap();
+    // 柱・梁の自重は断面積 0 なので 0。壁版の分だけが現れる。
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - total).abs() < 1e-6,
+        "{}",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+}
+
+/// 両端の柱へ集中させる壁版でも、重量は取付き線の高さに残る。
 ///
 /// 旧フレーム外雑壁の「柱」伝達は、最も近い柱要素の**上下 2 節点**へ 1/2 ずつ配って
 /// いた。下端は基部でどの階にも属さないため、壁の重量の半分が階の地震用重量から
 /// 黙って消えていた。上階の地震力を過小に見る危険側の挙動である。後継の
 /// `LoadTransfer::Columns` は取付き線の両端へ集中するので、全量がその階に残る。
 #[test]
-fn test_attached_wall_transfer_keeps_total_weight_in_story() {
-    // 柱・梁の自重は断面積 0 なので 0。壁版の分だけが現れる。
-    let (model, total) = single_column_with_attached_wall(LoadTransfer::Anchor);
-    let gen = generate_stories(&model, None).unwrap();
-    assert!(
-        (gen.stories[1].seismic_weight.unwrap() - total).abs() < 1e-6,
-        "{}",
-        gen.stories[1].seismic_weight.unwrap()
-    );
-
+fn test_attached_wall_columns_transfer_keeps_weight_at_anchor_line() {
     let (model, total) = single_column_with_attached_wall(LoadTransfer::Columns);
     let gen = generate_stories(&model, None).unwrap();
     assert!(
@@ -1570,8 +1905,6 @@ fn test_attached_wall_transfer_keeps_total_weight_in_story() {
 #[test]
 fn test_damper_weight_replaces_section_self_weight() {
     let len = 4000.0;
-
-    // 装置重量あり: 装置重量 + 支持部材（装置長を除く残り）の重量。
     let damper = DamperSpec {
         elem: ElemId(0),
         device_weight: 20000.0,
@@ -1586,13 +1919,18 @@ fn test_damper_weight_replaces_section_self_weight() {
     let gen = generate_stories(&model, None).unwrap();
     let support_len = (len - 1000.0_f64).max(0.0);
     let w = 20000.0 + 5000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
+    let expected = w / 2.0;
     assert!(
-        (gen.stories[1].seismic_weight.unwrap() - w / 2.0).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
         gen.stories[1].seismic_weight.unwrap()
     );
+}
 
+#[test]
+fn test_damper_zero_device_weight_counts_support_only() {
     // 「自重を考慮しない部材」: device_weight=0 かつ support_area>0 は支持部のみ算入。
+    let len = 4000.0;
     let damper = DamperSpec {
         elem: ElemId(0),
         device_weight: 0.0,
@@ -1607,8 +1945,9 @@ fn test_damper_weight_replaces_section_self_weight() {
     let gen = generate_stories(&model, None).unwrap();
     let support_len = (len - 500.0_f64).max(0.0);
     let w = 8000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
+    let expected = w / 2.0;
     assert!(
-        (gen.stories[1].seismic_weight.unwrap() - w / 2.0).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
         gen.stories[1].seismic_weight.unwrap()
     );
@@ -1739,10 +2078,8 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
 // §柱の長さ(下階柱なし時の柱脚梁せい付加)
 // ------------------------------------------------------------------
 
-/// 柱脚に取付く梁の最大せいは、下階に柱がない場合だけ柱長さへ付加する（正・負ペア）。
 #[test]
-fn test_base_column_beam_depth_addition_depends_on_lower_column() {
-    // 下階柱なし: 柱長さ + 柱脚に取付く梁の最大せい。
+fn test_base_column_without_lower_column_adds_max_beam_depth() {
     let mut model = Model::default();
     model.nodes.push(Node {
         id: NodeId(0),
@@ -1857,8 +2194,11 @@ fn test_base_column_beam_depth_addition_depends_on_lower_column() {
         "{}",
         gen.stories[1].seismic_weight.unwrap()
     );
+}
 
-    // 下階に柱がある場合: 梁せいを付加しない(誤って常時付加しないことの回帰確認)。
+#[test]
+fn test_base_column_with_lower_column_does_not_add_beam_depth() {
+    // 下階に柱がある場合は梁せいを付加しない(誤って常時付加しないことの回帰確認)。
     let mut model = Model::default();
     model.nodes.push(Node {
         id: NodeId(0),
@@ -2206,16 +2546,6 @@ fn test_k_brace_base_nodes_only_shifts_centroid_toward_base_nodes() {
         gen_internal.rep_nodes[1].coord[0]
     );
 
-    // 既定(LoadCfg なし)も InternalNodes（両端 1/2 ずつ）で同じ重心になる。
-    let mut default_model = k_brace_model(KBraceWeightRule::InternalNodes);
-    default_model.load_cfg = None;
-    let gen_default = generate_stories(&default_model, None).unwrap();
-    assert!(
-        (gen_default.rep_nodes[1].coord[0] - expected_internal).abs() < 1e-2,
-        "{}",
-        gen_default.rep_nodes[1].coord[0]
-    );
-
     let base_only = k_brace_model(KBraceWeightRule::BaseNodesOnly);
     let gen_base = generate_stories(&base_only, None).unwrap();
     // 手計算: node2=w1(x=0), node3=w2(x=4000), node4=0
@@ -2235,6 +2565,24 @@ fn test_k_brace_base_nodes_only_shifts_centroid_toward_base_nodes() {
             - gen_base.stories[1].seismic_weight.unwrap())
         .abs()
             < 1e-6
+    );
+}
+
+#[test]
+fn test_k_brace_internal_nodes_default_is_half_half() {
+    // 既定(InternalNodes)は両端 1/2 ずつ(従来どおり)であることを回帰確認する。
+    let mut model = k_brace_model(KBraceWeightRule::InternalNodes);
+    model.load_cfg = None; // 既定値(LoadCfg::default())でも InternalNodes になることを確認
+    let gen = generate_stories(&model, None).unwrap();
+    let density = 7.85e-9;
+    let len = 2000.0;
+    let w1 = density * 10000.0 * len * GRAVITY_MM_S2;
+    let w2 = density * 20000.0 * len * GRAVITY_MM_S2;
+    let expected = (1000.0 * w1 + 3000.0 * w2) / (w1 + w2);
+    assert!(
+        (gen.rep_nodes[1].coord[0] - expected).abs() < 1e-2,
+        "{}",
+        gen.rep_nodes[1].coord[0]
     );
 }
 
@@ -2311,10 +2659,10 @@ fn steel_h_shape() -> squid_n_core::section_shape::SectionShape {
     }
 }
 
-/// 階の主要構造種別は、その階に属する柱・梁の材料区分から自動判定される
+/// 階の主要構造種別は、その階に属する柱・梁の構造種別から自動判定される
 /// （下階 RC・上階 S の混合構造で階ごとに別々に判定されること）。
 #[test]
-fn test_generate_infers_story_structure_from_material() {
+fn test_generate_infers_story_structure_from_members() {
     use squid_n_core::model::StoryStructure;
     let model = two_story_model_with_shapes(
         (rc_rect_shape(), MaterialCategory::Concrete),
@@ -2325,9 +2673,13 @@ fn test_generate_infers_story_structure_from_material() {
     // 構造種別は層の属性で、層の上端の階が持つ（下層 RC・上層 S）。
     assert_eq!(gen.stories[1].structure, StoryStructure::Rc);
     assert_eq!(gen.stories[2].structure, StoryStructure::S);
+}
 
-    // 構造種別は断面形状ではなく材料の区分で決まる。
-    // H 形の断面でも材料がコンクリートなら、その階は RC になる。
+/// 構造種別は断面形状ではなく材料の区分で決まる。
+/// H 形の断面でも材料がコンクリートなら、その階は RC になる。
+#[test]
+fn test_generate_story_structure_follows_material_not_shape() {
+    use squid_n_core::model::StoryStructure;
     let model = two_story_model_with_shapes(
         (steel_h_shape(), MaterialCategory::Concrete),
         (steel_h_shape(), MaterialCategory::Steel),
@@ -2335,8 +2687,12 @@ fn test_generate_infers_story_structure_from_material() {
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert_eq!(gen.stories[1].structure, StoryStructure::Rc);
     assert_eq!(gen.stories[2].structure, StoryStructure::S);
+}
 
-    // 形状定義を持たない断面（カタログ数値の直入力）でも材料の区分で判定できる。
+/// 形状定義を持たない断面（カタログ数値の直入力）でも材料の区分で判定できる。
+#[test]
+fn test_generate_story_structure_uses_material_without_shapes() {
+    use squid_n_core::model::StoryStructure;
     let model = two_story_model(); // shape: None の断面＋鋼材の材料
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     // 構造種別は層の属性で、層の上端の階が持つ。基部の床はどの層の上端でもない。

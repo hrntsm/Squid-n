@@ -72,6 +72,71 @@ impl Model {
             _ => self.wall_regions.iter().find(|r| r.id == id),
         }
     }
+
+    /// 壁領域の境界多角形の内側（境界を除く）に点 `p` [mm] があるか。
+    /// 境界座標・構面が引けない場合は `false`。
+    pub fn wall_region_contains_point(&self, id: WallRegionId, p: [f64; 3]) -> bool {
+        use crate::geom::vec3;
+        let Some((poly, to_2d, normal, origin)) = self.wall_region_polygon(id) else {
+            return false;
+        };
+        if vec3::dot(vec3::sub(p, origin), normal).abs() > crate::geom::MEMBER_AXIS_TOL_MM {
+            return false;
+        }
+        crate::geom::polygon::contains_excluding_boundary(&poly, to_2d(p))
+    }
+
+    /// 壁領域の境界多角形の内側または境界上（[`crate::geom::MEMBER_AXIS_TOL_MM`] 以内）に
+    /// 点 `p` [mm] があるか。境界座標・構面が引けない場合は `false`。
+    pub fn wall_region_contains_point_including_boundary(
+        &self,
+        id: WallRegionId,
+        p: [f64; 3],
+    ) -> bool {
+        use crate::geom::vec3;
+        let Some((poly, to_2d, normal, origin)) = self.wall_region_polygon(id) else {
+            return false;
+        };
+        if vec3::dot(vec3::sub(p, origin), normal).abs() > crate::geom::MEMBER_AXIS_TOL_MM {
+            return false;
+        }
+        crate::geom::polygon::contains_within_tol(&poly, to_2d(p), crate::geom::MEMBER_AXIS_TOL_MM)
+    }
+
+    /// 壁領域の境界を構面の局所 2D 座標へ写す基底と多角形を返す。
+    /// `(多角形, 点を 2D へ写す関数, 構面の法線, 構面上の基準点)`。縮退は `None`。
+    #[allow(clippy::type_complexity)]
+    fn wall_region_polygon(
+        &self,
+        id: WallRegionId,
+    ) -> Option<(
+        Vec<[f64; 2]>,
+        impl Fn([f64; 3]) -> [f64; 2],
+        [f64; 3],
+        [f64; 3],
+    )> {
+        use crate::geom::vec3;
+        let region = self.wall_region(id)?;
+        let coords = region.boundary_coords(self)?;
+        if coords.len() < 3 {
+            return None;
+        }
+        let origin = coords[0];
+        let u = coords[1..]
+            .iter()
+            .find_map(|c| vec3::unit(vec3::sub(*c, origin)))?;
+        let normal = vec3::unit(vec3::cross(
+            vec3::sub(coords[1], origin),
+            vec3::sub(coords[2], origin),
+        ))?;
+        let v = vec3::cross(normal, u);
+        let to_2d = move |q: [f64; 3]| {
+            let d = vec3::sub(q, origin);
+            [vec3::dot(d, u), vec3::dot(d, v)]
+        };
+        let poly: Vec<[f64; 2]> = coords.iter().map(|&c| to_2d(c)).collect();
+        Some((poly, to_2d, normal, origin))
+    }
 }
 
 #[cfg(test)]

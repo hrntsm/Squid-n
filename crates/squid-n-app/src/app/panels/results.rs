@@ -9,6 +9,7 @@ use squid_n_core::units::to_display::{force_kn, stiffness_kn_per_mm};
 impl App {
     /// 結果タブ：3Dビューア と 時刻歴グラフを切替。
     pub(crate) fn results_tab_panel(&mut self, ui: &mut egui::Ui) {
+        self.unset_regions_banner(ui);
         let result_options = self.result_display_options();
         let current_key = self
             .ui
@@ -78,6 +79,33 @@ impl App {
             ResultsView::LumpedMass => self.lumped_mass_panel(ui),
         }
     }
+    /// 未設定の割当領域がある間、件数と対象 ID を結果画面へ常時表示する。
+    /// 未設定は荷重・剛性の過小評価につながるため、結果を見る前に気づけるようにする。
+    fn unset_regions_banner(&self, ui: &mut egui::Ui) {
+        let (floors, walls) = self.core.model.unset_plate_assignment_regions();
+        if floors.is_empty() && walls.is_empty() {
+            return;
+        }
+        let label = |ids: &[u32]| {
+            ids.iter()
+                .map(|id| format!("R{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let floors_list: Vec<u32> = floors.iter().map(|id| id.0).collect();
+        let walls_list: Vec<u32> = walls.iter().map(|id| id.0).collect();
+        ui.colored_label(
+            crate::theme::WARN_TEXT,
+            format!(
+                "⚠ 未設定の割当領域: 床板 {} 件 [{}] / 壁版 {} 件 [{}]（荷重・剛性を過小評価し得ます）",
+                floors.len(),
+                label(&floors_list),
+                walls.len(),
+                label(&walls_list),
+            ),
+        );
+    }
+
     /// 増分解析結果（性能曲線・ヒンジ・崩壊機構）の表示。
     pub(crate) fn pushover_results_panel(&mut self, ui: &mut egui::Ui) {
         if self.displayed_pushover().is_none() {

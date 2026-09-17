@@ -56,6 +56,14 @@ pub enum StbError {
     Io(String),
     #[error("decode: {0}")]
     Decode(String),
+    #[error("床板割当領域に一致しない床板: {0}")]
+    SlabWithoutRegion(String),
+    #[error("床板割当領域の統合で版仕様が競合: {0}")]
+    SlabRegionConflict(String),
+    #[error("壁版割当領域に一致しない壁版: {0}")]
+    WallWithoutRegion(String),
+    #[error("両端の節点を持たない二次部材: {0}")]
+    SecondaryWithoutNode(String),
 }
 
 const STB_VERSION: &str = "2.0.2";

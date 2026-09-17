@@ -2,6 +2,64 @@
 
 use super::*;
 use squid_n_core::ids::*;
+use squid_n_core::model::{
+    FloorPlateAssignmentRegions, FloorRegion, Slab, WallPlate, WallPlateAssignmentRegions,
+    WallRegion,
+};
+
+/// 位相（節点座標・部材）を変えるコマンドが割当領域を再構築したときの undo 用
+/// スナップショット。孤児化した版の除去までを 1 つの Undo 単位に含めるため、
+/// 再構築が変更しうる派生データ（床領域・壁領域・割当領域・版）を退避する。
+#[derive(Clone)]
+struct AssignmentTopology {
+    floor_regions: Vec<FloorRegion>,
+    wall_regions: Vec<WallRegion>,
+    floor_assignment_regions: FloorPlateAssignmentRegions,
+    wall_assignment_regions: WallPlateAssignmentRegions,
+    slabs: Vec<Slab>,
+    wall_plates: Vec<WallPlate>,
+}
+
+impl AssignmentTopology {
+    fn capture(model: &Model) -> Self {
+        Self {
+            floor_regions: model.floor_regions.clone(),
+            wall_regions: model.wall_regions.clone(),
+            floor_assignment_regions: model.floor_assignment_regions.clone(),
+            wall_assignment_regions: model.wall_assignment_regions.clone(),
+            slabs: model.slabs.clone(),
+            wall_plates: model.wall_plates.clone(),
+        }
+    }
+
+    fn restore(self, model: &mut Model) {
+        model.floor_regions = self.floor_regions;
+        model.wall_regions = self.wall_regions;
+        model.floor_assignment_regions = self.floor_assignment_regions;
+        model.wall_assignment_regions = self.wall_assignment_regions;
+        model.slabs = self.slabs;
+        model.wall_plates = self.wall_plates;
+    }
+}
+
+/// 位相変更コマンドの逆操作。子の逆操作を適用してから、適用前の割当領域と版を
+/// 復元する（復元は ID 繰上げ・繰下げの後に来る必要があるため、この順序で行う）。
+struct RestoreAssignmentTopology {
+    snapshot: AssignmentTopology,
+    inverse: Box<dyn EditCommand>,
+}
+
+impl EditCommand for RestoreAssignmentTopology {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let redo = self.inverse.apply(model);
+        self.snapshot.clone().restore(model);
+        redo
+    }
+
+    fn label(&self) -> &str {
+        self.inverse.label()
+    }
+}
 
 /// 節点座標変更。
 pub struct SetNodeCoord {
@@ -16,10 +74,15 @@ impl EditCommand for SetNodeCoord {
             return Box::new(Noop);
         }
         let old_coord = model.nodes[idx].coord;
+        let snapshot = AssignmentTopology::capture(model);
         model.nodes[idx].coord = self.coord;
-        Box::new(SetNodeCoord {
-            node: self.node,
-            coord: old_coord,
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreAssignmentTopology {
+            snapshot,
+            inverse: Box::new(SetNodeCoord {
+                node: self.node,
+                coord: old_coord,
+            }),
         })
     }
 
@@ -234,8 +297,13 @@ impl EditCommand for AddMember {
         if !crate::refs::new_elem_ok(model, &self.elem) {
             return Box::new(Noop);
         }
+        let snapshot = AssignmentTopology::capture(model);
         model.elements.push(self.elem.clone());
-        Box::new(DeleteMember { id: self.elem.id })
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreAssignmentTopology {
+            snapshot,
+            inverse: Box::new(DeleteMember { id: self.elem.id }),
+        })
     }
 
     fn label(&self) -> &str {
@@ -531,6 +599,7 @@ impl EditCommand for DeleteMember {
         if idx >= model.elements.len() || model.elements[idx].id != self.id {
             return Box::new(Noop);
         }
+        let snapshot = AssignmentTopology::capture(model);
         let mut removed_loads = Vec::new();
         for (lci, lc) in model.load_cases.iter_mut().enumerate() {
             let mut li = 0;
@@ -561,12 +630,16 @@ impl EditCommand for DeleteMember {
                 id.0 -= 1;
             }
         });
-        Box::new(InsertMember {
-            index: idx,
-            elem: removed,
-            member_loads: removed_loads,
-            elem_attrs: removed_attrs,
-            beam_group_refs: removed_group_refs,
+        model.rebuild_assignment_regions_dropping_orphan_plates();
+        Box::new(RestoreAssignmentTopology {
+            snapshot,
+            inverse: Box::new(InsertMember {
+                index: idx,
+                elem: removed,
+                member_loads: removed_loads,
+                elem_attrs: removed_attrs,
+                beam_group_refs: removed_group_refs,
+            }),
         })
     }
 

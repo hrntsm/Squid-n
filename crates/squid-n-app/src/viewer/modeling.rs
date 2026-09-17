@@ -492,7 +492,7 @@ fn draw_wall_plates_modeling(
         .wall_plates
         .iter()
         .filter(|plate| !model.wall_plate_becomes_element(plate))
-        .filter(|plate| super::scene::wall_plate_visible_on_frame(plate, frame_filter))
+        .filter(|plate| super::scene::wall_plate_visible_on_frame(model, plate, frame_filter))
         .collect();
     if targets.is_empty() {
         return;

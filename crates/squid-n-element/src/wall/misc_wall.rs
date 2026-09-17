@@ -311,7 +311,7 @@ fn plate_is_misc_wall(plate: &WallPlate, model: &Model) -> bool {
     if !model.wall_plate_covers_region(plate) {
         return true;
     }
-    let Some(boundary) = plate.boundary_nodes() else {
+    let Some(boundary) = plate.boundary_nodes(model) else {
         return false;
     };
     model
@@ -380,7 +380,10 @@ fn opening_envelope(plate: &WallPlate) -> Option<[f64; 4]> {
 /// 壁版 1 枚を壁ローカル座標系の幾何へ変換する（開口の包絡は呼び出し側が入れる）。
 fn plate_geometry(plate: &WallPlate, model: &Model, t: f64) -> Option<InFrameMiscWallGeometry> {
     match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary, plate),
+        WallPlateShape::Enclosed => {
+            let boundary = plate.boundary_nodes(model)?;
+            enclosed_geometry(model, t, &boundary, plate)
+        }
         WallPlateShape::Attached { anchor, extent } => {
             attached_geometry(model, t, anchor, (*extent)?, plate.id)
         }
@@ -572,27 +575,26 @@ mod tests {
     /// 雑壁の幾何は壁版が情報源であり、壁エレメントになるか（＝雑壁の算入対象から
     /// 外れるか）は「壁版が壁領域全体を覆うか」で決まるため、壁領域も要る。
     fn add_wall_plate(model: &mut Model, openings: Vec<WallOpening>, slit: WallSlit) {
+        let plate_id = model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            squid_n_core::model::WallPlate {
+                self_weight_shares: Vec::new(),
+                id: squid_n_core::ids::WallPlateId(0),
+                shape: squid_n_core::model::WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings,
+                loads: vec![],
+                slit,
+            },
+        );
         model.wall_regions.push(squid_n_core::model::WallRegion {
             id: squid_n_core::ids::WallRegionId(model.wall_regions.len() as u32),
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            wall_plate_ids: vec![squid_n_core::ids::WallPlateId(
-                model.wall_plates.len() as u32
-            )],
+            wall_plate_ids: vec![plate_id],
             posts: Vec::new(),
-        });
-        model.wall_plates.push(squid_n_core::model::WallPlate {
-            self_weight_shares: Vec::new(),
-            id: squid_n_core::ids::WallPlateId(model.wall_plates.len() as u32),
-            shape: squid_n_core::model::WallPlateShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings,
-            loads: vec![],
-            slit,
         });
     }
 

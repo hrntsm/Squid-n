@@ -111,6 +111,14 @@ fn id_list_message<T: std::fmt::Display>(
     format!("{what}: {label}{}{more}。{remedy}", head.join(", "))
 }
 
+/// 支持部材を利用者向けの短い識別子へ整える。主架構は要素 ID、二次部材は安定 ID。
+fn support_label(support: squid_n_core::model::SupportMemberId) -> String {
+    match support {
+        squid_n_core::model::SupportMemberId::Primary(elem) => format!("主架構 部材 {}", elem.0),
+        squid_n_core::model::SupportMemberId::Secondary(id) => format!("二次部材 {}", id.0),
+    }
+}
+
 /// 解析を妨げるモデルの不備をすべて集める。
 ///
 /// 返す順は「モデル検証 → モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
@@ -357,6 +365,39 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     }
 
     {
+        let overlaps = model.same_kind_support_overlaps();
+        if !overlaps.is_empty() {
+            const HEAD: usize = 5;
+            let listed = overlaps
+                .iter()
+                .take(HEAD)
+                .map(|overlap| {
+                    format!(
+                        "{} と {}（位置 [{:.0}, {:.0}, {:.0}] mm）",
+                        support_label(overlap.first),
+                        support_label(overlap.second),
+                        overlap.midpoint[0],
+                        overlap.midpoint[1],
+                        overlap.midpoint[2]
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            let more = if overlaps.len() > HEAD {
+                format!(" 他{}件", overlaps.len() - HEAD)
+            } else {
+                String::new()
+            };
+            issues.push(ModelIssue::model(format!(
+                "同じ位置に重なった同種の支持部材があります（{listed}{more}）。\
+                 同じ材軸上で大梁・柱どうし、または小梁・間柱どうしを重ねて配置すると、\
+                 どちらが荷重を受けるか一意に決まりません。重複した部材を削除するか、\
+                 材軸を分けて配置してください。"
+            )));
+        }
+    }
+
+    {
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
         if n != 0 {
             issues.push(ModelIssue::model(format!(
@@ -418,30 +459,32 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 a: &squid_n_core::model::SecondaryMember,
                 b: &squid_n_core::model::SecondaryMember,
             ) -> bool {
-                if a.kind != b.kind {
-                    return false;
-                }
-                let (a0, a1) = (a.nodes[0], a.nodes[1]);
-                let (b0, b1) = (b.nodes[0], b.nodes[1]);
-                (a0 == b0 && a1 == b1) || (a0 == b1 && a1 == b0)
+                a.id == b.id
             }
+            let points_equal = |a: [f64; 3], b: [f64; 3]| {
+                let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+                    <= squid_n_core::geom::MEMBER_AXIS_TOL_MM
+                        * squid_n_core::geom::MEMBER_AXIS_TOL_MM
+            };
+            let node_at = |p: [f64; 3]| {
+                model
+                    .nodes
+                    .iter()
+                    .find(|n| points_equal(n.coord, p))
+                    .map(|n| n.id)
+            };
 
-            let both_free = model
+            let detached = model
                 .joists()
                 .chain(model.posts())
-                .filter(|sm| {
-                    !model.secondary_member_materialized(sm)
-                        && sm.end_support
-                            == [
-                                squid_n_core::model::EndSupport::Free,
-                                squid_n_core::model::EndSupport::Free,
-                            ]
-                })
+                .filter(|sm| sm.is_detached())
                 .count();
-            if both_free != 0 {
+            if detached != 0 {
                 issues.push(ModelIssue::model(format!(
-                    "両端が自由端の二次部材が {both_free} 本あります。支持がなく不安定なため、\
-                     少なくとも一端を支持として扱ってください。"
+                    "支持部材アンカーへ解決できない二次部材が {detached} 本あります。\
+                     端点座標で重量・材軸長は保持していますが、受け持った荷重の行き先が決まりません。\
+                     端部を大梁の材軸上、または受け側となる二次部材の内法・自由端へ載せてください。"
                 )));
             }
             let free_on_support = model
@@ -449,10 +492,13 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .chain(model.posts())
                 .filter(|sm| {
                     !model.secondary_member_materialized(sm)
-                        && sm.end_support.iter().enumerate().any(|(end, s)| {
-                            *s == squid_n_core::model::EndSupport::Free
-                                && model.node_has_geometric_support(sm.nodes[end], sm)
-                        })
+                        && sm.is_cantilever()
+                        && model
+                            .secondary_member_end_points(sm)
+                            .is_some_and(|(_, free)| {
+                                node_at(free)
+                                    .is_some_and(|n| model.node_has_geometric_support(n, sm))
+                            })
                 })
                 .count();
             if free_on_support != 0 {
@@ -469,15 +515,18 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .chain(model.posts())
                 .filter(|sm| {
                     !model.secondary_member_materialized(sm)
-                        && sm.end_support.iter().enumerate().any(|(end, s)| {
-                            *s == squid_n_core::model::EndSupport::Free
-                                && model.joists().chain(model.posts()).any(|other| {
+                        && sm.is_cantilever()
+                        && model
+                            .secondary_member_end_points(sm)
+                            .is_some_and(|(_, free)| {
+                                model.joists().chain(model.posts()).any(|other| {
                                     !same_secondary(other, sm)
-                                        && other
-                                            .free_end()
-                                            .is_some_and(|fe| other.nodes[fe] == sm.nodes[end])
+                                        && other.is_cantilever()
+                                        && model.secondary_member_end_points(other).is_some_and(
+                                            |(_, other_free)| points_equal(other_free, free),
+                                        )
                                 })
-                        })
+                            })
                 })
                 .count();
             if free_end_tie != 0 {
@@ -589,25 +638,54 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         let ignored_slit = model
             .wall_plates
             .iter()
-            .filter(|p| p.slit.any() && !p.has_quad_boundary())
+            .filter(|p| {
+                p.slit.any()
+                    && !squid_n_load::wall_plate_load::slit_specification_is_reflected(model, p)
+            })
             .count();
         if ignored_slit != 0 {
             issues.push(
                 ModelIssue::model(format!(
                     "耐震スリットの指定が効かない壁版が {ignored_slit} 枚あります。\
                      スリットは境界が 4 節点の囲まれた壁版でのみ扱えます\
-                     （辺が柱際か梁際かを決められないため）。"
+                     （境界が 4 節点でない、または境界頂点のモデル節点を引けない等で\
+                     辺が柱際か梁際かを決められないため）。"
                 ))
                 .warn(),
             );
         }
 
+        let both_beam_slit: Vec<_> = model
+            .wall_plates
+            .iter()
+            .filter(|p| p.has_quad_boundary(model) && p.slit.both_beam_faces())
+            .map(|p| p.id.0)
+            .collect();
+        if !both_beam_slit.is_empty() {
+            let ids = both_beam_slit
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            issues.push(ModelIssue::model(format!(
+                "上下の梁際がともに切れた壁版があります（壁版 {ids}）。\
+                 対象は境界が 4 節点の囲まれた壁版です。\
+                 上下の梁際をともに切った納まりは想定していないため、\
+                 自重の支持先の指定によらず入力エラーとします。\
+                 いずれかの梁際のスリットを外してください。"
+            )));
+        }
+
         let stranded = squid_n_load::wall_plate_load::wall_plates_without_load_path(model);
         if !stranded.is_empty() {
-            let n = stranded.len();
+            let ids = stranded
+                .iter()
+                .map(|id| id.0.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             issues.push(ModelIssue::model(format!(
-                "自重の行き先が決まらない壁版が {n} 枚あります。\
-                 支持辺の負担率が未指定・不正、指定辺がスリットで縁切り、全長を支持する部材がない、または支持する主架構部材の区間が重複しています。\
+                "自重の行き先が決まらない壁版があります（壁版 {ids}）。\
+                 境界辺への自重負担率が未指定・不正、正の負担率の辺がスリットで縁切り、または壁版割当領域の境界が無く支持部材を解決できないためです。\
                  壁版の自重負担率（合計100%）、境界、支持部材を確認してください。"
             )));
         }
@@ -855,9 +933,11 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
         }
         for slab in &model.slabs {
             match &slab.shape {
-                squid_n_core::model::SlabShape::Enclosed { boundary } => {
-                    for n in boundary {
-                        mark(*n);
+                squid_n_core::model::SlabShape::Enclosed => {
+                    if let Some(nodes) = slab.boundary_nodes(model) {
+                        for n in &nodes {
+                            mark(*n);
+                        }
                     }
                 }
                 squid_n_core::model::SlabShape::Attached { anchor, .. } => match anchor {
@@ -871,16 +951,13 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 },
             }
         }
-        for sm in model.joists().chain(model.posts()) {
-            for n in &sm.nodes {
-                mark(*n);
-            }
-        }
         for plate in &model.wall_plates {
             match &plate.shape {
-                squid_n_core::model::WallPlateShape::Enclosed { boundary } => {
-                    for n in boundary {
-                        mark(*n);
+                squid_n_core::model::WallPlateShape::Enclosed => {
+                    if let Some(boundary) = plate.boundary_nodes(model) {
+                        for n in &boundary {
+                            mark(*n);
+                        }
                     }
                 }
                 squid_n_core::model::WallPlateShape::Attached { anchor, .. } => match anchor {
