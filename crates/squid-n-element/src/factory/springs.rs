@@ -1,11 +1,6 @@
 //! バネ / 履歴則パラメータ算定。
 //!
-//! - [`build_fiber`] — ファイバー梁の生成
-//! - [`build_flexural_springs`] — 材端曲げバネ（履歴則別・非線形解析用）
-//! - [`yield_moment_and_axial`] — 集中バネの My0 と N許容（N-M 相関用）
-//! - [`resolve_member_hysteresis`] — 部材の履歴則を解決（UI 表示にも用いる）
-//! - [`flexural_yield_moment`] / [`crack_moment`] / [`flexural_alpha_y`] — 骨格の折れ点算定
-//! - [`rotational_spring_params`] / [`flexible_length`] / [`is_rc_like_section`] — 補助算定
+//! 材端曲げバネの構築は [`build_flexural_springs`]。
 
 use squid_n_core::model::{
     default_fiber_concrete_hysteresis, default_member_hysteresis, AnalysisKind, ElementData,
@@ -16,6 +11,7 @@ use squid_n_material::{HysteresisMaterial, HysteresisRule, SteelBuckling, TsujiY
 
 use super::regime::is_vertical_member;
 use super::StrengthBasis;
+use crate::frame::concentrated::MnInteraction;
 
 /// 端部塑性化域モデルの塑性化域長 Lp [mm]。
 pub fn plastic_zone_length(data: &ElementData, model: &Model) -> f64 {
@@ -227,32 +223,134 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
     }
 }
 
+/// 材端曲げバネの骨格種別。N-M 相関時の折れ点の置換規則を決める。
+#[derive(Clone, Debug)]
+enum FlexuralBackboneKind {
+    /// 標準型（バイリニア）。
+    Bilinear,
+    /// 辻・山田型。
+    TsujiYamada,
+    /// 座屈考慮型。構築済みの材料を保持する。
+    SteelBuckling(SteelBuckling),
+    /// 履歴材料（武田型・逆行型・原点指向型・最大点指向型）。
+    Explicit,
+}
+
+/// 材端曲げバネの M-θ 骨格と N-M 相関の適用可否。
+#[derive(Clone, Debug)]
+pub struct FlexuralSpringBackbone {
+    /// 初期回転剛性 k_rot [N·mm/rad]。
+    pub k_rot: f64,
+    /// 材料構築に渡した降伏後接線剛性 [N·mm/rad]（バイリニア系のみ。他は 0）。
+    pub post_yield_stiffness: f64,
+    /// N-M 相関なしの折れ点 [theta(rad), moment(N·mm)]。
+    pub points: Vec<[f64; 2]>,
+    /// N-M 相関（`set_yield`）を適用可能か。
+    pub use_mn: bool,
+    kind: FlexuralBackboneKind,
+}
+
+impl FlexuralSpringBackbone {
+    /// 軸力に対する N-M 線形相関後の折れ点 [theta(rad), moment(N·mm)]。
+    /// `mn` が None、または N-M 相関非対応の履歴則では素の折れ点を返す。
+    /// `axial_force` [N] は絶対値のみを用いるため符号は問わない。
+    pub(crate) fn points_with_mn(
+        &self,
+        mn: Option<&MnInteraction>,
+        axial_force: f64,
+    ) -> Vec<[f64; 2]> {
+        let Some(mn) = mn.filter(|_| self.use_mn) else {
+            return self.points.clone();
+        };
+        let m = mn.moment_limit(axial_force);
+        match &self.kind {
+            FlexuralBackboneKind::Bilinear | FlexuralBackboneKind::TsujiYamada => {
+                if self.k_rot > 0.0 {
+                    bilinear_backbone_points(self.k_rot, m, self.post_yield_stiffness)
+                } else {
+                    self.points.clone()
+                }
+            }
+            FlexuralBackboneKind::SteelBuckling(template) => {
+                let mut material = template.clone();
+                material.set_yield(m);
+                material.skeleton_points()
+            }
+            FlexuralBackboneKind::Explicit => self.points.clone(),
+        }
+    }
+}
+
+/// バイリニア系の折れ点 `[(0,0), (My/k, My), (4θy, My + k2·3θy)]`。
+/// `k2` は材料構築に渡した降伏後接線 [N·mm/rad]。`k_rot<=0` は原点のみ。
+fn bilinear_backbone_points(k_rot: f64, my: f64, k2: f64) -> Vec<[f64; 2]> {
+    if k_rot <= 0.0 {
+        return vec![[0.0, 0.0]];
+    }
+    let theta_y = my / k_rot;
+    let theta_end = 4.0 * theta_y;
+    vec![
+        [0.0, 0.0],
+        [theta_y, my],
+        [theta_end, my + k2 * (theta_end - theta_y)],
+    ]
+}
+
 /// 材端曲げバネの復元力材料を履歴則に応じて構築する。
-/// 戻り値の bool は N-M 相関（`set_yield`）を適用可能か。
+/// 戻り値の [`FlexuralSpringBackbone::use_mn`] は N-M 相関（`set_yield`）を
+/// 適用可能か。
 pub(super) fn build_flexural_springs(
     data: &ElementData,
     model: &Model,
     rule: HysteresisModel,
     basis: StrengthBasis,
-) -> (Box<dyn UniaxialMaterial>, Box<dyn UniaxialMaterial>, bool) {
+) -> (
+    Box<dyn UniaxialMaterial>,
+    Box<dyn UniaxialMaterial>,
+    FlexuralSpringBackbone,
+) {
     let (k_rot, my) = rotational_spring_params(data, model, basis);
     if my <= 0.0 || k_rot <= 0.0 || rule == HysteresisModel::Standard {
         let my = my.max(1.0);
+        let backbone = FlexuralSpringBackbone {
+            k_rot,
+            post_yield_stiffness: 0.01 * k_rot,
+            points: bilinear_backbone_points(k_rot, my, 0.01 * k_rot),
+            use_mn: true,
+            kind: FlexuralBackboneKind::Bilinear,
+        };
         return (
             Box::new(Bilinear::new(k_rot, my, 0.01)),
             Box::new(Bilinear::new(k_rot, my, 0.01)),
-            true,
+            backbone,
         );
     }
     if rule == HysteresisModel::TsujiYamada {
         let k2 = 0.01 * k_rot;
         let mk = || Box::new(TsujiYamada::new(k_rot, my, k2, 0.5)) as Box<dyn UniaxialMaterial>;
-        return (mk(), mk(), true);
+        let backbone = FlexuralSpringBackbone {
+            k_rot,
+            post_yield_stiffness: k2,
+            points: bilinear_backbone_points(k_rot, my, k2),
+            use_mn: true,
+            kind: FlexuralBackboneKind::TsujiYamada,
+        };
+        return (mk(), mk(), backbone);
     }
     if rule == HysteresisModel::SteelBuckling {
-        let mk =
-            || Box::new(SteelBuckling::with_defaults(k_rot, my, 1.1)) as Box<dyn UniaxialMaterial>;
-        return (mk(), mk(), true);
+        let template = SteelBuckling::with_defaults(k_rot, my, 1.1);
+        let mk = {
+            let template = template.clone();
+            move || Box::new(template.clone()) as Box<dyn UniaxialMaterial>
+        };
+        let backbone = FlexuralSpringBackbone {
+            k_rot,
+            post_yield_stiffness: 0.0,
+            points: template.skeleton_points(),
+            use_mn: true,
+            kind: FlexuralBackboneKind::SteelBuckling(template),
+        };
+        return (mk(), mk(), backbone);
     }
     let mc = crack_moment(data, model, my);
     let tc = (mc / k_rot).max(1e-9);
@@ -264,27 +362,46 @@ pub(super) fn build_flexural_springs(
     let mk =
         |r: HysteresisRule| -> Box<dyn UniaxialMaterial> { Box::new(HysteresisMaterial::new(r)) };
     let make_pair = |r: HysteresisRule| (mk(r.clone()), mk(r));
-    let (a, b) = match rule {
-        HysteresisModel::Retrograde => make_pair(HysteresisRule::Retrograde {
-            crack: (mc, tc),
-            yield_point: (my, ty),
-            ultimate: (mu, tu),
-        }),
-        HysteresisModel::OriginOriented => make_pair(HysteresisRule::OriginOriented {
-            yield_point: (my, ty),
-            ultimate: (mu, tu),
-        }),
-        HysteresisModel::MaxPointOriented => make_pair(HysteresisRule::MaxPointOriented {
-            crack: (mc, tc),
-            yield_point: (my, ty),
-            ultimate: (mu, tu),
-        }),
-        _ => make_pair(HysteresisRule::Takeda {
-            crack: (mc, tc),
-            yield_point: (my, ty),
-            ultimate: (mu, tu),
-            alpha,
-        }),
+    let (a, b, points) = match rule {
+        HysteresisModel::Retrograde => {
+            let (a, b) = make_pair(HysteresisRule::Retrograde {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+            });
+            (a, b, vec![[0.0, 0.0], [tc, mc], [ty, my], [tu, mu]])
+        }
+        HysteresisModel::OriginOriented => {
+            let (a, b) = make_pair(HysteresisRule::OriginOriented {
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+            });
+            (a, b, vec![[0.0, 0.0], [ty, my], [tu, mu]])
+        }
+        HysteresisModel::MaxPointOriented => {
+            let (a, b) = make_pair(HysteresisRule::MaxPointOriented {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+            });
+            (a, b, vec![[0.0, 0.0], [tc, mc], [ty, my], [tu, mu]])
+        }
+        _ => {
+            let (a, b) = make_pair(HysteresisRule::Takeda {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+                alpha,
+            });
+            (a, b, vec![[0.0, 0.0], [tc, mc], [ty, my], [tu, mu]])
+        }
     };
-    (a, b, false)
+    let backbone = FlexuralSpringBackbone {
+        k_rot,
+        post_yield_stiffness: 0.0,
+        points,
+        use_mn: false,
+        kind: FlexuralBackboneKind::Explicit,
+    };
+    (a, b, backbone)
 }

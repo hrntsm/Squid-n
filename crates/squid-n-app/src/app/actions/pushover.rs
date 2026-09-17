@@ -37,6 +37,10 @@ impl App {
                 bundle.pushover = Some(po);
             }
         }
+        #[cfg(feature = "gui")]
+        {
+            self.ui.scoped.hinge_view_cache = None;
+        }
     }
 
     /// 保存直前に `pushover` 窓口を表示中方向へ同期する。

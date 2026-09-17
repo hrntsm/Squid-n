@@ -6,7 +6,7 @@
 //! - [`record_member_step`] — ヒンジ詳細図用に 1 確定ステップ分の部材端応答
 //!   （軸力・剛域フェイスの局所曲げ・弦からの材端回転）を全部材について記録する
 
-use super::geom::{axial_compression, dot3, member_end_forces_at_face};
+use super::geom::{axial_compression, axial_force_signed, dot3, member_end_forces_at_face};
 use super::types::{MemberStepState, PushoverMemberResponse};
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::{ElementData, Model};
@@ -111,7 +111,7 @@ pub(crate) fn record_member_step(
             };
             let f_i = [f.data[0], f.data[1], f.data[2]];
             let f_j = [f.data[6], f.data[7], f.data[8]];
-            let n = axial_compression(f_i, f_j, ex);
+            let n = axial_force_signed(f_i, f_j, ex);
 
             let get = |node_index: usize, dof: usize| -> f64 {
                 let g = node_index * 6 + dof;
@@ -130,6 +130,7 @@ pub(crate) fn record_member_step(
             let rz_i = dot3(r_i, ez) - chord_v;
             let ry_j = dot3(r_j, ey) + chord_w;
             let rz_j = dot3(r_j, ez) - chord_v;
+            let end_spring = b.end_spring_rotations();
 
             MemberStepState {
                 n: n as f32,
@@ -141,6 +142,8 @@ pub(crate) fn record_member_step(
                 rz_i: rz_i as f32,
                 ry_j: ry_j as f32,
                 rz_j: rz_j as f32,
+                spring_rz_i: end_spring.map_or(0.0, |g| g[0] as f32),
+                spring_rz_j: end_spring.map_or(0.0, |g| g[1] as f32),
             }
         })
         .collect()

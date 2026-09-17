@@ -245,7 +245,7 @@ pub struct MemberHistory {
 /// 結ぶ直線）からの材端回転で、M-θ 曲線・N-M 相関図の応答経路の描画に用いる。
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MemberStepState {
-    /// 軸力 [N]（圧縮正）。
+    /// 軸力 [N]（圧縮正、引張は負値）。
     pub n: f32,
     /// i 端の局所曲げモーメント My（弱軸まわり）[N·mm]。
     pub my_i: f32,
@@ -263,6 +263,12 @@ pub struct MemberStepState {
     pub ry_j: f32,
     /// j 端の弦からの材端回転（局所 z まわり）[rad]。
     pub rz_j: f32,
+    /// i 端の材端集中ばねのばね変形（局所 z まわり）[rad]。
+    /// 端ばねを持たない要素は 0。
+    pub spring_rz_i: f32,
+    /// j 端の材端集中ばねのばね変形（局所 z まわり）[rad]。
+    /// 端ばねを持たない要素は 0。
+    pub spring_rz_j: f32,
 }
 
 /// プッシュオーバー解析結果

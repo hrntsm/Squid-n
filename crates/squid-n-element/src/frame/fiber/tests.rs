@@ -2385,6 +2385,12 @@ fn test_steel_box_fibers_are_hollow() {
         },
         1.0,
         1.0,
+        StrengthParams {
+            steel_fy: 295.0,
+            rebar_fy: 295.0,
+            concrete_fc: 24.0,
+            steel_e: 205000.0,
+        },
         HysteresisModel::Retrograde,
     );
     assert_eq!(sec.fibers.len(), mats.len());
@@ -2442,6 +2448,12 @@ fn test_rc_circle_fibers_match_circle_area() {
         },
         1.0,
         1.0,
+        StrengthParams {
+            steel_fy: 235.0,
+            rebar_fy: 345.0,
+            concrete_fc: 24.0,
+            steel_e: 22000.0,
+        },
         HysteresisModel::Retrograde,
     );
 

@@ -130,6 +130,20 @@ impl SteelBuckling {
         )
     }
 
+    /// 骨格（モーメント-回転）の折れ点
+    /// `[[0,0],[θy,mp],[θu,mu],[θstatic,mu],[θres,mu_res*mu]]`
+    /// （`θy = mp/k1`、回転角 [rad]）。
+    pub fn skeleton_points(&self) -> Vec<[f64; 2]> {
+        let theta_y = self.mp / self.k1;
+        vec![
+            [0.0, 0.0],
+            [theta_y, self.mp],
+            [self.theta_u, self.mu],
+            [self.theta_static, self.mu],
+            [self.theta_res, self.mu_res * self.mu],
+        ]
+    }
+
     /// 骨格（奇対称）。
     fn envelope(&self, theta: f64) -> (f64, f64) {
         let s = theta.signum();

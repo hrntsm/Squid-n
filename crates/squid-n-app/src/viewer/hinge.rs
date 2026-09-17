@@ -1,39 +1,35 @@
-//! ヒンジ図（増分解析のヒンジ発生位置の可視化）の描画。
+//! ヒンジ図（増分解析のヒンジ発生位置の可視化）と、ヒンジ詳細ウィンドウ
+//! （M-θ カーブ・N-M 相関図・ファイバー断面の塑性化マップ）の描画。
 //!
-//! 増分解析（プッシュオーバー解析）の結果 [`PushoverResult::hinges`] は、閾値
-//! （ひび割れ／降伏／終局）を超過している間、同じ (部材, 端) が毎ステップ
-//! push されるため単純な件数集計はできない。本モジュールはまず
-//! [`aggregate_hinges`] で (部材, 端) ごとに 1 件へ集約し（最高レベル・最大
-//! 塑性率・初出 step を保持）、その集約結果を材端の少し内側にマーカーとして描く。
-//!
-//! マーカーは節点直上ではなく材軸に沿って 10% 内側へ寄せて描く。節点直上に描くと、
-//! 同一節点に集まる複数部材のヒンジが重なって判別できなくなるため。
-//!
-//! ヒンジ図で部材をクリックすると、[`show_hinge_detail_window`] がその部材の
-//! ヒンジ詳細ウィンドウ（M-θ カーブ・N-M 相関図・ファイバー断面の塑性化マップ）
-//! を開く。データは [`PushoverResult::member_history`]（材端応答の全ステップ
-//! 履歴）・[`PushoverResult::fiber_states`]（終局時のファイバー断面状態）を使う。
+//! 応答履歴は [`PushoverResult::member_history`]、終局時のファイバー断面状態は
+//! [`PushoverResult::fiber_states`] を用いる。
 
 use std::collections::HashMap;
+use std::time::SystemTime;
 
-use crate::app::App;
+use crate::app::{App, Staleness};
 use crate::theme;
-use squid_n_core::geom::is_vertical_pair;
-use squid_n_core::ids::ElemId;
-use squid_n_core::material_grade::{
-    material_strength_factor_rebar, material_strength_factor_steel,
+use crate::viewer::mn_draw;
+use squid_n_core::ids::{ElemId, MaterialId};
+use squid_n_core::model::{
+    AnalysisKind, ElementData, ElementKind, HysteresisModel, Material, MaterialCategory, Model,
+    RigidZone, Section,
 };
-use squid_n_core::model::{ElementData, ElementKind, Model, Section};
+use squid_n_core::section_shape::SectionShape;
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
+use squid_n_core::units::ConcreteClass;
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
+use squid_n_element::factory::{
+    build_hinge_view, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
+    resolves_to_concentrated_spring, AnalysisHingeModel, HingeView, StrengthBasis,
+};
+use squid_n_element::frame::concentrated::MnInteraction;
+use squid_n_element::wall::side_column::wall_side_column_release;
 use squid_n_element::wall::wall_element::wall_element_geometry;
-use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
+use squid_n_section::mn_surface::MnSurface;
 use squid_n_solver::nonlinear::pushover::{HingeEvent, HingeLevel, MemberStepState};
 
 /// (部材, 端) ごとに集約したヒンジ情報。
-///
-/// `HingeLevel`（squid-n-solver）は `PartialEq` を持たないため、本構造体も
-/// `PartialEq` は導出しない（比較はフィールド単位・`level_rank` 経由で行う）。
 #[derive(Clone, Debug)]
 pub(super) struct HingeMarker {
     pub elem: ElemId,
@@ -59,12 +55,8 @@ fn level_rank(level: &HingeLevel) -> u8 {
 
 /// ヒンジ発生履歴 `hinges` を (部材, 端) ごとに集約する（純粋関数）。
 ///
-/// 同一 (部材, 端) は、その端が閾値を超過している限り毎ステップ重複記録される
-/// ため（`crates/squid-n-solver/src/nonlinear/pushover/mechanism.rs` の
-/// `determine_mechanism` と同様の重複排除）、以下を保持する 1 件へまとめる。
-/// - 最高レベル（Crack < Yield < Ultimate）
-/// - 最大塑性率（`ductility`）
-/// - 初めてヒンジ（Crack 以上）が記録された step（最小 step）
+/// 各端について、最高レベル（Crack < Yield < Ultimate）・最大塑性率・初出 step
+/// （最小 step）を保持する 1 件へまとめる。
 pub(super) fn aggregate_hinges(hinges: &[HingeEvent]) -> Vec<HingeMarker> {
     let mut map: HashMap<(ElemId, bool), HingeMarker> = HashMap::new();
     for h in hinges {
@@ -282,60 +274,255 @@ fn draw_hinge_legend(painter: &egui::Painter, counts: &[usize; 3]) {
     }
 }
 
-/// N-M 相関図用の曲線キャッシュ（部材のファイバー分割・曲面構築は数十ms
-/// かかりうるため、選択部材・ステップ数が変わらない限り再計算しない）。
-pub struct MnCurveCache {
-    elem: ElemId,
-    /// キャッシュ有効性の簡易判定に使うステップ数（増分解析を再実行すると
-    /// 通常はステップ数も変わるため、同一部材のまま結果だけ更新された場合の
-    /// 取りこぼしをある程度防げる）。
-    step_count: usize,
-    /// 正曲げ側（β 方向）の N-M 曲線 [M(kN·m, 符号付き), N(kN, 圧縮正)]。
-    pos: Vec<[f64; 2]>,
-    /// 負曲げ側（β+π 方向）の N-M 曲線。
-    neg: Vec<[f64; 2]>,
-    /// N-My-Mz 相関曲面（3D ワイヤーフレーム表示用。単位は N・N・mm、引張正の
-    /// `MnSurface` 既定規約のまま保持し、描画時に正規化する）。
-    surface: squid_n_section::mn_surface::MnSurface,
+/// ヒンジ詳細ウィンドウの表示ビューキャッシュ。キーが一致する限り、ファイバー
+/// 分割・曲面構築を含む [`build_hinge_view`] を再実行しない。
+pub struct HingeViewCache {
+    key: HingeViewKey,
+    view: HingeView,
 }
 
-use crate::viewer::mn_draw;
+impl HingeViewCache {
+    /// 保存時のキー。テスト用に公開する。
+    #[cfg(test)]
+    fn key(&self) -> &HingeViewKey {
+        &self.key
+    }
+}
 
-/// 部材の最終応答レコードから、採用する曲げ面（強軸 Mz／弱軸 My）を選ぶ
-/// （純粋関数）。i端・j端のうち絶対値が大きい方の成分を軸ごとに比較し、
-/// 大きい軸を採用する（同値なら強軸を採用）。
+/// [`HingeViewCache`] のキー。骨格・曲面の生成に影響する入力を識別する。
+#[derive(Clone, PartialEq, Debug)]
+struct HingeViewKey {
+    elem: ElemId,
+    /// 選択ステップ添字（`records` 上の位置）。材端集中ばね以外は常に 0。
+    step: usize,
+    /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
+    generation: (Option<SystemTime>, bool),
+    kind: ElementKind,
+    /// 要素幾何（両端節点座標と局所軸基準ベクトル）。
+    geometry: Option<ElementGeometry>,
+    /// [`resolves_to_concentrated_spring`] の解決値。
+    concentrated: bool,
+    /// 自要素が耐震壁の側柱（面内解放）か。
+    wall_side_column: bool,
+    /// 材端集中ばねの剛域。それ以外は `None`。
+    rigid_zone: Option<RigidZone>,
+    section: Option<SectionFingerprint>,
+    material: Option<MaterialFingerprint>,
+    rebar_material: Option<MaterialFingerprint>,
+    steel_material: Option<MaterialFingerprint>,
+    /// 材端集中ばねの履歴則。それ以外は `None`。
+    hysteresis: Option<HysteresisModel>,
+}
+
+/// 要素の両端節点座標と局所軸の基準ベクトル。
+#[derive(Clone, PartialEq, Debug)]
+struct ElementGeometry {
+    coord_i: [f64; 3],
+    coord_j: [f64; 3],
+    ref_vector: [f64; 3],
+}
+
+/// 要素の両端節点座標と局所軸基準ベクトルをキー用に取り出す（純粋関数）。
+/// 節点が取得できない場合は `None`。
+fn element_geometry(model: &Model, elem: &ElementData) -> Option<ElementGeometry> {
+    let pi = model.nodes.get(elem.nodes.first()?.index())?;
+    let pj = model.nodes.get(elem.nodes.get(1)?.index())?;
+    Some(ElementGeometry {
+        coord_i: pi.coord,
+        coord_j: pj.coord,
+        ref_vector: elem.local_axis.ref_vector,
+    })
+}
+
+/// 断面のうち骨格・曲面生成に用いるフィールド。
+#[derive(Clone, PartialEq, Debug)]
+struct SectionFingerprint {
+    shape: Option<SectionShape>,
+    area: f64,
+    iy: f64,
+    iz: f64,
+    j: f64,
+    depth: f64,
+    width: f64,
+    as_y: f64,
+    as_z: f64,
+    panel_thickness: Option<f64>,
+    thickness: Option<f64>,
+    material: Option<MaterialId>,
+    rebar_material: Option<MaterialId>,
+    shear_rebar_material: Option<MaterialId>,
+    steel_material: Option<MaterialId>,
+}
+
+impl From<&Section> for SectionFingerprint {
+    fn from(s: &Section) -> Self {
+        SectionFingerprint {
+            shape: s.shape.clone(),
+            area: s.area,
+            iy: s.iy,
+            iz: s.iz,
+            j: s.j,
+            depth: s.depth,
+            width: s.width,
+            as_y: s.as_y,
+            as_z: s.as_z,
+            panel_thickness: s.panel_thickness,
+            thickness: s.thickness,
+            material: s.material,
+            rebar_material: s.rebar_material,
+            shear_rebar_material: s.shear_rebar_material,
+            steel_material: s.steel_material,
+        }
+    }
+}
+
+/// 材料のうち骨格・曲面生成に用いるフィールド。
+#[derive(Clone, PartialEq, Debug)]
+struct MaterialFingerprint {
+    name: String,
+    category: MaterialCategory,
+    young: f64,
+    poisson: f64,
+    fc: Option<f64>,
+    fy: Option<f64>,
+    strength_factor: Option<f64>,
+    concrete_class: ConcreteClass,
+}
+
+impl From<&Material> for MaterialFingerprint {
+    fn from(m: &Material) -> Self {
+        MaterialFingerprint {
+            name: m.name.clone(),
+            category: m.category,
+            young: m.young,
+            poisson: m.poisson,
+            fc: m.fc,
+            fy: m.fy,
+            strength_factor: m.strength_factor,
+            concrete_class: m.concrete_class,
+        }
+    }
+}
+
+/// 骨格・曲面生成に影響する入力からキャッシュキーを組み立てる（純粋関数）。
+/// 強度基準（[`StrengthBasis::MaterialStrength`]）と解析種別
+/// （[`AnalysisKind::Incremental`]）は固定のため含めない。
+fn hinge_view_key(
+    model: &Model,
+    elem: &ElementData,
+    step: usize,
+    staleness: &Staleness,
+) -> HingeViewKey {
+    let concentrated = resolves_to_concentrated_spring(elem, model);
+    let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
+    HingeViewKey {
+        elem: elem.id,
+        step: if concentrated { step } else { 0 },
+        generation: (staleness.last_run, staleness.results_stale),
+        kind: elem.kind,
+        geometry: element_geometry(model, elem),
+        concentrated,
+        wall_side_column: wall_side_column_release(elem, model).is_some(),
+        rigid_zone: concentrated.then_some(elem.rigid_zone),
+        section: section.map(SectionFingerprint::from),
+        material: model.element_material(elem).map(MaterialFingerprint::from),
+        rebar_material: model
+            .element_rebar_material(elem)
+            .map(MaterialFingerprint::from),
+        steel_material: model
+            .element_steel_material(elem)
+            .map(MaterialFingerprint::from),
+        hysteresis: concentrated
+            .then(|| resolve_member_hysteresis(elem, model, AnalysisKind::Incremental)),
+    }
+}
+
+/// キーがキャッシュと一致しなければ [`build_hinge_view`] で再生成する。
+///
+/// `model` は解析と同じく壁を展開したモデルを渡すこと（壁側柱の解決に必要）。
+fn ensure_hinge_view(
+    model: &Model,
+    cache: &mut Option<HingeViewCache>,
+    key: HingeViewKey,
+    elem: &ElementData,
+    axial_force_n: f64,
+) {
+    if cache.as_ref().is_some_and(|c| c.key == key) {
+        return;
+    }
+    let view = build_hinge_view(
+        elem,
+        model,
+        StrengthBasis::MaterialStrength,
+        AnalysisKind::Incremental,
+        axial_force_n,
+        mn_draw::N_ALPHA,
+        mn_draw::N_BETA,
+    );
+    *cache = Some(HingeViewCache { key, view });
+}
+
+/// 部材の最終応答レコードから、支配的な曲げ面（強軸 Mz／弱軸 My）を選ぶ
+/// （純粋関数）。i端・j端のうち絶対値が大きい方の成分で比較し、同値なら強軸。
 pub(super) fn dominant_bend_axis_z(last: &MemberStepState) -> bool {
     let mz_max = last.mz_i.abs().max(last.mz_j.abs());
     let my_max = last.my_i.abs().max(last.my_j.abs());
     mz_max >= my_max
 }
 
-/// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから
-/// 抽出する（純粋関数）。θ は弦からの材端回転、M は剛域フェイス位置の局所曲げ。
+/// ヒンジ詳細で表示する採用曲げ面（強軸 Mz=true）を決める（純粋関数）。
+///
+/// 材端集中ばねは非線形ばねが強軸（局所 z）のみに作用するため、応答が弱軸支配でも
+/// 強軸に固定する。ファイバー／マルチスプリングは最終ステップの支配軸に従う。
+fn effective_bend_dir_z(model: AnalysisHingeModel, dominant_z: bool) -> bool {
+    match model {
+        AnalysisHingeModel::ConcentratedSpring => true,
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring | AnalysisHingeModel::Other => {
+            dominant_z
+        }
+    }
+}
+
+/// 採用軸に応じた i端・j端の (|θ|[rad], |M|[N·mm]) 点列を全ステップから抽出する
+/// （純粋関数）。`use_spring_rot=true` では端ばね変形 `spring_rz_i`／`spring_rz_j`、
+/// それ以外は弦からの材端回転 `rz_*`（弱軸は `ry_*`）を用いる。
 pub(super) fn m_theta_series(
     records: &[MemberStepState],
     bend_dir_z: bool,
+    use_spring_rot: bool,
 ) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let theta = |r: &MemberStepState, end_j: bool| -> f64 {
+        if bend_dir_z {
+            if use_spring_rot {
+                return if end_j {
+                    r.spring_rz_j as f64
+                } else {
+                    r.spring_rz_i as f64
+                };
+            }
+            if end_j {
+                r.rz_j as f64
+            } else {
+                r.rz_i as f64
+            }
+        } else if end_j {
+            r.ry_j as f64
+        } else {
+            r.ry_i as f64
+        }
+    };
     let i_pts = records
         .iter()
         .map(|r| {
-            let (theta, m) = if bend_dir_z {
-                (r.rz_i, r.mz_i)
-            } else {
-                (r.ry_i, r.my_i)
-            };
-            [theta.abs() as f64, m.abs() as f64]
+            let m = if bend_dir_z { r.mz_i } else { r.my_i };
+            [theta(r, false).abs(), m.abs() as f64]
         })
         .collect();
     let j_pts = records
         .iter()
         .map(|r| {
-            let (theta, m) = if bend_dir_z {
-                (r.rz_j, r.mz_j)
-            } else {
-                (r.ry_j, r.my_j)
-            };
-            [theta.abs() as f64, m.abs() as f64]
+            let m = if bend_dir_z { r.mz_j } else { r.my_j };
+            [theta(r, true).abs(), m.abs() as f64]
         })
         .collect();
     (i_pts, j_pts)
@@ -343,13 +530,7 @@ pub(super) fn m_theta_series(
 
 /// 採用軸の端最大 |M|（絶対値が大きい方の端の符号付き値）と軸力から、
 /// 応答経路 [M(kN·m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
-/// `member_history` の軸力は既に圧縮正のため、N-M 曲線側の符号変換のみで
-/// 済む（[`extract_mn_meridian`] 参照）。
-///
-/// 先頭に原点 [0.0, 0.0]（無載荷状態）を前置する。`member_history` の記録は
-/// 最初の記録ステップから始まるため、これがないと経路の始点が分からない。
-/// 長期荷重の初期載荷が実装されれば最初の記録ステップは長期荷重時点になるが、
-/// その場合も「無載荷→長期荷重→水平力」の経路として原点前置のままで正しい。
+/// 先頭に無載荷状態の原点 [0.0, 0.0] を前置する。
 pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -> Vec<[f64; 2]> {
     let mut path = vec![[0.0, 0.0]];
     path.extend(records.iter().map(|r| {
@@ -369,7 +550,7 @@ pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -
 /// （√(My²+Mz²)）が大きい方の端を採用する（[`n_m_response_path`] は採用軸
 /// 1 成分のみを追うのに対し、3D 表示は My・Mz の両成分をそのまま使える）。
 ///
-/// `MnSurface`（[`build_mn_curve_cache`]）は引張正の N 規約のため、圧縮正の
+/// N-M 曲面 [`MnSurface`] は引張正の N 規約のため、圧縮正の
 /// `member_history` の軸力符号を反転して揃える。先頭に原点
 /// [0.0, 0.0, 0.0]（無載荷状態）を前置する（[`n_m_response_path`] と同じ理由）。
 pub(super) fn n_my_mz_response_path_3d(records: &[MemberStepState]) -> Vec<[f64; 3]> {
@@ -414,25 +595,6 @@ pub(super) fn extract_mn_meridian(
         .collect()
 }
 
-/// 部材が軸力を受ける（N-M 相関図の対象となる）か判定する（純粋関数）。
-/// 鉛直材（柱。[`is_vertical_pair`] で判定）、またはファイバー系
-/// （Fiber／MultiSpring／Brace）要素種別を対象とする。
-pub(super) fn is_axial_bending_member(elem: &ElementData, model: &Model) -> bool {
-    if matches!(
-        elem.kind,
-        ElementKind::Fiber | ElementKind::MultiSpring | ElementKind::Brace { .. }
-    ) {
-        return true;
-    }
-    let (Some(&n0), Some(&n1)) = (elem.nodes.first(), elem.nodes.get(1)) else {
-        return false;
-    };
-    let (Some(a), Some(b)) = (model.nodes.get(n0.index()), model.nodes.get(n1.index())) else {
-        return false;
-    };
-    is_vertical_pair(a.coord, b.coord)
-}
-
 /// `sections`（ある部材のファイバー断面状態。xi 昇順とは限らない）から、
 /// 指定端（i端=false→最小 xi、j端=true→最大 xi）に最も近い断面を返す
 /// （純粋関数）。ヒンジは危険断面＝可撓部の材端付近に生じるため、その端に
@@ -449,78 +611,6 @@ pub(super) fn pick_fiber_section(
         sections
             .iter()
             .min_by(|a, b| a.xi.partial_cmp(&b.xi).unwrap_or(std::cmp::Ordering::Equal))
-    }
-}
-
-/// 部材 `elem_id` の N-M 相関曲線を算定する。断面形状が未定義、または断面から
-/// ファイバーを生成できない場合は `None`。
-fn build_mn_curve_cache(
-    app: &App,
-    elem: &ElementData,
-    elem_id: ElemId,
-    bend_dir_z: bool,
-    step_count: usize,
-) -> Option<MnCurveCache> {
-    let sec = elem
-        .section
-        .and_then(|sid| app.core.model.sections.get(sid.index()))?;
-    let shape = sec.shape.clone()?;
-    let mat = app.core.model.element_material(elem);
-    let rebar_mat = app.core.model.element_rebar_material(elem);
-
-    let steel_fy = mat.and_then(|m| m.fy).unwrap_or(235.0)
-        * mat.map(material_strength_factor_steel).unwrap_or(1.0);
-    let rebar_fy = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
-        .or_else(|| mat.and_then(|m| m.fy))
-        .unwrap_or(345.0)
-        * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.0);
-    let concrete_fc = mat.and_then(|m| m.fc).unwrap_or(24.0);
-    let steel_e = mat.map(|m| m.young).unwrap_or(205000.0);
-    let strength = StrengthParams {
-        steel_fy,
-        rebar_fy,
-        concrete_fc,
-        steel_e,
-    };
-
-    let fibers = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
-    if fibers.is_empty() {
-        return None;
-    }
-    let surface = build_surface(
-        &fibers,
-        YieldModelKind::MultiFiber,
-        mn_draw::N_ALPHA,
-        mn_draw::N_BETA,
-    );
-    let (j_pos, j_neg) = mn_beta_columns(mn_draw::N_BETA, bend_dir_z);
-    let pos = extract_mn_meridian(&surface.grid, j_pos, bend_dir_z);
-    let neg = extract_mn_meridian(&surface.grid, j_neg, bend_dir_z);
-
-    Some(MnCurveCache {
-        elem: elem_id,
-        step_count,
-        pos,
-        neg,
-        surface,
-    })
-}
-
-/// `app.ui.scoped.hinge_mn_cache` が古ければ（選択部材・ステップ数が変われば）再計算する。
-fn ensure_mn_cache(
-    app: &mut App,
-    elem: &ElementData,
-    elem_id: ElemId,
-    bend_dir_z: bool,
-    step_count: usize,
-) {
-    let stale = match &app.ui.scoped.hinge_mn_cache {
-        Some(c) => c.elem != elem_id || c.step_count != step_count,
-        None => true,
-    };
-    if stale {
-        app.ui.scoped.hinge_mn_cache =
-            build_mn_curve_cache(app, elem, elem_id, bend_dir_z, step_count);
     }
 }
 
@@ -544,16 +634,17 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
         });
     if !open {
         app.ui.scoped.hinge_detail_elem = None;
-        app.ui.scoped.hinge_mn_cache = None;
+        app.ui.scoped.hinge_view_cache = None;
+        app.ui.scoped.hinge_step = None;
     }
 }
 
-/// ヒンジ詳細ウィンドウの中身。共通ヘッダ（i端/j端の集約ヒンジ情報）に続けて、
-/// M-θ カーブ（常時）・N-M 相関図（軸力を受ける部材のみ）・ファイバー断面の
-/// 塑性化マップ（ファイバー要素のみ）を該当するものだけ縦に並べる。
+/// ヒンジ詳細ウィンドウの中身。共通ヘッダ（i端/j端の集約ヒンジ情報）と解析モデルの
+/// 表示に続けて、表示ステップの選択、M-θ カーブ、N-M 相関図、ファイバー断面の
+/// 塑性化マップを該当するものだけ縦に並べる。
 fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
-    let (is_axial, elem_snapshot, elem_section) = {
-        let display = super::wall_expanded_view_model(&app.core.model);
+    let display = super::wall_expanded_view_model(&app.core.model);
+    let (elem_snapshot, elem_section) = {
         let Some(elem) = display.element(elem_id) else {
             ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
             return;
@@ -562,11 +653,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
             ui.label("耐震壁（壁版から生成された解析要素）");
             ui.separator();
         }
-        (
-            is_axial_bending_member(elem, display.as_ref()),
-            elem.clone(),
-            elem.section,
-        )
+        (elem.clone(), elem.section)
     };
 
     let Some(po) = app.displayed_pushover() else {
@@ -612,44 +699,100 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         .iter()
         .find(|(id, _)| *id == elem_id)
         .map(|(_, s)| s.clone());
+    let dominant_z = dominant_bend_axis_z(&records[records.len() - 1]);
 
-    let Some(last) = records.last() else {
-        return;
+    let step = hinge_step_selector(ui, &mut app.ui.scoped.hinge_step, &records);
+    let axial_force_n = records[step].n as f64;
+    let key = hinge_view_key(
+        display.as_ref(),
+        &elem_snapshot,
+        step,
+        &app.core.scoped.staleness,
+    );
+    ensure_hinge_view(
+        display.as_ref(),
+        &mut app.ui.scoped.hinge_view_cache,
+        key,
+        &elem_snapshot,
+        axial_force_n,
+    );
+    let view = app
+        .ui
+        .scoped
+        .hinge_view_cache
+        .as_ref()
+        .map(|c| &c.view)
+        .expect("ensure_hinge_view がキャッシュを設定する");
+    let bend_dir_z = effective_bend_dir_z(view.model, dominant_z);
+
+    ui.label(format!("解析モデル: {}", analysis_model_label(view.model)));
+    let rule_note = match view.model {
+        AnalysisHingeModel::ConcentratedSpring => Some(format!(
+            "履歴則: {}",
+            resolve_member_hysteresis(&elem_snapshot, &app.core.model, AnalysisKind::Incremental)
+                .label()
+        )),
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring => Some(format!(
+            "コンクリート除荷則: {}",
+            resolve_fiber_concrete_hysteresis(
+                &elem_snapshot,
+                &app.core.model,
+                AnalysisKind::Incremental
+            )
+            .label()
+        )),
+        AnalysisHingeModel::Other => None,
     };
-    let bend_dir_z = dominant_bend_axis_z(last);
-    ui.label(format!(
-        "採用曲げ面: {}",
-        if bend_dir_z {
-            "強軸(Mz)"
-        } else {
-            "弱軸(My)"
+    if let Some(note) = rule_note {
+        ui.label(note);
+    }
+    let bend_face_label = match view.model {
+        AnalysisHingeModel::ConcentratedSpring => {
+            "採用曲げ面: 強軸(Mz)固定（非線形ばねは強軸のみ。弱軸 My は弾性）。".to_string()
         }
-    ));
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring | AnalysisHingeModel::Other => {
+            format!(
+                "採用曲げ面: {}",
+                if bend_dir_z {
+                    "強軸(Mz)"
+                } else {
+                    "弱軸(My)"
+                }
+            )
+        }
+    };
+    ui.label(bend_face_label);
 
     ui.strong("M-θ カーブ（荷重変形カーブ）");
-    draw_m_theta_plot(ui, elem_id, &records, bend_dir_z, &mine);
+    ui.label(m_theta_axis_label(view.model));
+    draw_m_theta_plot(ui, elem_id, &records, view, bend_dir_z, &mine, step);
     ui.separator();
 
-    if is_axial {
+    if view.model != AnalysisHingeModel::Other {
         ui.strong("N-M 相関図");
-        ensure_mn_cache(app, &elem_snapshot, elem_id, bend_dir_z, records.len());
-        let mut cam = app.ui.view.hinge_mn_camera.clone();
-        match app
-            .ui
-            .scoped
-            .hinge_mn_cache
-            .as_ref()
-            .filter(|c| c.elem == elem_id)
-        {
-            Some(cache) => draw_mn_plot(ui, cache, elem_id, &records, bend_dir_z, &mut cam),
-            None => {
-                ui.colored_label(
-                    theme::GRAY_600,
-                    "断面形状が未定義のため N-M 相関図を表示できません。",
+        match mn_display(view) {
+            MnDisplay::Linear => {
+                let mn = view.mn_linear.as_ref().expect("Linear は mn_linear を持つ");
+                ui.label("非線形化は強軸(Mz)のみ（弱軸は弾性）。");
+                ui.label(
+                    "曲線: M = My0·(1−|N|/N許容) [My0=N=0 の降伏モーメント、N許容=軸許容耐力]。\
+                     横軸 M [kN·m]、縦軸 N [kN]（圧縮正・引張負）。",
                 );
+                draw_mn_linear_plot(ui, elem_id, mn, &records, bend_dir_z, step);
+            }
+            MnDisplay::Surface => {
+                let surface = view
+                    .mn_surface
+                    .as_ref()
+                    .expect("Surface は mn_surface を持つ");
+                let mut cam = app.ui.view.hinge_mn_camera.clone();
+                draw_mn_plot(ui, surface, elem_id, &records, bend_dir_z, step, &mut cam);
+                app.ui.view.hinge_mn_camera = cam;
+            }
+            MnDisplay::None => {
+                ui.colored_label(theme::GRAY_600, mn_unavailable_message(view));
             }
         }
-        app.ui.view.hinge_mn_camera = cam;
         ui.separator();
     }
 
@@ -660,48 +803,154 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     }
 }
 
+/// ヒンジ詳細で表示する N-M 図の種別。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MnDisplay {
+    /// N-M 図を出さない（その他、または断面未定義で曲面なし）。
+    None,
+    /// 集中ばねの N-M 線形相関。
+    Linear,
+    /// ファイバー／マルチスプリングの N-M 曲面。
+    Surface,
+}
+
+/// `HingeView` に対応する N-M 図の種別を返す（純粋関数）。
+fn mn_display(view: &HingeView) -> MnDisplay {
+    match view.model {
+        AnalysisHingeModel::ConcentratedSpring if view.mn_linear.is_some() => MnDisplay::Linear,
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring
+            if view.mn_surface.is_some() =>
+        {
+            MnDisplay::Surface
+        }
+        _ => MnDisplay::None,
+    }
+}
+
+/// N-M 図を表示できないときの案内文。
+fn mn_unavailable_message(view: &HingeView) -> &'static str {
+    match view.model {
+        AnalysisHingeModel::ConcentratedSpring if view.backbone.is_none() => {
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
+        }
+        AnalysisHingeModel::ConcentratedSpring => {
+            "この解析モデルでは N-M 相関を使用していません（履歴材料は N-M 相関非対応）。"
+        }
+        AnalysisHingeModel::Fiber | AnalysisHingeModel::MultiSpring => {
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
+        }
+        AnalysisHingeModel::Other => "この要素種別では N-M 相関図を表示しません。",
+    }
+}
+
+/// 解析モデルの表示ラベル。
+fn analysis_model_label(model: AnalysisHingeModel) -> &'static str {
+    match model {
+        AnalysisHingeModel::ConcentratedSpring => "材端集中ばね",
+        AnalysisHingeModel::Fiber => "ファイバー（マルチファイバー）",
+        AnalysisHingeModel::MultiSpring => "マルチスプリング",
+        AnalysisHingeModel::Other => "その他（非線形ヒンジなし）",
+    }
+}
+
+/// 確定ステップ（`records` の添字）を選ぶスライダーを表示し、解決後の添字を返す。
+/// `selected` が `None` の間は最終ステップを既定とする。
+fn hinge_step_selector(
+    ui: &mut egui::Ui,
+    selected: &mut Option<usize>,
+    records: &[MemberStepState],
+) -> usize {
+    let last = records.len() - 1;
+    let mut step = selected.map(|s| s.min(last)).unwrap_or(last);
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("表示ステップ:");
+        changed = ui
+            .add(egui::Slider::new(&mut step, 0..=last).text(format!("/ 全 {}", records.len())))
+            .changed();
+    });
+    if changed {
+        *selected = Some(step);
+    }
+    let axial_kn = force_kn(records[step].n as f64);
+    ui.label(format!(
+        "step {} / 全 {}（軸力 N = {:.1} kN、圧縮正・引張負）",
+        step,
+        records.len(),
+        axial_kn
+    ));
+    step
+}
+
+/// M-θ カーブの横軸の説明文。材端集中ばねは端ばね変形、それ以外は弦からの
+/// 材端回転を横軸に用いる。
+fn m_theta_axis_label(model: AnalysisHingeModel) -> &'static str {
+    if model == AnalysisHingeModel::ConcentratedSpring {
+        "横軸: 端ばね変形 |θs| [rad]、\
+         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
+    } else {
+        "横軸: 材端回転角 |θ| [rad]（弦からの回転）、\
+         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
+    }
+}
+
 /// M-θ カーブ（i端・j端の (|θ|,|M|) 骨格）を egui_plot で描く。
 ///
-/// `Plot` の ID に `elem_id` を含める。egui_plot はズーム／パン状態
-/// （`PlotMemory`）を ID だけで永続化するため、固定 ID のままだと、ある部材の
-/// グラフを操作（ドラッグ／スクロールでのズーム）した後に別の部材のヒンジ詳細を
-/// 開くと、その操作で確定した表示範囲を新しい部材のデータにそのまま流用してしまい
-/// 「カーブが描画領域の一部にしか収まらない／余白が過大」に見える。部材ごとに ID を
-/// 分ければ、選択部材の切替時は必ず新規の `PlotMemory`（既定=自動フィット）から
-/// 始まるため、デフォルト表示は常に 5%（`egui_plot` 既定の `margin_fraction`）の
-/// 余白付きでカーブ全体を収める。
+/// `Plot` の ID に `elem_id` を含め、部材切替時に前の部材のズーム状態を
+/// 引き継がないようにする。集中ばねの応答経路には M-θ 骨格を重ねる。
 fn draw_m_theta_plot(
     ui: &mut egui::Ui,
     elem_id: ElemId,
     records: &[MemberStepState],
+    view: &HingeView,
     bend_dir_z: bool,
     mine: &[HingeMarker],
+    selected_step: usize,
 ) {
-    let (i_pts, j_pts) = m_theta_series(records, bend_dir_z);
+    let use_spring_rot = view.model == AnalysisHingeModel::ConcentratedSpring;
+    let (i_pts, j_pts) = m_theta_series(records, bend_dir_z, use_spring_rot);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
-        .x_axis_label("|θ| [rad]")
+        .x_axis_label(if use_spring_rot {
+            "|θs| [rad]"
+        } else {
+            "|θ| [rad]"
+        })
         .y_axis_label("|M| [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
+            if use_spring_rot {
+                if let Some(bp) = view.backbone.as_deref() {
+                    let xy: Vec<[f64; 2]> = bp.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
+                    plot_ui.line(
+                        egui_plot::Line::new(
+                            "M-θ 骨格（解析モデル）",
+                            egui_plot::PlotPoints::from(xy),
+                        )
+                        .color(theme::GRAY_600)
+                        .width(1.5_f32),
+                    );
+                }
+            }
             if has_i {
-                plot_m_theta_end(plot_ui, "i端", &i_pts, theme::DATA_BLUE);
+                plot_m_theta_end(plot_ui, "i端", &i_pts, theme::DATA_BLUE, selected_step);
             }
             if has_j {
-                plot_m_theta_end(plot_ui, "j端", &j_pts, theme::PARETO_RED);
+                plot_m_theta_end(plot_ui, "j端", &j_pts, theme::PARETO_RED, selected_step);
             }
         });
 }
 
-/// [θ(rad), M(N·mm)] 点列を [θ(rad), M(kN·m)] へ換算して描き、最終点を
-/// マーカーで強調する（点と折れ線は同名で登録し凡例エントリを共有する）。
+/// [θ(rad), M(N·mm)] 点列を [θ(rad), M(kN·m)] へ換算して描き、選択ステップの点を
+/// マーカーで強調する。点と折れ線は同名で登録し凡例エントリを共有する。
 fn plot_m_theta_end(
     plot_ui: &mut egui_plot::PlotUi<'_>,
     name: &str,
     pts: &[[f64; 2]],
     color: egui::Color32,
+    selected_step: usize,
 ) {
     if pts.is_empty() {
         return;
@@ -712,42 +961,39 @@ fn plot_m_theta_end(
             .color(color)
             .width(2.0_f32),
     );
-    if let Some(&last) = xy.last() {
+    if let Some(&selected) = xy.get(selected_step) {
         plot_ui.points(
-            egui_plot::Points::new(name, egui_plot::PlotPoints::from(vec![last]))
-                .color(color)
-                .radius(5.0_f32)
+            egui_plot::Points::new("選択ステップ", egui_plot::PlotPoints::from(vec![selected]))
+                .color(theme::HILITE_PURPLE)
+                .radius(6.0_f32)
                 .shape(egui_plot::MarkerShape::Circle),
         );
     }
 }
 
-/// N-M 相関図: N-My-Mz 曲面の 3D ワイヤーフレーム（上段）＋ 2D スライス
-/// （採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路、下段）を続けて描く。
+/// N-M 相関図（ファイバー／マルチスプリング）: N-My-Mz 曲面の 3D ワイヤーフレーム
+/// （上段）＋ 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路、下段）。
 fn draw_mn_plot(
     ui: &mut egui::Ui,
-    cache: &MnCurveCache,
+    surface: &MnSurface,
     elem_id: ElemId,
     records: &[MemberStepState],
     bend_dir_z: bool,
+    selected_step: usize,
     cam: &mut crate::viewer::CameraState,
 ) {
-    draw_mn_plot_3d(ui, cache, records, cam);
+    draw_mn_plot_3d(ui, surface, records, selected_step, cam);
     ui.add_space(4.0);
     ui.separator();
-    draw_mn_plot_2d(ui, cache, elem_id, records, bend_dir_z);
+    draw_mn_plot_2d(ui, surface, elem_id, records, bend_dir_z, selected_step);
 }
 
 /// N-M 相関図の 3D ワイヤーフレーム（N-My-Mz 曲面）＋ 3D 応答経路。
-///
-/// 曲面そのものの描き方（格子解像度・正規化基準・投影スケール・座標軸・
-/// ワイヤーフレーム）は断面詳細ビュー（`crate::mn_view`）と同じで、
-/// [`crate::viewer::mn_draw`] に集約してある。この関数が持つのは、
-/// そこへ応答経路を重ねるという本画面固有の部分だけである。
 fn draw_mn_plot_3d(
     ui: &mut egui::Ui,
-    cache: &MnCurveCache,
+    surface: &MnSurface,
     records: &[MemberStepState],
+    selected_step: usize,
     cam: &mut crate::viewer::CameraState,
 ) {
     let (rect, response) = ui.allocate_exact_size(
@@ -759,22 +1005,23 @@ fn draw_mn_plot_3d(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::VIEW_BG);
 
-    let refs = mn_draw::surface_refs(&cache.surface);
+    let refs = mn_draw::surface_refs(surface);
     let view = mn_draw::MnView::new(&rect, cam);
 
     mn_draw::draw_axes(&painter, &view);
-    mn_draw::draw_wireframe(&painter, &cache.surface, refs, &view, theme::DATA_BLUE, 160);
-    draw_mn_response_path_3d(&painter, records, refs, &view);
+    mn_draw::draw_wireframe(&painter, surface, refs, &view, theme::DATA_BLUE, 160);
+    draw_mn_response_path_3d(&painter, records, refs, &view, selected_step);
 
     mn_draw::draw_camera_hint(ui);
 }
 
-/// 3D 応答経路（原点前置済み）を折れ線＋終点マーカーで描く。
+/// 3D 応答経路（原点前置済み）を折れ線＋選択ステップのマーカーで描く。
 fn draw_mn_response_path_3d(
     painter: &egui::Painter,
     records: &[MemberStepState],
     refs: [f64; 3],
     view: &mn_draw::MnView<'_>,
+    selected_step: usize,
 ) {
     let path = n_my_mz_response_path_3d(records);
     if path.len() < 2 {
@@ -789,45 +1036,40 @@ fn draw_mn_response_path_3d(
         painter.line_segment([w[0], w[1]], stroke);
     }
     painter.circle_stroke(pts[0], 4.0, egui::Stroke::new(1.5_f32, theme::GRAY_600));
-    if let Some(&last) = pts.last() {
-        painter.circle_filled(last, 5.0, theme::PARETO_RED);
+    if let Some(&selected) = pts.get(selected_step + 1) {
+        painter.circle_filled(selected, 5.0, theme::PARETO_RED);
     }
 }
 
-/// N-M 相関図の 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路）
-/// を egui_plot で描く（3D ワイヤーフレームの下段）。
-///
-/// `Plot` の ID に `elem_id` を含める理由は [`draw_m_theta_plot`] のドキュメント
-/// コメントを参照（固定 ID だと部材切替時に前の部材の表示範囲を引き継いでしまう）。
+/// N-M 相関図の 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路）。
+/// `Plot` の ID に `elem_id` を含め、部材切替時に表示範囲を引き継がない。
 fn draw_mn_plot_2d(
     ui: &mut egui::Ui,
-    cache: &MnCurveCache,
+    surface: &MnSurface,
     elem_id: ElemId,
     records: &[MemberStepState],
     bend_dir_z: bool,
+    selected_step: usize,
 ) {
+    let (j_pos, j_neg) = mn_beta_columns(mn_draw::N_BETA, bend_dir_z);
+    let pos = extract_mn_meridian(&surface.grid, j_pos, bend_dir_z);
+    let neg = extract_mn_meridian(&surface.grid, j_neg, bend_dir_z);
     let response_path = n_m_response_path(records, bend_dir_z);
     egui_plot::Plot::new(format!("hinge_mn_{}", elem_id.0))
         .x_axis_label("M [kN·m]")
-        .y_axis_label("N [kN]（圧縮正）")
+        .y_axis_label("N [kN]（圧縮正・引張負）")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
             plot_ui.line(
-                egui_plot::Line::new(
-                    "N-M 相関(正曲げ側)",
-                    egui_plot::PlotPoints::from(cache.pos.clone()),
-                )
-                .color(theme::GRAY_600)
-                .width(1.5_f32),
+                egui_plot::Line::new("N-M 相関(正曲げ側)", egui_plot::PlotPoints::from(pos))
+                    .color(theme::GRAY_600)
+                    .width(1.5_f32),
             );
             plot_ui.line(
-                egui_plot::Line::new(
-                    "N-M 相関(負曲げ側)",
-                    egui_plot::PlotPoints::from(cache.neg.clone()),
-                )
-                .color(theme::GRAY_300)
-                .width(1.5_f32),
+                egui_plot::Line::new("N-M 相関(負曲げ側)", egui_plot::PlotPoints::from(neg))
+                    .color(theme::GRAY_300)
+                    .width(1.5_f32),
             );
             plot_ui.line(
                 egui_plot::Line::new(
@@ -837,12 +1079,76 @@ fn draw_mn_plot_2d(
                 .color(theme::DATA_BLUE)
                 .width(2.0_f32),
             );
-            if let Some(&last) = response_path.last() {
+            if let Some(&selected) = response_path.get(selected_step + 1) {
                 plot_ui.points(
-                    egui_plot::Points::new("応答経路", egui_plot::PlotPoints::from(vec![last]))
-                        .color(theme::PARETO_RED)
-                        .radius(5.0_f32)
-                        .shape(egui_plot::MarkerShape::Circle),
+                    egui_plot::Points::new(
+                        "選択ステップ",
+                        egui_plot::PlotPoints::from(vec![selected]),
+                    )
+                    .color(theme::HILITE_PURPLE)
+                    .radius(6.0_f32)
+                    .shape(egui_plot::MarkerShape::Circle),
+                );
+            }
+        });
+}
+
+/// 集中ばねの N-M 線形相関 `M = My0·(1−|N|/N許容)` を 2D で描く。
+///
+/// 横軸 M [kN·m]（±両側）、縦軸 N [kN]（圧縮正）。応答経路は採用曲げ面の端
+/// モーメントと軸力（[`n_m_response_path`]）を重ね、選択ステップを強調する。
+fn draw_mn_linear_plot(
+    ui: &mut egui::Ui,
+    elem_id: ElemId,
+    mn: &MnInteraction,
+    records: &[MemberStepState],
+    bend_dir_z: bool,
+    selected_step: usize,
+) {
+    const N_PTS: usize = 41;
+    let mut pos = Vec::with_capacity(N_PTS + 1);
+    let mut neg = Vec::with_capacity(N_PTS + 1);
+    for k in 0..=N_PTS {
+        let n = -mn.n_allow + 2.0 * mn.n_allow * k as f64 / N_PTS as f64;
+        let m = moment_kn_m(mn.moment_limit(n));
+        let n_kn = force_kn(n);
+        pos.push([m, n_kn]);
+        neg.push([-m, n_kn]);
+    }
+    let response_path = n_m_response_path(records, bend_dir_z);
+    egui_plot::Plot::new(format!("hinge_mn_linear_{}", elem_id.0))
+        .x_axis_label("M [kN·m]")
+        .y_axis_label("N [kN]（圧縮正・引張負）")
+        .legend(egui_plot::Legend::default())
+        .height(220.0)
+        .show(ui, |plot_ui| {
+            plot_ui.line(
+                egui_plot::Line::new("N-M 相関(+M側)", egui_plot::PlotPoints::from(pos))
+                    .color(theme::GRAY_600)
+                    .width(1.5_f32),
+            );
+            plot_ui.line(
+                egui_plot::Line::new("N-M 相関(−M側)", egui_plot::PlotPoints::from(neg))
+                    .color(theme::GRAY_300)
+                    .width(1.5_f32),
+            );
+            plot_ui.line(
+                egui_plot::Line::new(
+                    "応答経路",
+                    egui_plot::PlotPoints::from(response_path.clone()),
+                )
+                .color(theme::DATA_BLUE)
+                .width(2.0_f32),
+            );
+            if let Some(&selected) = response_path.get(selected_step + 1) {
+                plot_ui.points(
+                    egui_plot::Points::new(
+                        "選択ステップ",
+                        egui_plot::PlotPoints::from(vec![selected]),
+                    )
+                    .color(theme::HILITE_PURPLE)
+                    .radius(6.0_f32)
+                    .shape(egui_plot::MarkerShape::Circle),
                 );
             }
         });
@@ -877,11 +1183,8 @@ fn draw_fiber_maps(
     });
 }
 
-/// ファイバー断面 1 断面分の塑性化マップ（散布図）を描く。`id_suffix` は
-/// `egui_plot::Plot` の ID 重複を避けるための識別子（"i"/"j"）。`elem_id` も
-/// ID に含める理由は [`draw_m_theta_plot`] のドキュメントコメントを参照
-/// （固定 ID だと部材切替時に前の部材のズーム状態を引き継いでしまう）。
-/// `outline` は断面外形線（外形, 内形（中空断面のみ）。[`fiber_frame_outline`]）。
+/// ファイバー断面 1 断面分の塑性化マップ（散布図）を描く。`id_suffix`（"i"/"j"）と
+/// `elem_id` は `egui_plot::Plot` の ID に含める。`outline` は断面外形線。
 fn draw_one_fiber_map(
     ui: &mut egui::Ui,
     elem_id: ElemId,
@@ -926,9 +1229,7 @@ fn draw_one_fiber_map(
         });
 }
 
-/// 断面外形線（閉多角形）を、ファイバー点より目立たない中間色の細線で描く
-/// （凡例には出さない）。ファイバー配置ミス（例: 角形鋼管なのに中実配置）を
-/// 外形線との対比で判別できるようにするための背景ガイド。
+/// 断面外形線（閉多角形）を中間色の細線で描く（凡例には出さない）。
 fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
     if pts.is_empty() {
         return;
@@ -943,24 +1244,9 @@ fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
     );
 }
 
-/// 断面 `sec` の外形線を、ファイバー座標系（[`FiberStateSample`] の y/z。
-/// `build_gauss_fibers` の 90°回転後: y=せい方向、z=−幅方向）へ変換して返す
-/// （外形, 内形（中空断面のみ）。断面を描けなければ None）。
-///
-/// [`super::solid::section_outline`]／[`super::solid::section_inner_outline`]
-/// が返す輪郭は「局所 y=せい, z=幅」の生の形状座標（重心補正なし）であり、
-/// ファイバー側とは 2 点で異なる:
-/// - 山形・溝形・T形・リップ溝形鋼・上下非対称ビルトH は、ファイバー生成時に
-///   断面積重心が原点に来るよう平行移動されている
-///   （`squid_n_section::mn_surface::fibers::plastic_fibers_at` 末尾の補正）。
-/// - `build_gauss_fibers` の 90°回転 `(y,z)←(z,−y)` により、幅方向の符号が
-///   反転している（輪郭の z=+幅方向、ファイバーの z=−幅方向）。
-///
-/// 生の輪郭多角形自身の面積重心を求めて原点へ平行移動する処理は、上記の
-/// 断面積重心補正と数学的に同値（同一形状の連続体面積重心は求め方によらず
-/// 一致する。多角形の場合はシューレース法の重心公式で厳密に求まる）ため、
-/// 山形等の個別実装をせずに済む。対称断面（矩形・H・箱・円）は多角形重心が
-/// 元々 (0,0) 付近になるため実質的に補正は効かない（下記のテストで検証）。
+/// 断面 `sec` の外形線をファイバー座標系（`build_gauss_fibers` の 90°回転後:
+/// y=せい方向、z=−幅方向）へ変換して返す（外形, 内形（中空断面のみ））。
+/// 断面を描けなければ `None`。非対称断面は輪郭多角形の面積重心を原点へ合わせる。
 fn fiber_frame_outline(sec: &Section) -> Option<SectionOutline> {
     let outer_raw = super::solid::section_outline(sec)?;
     let inner_raw = super::solid::section_inner_outline(sec);
@@ -998,13 +1284,8 @@ fn fiber_material_color(material: usize) -> egui::Color32 {
     }
 }
 
-/// ファイバー断面の散布図を材料別・降伏状態別に描く。
-///
-/// 色は材料区分（コンクリート=グレー系／主筋=赤系／鋼材=青系）で分け、
-/// 降伏状態は明度と形状で重ねて表現する: 未降伏=材料色の淡色（小さい円）、
-/// 降伏(引張)=材料色そのまま＋外周リング（円）、降伏(圧縮)=材料色そのまま＋
-/// 外周リング（ひし形）。主筋・鋼材はコンクリートより大きい円で強調する
-/// （点ファイバーであり本数が少ないため、視認性を優先）。
+/// ファイバー断面の散布図を材料別・降伏状態別に描く。降伏は引張=円、
+/// 圧縮=ひし形、未降伏=淡色で表す。
 fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateSample]) {
     for &(material, mat_label, radius) in FIBER_MATERIALS {
         let color = fiber_material_color(material);
@@ -1082,6 +1363,8 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewer::wall_expanded_view_model;
+    use squid_n_core::model::ForceRegime;
     use squid_n_core::units::to_display::moment_kn_m;
 
     /// テスト用のヒンジ発生イベントを組み立てる。
@@ -1184,6 +1467,8 @@ mod tests {
             rz_i: 0.0,
             ry_j: 0.0,
             rz_j: 0.0,
+            spring_rz_i: 0.0,
+            spring_rz_j: 0.0,
         }
     }
 
@@ -1234,9 +1519,30 @@ mod tests {
         let mut records = records;
         records[0].rz_i = -0.01;
         records[0].rz_j = 0.02;
-        let (i_pts, j_pts) = m_theta_series(&records, true);
+        let (i_pts, j_pts) = m_theta_series(&records, true, false);
         assert_pts_near(&i_pts, &[[0.01, 100.0]]);
         assert_pts_near(&j_pts, &[[0.02, 50.0]]);
+    }
+
+    /// 材端集中ばね（`use_spring_rot=true`）では、弦からの材端回転ではなく
+    /// 端ばね変形を横軸に使う。
+    #[test]
+    fn m_theta_series_uses_spring_rotation_for_concentrated_spring() {
+        let mut records = vec![step(100.0, -50.0, 1.0, 1.0, 0.0)];
+        records[0].rz_i = -0.10;
+        records[0].rz_j = 0.20;
+        records[0].spring_rz_i = -0.01;
+        records[0].spring_rz_j = 0.02;
+        let (i_pts, j_pts) = m_theta_series(&records, true, true);
+        assert_pts_near(&i_pts, &[[0.01, 100.0]]);
+        assert_pts_near(&j_pts, &[[0.02, 50.0]]);
+    }
+
+    /// M-θ 説明文は材端集中ばねとファイバー系の横軸の基準に合わせる。
+    #[test]
+    fn m_theta_axis_label_matches_axis() {
+        assert!(m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring).contains("端ばね変形"));
+        assert!(m_theta_axis_label(AnalysisHingeModel::Fiber).contains("弦からの回転"));
     }
 
     /// 弱軸採用時は ry/my を抽出する。
@@ -1245,7 +1551,7 @@ mod tests {
         let mut records = vec![step(0.0, 0.0, 30.0, -20.0, 0.0)];
         records[0].ry_i = 0.005;
         records[0].ry_j = -0.006;
-        let (i_pts, j_pts) = m_theta_series(&records, false);
+        let (i_pts, j_pts) = m_theta_series(&records, false, false);
         assert_pts_near(&i_pts, &[[0.005, 30.0]]);
         assert_pts_near(&j_pts, &[[0.006, 20.0]]);
     }
@@ -1253,7 +1559,7 @@ mod tests {
     /// 空入力は空の点列を返す。
     #[test]
     fn m_theta_series_empty_input() {
-        let (i_pts, j_pts) = m_theta_series(&[], true);
+        let (i_pts, j_pts) = m_theta_series(&[], true, false);
         assert!(i_pts.is_empty());
         assert!(j_pts.is_empty());
     }
@@ -1293,6 +1599,17 @@ mod tests {
     fn n_m_response_path_empty_input_returns_origin_only() {
         let path = n_m_response_path(&[], true);
         assert_eq!(path, vec![[0.0, 0.0]]);
+    }
+
+    /// 引張（負の軸力）は N-M 応答経路で N=0 に張り付かず、2D は圧縮正の負値、
+    /// 3D は引張正の正値として描かれる。
+    #[test]
+    fn n_m_response_path_keeps_tension_signed() {
+        let records = vec![step(-80.0, 30.0, 0.0, 0.0, -1000.0)];
+        let path = n_m_response_path(&records, true);
+        assert!(path[1][1] < 0.0, "2D は引張を負の N として描く");
+        let path_3d = n_my_mz_response_path_3d(&records);
+        assert!(path_3d[1][2] > 0.0, "3D は引張正へ符号反転する");
     }
 
     // ── n_my_mz_response_path_3d ────────────────────────────────────────
@@ -1360,85 +1677,6 @@ mod tests {
         assert_eq!(pts.len(), 1);
     }
 
-    // ── is_axial_bending_member ─────────────────────────────────────────
-
-    fn make_model_with_column() -> (ElementData, Model) {
-        use smallvec::smallvec;
-        use squid_n_core::dof::Dof6Mask;
-        use squid_n_core::ids::NodeId;
-        use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Node, RigidZone};
-
-        let n0 = Node {
-            id: NodeId(0),
-            coord: [0.0, 0.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        };
-        let n1 = Node {
-            id: NodeId(1),
-            coord: [0.0, 0.0, 3000.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        };
-        let model = Model {
-            nodes: vec![n0, n1],
-            ..Default::default()
-        };
-        let elem = ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Beam,
-            nodes: smallvec![NodeId(0), NodeId(1)],
-            section: None,
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: RigidZone::default(),
-            plastic_zone: None,
-            spring: None,
-        };
-        (elem, model)
-    }
-
-    /// 両端節点の水平距離が 1mm 未満の Beam（柱）は軸力を受ける部材とみなす。
-    #[test]
-    fn is_axial_bending_member_vertical_beam_is_true() {
-        let (elem, model) = make_model_with_column();
-        assert!(is_axial_bending_member(&elem, &model));
-    }
-
-    /// 水平材（梁）は Beam 種別では対象外。
-    #[test]
-    fn is_axial_bending_member_horizontal_beam_is_false() {
-        let (mut elem, mut model) = make_model_with_column();
-        model.nodes[1].coord = [3000.0, 0.0, 0.0];
-        elem.nodes =
-            smallvec::smallvec![squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)];
-        assert!(!is_axial_bending_member(&elem, &model));
-    }
-
-    /// ElementKind が Fiber/MultiSpring/Brace なら向きに依らず対象。
-    #[test]
-    fn is_axial_bending_member_fiber_kind_is_always_true() {
-        let (mut elem, mut model) = make_model_with_column();
-        model.nodes[1].coord = [3000.0, 0.0, 0.0]; // 水平材
-        elem.kind = ElementKind::Fiber;
-        assert!(is_axial_bending_member(&elem, &model));
-
-        elem.kind = ElementKind::MultiSpring;
-        assert!(is_axial_bending_member(&elem, &model));
-
-        elem.kind = ElementKind::Brace {
-            tension_only: false,
-        };
-        assert!(is_axial_bending_member(&elem, &model));
-    }
-
     // ── pick_fiber_section ──────────────────────────────────────────────
 
     fn fiber_section(xi: f64) -> FiberSectionState {
@@ -1503,7 +1741,7 @@ mod tests {
 
     use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::section_shape::SectionShape;
-    use squid_n_section::mn_surface::plastic_fibers;
+    use squid_n_section::mn_surface::{plastic_fibers, StrengthParams, YieldModelKind};
 
     /// 中心 (0,0) の正方形（原点対称）の面積重心は原点。
     #[test]
@@ -1693,6 +1931,805 @@ mod tests {
         assert!(
             (omax[1] + omin[1]) < -1.0,
             "非対称断面なのに外形線が z=0 対称のまま（重心補正が効いていない）: omin={omin:?}, omax={omax:?}"
+        );
+    }
+
+    // ── ヒンジ表示ビューのキャッシュキー ────────────────────────────────
+
+    /// キャッシュキーのテスト用モデル（断面・材料を編集できる最小構成）。
+    fn key_test_model() -> Model {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{Material, Node};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let section = Section {
+            id: SectionId(0),
+            name: "sec".into(),
+            floor: None,
+            area: 8000.0,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e8,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 6666.7,
+            as_z: 6666.7,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: Some(MaterialId(1)),
+            shear_rebar_material: None,
+            steel_material: None,
+        };
+        let material = |id, name: &str, category, fy: f64| Material {
+            id,
+            name: name.into(),
+            category,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(fy),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        };
+        Model {
+            nodes: vec![
+                node(NodeId(0), [0.0, 0.0, 0.0]),
+                node(NodeId(1), [0.0, 0.0, 3000.0]),
+            ],
+            sections: vec![section],
+            materials: vec![
+                material(MaterialId(0), "SN400", MaterialCategory::Steel, 235.0),
+                material(MaterialId(1), "SD345", MaterialCategory::Rebar, 345.0),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// キャッシュキーのテスト用モデル（RC 断面形状つき。ファイバー曲面生成用）。
+    fn key_test_model_rc() -> Model {
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let mut model = key_test_model();
+        model.sections[0].shape = Some(SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        });
+        model.materials[0].name = "Fc24".into();
+        model.materials[0].category = MaterialCategory::Concrete;
+        model.materials[0].fc = Some(24.0);
+        model
+    }
+
+    /// キャッシュキーのテスト用要素。
+    fn key_test_elem(kind: ElementKind, regime: ForceRegime) -> ElementData {
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{EndCondition, LocalAxis, RigidZone};
+
+        ElementData {
+            id: ElemId(0),
+            kind,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: regime,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    fn key_of(model: &Model, elem: &ElementData, step: usize) -> HingeViewKey {
+        hinge_view_key(model, elem, step, &Staleness::default())
+    }
+
+    /// 選択ステップが変わればキーが変わる（集中ばねの骨格・N-M 線に使う軸力が変わる）。
+    #[test]
+    fn hinge_view_key_changes_with_step() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert_ne!(key_of(&model, &elem, 0), key_of(&model, &elem, 1));
+    }
+
+    /// ファイバー／マルチスプリングのビューは選択ステップの軸力に依存しないため、
+    /// ステップが変わってもキーは変わらない（重い曲面を再生成しない）。
+    #[test]
+    fn hinge_view_key_ignores_step_for_non_concentrated() {
+        let model = key_test_model();
+        let fiber = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        assert_eq!(key_of(&model, &fiber, 0), key_of(&model, &fiber, 1));
+        let ms = key_test_elem(ElementKind::MultiSpring, ForceRegime::AxialBendingInteract);
+        assert_eq!(key_of(&model, &ms, 0), key_of(&model, &ms, 1));
+    }
+
+    /// 材端集中ばねは N-M 相関非対応の履歴則でも選択ステップの軸力が骨格に
+    /// 影響しうる（解析側は降伏モーメント不定・初期回転剛性ゼロで N-M 相関を
+    /// 適用するため）。ステップが変わればキーも変わる。
+    #[test]
+    fn hinge_view_key_uses_step_for_history_rule_concentrated_spring() {
+        let mut model = key_test_model();
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(
+            resolves_to_concentrated_spring(&elem, &model),
+            "テストモデルは集中ばねに判定される"
+        );
+        let k0 = key_of(&model, &elem, 0);
+        assert_ne!(k0, key_of(&model, &elem, 1));
+    }
+
+    /// 解析側は降伏モーメント不定・初期回転剛性ゼロの場合は履歴則でも N-M 相関を
+    /// 適用する。この縮退ケースでも選択ステップの軸力が骨格に影響するため、
+    /// キーが step を常に含むことを実ビューの `mn_linear` の有無と併せて固定する。
+    #[test]
+    fn hinge_view_key_uses_step_for_degenerate_concentrated_spring_with_history_rule() {
+        let mut model = key_test_model();
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        model.sections[0].iy = 0.0;
+        model.sections[0].iz = 0.0;
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let view = build_hinge_view(
+            &elem,
+            &model,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert!(
+            view.mn_linear.is_some(),
+            "縮退ケースでも解析は N-M 相関を適用する"
+        );
+        let k0 = key_of(&model, &elem, 0);
+        assert_ne!(k0, key_of(&model, &elem, 1));
+    }
+
+    /// 要素の両端節点座標・局所軸基準ベクトルが変わればキーが変わる
+    /// （幾何由来の解決レジーム変化＝剛床所属や壁側柱判定の変化を検出する）。
+    #[test]
+    fn hinge_view_key_changes_with_element_geometry() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let k0 = key_of(&model, &elem, 1);
+
+        let mut moved = model.clone();
+        moved.nodes[1].coord[2] += 100.0;
+        assert_ne!(k0, key_of(&moved, &elem, 1), "節点座標の変更でキーが変わる");
+
+        let mut rotated = elem.clone();
+        rotated.local_axis.ref_vector = [1.0, 0.0, 0.0];
+        assert_ne!(
+            k0,
+            key_of(&model, &rotated, 1),
+            "局所軸基準ベクトルの変更でキーが変わる"
+        );
+    }
+
+    /// 同一ステップ数で再解析した場合（`last_run` のみ更新）もキーが変わる。
+    /// また `results_stale` の変化も世代としてキーに含まれる。
+    #[test]
+    fn hinge_view_key_changes_with_result_generation_same_step_count() {
+        use std::time::Duration;
+
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let mut stale = Staleness {
+            last_run: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+        let k0 = hinge_view_key(&model, &elem, 2, &stale);
+        stale.last_run = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+        let k1 = hinge_view_key(&model, &elem, 2, &stale);
+        assert_ne!(k0, k1, "同一 step 数でも再解析でキーが変わる");
+
+        stale.results_stale = true;
+        let k2 = hinge_view_key(&model, &elem, 2, &stale);
+        assert_ne!(k1, k2, "results_stale も世代に含める");
+    }
+
+    /// 断面・材料・履歴則の編集でキーが変わる。
+    #[test]
+    fn hinge_view_key_changes_with_section_material_and_hysteresis() {
+        let mut model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let k0 = key_of(&model, &elem, 1);
+
+        model.sections[0].area += 1.0;
+        let k1 = key_of(&model, &elem, 1);
+        assert_ne!(k0, k1, "断面編集でキーが変わる");
+
+        model.materials[0].fy = Some(300.0);
+        let k2 = key_of(&model, &elem, 1);
+        assert_ne!(k1, k2, "材料編集でキーが変わる");
+
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        let k3 = key_of(&model, &elem, 1);
+        assert_ne!(k2, k3, "履歴則変更でキーが変わる");
+    }
+
+    /// stale 中に剛床を追加→削除してもキーが変化する。`results_stale` は bool で
+    /// 単調増加しないため、剛床所属に由来する解決レジームがファイバー⇔材端集中ばねと
+    /// 変わっても、レジームをキーに含めなければ同一キーになりうる。
+    #[test]
+    fn hinge_view_key_changes_with_rigid_diaphragm_toggle() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, StoryId};
+        use squid_n_core::model::{Constraint, Node};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [5000.0, 0.0, 0.0]),
+            node(NodeId(2), [0.0, 0.0, 3000.0]),
+        ];
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::Auto);
+        let stale = Staleness {
+            results_stale: true,
+            last_run: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+
+        let fiber = hinge_view_key(&model, &elem, 0, &stale);
+        assert!(
+            !resolves_to_concentrated_spring(&elem, &model),
+            "剛床に所属しない水平梁はファイバー"
+        );
+
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        ));
+        let concentrated = hinge_view_key(&model, &elem, 0, &stale);
+        assert!(
+            resolves_to_concentrated_spring(&elem, &model),
+            "剛床所属の水平梁は材端集中ばね"
+        );
+        assert_ne!(fiber, concentrated, "剛床の追加でキーが変わる");
+
+        model.constraints.clear();
+        let fiber_again = hinge_view_key(&model, &elem, 0, &stale);
+        assert_ne!(
+            concentrated, fiber_again,
+            "stale のまま剛床を削除しても解決レジームの変化でキーが変わる"
+        );
+        assert_eq!(fiber, fiber_again, "剛床を戻せば元のキーと一致する");
+    }
+
+    /// 壁版から解析要素を展開するテスト用モデル（壁の解析要素は入力モデルに持たない）。
+    /// 返り値は (壁版を持つ入力モデル, 側柱にする鉛直 `Beam`)。
+    fn wall_side_column_view_model() -> (Model, ElementData) {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, WallPlateId, WallRegionId};
+        use squid_n_core::model::{
+            ElementData, EndCondition, LocalAxis, Node, WallPlate, WallPlateShape, WallRegion,
+        };
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let line = |id: u32, nodes: [NodeId; 2]| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![nodes[0], nodes[1]],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [4000.0, 0.0, 0.0]),
+            node(NodeId(2), [4000.0, 0.0, 3000.0]),
+            node(NodeId(3), [0.0, 0.0, 3000.0]),
+        ];
+        // 側柱 [0,3] を先に積み、壁版の左辺の支持部材として使わせる。
+        let column = line(3, [NodeId(0), NodeId(3)]);
+        model.elements.push(column.clone());
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
+            },
+        );
+        model.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            posts: Vec::new(),
+        });
+        (model, column)
+    }
+
+    /// 壁側柱のキーは、生モデルではなく壁展開モデルを参照したときに変わる。
+    /// 側柱判定は鉛直材のレジームを変えずにビューを非線形ヒンジなしへ変えるため、
+    /// レジームだけでは追随できない。
+    #[test]
+    fn hinge_view_key_changes_with_wall_side_column_toggle() {
+        let (model, column) = wall_side_column_view_model();
+        let stale = Staleness {
+            results_stale: true,
+            last_run: Some(SystemTime::UNIX_EPOCH),
+            ..Default::default()
+        };
+
+        let raw_key = hinge_view_key(&model, &column, 0, &stale);
+        assert!(
+            wall_side_column_release(&column, &model).is_none(),
+            "生モデルには壁の解析要素が無い"
+        );
+
+        let expanded = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        let expanded_key = hinge_view_key(&expanded, &column, 0, &stale);
+        assert!(
+            wall_side_column_release(&column, &expanded).is_some(),
+            "展開モデルでは側柱と判定される"
+        );
+        assert!(
+            !resolves_to_concentrated_spring(&column, &expanded),
+            "壁側柱は集中ばねではない"
+        );
+        assert_ne!(raw_key, expanded_key, "壁の展開でキーが変わる");
+
+        let mut removed = model.clone();
+        removed.wall_plates.clear();
+        removed.wall_regions.clear();
+        let removed_view = wall_expanded_view_model(&removed);
+        let removed_key = hinge_view_key(removed_view.as_ref(), &column, 0, &stale);
+        assert_eq!(raw_key, removed_key, "壁を戻せば元のキーと一致する");
+    }
+
+    /// 壁側柱の解析モデル解決は、生モデルではなく壁展開モデルを参照する。
+    /// 生モデルには壁要素が無いためファイバーと誤判定し、展開モデルでは
+    /// 解析と同じく非線形ヒンジなし（[`AnalysisHingeModel::Other`]）になる。
+    #[test]
+    fn hinge_view_resolves_wall_side_column_with_expanded_model() {
+        let (model, column) = wall_side_column_view_model();
+        let view = |m: &Model| {
+            build_hinge_view(
+                &column,
+                m,
+                StrengthBasis::MaterialStrength,
+                AnalysisKind::Incremental,
+                0.0,
+                mn_draw::N_ALPHA,
+                mn_draw::N_BETA,
+            )
+            .model
+        };
+        assert_eq!(view(&model), AnalysisHingeModel::Fiber);
+        let expanded = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        assert_eq!(view(&expanded), AnalysisHingeModel::Other);
+    }
+
+    /// ファイバーの N-M 曲面は剛域・塑性化域長・履歴則に依存しないため、
+    /// これらを編集してもキーは変わらない（重い曲面を再生成しない）。
+    #[test]
+    fn hinge_view_key_ignores_non_display_fields_for_fiber() {
+        let model = key_test_model_rc();
+        let elem = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        let k0 = key_of(&model, &elem, 0);
+
+        let mut rigid = elem.clone();
+        rigid.rigid_zone.length_i = 500.0;
+        assert_eq!(k0, key_of(&model, &rigid, 0), "剛域は曲面に効かない");
+
+        let mut plastic = elem.clone();
+        plastic.plastic_zone = Some(900.0);
+        assert_eq!(
+            k0,
+            key_of(&model, &plastic, 0),
+            "塑性化域長は曲面に効かない"
+        );
+
+        let mut hist = model.clone();
+        hist.set_member_hysteresis(ElemId(0), HysteresisModel::Retrograde);
+        assert_eq!(k0, key_of(&hist, &elem, 0), "履歴則は曲面に効かない");
+    }
+
+    /// 材端集中ばねでは剛域・履歴則が表示骨格に効くためキーに含め、
+    /// 塑性化域長は効かないため含めない。
+    #[test]
+    fn hinge_view_key_includes_concentrated_display_fields_only() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(
+            resolves_to_concentrated_spring(&elem, &model),
+            "テストモデルは集中ばねに判定される"
+        );
+        let k0 = key_of(&model, &elem, 0);
+
+        let mut plastic = elem.clone();
+        plastic.plastic_zone = Some(900.0);
+        assert_eq!(
+            k0,
+            key_of(&model, &plastic, 0),
+            "塑性化域長は骨格に効かない"
+        );
+
+        let mut rigid = elem.clone();
+        rigid.rigid_zone.length_i = 500.0;
+        assert_ne!(k0, key_of(&model, &rigid, 0), "剛域は骨格に効く");
+
+        let mut hist = model.clone();
+        hist.set_member_hysteresis(ElemId(0), HysteresisModel::Retrograde);
+        assert_ne!(k0, key_of(&hist, &elem, 0), "履歴則は骨格に効く");
+    }
+
+    /// 指定レジームそのものはキーに含めない。同じ分岐（材端集中ばね）に解決される
+    /// `Auto` と明示指定は表示ビューが同一のためキーも一致する。
+    #[test]
+    fn hinge_view_key_treats_force_regime_via_resolved_branch() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, StoryId};
+        use squid_n_core::model::{Constraint, Node};
+
+        let node = |id: NodeId, coord: [f64; 3]| Node {
+            id,
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut model = key_test_model();
+        model.nodes = vec![
+            node(NodeId(0), [0.0, 0.0, 0.0]),
+            node(NodeId(1), [5000.0, 0.0, 0.0]),
+            node(NodeId(2), [0.0, 0.0, 3000.0]),
+        ];
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        ));
+
+        let auto = key_test_elem(ElementKind::Beam, ForceRegime::Auto);
+        let explicit = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(resolves_to_concentrated_spring(&auto, &model));
+        assert!(resolves_to_concentrated_spring(&explicit, &model));
+        assert_eq!(
+            key_of(&model, &auto, 0),
+            key_of(&model, &explicit, 0),
+            "同じ分岐に解決されるレジームは同じキー"
+        );
+    }
+
+    /// 軸力が大きいほど集中ばね骨格の降伏モーメントが低下する
+    /// （ステップ変更で軸力引数が変わる＝表示骨格が再生成されることの根拠）。
+    #[test]
+    fn concentrated_backbone_follows_axial_force() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let basis = StrengthBasis::MaterialStrength;
+        let kind = AnalysisKind::Incremental;
+        let b0 = build_hinge_view(
+            &elem,
+            &model,
+            basis,
+            kind,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        )
+        .backbone
+        .expect("集中ばねは骨格を返す");
+        let b1 = build_hinge_view(
+            &elem,
+            &model,
+            basis,
+            kind,
+            1.0e5,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        )
+        .backbone
+        .expect("集中ばねは骨格を返す");
+        assert!(
+            b0[1][1] > b1[1][1],
+            "軸力が大きいほど降伏モーメントが低下する"
+        );
+    }
+
+    /// 引張（圧縮正で負値）でも集中ばねの N-M 線形相関の降伏モーメントが
+    /// 低減される（`build_hinge_view` は `moment_limit` の絶対値を用いる）。
+    /// 解析側の軸力（引張正）と `MemberStepState.n`（圧縮正・引張負）で
+    /// 符号規約は異なるが、絶対値を使うため表示骨格は解析と一致する。
+    #[test]
+    fn concentrated_backbone_reduces_under_tension() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let basis = StrengthBasis::MaterialStrength;
+        let kind = AnalysisKind::Incremental;
+        let backbone = |axial: f64| {
+            build_hinge_view(
+                &elem,
+                &model,
+                basis,
+                kind,
+                axial,
+                mn_draw::N_ALPHA,
+                mn_draw::N_BETA,
+            )
+            .backbone
+            .expect("集中ばねは骨格を返す")
+        };
+        let b0 = backbone(0.0);
+        let b_tension = backbone(-1.0e5);
+        let b_compression = backbone(1.0e5);
+        assert!(
+            b_tension[1][1] < b0[1][1],
+            "引張でも降伏モーメントが低下する"
+        );
+        assert!(
+            (b_tension[1][1] - b_compression[1][1]).abs() < 1e-9,
+            "引張・圧縮で降伏モーメントの低減量は等しい（絶対値）"
+        );
+    }
+
+    /// 履歴材料（use_nm=false）の集中ばねは `mn_linear` が `None` で、N-M 図を出さない。
+    #[test]
+    fn concentrated_history_rule_has_no_mn_linear_and_no_nm_plot() {
+        let mut model = key_test_model();
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let view = build_hinge_view(
+            &elem,
+            &model,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
+        assert!(view.mn_linear.is_none());
+        assert_eq!(mn_display(&view), MnDisplay::None);
+    }
+
+    /// 集中ばねは弱軸(My)支配の応答でも強軸(Mz)表示に固定し、ファイバー系は
+    /// 支配軸（`dominant_bend_axis_z`）に従う。
+    #[test]
+    fn effective_bend_dir_z_forces_strong_axis_for_concentrated_spring() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let concentrated = build_hinge_view(
+            &elem,
+            &model,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(concentrated.model, AnalysisHingeModel::ConcentratedSpring);
+
+        let weak_dominant = step(50.0, -10.0, 200.0, -150.0, 0.0);
+        assert!(!dominant_bend_axis_z(&weak_dominant), "弱軸支配の前提");
+        assert!(
+            effective_bend_dir_z(concentrated.model, dominant_bend_axis_z(&weak_dominant)),
+            "集中ばねは弱軸支配でも強軸(Mz)に固定"
+        );
+
+        let rc = key_test_model_rc();
+        let fiber = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        let fiber_view = build_hinge_view(
+            &fiber,
+            &rc,
+            StrengthBasis::MaterialStrength,
+            AnalysisKind::Incremental,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(fiber_view.model, AnalysisHingeModel::Fiber);
+        assert!(
+            !effective_bend_dir_z(fiber_view.model, dominant_bend_axis_z(&weak_dominant)),
+            "ファイバーは支配軸（弱軸 My）に従う"
+        );
+    }
+
+    /// キャッシュは同じキーのときだけ再利用され、キーが変われば作り直される
+    /// （`ensure_hinge_view` の一致判定）。
+    #[test]
+    fn hinge_view_cache_reuses_only_matching_key() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let k0 = key_of(&model, &elem, 0);
+        let cache = HingeViewCache {
+            key: k0.clone(),
+            view: HingeView {
+                model: AnalysisHingeModel::Other,
+                backbone: None,
+                mn_linear: None,
+                mn_surface: None,
+            },
+        };
+        assert_eq!(cache.key(), &k0);
+        let k1 = key_of(&model, &elem, 1);
+        assert_ne!(cache.key(), &k1);
+    }
+
+    /// 表示方向を切り替えるとキャッシュを破棄する。集中ばねの M-θ 骨格は表示中の
+    /// 方向の `records` から選んだステップの軸力で作られるため、方向切替後に
+    /// 古い軸力の骨格を再利用してはならない。
+    #[test]
+    fn set_pushover_view_dir_clears_hinge_view_cache() {
+        use squid_n_solver::statics::analysis::SeismicDir;
+
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let mut app = App::default();
+        app.core.model = model;
+        app.core.scoped.pushover_view_dir = SeismicDir::X;
+        let key = hinge_view_key(&app.core.model, &elem, 0, &app.core.scoped.staleness);
+        ensure_hinge_view(
+            &app.core.model,
+            &mut app.ui.scoped.hinge_view_cache,
+            key,
+            &elem,
+            0.0,
+        );
+        assert!(app.ui.scoped.hinge_view_cache.is_some());
+
+        app.set_pushover_view_dir(SeismicDir::Y);
+        assert!(
+            app.ui.scoped.hinge_view_cache.is_none(),
+            "方向切替で古い軸力の骨格を破棄する"
+        );
+    }
+
+    /// 要素種別に応じて `AnalysisHingeModel` と表示する N-M 図が対応する。
+    #[test]
+    fn mn_display_matches_element_model_kind() {
+        let basis = StrengthBasis::MaterialStrength;
+        let kind = AnalysisKind::Incremental;
+        let rc = key_test_model_rc();
+
+        let beam = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let beam_view = build_hinge_view(
+            &beam,
+            &key_test_model(),
+            basis,
+            kind,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(beam_view.model, AnalysisHingeModel::ConcentratedSpring);
+        assert_eq!(mn_display(&beam_view), MnDisplay::Linear);
+
+        let fiber = key_test_elem(ElementKind::Fiber, ForceRegime::AxialBendingInteract);
+        let fiber_view = build_hinge_view(
+            &fiber,
+            &rc,
+            basis,
+            kind,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(fiber_view.model, AnalysisHingeModel::Fiber);
+        assert_eq!(mn_display(&fiber_view), MnDisplay::Surface);
+
+        let ms = key_test_elem(ElementKind::MultiSpring, ForceRegime::AxialBendingInteract);
+        let ms_view = build_hinge_view(
+            &ms,
+            &rc,
+            basis,
+            kind,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(ms_view.model, AnalysisHingeModel::MultiSpring);
+        assert_eq!(mn_display(&ms_view), MnDisplay::Surface);
+
+        let other = key_test_elem(
+            ElementKind::Brace {
+                tension_only: false,
+            },
+            ForceRegime::AxialBendingInteract,
+        );
+        let other_view = build_hinge_view(
+            &other,
+            &rc,
+            basis,
+            kind,
+            0.0,
+            mn_draw::N_ALPHA,
+            mn_draw::N_BETA,
+        );
+        assert_eq!(other_view.model, AnalysisHingeModel::Other);
+        assert_eq!(mn_display(&other_view), MnDisplay::None);
+    }
+
+    /// 集中ばねで骨格が無い（断面・材料不足）場合は「履歴材料が非対応」ではなく
+    /// 情報不足を案内する。
+    #[test]
+    fn mn_unavailable_message_distinguishes_input_shortage_from_history_rule() {
+        let input_shortage = HingeView {
+            model: AnalysisHingeModel::ConcentratedSpring,
+            backbone: None,
+            mn_linear: None,
+            mn_surface: None,
+        };
+        assert_eq!(
+            mn_unavailable_message(&input_shortage),
+            "断面または材料の情報が不足しているため N-M 相関図を表示できません。"
+        );
+
+        let history = HingeView {
+            model: AnalysisHingeModel::ConcentratedSpring,
+            backbone: Some(vec![[0.0, 0.0]]),
+            mn_linear: None,
+            mn_surface: None,
+        };
+        assert_eq!(
+            mn_unavailable_message(&history),
+            "この解析モデルでは N-M 相関を使用していません（履歴材料は N-M 相関非対応）。"
         );
     }
 }

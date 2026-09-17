@@ -28,6 +28,7 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0020](0020-assign-plates-to-member-bounded-regions.md) | accepted | 囲まれた床板・壁版は支持部材で分割された領域へ割り当てる |
 | [0021](0021-same-position-support-members.md) | accepted | 同じ位置に支持部材が重なる場合は同種をエラー、異種は主架構優先とする |
 | [0022](0022-unmapped-slit-specification-warning.md) | accepted | 耐震スリット指定が辺へ反映できない場合は警告する |
+| [0023](0023-hinge-detail-single-source-analysis-models.md) | accepted | ヒンジ詳細の表示は解析要素と同じ非線形モデルを単一情報源とする |
 
 ## 規約
 
