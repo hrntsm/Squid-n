@@ -2174,6 +2174,36 @@ fn test_axial_compression_sign_convention_handcalc() {
     );
 }
 
+/// 符号付き軸力（圧縮正・引張負）の検算。両端のうち絶対値が大きい方を
+/// 符号付きで採用し、引張は負値のまま返すことを確認する。
+#[test]
+fn test_axial_force_signed_sign_and_representative_value() {
+    let ex = [0.0, 0.0, 1.0];
+    let mag = 1000.0;
+
+    // 圧縮（f_i=+|N|·ex, f_j=-|N|·ex）は正値。
+    assert!(
+        (axial_force_signed([0.0, 0.0, mag], [0.0, 0.0, -mag], ex) - mag).abs() < 1e-9,
+        "pure compression must be positive"
+    );
+    // 引張は負値のまま返す（0 にクランプしない）。
+    assert!(
+        (axial_force_signed([0.0, 0.0, -mag], [0.0, 0.0, mag], ex) + mag).abs() < 1e-9,
+        "pure tension must stay negative"
+    );
+    // 両端で絶対値が異なれば、大きい方を符号付きで採用する
+    // （i端圧縮 300・j端圧縮 1000）。
+    assert!(
+        (axial_force_signed([0.0, 0.0, 300.0], [0.0, 0.0, -1000.0], ex) - 1000.0).abs() < 1e-9,
+        "should take the larger compression magnitude"
+    );
+    // 引張側で j端の絶対値が大きい場合も負値で採用する。
+    assert!(
+        (axial_force_signed([0.0, 0.0, -300.0], [0.0, 0.0, 500.0], ex) + 500.0).abs() < 1e-9,
+        "should take the larger tension magnitude with negative sign"
+    );
+}
+
 /// `ElementBehavior::internal_force` が固定のグローバル材端力を返すだけのテスト
 /// スタブ（`track_shear_yield` は `global_dofs`/剛性を使わないため他は無関係）。
 struct FixedForceBehavior {

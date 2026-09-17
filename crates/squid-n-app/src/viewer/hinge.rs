@@ -842,7 +842,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
                 ui.label("非線形化は強軸(Mz)のみ（弱軸は弾性）。");
                 ui.label(
                     "曲線: M = My0·(1−|N|/N許容) [My0=N=0 の降伏モーメント、N許容=軸許容耐力]。\
-                     横軸 M [kN·m]、縦軸 N [kN]（圧縮正）。",
+                     横軸 M [kN·m]、縦軸 N [kN]（圧縮正・引張負）。",
                 );
                 draw_mn_linear_plot(ui, elem_id, mn, &records, bend_dir_z, step);
             }
@@ -941,7 +941,7 @@ fn hinge_step_selector(ui: &mut egui::Ui, app: &mut App, records: &[MemberStepSt
     }
     let axial_kn = force_kn(records[step].n as f64);
     ui.label(format!(
-        "step {} / 全 {}（軸力 N = {:.1} kN、圧縮正）",
+        "step {} / 全 {}（軸力 N = {:.1} kN、圧縮正・引張負）",
         step,
         records.len(),
         axial_kn
@@ -1150,7 +1150,7 @@ fn draw_mn_plot_2d(
     let response_path = n_m_response_path(records, bend_dir_z);
     egui_plot::Plot::new(format!("hinge_mn_{}", elem_id.0))
         .x_axis_label("M [kN·m]")
-        .y_axis_label("N [kN]（圧縮正）")
+        .y_axis_label("N [kN]（圧縮正・引張負）")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
@@ -1211,7 +1211,7 @@ fn draw_mn_linear_plot(
     let response_path = n_m_response_path(records, bend_dir_z);
     egui_plot::Plot::new(format!("hinge_mn_linear_{}", elem_id.0))
         .x_axis_label("M [kN·m]")
-        .y_axis_label("N [kN]（圧縮正）")
+        .y_axis_label("N [kN]（圧縮正・引張負）")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
@@ -1751,6 +1751,17 @@ mod tests {
     fn n_m_response_path_empty_input_returns_origin_only() {
         let path = n_m_response_path(&[], true);
         assert_eq!(path, vec![[0.0, 0.0]]);
+    }
+
+    /// 引張（負の軸力）は N-M 応答経路で N=0 に張り付かず、2D は圧縮正の負値、
+    /// 3D は引張正の正値として描かれる。
+    #[test]
+    fn n_m_response_path_keeps_tension_signed() {
+        let records = vec![step(-80.0, 30.0, 0.0, 0.0, -1000.0)];
+        let path = n_m_response_path(&records, true);
+        assert!(path[1][1] < 0.0, "2D は引張を負の N として描く");
+        let path_3d = n_my_mz_response_path_3d(&records);
+        assert!(path_3d[1][2] > 0.0, "3D は引張正へ符号反転する");
     }
 
     // ── n_my_mz_response_path_3d ────────────────────────────────────────
@@ -2307,6 +2318,42 @@ mod tests {
         assert!(
             b0[1][1] > b1[1][1],
             "軸力が大きいほど降伏モーメントが低下する"
+        );
+    }
+
+    /// 引張（圧縮正で負値）でも集中ばねの N-M 線形相関の降伏モーメントが
+    /// 低減される（`build_hinge_view` は `moment_limit` の絶対値を用いる）。
+    /// 解析側の軸力（引張正）と `MemberStepState.n`（圧縮正・引張負）で
+    /// 符号規約は異なるが、絶対値を使うため表示骨格は解析と一致する。
+    #[test]
+    fn concentrated_backbone_reduces_under_tension() {
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let basis = StrengthBasis::MaterialStrength;
+        let kind = AnalysisKind::Incremental;
+        let backbone = |axial: f64| {
+            build_hinge_view(
+                &elem,
+                &model,
+                basis,
+                kind,
+                axial,
+                mn_draw::N_ALPHA,
+                mn_draw::N_BETA,
+            )
+            .backbone
+            .expect("集中ばねは骨格を返す")
+        };
+        let b0 = backbone(0.0);
+        let b_tension = backbone(-1.0e5);
+        let b_compression = backbone(1.0e5);
+        assert!(
+            b_tension[1][1] < b0[1][1],
+            "引張でも降伏モーメントが低下する"
+        );
+        assert!(
+            (b_tension[1][1] - b_compression[1][1]).abs() < 1e-9,
+            "引張・圧縮で降伏モーメントの低減量は等しい（絶対値）"
         );
     }
 

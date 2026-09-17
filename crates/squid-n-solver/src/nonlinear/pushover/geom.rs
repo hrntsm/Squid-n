@@ -2,6 +2,7 @@
 //!
 //! - [`dot3`] — 3 次元ベクトルの内積（`squid_n_core::geom::vec3::dot` の別名）
 //! - [`axial_compression`] — 材端力から部材の軸方向圧縮力を算定
+//! - [`axial_force_signed`] — 材端力から部材の軸方向力を圧縮正の符号付きで算定
 //! - [`member_end_forces_at_face`] — 材端力を局所座標・剛域フェイス位置へ変換
 
 use squid_n_core::model::{ElementData, Model};
@@ -16,6 +17,19 @@ pub(crate) fn axial_compression(f_i: [f64; 3], f_j: [f64; 3], ex: [f64; 3]) -> f
     let from_i = dot3(f_i, ex).max(0.0);
     let from_j = (-dot3(f_j, ex)).max(0.0);
     from_i.max(from_j)
+}
+
+/// 部材の軸方向力 N [N]を**圧縮正・引張負**の符号付きで算定する。
+///
+/// 両端のうち絶対値が大きい方を部材の代表値とする。
+pub(crate) fn axial_force_signed(f_i: [f64; 3], f_j: [f64; 3], ex: [f64; 3]) -> f64 {
+    let from_i = dot3(f_i, ex);
+    let from_j = -dot3(f_j, ex);
+    if from_i.abs() >= from_j.abs() {
+        from_i
+    } else {
+        from_j
+    }
 }
 
 /// 部材の材端力を局所座標・剛域フェイス位置の 12 成分へ変換する.

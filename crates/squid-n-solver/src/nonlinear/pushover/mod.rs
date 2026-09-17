@@ -35,7 +35,7 @@ pub use types::{
 #[cfg(test)]
 use crate::statics::analysis::SeismicDir;
 #[cfg(test)]
-use geom::axial_compression;
+use geom::{axial_compression, axial_force_signed};
 #[cfg(test)]
 use hinge::compute_hinge_thresholds;
 #[cfg(test)]
