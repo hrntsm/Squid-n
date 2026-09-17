@@ -6833,6 +6833,7 @@ fn test_load_model_resets_model_derived_state() {
     #[cfg(feature = "gui")]
     {
         app.ui.scoped.hinge_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.ui.scoped.hinge_step = Some(3);
         app.ui.scoped.th_detail_elem = Some(squid_n_core::ids::ElemId(0));
         app.ui.scoped.analysis_target = None;
         app.ui.scoped.th_frame = 42;
@@ -6859,6 +6860,7 @@ fn test_load_model_resets_model_derived_state() {
     #[cfg(feature = "gui")]
     {
         assert!(app.ui.scoped.hinge_detail_elem.is_none());
+        assert!(app.ui.scoped.hinge_step.is_none());
         assert!(app.ui.scoped.th_detail_elem.is_none());
         assert_eq!(app.ui.scoped.th_frame, 0);
         assert!(!app.ui.scoped.th_playing);

@@ -999,10 +999,15 @@ pub struct UiModelScoped {
     /// `None` はウィンドウ非表示）。
     #[cfg(feature = "gui")]
     pub hinge_detail_elem: Option<squid_n_core::ids::ElemId>,
-    /// ヒンジ詳細ウィンドウの N-M 相関曲線キャッシュ（断面のファイバー分割・
-    /// 曲面構築は数十msかかりうるため、選択部材が変わらない限り再計算しない）。
+    /// ヒンジ詳細ウィンドウの表示ビューキャッシュ（断面のファイバー分割・曲面構築は
+    /// 数十msかかりうるため、選択部材・表示ステップ・モデル編集のフィンガープリントが
+    /// 一致する限り `HingeView` を再生成しない）。
     #[cfg(feature = "gui")]
-    pub hinge_mn_cache: Option<crate::viewer::hinge::MnCurveCache>,
+    pub hinge_view_cache: Option<crate::viewer::hinge::HingeViewCache>,
+    /// ヒンジ詳細ウィンドウで選択中の確定ステップ（`member_history` の `records` の
+    /// 添字）。`None` は最終ステップを表示する既定。
+    #[cfg(feature = "gui")]
+    pub hinge_step: Option<usize>,
     /// モード形の表示インデックス
     #[cfg(feature = "gui")]
     pub view_mode_idx: usize,
@@ -1152,7 +1157,9 @@ impl Default for UiModelScoped {
             #[cfg(feature = "gui")]
             hinge_detail_elem: None,
             #[cfg(feature = "gui")]
-            hinge_mn_cache: None,
+            hinge_view_cache: None,
+            #[cfg(feature = "gui")]
+            hinge_step: None,
             #[cfg(feature = "gui")]
             view_mode_idx: 0,
             #[cfg(feature = "gui")]

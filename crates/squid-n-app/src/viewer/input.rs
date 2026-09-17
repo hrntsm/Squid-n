@@ -296,6 +296,10 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
                     app.ui.scoped.selection.members = vec![id];
                     app.ui.scoped.nav.focus_member = Some(id);
                     if mode == ViewMode::Hinge {
+                        if app.ui.scoped.hinge_detail_elem != Some(id) {
+                            app.ui.scoped.hinge_step = None;
+                            app.ui.scoped.hinge_view_cache = None;
+                        }
                         app.ui.scoped.hinge_detail_elem = Some(id);
                     }
                     if mode == ViewMode::TimeHistory && !app.core.scoped.staleness.results_stale {
