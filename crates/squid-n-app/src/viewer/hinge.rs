@@ -476,26 +476,28 @@ fn hinge_view_key(
 }
 
 /// キーがキャッシュと一致しなければ [`build_hinge_view`] で再生成する。
-fn ensure_hinge_view(app: &mut App, key: HingeViewKey, elem: &ElementData, axial_force_n: f64) {
-    if app
-        .ui
-        .scoped
-        .hinge_view_cache
-        .as_ref()
-        .is_some_and(|c| c.key == key)
-    {
+///
+/// `model` は解析と同じく壁を展開したモデルを渡すこと（壁側柱の解決に必要）。
+fn ensure_hinge_view(
+    model: &Model,
+    cache: &mut Option<HingeViewCache>,
+    key: HingeViewKey,
+    elem: &ElementData,
+    axial_force_n: f64,
+) {
+    if cache.as_ref().is_some_and(|c| c.key == key) {
         return;
     }
     let view = build_hinge_view(
         elem,
-        &app.core.model,
+        model,
         StrengthBasis::MaterialStrength,
         AnalysisKind::Incremental,
         axial_force_n,
         mn_draw::N_ALPHA,
         mn_draw::N_BETA,
     );
-    app.ui.scoped.hinge_view_cache = Some(HingeViewCache { key, view });
+    *cache = Some(HingeViewCache { key, view });
 }
 
 /// 部材の最終応答レコードから、支配的な曲げ面（強軸 Mz／弱軸 My）を選ぶ
@@ -709,8 +711,8 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
 /// 表示に続けて、表示ステップの選択、M-θ カーブ、N-M 相関図、ファイバー断面の
 /// 塑性化マップを該当するものだけ縦に並べる。
 fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
+    let display = super::wall_expanded_view_model(&app.core.model);
     let (elem_snapshot, elem_section) = {
-        let display = super::wall_expanded_view_model(&app.core.model);
         let Some(elem) = display.element(elem_id) else {
             ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
             return;
@@ -767,15 +769,21 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         .map(|(_, s)| s.clone());
     let dominant_z = dominant_bend_axis_z(&records[records.len() - 1]);
 
-    let step = hinge_step_selector(ui, app, &records);
+    let step = hinge_step_selector(ui, &mut app.ui.scoped.hinge_step, &records);
     let axial_force_n = records[step].n as f64;
     let key = hinge_view_key(
-        &app.core.model,
+        display.as_ref(),
         &elem_snapshot,
         step,
         &app.core.scoped.staleness,
     );
-    ensure_hinge_view(app, key, &elem_snapshot, axial_force_n);
+    ensure_hinge_view(
+        display.as_ref(),
+        &mut app.ui.scoped.hinge_view_cache,
+        key,
+        &elem_snapshot,
+        axial_force_n,
+    );
     let view = app
         .ui
         .scoped
@@ -926,15 +934,14 @@ fn analysis_model_label(model: AnalysisHingeModel) -> &'static str {
 }
 
 /// 確定ステップ（`records` の添字）を選ぶスライダーを表示し、解決後の添字を返す。
-/// `app.ui.scoped.hinge_step` が `None` の間は最終ステップを既定とする。
-fn hinge_step_selector(ui: &mut egui::Ui, app: &mut App, records: &[MemberStepState]) -> usize {
+/// `selected` が `None` の間は最終ステップを既定とする。
+fn hinge_step_selector(
+    ui: &mut egui::Ui,
+    selected: &mut Option<usize>,
+    records: &[MemberStepState],
+) -> usize {
     let last = records.len() - 1;
-    let mut step = app
-        .ui
-        .scoped
-        .hinge_step
-        .map(|s| s.min(last))
-        .unwrap_or(last);
+    let mut step = selected.map(|s| s.min(last)).unwrap_or(last);
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("表示ステップ:");
@@ -943,7 +950,7 @@ fn hinge_step_selector(ui: &mut egui::Ui, app: &mut App, records: &[MemberStepSt
             .changed();
     });
     if changed {
-        app.ui.scoped.hinge_step = Some(step);
+        *selected = Some(step);
     }
     let axial_kn = force_kn(records[step].n as f64);
     ui.label(format!(
@@ -1487,6 +1494,7 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewer::wall_expanded_view_model;
     use squid_n_core::units::to_display::moment_kn_m;
 
     /// テスト用のヒンジ発生イベントを組み立てる。
@@ -2395,13 +2403,14 @@ mod tests {
         assert_eq!(fiber, fiber_again, "剛床を戻せば元のキーと一致する");
     }
 
-    /// stale 中に壁を追加→削除してもキーが変化する。側柱判定は鉛直材のレジームを
-    /// 変えずにビューを非線形ヒンジなしへ変えるため、レジームだけでは追随できない。
-    #[test]
-    fn hinge_view_key_changes_with_wall_side_column_toggle() {
+    /// 壁版から解析要素を展開するテスト用モデル（壁の解析要素は入力モデルに持たない）。
+    /// 返り値は (壁版を持つ入力モデル, 側柱にする鉛直 `Beam`)。
+    fn wall_side_column_view_model() -> (Model, ElementData) {
         use squid_n_core::dof::Dof6Mask;
-        use squid_n_core::ids::NodeId;
-        use squid_n_core::model::{ElementData, EndCondition, LocalAxis, Node, RigidZone};
+        use squid_n_core::ids::{NodeId, WallPlateId, WallRegionId};
+        use squid_n_core::model::{
+            ElementData, EndCondition, LocalAxis, Node, WallPlate, WallPlateShape, WallRegion,
+        };
 
         let node = |id: NodeId, coord: [f64; 3]| Node {
             id,
@@ -2425,6 +2434,7 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
+
         let mut model = key_test_model();
         model.nodes = vec![
             node(NodeId(0), [0.0, 0.0, 0.0]),
@@ -2432,47 +2442,92 @@ mod tests {
             node(NodeId(2), [4000.0, 0.0, 3000.0]),
             node(NodeId(3), [0.0, 0.0, 3000.0]),
         ];
-        let wall = ElementData {
-            id: ElemId(9),
-            kind: ElementKind::Wall,
-            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            section: Some(SectionId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: RigidZone::default(),
-            plastic_zone: None,
-            spring: None,
-        };
+        // 側柱 [0,3] を先に積み、壁版の左辺の支持部材として使わせる。
         let column = line(3, [NodeId(0), NodeId(3)]);
-        model.elements.push(line(1, [NodeId(0), NodeId(1)]));
-        model.elements.push(line(2, [NodeId(3), NodeId(2)]));
         model.elements.push(column.clone());
+        model.add_enclosed_wall_plate_from_nodes(
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            WallPlate {
+                self_weight_shares: Vec::new(),
+                id: WallPlateId(0),
+                shape: WallPlateShape::Enclosed,
+                section: Some(SectionId(0)),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                openings: Vec::new(),
+                loads: vec![],
+                slit: Default::default(),
+            },
+        );
+        model.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            posts: Vec::new(),
+        });
+        (model, column)
+    }
+
+    /// 壁側柱のキーは、生モデルではなく壁展開モデルを参照したときに変わる。
+    /// 側柱判定は鉛直材のレジームを変えずにビューを非線形ヒンジなしへ変えるため、
+    /// レジームだけでは追随できない。
+    #[test]
+    fn hinge_view_key_changes_with_wall_side_column_toggle() {
+        let (model, column) = wall_side_column_view_model();
         let stale = Staleness {
             results_stale: true,
             last_run: Some(SystemTime::UNIX_EPOCH),
             ..Default::default()
         };
 
-        let without_wall = hinge_view_key(&model, &column, 0, &stale);
-
-        model.elements.push(wall);
-        let with_wall = hinge_view_key(&model, &column, 0, &stale);
+        let raw_key = hinge_view_key(&model, &column, 0, &stale);
         assert!(
-            !resolves_to_concentrated_spring(&column, &model),
+            wall_side_column_release(&column, &model).is_none(),
+            "生モデルには壁の解析要素が無い"
+        );
+
+        let expanded = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        let expanded_key = hinge_view_key(&expanded, &column, 0, &stale);
+        assert!(
+            wall_side_column_release(&column, &expanded).is_some(),
+            "展開モデルでは側柱と判定される"
+        );
+        assert!(
+            !resolves_to_concentrated_spring(&column, &expanded),
             "壁側柱は集中ばねではない"
         );
-        assert_ne!(without_wall, with_wall, "壁の追加でキーが変わる");
+        assert_ne!(raw_key, expanded_key, "壁の展開でキーが変わる");
 
-        model.elements.retain(|e| e.kind != ElementKind::Wall);
-        let wall_removed = hinge_view_key(&model, &column, 0, &stale);
-        assert_ne!(
-            with_wall, wall_removed,
-            "stale のまま壁を削除しても側柱判定の変化でキーが変わる"
-        );
-        assert_eq!(without_wall, wall_removed, "壁を戻せば元のキーと一致する");
+        let mut removed = model.clone();
+        removed.wall_plates.clear();
+        removed.wall_regions.clear();
+        let removed_view = wall_expanded_view_model(&removed);
+        let removed_key = hinge_view_key(removed_view.as_ref(), &column, 0, &stale);
+        assert_eq!(raw_key, removed_key, "壁を戻せば元のキーと一致する");
+    }
+
+    /// 壁側柱の解析モデル解決は、生モデルではなく壁展開モデルを参照する。
+    /// 生モデルには壁要素が無いためファイバーと誤判定し、展開モデルでは
+    /// 解析と同じく非線形ヒンジなし（[`AnalysisHingeModel::Other`]）になる。
+    #[test]
+    fn hinge_view_resolves_wall_side_column_with_expanded_model() {
+        let (model, column) = wall_side_column_view_model();
+        let view = |m: &Model| {
+            build_hinge_view(
+                &column,
+                m,
+                StrengthBasis::MaterialStrength,
+                AnalysisKind::Incremental,
+                0.0,
+                mn_draw::N_ALPHA,
+                mn_draw::N_BETA,
+            )
+            .model
+        };
+        assert_eq!(view(&model), AnalysisHingeModel::Fiber);
+        let expanded = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        assert_eq!(view(&expanded), AnalysisHingeModel::Other);
     }
 
     /// 軸力が大きいほど集中ばね骨格の降伏モーメントが低下する
@@ -2643,7 +2698,13 @@ mod tests {
         app.core.model = model;
         app.core.scoped.pushover_view_dir = SeismicDir::X;
         let key = hinge_view_key(&app.core.model, &elem, 0, &app.core.scoped.staleness);
-        ensure_hinge_view(&mut app, key, &elem, 0.0);
+        ensure_hinge_view(
+            &app.core.model,
+            &mut app.ui.scoped.hinge_view_cache,
+            key,
+            &elem,
+            0.0,
+        );
         assert!(app.ui.scoped.hinge_view_cache.is_some());
 
         app.set_pushover_view_dir(SeismicDir::Y);

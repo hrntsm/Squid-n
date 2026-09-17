@@ -749,7 +749,12 @@ mod tests {
         assert!(view.mn_surface.is_none());
     }
 
-    /// 耐震壁とその側柱（鉛直な `Beam`）を持つモデル。返り値は側柱要素。
+    /// 耐震壁とその側柱（鉛直な `Beam`）を持つ壁展開モデル相当。返り値は側柱要素。
+    ///
+    /// 壁の解析要素は入力の正である `Model` には保存されず解析時にのみ生成される
+    /// （`squid-n-load` の `expand_wall_elements`）。`squid-n-element` は
+    /// `squid-n-load` に依存できないため、ここでは展開後相当のモデルを直接組み立てる。
+    /// 生モデル（壁要素なし）との分類差は `squid-n-app` の回帰テストで固定する。
     fn wall_side_column_model() -> (Model, ElementData) {
         let node = |id: NodeId, coord: [f64; 3]| Node {
             id,
