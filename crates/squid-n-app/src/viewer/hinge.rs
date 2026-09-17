@@ -2219,6 +2219,29 @@ mod tests {
         assert_ne!(cache.key(), &k1);
     }
 
+    /// 表示方向を切り替えるとキャッシュを破棄する。集中ばねの M-θ 骨格は表示中の
+    /// 方向の `records` から選んだステップの軸力で作られるため、方向切替後に
+    /// 古い軸力の骨格を再利用してはならない。
+    #[test]
+    fn set_pushover_view_dir_clears_hinge_view_cache() {
+        use squid_n_solver::statics::analysis::SeismicDir;
+
+        let model = key_test_model();
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        let mut app = App::default();
+        app.core.model = model;
+        app.core.scoped.pushover_view_dir = SeismicDir::X;
+        let key = hinge_view_key(&app.core.model, &elem, 0, &app.core.scoped.staleness);
+        ensure_hinge_view(&mut app, key, &elem, 0.0);
+        assert!(app.ui.scoped.hinge_view_cache.is_some());
+
+        app.set_pushover_view_dir(SeismicDir::Y);
+        assert!(
+            app.ui.scoped.hinge_view_cache.is_none(),
+            "方向切替で古い軸力の骨格を破棄する"
+        );
+    }
+
     /// 要素種別に応じて `AnalysisHingeModel` と表示する N-M 図が対応する。
     #[test]
     fn mn_display_matches_element_model_kind() {
