@@ -557,8 +557,8 @@ impl Model {
         }
 
         self.validate_secondary_member_anchor_ends()?;
-        self.floor_assignment_regions.validate(&self.slabs)?;
-        self.wall_assignment_regions.validate(&self.wall_plates)?;
+        self.floor_assignment_regions.validate(self)?;
+        self.wall_assignment_regions.validate(self)?;
 
         for slab in &self.slabs {
             if let SlabShape::Attached {

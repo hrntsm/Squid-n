@@ -111,6 +111,14 @@ fn id_list_message<T: std::fmt::Display>(
     format!("{what}: {label}{}{more}。{remedy}", head.join(", "))
 }
 
+/// 支持部材を利用者向けの短い識別子へ整える。主架構は要素 ID、二次部材は安定 ID。
+fn support_label(support: squid_n_core::model::SupportMemberId) -> String {
+    match support {
+        squid_n_core::model::SupportMemberId::Primary(elem) => format!("主架構 部材 {}", elem.0),
+        squid_n_core::model::SupportMemberId::Secondary(id) => format!("二次部材 {}", id.0),
+    }
+}
+
 /// 解析を妨げるモデルの不備をすべて集める。
 ///
 /// 返す順は「モデル検証 → モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
@@ -357,6 +365,39 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     }
 
     {
+        let overlaps = model.same_kind_support_overlaps();
+        if !overlaps.is_empty() {
+            const HEAD: usize = 5;
+            let listed = overlaps
+                .iter()
+                .take(HEAD)
+                .map(|overlap| {
+                    format!(
+                        "{} と {}（位置 [{:.0}, {:.0}, {:.0}] mm）",
+                        support_label(overlap.first),
+                        support_label(overlap.second),
+                        overlap.midpoint[0],
+                        overlap.midpoint[1],
+                        overlap.midpoint[2]
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            let more = if overlaps.len() > HEAD {
+                format!(" 他{}件", overlaps.len() - HEAD)
+            } else {
+                String::new()
+            };
+            issues.push(ModelIssue::model(format!(
+                "同じ位置に重なった同種の支持部材があります（{listed}{more}）。\
+                 同じ材軸上で大梁・柱どうし、または小梁・間柱どうしを重ねて配置すると、\
+                 どちらが荷重を受けるか一意に決まりません。重複した部材を削除するか、\
+                 材軸を分けて配置してください。"
+            )));
+        }
+    }
+
+    {
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
         if n != 0 {
             issues.push(ModelIssue::model(format!(
@@ -597,14 +638,18 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         let ignored_slit = model
             .wall_plates
             .iter()
-            .filter(|p| p.slit.any() && !p.has_quad_boundary(model))
+            .filter(|p| {
+                p.slit.any()
+                    && !squid_n_load::wall_plate_load::slit_specification_is_reflected(model, p)
+            })
             .count();
         if ignored_slit != 0 {
             issues.push(
                 ModelIssue::model(format!(
                     "耐震スリットの指定が効かない壁版が {ignored_slit} 枚あります。\
                      スリットは境界が 4 節点の囲まれた壁版でのみ扱えます\
-                     （辺が柱際か梁際かを決められないため）。"
+                     （境界が 4 節点でない、または境界頂点のモデル節点を引けない等で\
+                     辺が柱際か梁際かを決められないため）。"
                 ))
                 .warn(),
             );
@@ -640,7 +685,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .join(", ");
             issues.push(ModelIssue::model(format!(
                 "自重の行き先が決まらない壁版があります（壁版 {ids}）。\
-                 支持辺の負担率が未指定・不正、指定辺がスリットで縁切り、全長を支持する部材がない、または支持する主架構部材の区間が重複しています。\
+                 境界辺への自重負担率が未指定・不正、正の負担率の辺がスリットで縁切り、または壁版割当領域の境界が無く支持部材を解決できないためです。\
                  壁版の自重負担率（合計100%）、境界、支持部材を確認してください。"
             )));
         }
