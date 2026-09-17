@@ -128,10 +128,20 @@ pub(crate) fn fiber_strength_params(
     model: &squid_n_core::model::Model,
     basis: crate::factory::StrengthBasis,
 ) -> StrengthParams {
+    fiber_strength_params_from_yield(data, model, basis, resolve_fiber_yield(model, data))
+}
+
+/// 解決済みの [`FiberYield`] を渡す内部版。呼び出し元が [`resolve_fiber_yield`] を
+/// 再実行せずに [`fiber_strength_params`] と同じ値を得るために用いる。
+fn fiber_strength_params_from_yield(
+    data: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+    basis: crate::factory::StrengthBasis,
+    yield_: FiberYield,
+) -> StrengthParams {
     let mat_ref = model.element_material(data);
     let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
     let fc = mat_ref.and_then(|m| m.fc);
-    let yield_ = resolve_fiber_yield(model, data);
     let rebar_fy = yield_.rebar.or(yield_.main);
     let steel_fy = yield_.steel;
     StrengthParams {
@@ -180,7 +190,7 @@ pub(crate) fn build_gauss_fiber_pair(
     let shape = sec.and_then(|s| s.shape.as_ref());
     let fc = mat_ref.and_then(|m| m.fc);
     let yield_ = resolve_fiber_yield(model, data);
-    let strength = fiber_strength_params(data, model, basis);
+    let strength = fiber_strength_params_from_yield(data, model, basis, yield_);
     let steel_factor = basis.steel_factor(mat_ref);
     let rebar_factor = basis.rebar_factor(mat_ref);
     let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
