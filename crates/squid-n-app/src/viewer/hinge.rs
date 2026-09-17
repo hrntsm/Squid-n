@@ -318,7 +318,8 @@ impl HingeViewCache {
 struct HingeViewKey {
     elem: ElemId,
     /// キャッシュが生成された選択ステップ添字（`records` 上の位置）。
-    /// 非集中ばねは軸力に依存せず選択ステップにも依らないため常に 0。
+    /// 選択ステップの軸力が骨格に影響する N-M 相関ありの集中ばねのみ実 step を
+    /// 保持し、それ以外（非集中ばね、N-M 相関非対応の履歴材料）は常に 0。
     step: usize,
     /// 解析結果の世代（最終実行時刻と要再計算フラグ）。
     generation: (Option<SystemTime>, bool),
@@ -420,8 +421,9 @@ fn concentrated_uses_mn(rule: HysteresisModel) -> bool {
 
 /// [`build_hinge_view`] が材端集中ばねを返す要素か（要素生成と同じ判定）。
 ///
-/// 集中ばねだけが選択ステップの軸力で M-θ 骨格を変えるため、キャッシュキーへ
-/// ステップを含めるかの判定に用いる。壁側柱（面内解放）は集中ばねではない。
+/// 選択ステップの軸力が M-θ 骨格へ影響するのは、N-M 相関を用いる集中ばねのみ。
+/// キャッシュキーへステップを含めるかの判定に用いる。壁側柱（面内解放）は
+/// 集中ばねではない。
 fn is_concentrated_spring(model: &Model, elem: &ElementData) -> bool {
     elem.kind == ElementKind::Beam
         && wall_side_column_release(elem, model).is_none()
@@ -443,14 +445,12 @@ fn hinge_view_key(
     staleness: &Staleness,
 ) -> HingeViewKey {
     let rule = resolve_member_hysteresis(elem, model, AnalysisKind::Incremental);
+    let concentrated = is_concentrated_spring(model, elem);
+    let use_mn = concentrated_uses_mn(rule);
     let section = elem.section.and_then(|sid| model.sections.get(sid.index()));
     HingeViewKey {
         elem: elem.id,
-        step: if is_concentrated_spring(model, elem) {
-            step
-        } else {
-            0
-        },
+        step: if concentrated && use_mn { step } else { 0 },
         generation: (staleness.last_run, staleness.results_stale),
         kind: elem.kind,
         force_regime: elem.force_regime,
@@ -465,7 +465,7 @@ fn hinge_view_key(
             .element_steel_material(elem)
             .map(MaterialFingerprint::from),
         hysteresis: rule,
-        use_mn: concentrated_uses_mn(rule),
+        use_mn,
     }
 }
 
@@ -2212,6 +2212,22 @@ mod tests {
         assert_eq!(key_of(&model, &fiber, 0), key_of(&model, &fiber, 1));
         let ms = key_test_elem(ElementKind::MultiSpring, ForceRegime::AxialBendingInteract);
         assert_eq!(key_of(&model, &ms, 0), key_of(&model, &ms, 1));
+    }
+
+    /// N-M 相関非対応の集中ばね（履歴材料）も選択ステップの軸力に依存しないため、
+    /// ステップが変わってもキーは変わらない（軸力に依らない骨格を再生成しない）。
+    #[test]
+    fn hinge_view_key_ignores_step_for_history_rule_concentrated_spring() {
+        let mut model = key_test_model();
+        model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+        let elem = key_test_elem(ElementKind::Beam, ForceRegime::UniaxialBendingShear);
+        assert!(
+            is_concentrated_spring(&model, &elem),
+            "テストモデルは集中ばねに判定される"
+        );
+        let k0 = key_of(&model, &elem, 0);
+        assert!(!k0.use_mn, "武田型は N-M 相関非対応");
+        assert_eq!(k0, key_of(&model, &elem, 1));
     }
 
     /// 同一ステップ数で再解析した場合（`last_run` のみ更新）もキーが変わる。
