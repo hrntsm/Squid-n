@@ -975,6 +975,7 @@ fn m_theta_axis_label(model: AnalysisHingeModel, spring_rot_axis: bool) -> &'sta
 /// 分ければ、選択部材の切替時は必ず新規の `PlotMemory`（既定=自動フィット）から
 /// 始まるため、デフォルト表示は常に 5%（`egui_plot` 既定の `margin_fraction`）の
 /// 余白付きでカーブ全体を収める。
+#[allow(clippy::too_many_arguments)]
 fn draw_m_theta_plot(
     ui: &mut egui::Ui,
     elem_id: ElemId,
