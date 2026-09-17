@@ -335,6 +335,7 @@ impl WallElement {
                 crate::frame::fiber::FiberYield::default(),
                 1.0,
                 1.0,
+                squid_n_section::mn_surface::StrengthParams::default(),
                 concrete_rule,
             );
             if ps > 0.0 {

@@ -6,6 +6,7 @@ use squid_n_core::model::{AnalysisKind, HysteresisModel};
 use squid_n_core::section_shape::SectionShape;
 use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
+use squid_n_section::mn_surface::StrengthParams;
 use std::any::Any;
 
 /// 塑性化域長 Lp [mm] を部材長 `l` [mm] に対して有効な範囲へクランプする。
@@ -13,6 +14,10 @@ use std::any::Any;
 pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
     lp.clamp(1.0e-6 * l, 0.45 * l)
 }
+
+/// ファイバー梁の端部断面分割（幅方向・せい方向）。表示 API も同じ格子を使う。
+pub(crate) const FIBER_NW: usize = 12;
+pub(crate) const FIBER_ND: usize = 20;
 
 /// 鋼材・鉄筋のファイバ材料を生成する。
 ///
@@ -117,6 +122,26 @@ pub(crate) fn resolve_fiber_yield(
     FiberYield { main, rebar, steel }
 }
 
+/// ファイバ断面の実効材料強度。解析用 [`build_gauss_fibers`] と表示 API が共有する。
+pub(crate) fn fiber_strength_params(
+    data: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+    basis: crate::factory::StrengthBasis,
+) -> StrengthParams {
+    let mat_ref = model.element_material(data);
+    let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
+    let fc = mat_ref.and_then(|m| m.fc);
+    let yield_ = resolve_fiber_yield(model, data);
+    let rebar_fy = yield_.rebar.or(yield_.main);
+    let steel_fy = yield_.steel;
+    StrengthParams {
+        steel_fy: steel_fy.unwrap_or(235.0) * basis.steel_factor(mat_ref),
+        rebar_fy: rebar_fy.unwrap_or(345.0) * basis.rebar_factor(mat_ref),
+        concrete_fc: fc.unwrap_or(24.0),
+        steel_e: e,
+    }
+}
+
 pub(crate) fn resolve_steel_fiber_fy(
     shape: Option<&SectionShape>,
     steel_mat: Option<&squid_n_core::model::Material>,
@@ -139,7 +164,7 @@ pub(crate) fn resolve_steel_fiber_fy(
 /// 各ガウス点は独立した断面と材料インスタンスを持つ。
 /// 断面・材料が未割当のときはゼロ剛性。
 #[allow(clippy::too_many_arguments)]
-fn build_gauss_fiber_pair(
+pub(crate) fn build_gauss_fiber_pair(
     data: &squid_n_core::model::ElementData,
     model: &squid_n_core::model::Model,
     basis: crate::factory::StrengthBasis,
@@ -155,6 +180,7 @@ fn build_gauss_fiber_pair(
     let shape = sec.and_then(|s| s.shape.as_ref());
     let fc = mat_ref.and_then(|m| m.fc);
     let yield_ = resolve_fiber_yield(model, data);
+    let strength = fiber_strength_params(data, model, basis);
     let steel_factor = basis.steel_factor(mat_ref);
     let rebar_factor = basis.rebar_factor(mat_ref);
     let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
@@ -170,6 +196,7 @@ fn build_gauss_fiber_pair(
             yield_,
             steel_factor,
             rebar_factor,
+            strength,
             concrete_rule,
         )
     };
@@ -193,11 +220,23 @@ pub(crate) fn build_gauss_fibers(
     yield_: FiberYield,
     steel_factor: f64,
     rebar_factor: f64,
+    strength: StrengthParams,
     concrete_rule: HysteresisModel,
 ) -> (FiberSection, Vec<Box<dyn UniaxialMaterial>>) {
     let mut result = shape
         .filter(|s| !matches!(s, SectionShape::RcWall { .. }))
-        .map(|s| build_shape_fibers(s, fc, e, yield_, steel_factor, rebar_factor, concrete_rule));
+        .map(|s| {
+            build_shape_fibers(
+                s,
+                fc,
+                e,
+                yield_,
+                steel_factor,
+                rebar_factor,
+                strength,
+                concrete_rule,
+            )
+        });
 
     let (mut fibers, mats) = match result.take() {
         Some(r) => r,
@@ -234,20 +273,13 @@ fn build_shape_fibers(
     yield_: FiberYield,
     steel_factor: f64,
     rebar_factor: f64,
+    strength: StrengthParams,
     concrete_rule: HysteresisModel,
 ) -> (Vec<Fiber>, Vec<Box<dyn UniaxialMaterial>>) {
-    use squid_n_section::mn_surface::{
-        max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion, StrengthParams,
-    };
+    use squid_n_section::mn_surface::{max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion};
 
     let rebar_fy = yield_.rebar.or(yield_.main);
     let steel_fy = yield_.steel;
-    let strength = StrengthParams {
-        steel_fy: steel_fy.unwrap_or(235.0) * steel_factor,
-        rebar_fy: rebar_fy.unwrap_or(345.0) * rebar_factor,
-        concrete_fc: fc.unwrap_or(24.0),
-        steel_e: e,
-    };
     let target = (max_dimension(shape) / 16.0).max(1.0);
     let ring = AnnulusRes {
         n_theta: 24,
@@ -525,8 +557,8 @@ impl FiberBeam {
         let k_shear =
             Self::compute_shear_stiffness(flex_length, phi_y, phi_z, g * sec_as_z, g * sec_as_y);
 
-        let nw = 12;
-        let nd = 20;
+        let nw = FIBER_NW;
+        let nd = FIBER_ND;
         let [(sec_a, mats_a), (sec_b, mats_b)] =
             build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd);
         let gauss_points = vec![
@@ -747,7 +779,7 @@ impl FiberBeam {
         basis: crate::factory::StrengthBasis,
         kind: AnalysisKind,
     ) -> Self {
-        Self::build_plastic_zone(data, model, lp, 12, 20, basis, kind)
+        Self::build_plastic_zone(data, model, lp, FIBER_NW, FIBER_ND, basis, kind)
     }
 
     /// `nw × nd` は端部断面のファイバ分割数。

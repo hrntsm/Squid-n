@@ -5,6 +5,7 @@
 //! - [`regime`] —       フォースレジーム判定
 //! - [`wall_opening`] — 壁開口低減率
 //! - [`springs`] —      バネ / 履歴則パラメータ算定
+//! - [`hinge_view`] —   解析で使用した非線形特性の読み取り専用ビュー
 //! - [`input_check`] —  非線形解析の入力チェック（耐力を算定できない設定不備の検出）
 //!
 //! 本モジュールは要素種別ごとのディスパッチ（[`build_behavior`] /
@@ -13,11 +14,13 @@
 use crate::behavior::ElementBehavior;
 use squid_n_core::model::{ElementData, ElementKind, Model};
 
+mod hinge_view;
 mod input_check;
 mod regime;
 mod springs;
 mod wall_opening;
 
+pub use hinge_view::{build_hinge_view, AnalysisHingeModel, HingeView};
 pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
 pub use springs::{
@@ -187,13 +190,13 @@ pub fn build_nonlinear_behavior(
                 ResolvedRegime::ConcentratedSpring => {
                     let elem = crate::frame::beam::BeamElement::new(data, model);
                     let rule = resolve_member_hysteresis(data, model, kind);
-                    let (spring_i, spring_j, use_mn) =
+                    let (spring_i, spring_j, backbone) =
                         build_flexural_springs(data, model, rule, basis);
                     let beam =
                         crate::frame::concentrated::ConcentratedSpringBeam::new_one_component(
                             elem, spring_i, spring_j,
                         );
-                    let beam = if use_mn {
+                    let beam = if backbone.use_mn {
                         let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
                         beam.with_mn_interaction(my0, n_allow)
                     } else {

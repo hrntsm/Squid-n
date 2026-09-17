@@ -16,8 +16,9 @@ pub struct MultiSpringElement {
     pub inner: FiberBeam,
 }
 
-const MS_NW: usize = 2;
-const MS_ND: usize = 5;
+/// MS 端部断面のファイバ分割（幅方向・せい方向）。表示 API も同じ格子を使う。
+pub(crate) const MS_NW: usize = 2;
+pub(crate) const MS_ND: usize = 5;
 
 impl MultiSpringElement {
     pub fn new(

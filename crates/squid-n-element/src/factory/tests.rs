@@ -557,13 +557,13 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::Standard
     );
-    let (_i, _j, use_mn) = build_flexural_springs(
+    let (_i, _j, backbone) = build_flexural_springs(
         &beam,
         &model,
         HysteresisModel::Standard,
         StrengthBasis::Nominal,
     );
-    assert!(use_mn);
+    assert!(backbone.use_mn);
 
     model.sections[0].shape = Some(SectionShape::RcRect {
         b: 400.0,
@@ -580,13 +580,16 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::Takeda
     );
-    let (_i, _j, use_mn) = build_flexural_springs(
+    let (_i, _j, backbone) = build_flexural_springs(
         &beam,
         &model,
         HysteresisModel::Takeda,
         StrengthBasis::Nominal,
     );
-    assert!(!use_mn, "武田型(履歴材料)は N-M 相関(set_yield)対象外");
+    assert!(
+        !backbone.use_mn,
+        "武田型(履歴材料)は N-M 相関(set_yield)対象外"
+    );
 
     model.sections[0].shape = Some(SectionShape::SteelH {
         height: 400.0,
@@ -605,13 +608,13 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::MaxPointOriented
     );
-    let (_i, _j, use_mn) = build_flexural_springs(
+    let (_i, _j, backbone) = build_flexural_springs(
         &beam,
         &model,
         HysteresisModel::MaxPointOriented,
         StrengthBasis::Nominal,
     );
-    assert!(!use_mn);
+    assert!(!backbone.use_mn);
 }
 
 /// 履歴則の 2 スロット（増分用／時刻歴用）の解決を検証する。
@@ -897,8 +900,9 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
 
     let rule = resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental);
     assert_eq!(rule, HysteresisModel::Takeda);
-    let (mut si, _sj, use_mn) = build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
-    assert!(!use_mn);
+    let (mut si, _sj, backbone) =
+        build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
+    assert!(!backbone.use_mn);
 
     let (_m0, k0) = si.trial(1e-8);
     si.commit();
@@ -954,8 +958,12 @@ fn test_steel_beam_flexural_spring_buckling_degrades() {
 
     let rule = resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental);
     assert_eq!(rule, HysteresisModel::SteelBuckling);
-    let (mut si, _sj, use_mn) = build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
-    assert!(use_mn, "座屈考慮型は set_yield 対応で N-M 相関適用可");
+    let (mut si, _sj, backbone) =
+        build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
+    assert!(
+        backbone.use_mn,
+        "座屈考慮型は set_yield 対応で N-M 相関適用可"
+    );
 
     let (_m0, k0) = si.trial(1e-9);
     si.commit();
