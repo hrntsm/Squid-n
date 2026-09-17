@@ -817,13 +817,11 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     };
     ui.label(bend_face_label);
 
-    ui.strong("M-θ カーブ（荷重変形カーブ）");
-    ui.label(
-        "横軸: 材端回転角 |θ| [rad]（弦からの回転）、縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。",
-    );
     let spring_rot_axis = view.model == AnalysisHingeModel::ConcentratedSpring
         && (!mine.iter().any(|m| !m.end_j) || spring_rotation_recorded(&records, false))
         && (!mine.iter().any(|m| m.end_j) || spring_rotation_recorded(&records, true));
+    ui.strong("M-θ カーブ（荷重変形カーブ）");
+    ui.label(m_theta_axis_label(view.model, spring_rot_axis));
     draw_m_theta_plot(
         ui,
         elem_id,
@@ -951,6 +949,22 @@ fn hinge_step_selector(ui: &mut egui::Ui, app: &mut App, records: &[MemberStepSt
     step
 }
 
+/// M-θ カーブの横軸の説明文。材端集中ばねは解析が使う端ばね変形基準のため、
+/// 横軸の実態（端ばね変形／端ばね変形が未記録な旧結果は弦からの材端回転）と
+/// 文言を一致させる。
+fn m_theta_axis_label(model: AnalysisHingeModel, spring_rot_axis: bool) -> &'static str {
+    if model == AnalysisHingeModel::ConcentratedSpring && spring_rot_axis {
+        "横軸: 端ばね変形 |θs| [rad]、\
+         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
+    } else if model == AnalysisHingeModel::ConcentratedSpring {
+        "横軸: 材端回転角 |θ| [rad]（弦からの回転。端ばね変形が未記録）、\
+         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
+    } else {
+        "横軸: 材端回転角 |θ| [rad]（弦からの回転）、\
+         縦軸: 曲げモーメント |M| [kN·m]（採用曲げ面の絶対値）。"
+    }
+}
+
 /// M-θ カーブ（i端・j端の (|θ|,|M|) 骨格）を egui_plot で描く。
 ///
 /// `Plot` の ID に `elem_id` を含める。egui_plot はズーム／パン状態
@@ -982,7 +996,11 @@ fn draw_m_theta_plot(
         );
     }
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
-        .x_axis_label("|θ| [rad]")
+        .x_axis_label(if spring_rot_axis {
+            "|θs| [rad]"
+        } else {
+            "|θ| [rad]"
+        })
         .y_axis_label("|M| [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(220.0)
@@ -1663,6 +1681,19 @@ mod tests {
             !spring_rotation_recorded(&records, true),
             "j端は独立に判定する"
         );
+    }
+
+    /// M-θ 説明文は材端集中ばねの実軸（端ばね変形／未記録時は弦回転）に合わせる。
+    #[test]
+    fn m_theta_axis_label_matches_axis() {
+        assert!(
+            m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring, true).contains("端ばね変形")
+        );
+        assert!(
+            m_theta_axis_label(AnalysisHingeModel::ConcentratedSpring, false)
+                .contains("端ばね変形が未記録")
+        );
+        assert!(m_theta_axis_label(AnalysisHingeModel::Fiber, false).contains("弦からの回転"));
     }
 
     /// 弱軸採用時は ry/my を抽出する。
