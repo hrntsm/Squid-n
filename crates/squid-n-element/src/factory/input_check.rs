@@ -103,7 +103,7 @@ fn category_mismatch_issue(
 /// - 材料が設定されていない。
 /// - コンクリート系断面（RC/SRC/CFT）なのに材料の Fc が未設定または 0 以下。
 /// - 断面形状未設定の部材で、材料に正の fy も正の Fc もない。
-fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
+pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
     let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
         return Some(format!(
             "部材 ID {} に断面が設定されていません。\

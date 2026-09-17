@@ -176,7 +176,11 @@ fn surface_view(
 }
 
 /// 解析が実際に生成する端部ファイバ断面を、解析と同じ解像度・強度解決で
-/// `PlasticFiber` 群へ変換する（N-M 曲面の単一情報源）。断面未定義なら `None`。
+/// `PlasticFiber` 群へ変換する（N-M 曲面の単一情報源）。
+///
+/// 断面未定義、または材料強度（Fc・fy）を解決できない場合は `None` を返す。
+/// 後者はファイバ材料の生成（[`build_gauss_fiber_pair`]）が panic する条件
+/// であり、表示のために解析入力を変更せず `None` で「近似しない」を表す。
 pub(crate) fn analysis_plastic_fibers(
     data: &ElementData,
     model: &Model,
@@ -188,6 +192,9 @@ pub(crate) fn analysis_plastic_fibers(
     let sec = data
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
+    if super::input_check::member_strength_issue(data, model).is_some() {
+        return None;
+    }
     let strength = fiber_strength_params(data, model, basis);
     let [(section, _mats), _] =
         build_gauss_fiber_pair(data, model, basis, kind, sec.width, sec.depth, nw, nd);
@@ -630,5 +637,68 @@ mod tests {
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
         assert!(view.backbone.is_none());
+    }
+
+    /// コンクリート系断面で Fc が未設定のとき、ファイバ材料の生成で panic せず
+    /// 曲面を返さない（表示 API の「近似は返さない」契約）。
+    #[test]
+    fn concrete_shape_without_fc_returns_no_surface() {
+        let model = make_model(Some(rc_shape()), None);
+        let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
+        assert!(analysis_plastic_fibers(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            FIBER_NW,
+            FIBER_ND,
+        )
+        .is_none());
+        let view = build_hinge_view(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            0.0,
+            8,
+            24,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::Fiber);
+        assert!(view.mn_surface.is_none());
+    }
+
+    /// 鋼材断面で fy が未設定のとき、ファイバ材料の生成で panic せず曲面を
+    /// 返さない。
+    #[test]
+    fn steel_shape_without_fy_returns_no_surface() {
+        let shape = SectionShape::SteelBox {
+            height: 400.0,
+            width: 200.0,
+            thick: 9.0,
+            corner_r: 0.0,
+        };
+        let mut model = make_model(Some(shape), None);
+        model.materials[0].fy = None;
+        let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
+        assert!(analysis_plastic_fibers(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            FIBER_NW,
+            FIBER_ND,
+        )
+        .is_none());
+        let view = build_hinge_view(
+            &col,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+            0.0,
+            8,
+            24,
+        );
+        assert_eq!(view.model, AnalysisHingeModel::Fiber);
+        assert!(view.mn_surface.is_none());
     }
 }
