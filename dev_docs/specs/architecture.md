@@ -44,4 +44,4 @@ cargo run -p xtask -- check-deps
 
 ## API リファレンス
 
-各クレートの API ドキュメント（rustdoc）は、CI で `cargo doc` から生成され、このサイトの [`api/`](./api/squid_n_core/index.html) 以下に併設されます。
+各クレートの API ドキュメント（rustdoc）は、CI で `cargo doc` から生成され、このサイトの [`api/`](https://hrntsm.github.io/Squid-n/api/squid_n_core/index.html) 以下に併設されます。
