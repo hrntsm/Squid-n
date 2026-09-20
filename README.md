@@ -10,7 +10,7 @@
 
 ## アーキテクチャ
 
-**14** のクレートから成る階層型アーキテクチャ（詳細は [docs/architecture.md](docs/architecture.md)）:
+**14** のクレートから成る階層型アーキテクチャ（詳細は [dev_docs/specs/architecture.md](dev_docs/specs/architecture.md)）:
 
 ```
 Layer 0: squid-n-core（基本データ構造・DOF 管理・荷重組合せ）、squid-n-math（疎行列・ソルバ）、
@@ -51,7 +51,7 @@ cargo run -p squid-n-mcp --features mcp
 （`main` への push で GitHub Pages に自動デプロイ）。
 ローカルプレビューは [CONTRIBUTING.md](CONTRIBUTING.md#ドキュメントサイトmdbook) を参照。
 
-主な章: [はじめに](docs/introduction.md) · [アーキテクチャ](docs/architecture.md) ·
+主な章: [はじめに](docs/introduction.md) · [アーキテクチャ](dev_docs/specs/architecture.md) ·
 [モデル入出力](docs/model_io/README.md) · [MCP サーバ](docs/mcp_server/README.md) ·
 [計算根拠](docs/calc_basis/README.md)
 
