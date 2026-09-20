@@ -31,6 +31,7 @@
 | P11 ML断面提案 | [P11_ML断面提案.md](P11_ML断面提案.md) | 作成済・未着手 | burn:回帰/分類・サロゲート・提案→規準検証ゲート(無検証採用禁止)。クレートは着手時に新設 |
 | P13 Grasshopper連携 | [P13_Grasshopper連携.md](P13_Grasshopper連携.md) | 作成済 | GUI内蔵HTTPサーバ+Syncモード・GH専用DTO(全量置換/キー対応)・一次設計一式のGH実行・カタログAPI・C#プラグイン(モノレポ/スキーマ自動生成CI) |
 | **横断ドキュメント** | | | |
+| アーキテクチャ | [architecture.md](architecture.md) | 作成済 | クレート階層・依存方向・API リファレンスへの導線 |
 | UI 設計 | [UI設計.md](UI設計.md) | 作成済 | 4ペイン＋工程タブ・断面作成UI(SectionShape)・3D選択編集(共有/複製)・stale・結果可視化・レポート |
 | グリッド操作 | [グリッド操作.md](グリッド操作.md) | 作成済 | テーブルのスプレッドシート的編集（矩形選択・Excel相互TSVコピペ・2モード式編集・行/列/全選択）。プロトタイプ検証済み |
 | 数量積算 | [数量積算.md](数量積算.md) | 作成済 | 部位別の概算数量集計（design-jp::quantity・設計タブ「数量積算」・CSV・MCP quantity_takeoff） |

@@ -4,7 +4,6 @@
 
 # 概要
 
-- [アーキテクチャ](./architecture.md)
 - [モデル入出力（ファイル形式）](./model_io/README.md)
     - [Squid-n プロジェクト形式（.scz）](./model_io/01_プロジェクト形式_scz.md)
     - [ST-Bridge 形式（.stb / .xml）](./model_io/02_ST-Bridge_形式.md)
