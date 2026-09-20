@@ -78,7 +78,7 @@ CFT 柱の地震時設計用せん断:
 <div class="impl-ref">
 
 **実装参照**：`squid_n_design_jp::srrc::{beam, column, panel_zone}`、`squid_n_design_jp::cft` が検定します。
-SRC パネルゾーンは \\( {}\_c V \cdot j\delta \cdot f\_s \cdot (1+\beta) \ge (h\'/h)({}\_B M\_1 + {}\_B M\_2) \\)。
+SRC 柱梁接合部は \\( {}\_c V \cdot j\delta \cdot f\_s \cdot (1+\beta) \ge (h\'/h)({}\_B M\_1 + {}\_B M\_2) \\)。
 
 </div>
 
