@@ -492,16 +492,44 @@ mod tests {
         }
     }
 
-    /// 前方一致解決: JIS 種別記号付き名称・最長一致を確認する。
+    /// 前方一致解決: JIS 種別記号付き名称・最長一致を、ST-Bridge の材料 std が
+    /// 列挙する代表的なグレード名について確認する。
     #[test]
     fn test_steel_f_value_prefix() {
-        assert_eq!(steel_f_value_prefix("SN490B", 40.0), Some(325.0));
-        assert_eq!(steel_f_value_prefix("SN400C", 40.0), Some(235.0));
-        assert_eq!(steel_f_value_prefix("SM490YA", 40.0), Some(325.0));
-        assert_eq!(steel_f_value_prefix("STKN400W", 40.0), Some(235.0));
-        assert_eq!(steel_f_value_prefix("STKN490B", 40.0), Some(325.0));
-        assert_eq!(steel_f_value_prefix("SNR400A", 40.0), Some(235.0));
-        assert_eq!(steel_f_value_prefix("SNR490B", 40.0), Some(325.0));
+        for (name, fy) in [
+            ("SS400", 235.0),
+            ("SN400A", 235.0),
+            ("SN400B", 235.0),
+            ("SN400C", 235.0),
+            ("SM400A", 235.0),
+            ("SM400", 235.0),
+            ("STK400", 235.0),
+            ("STKR400", 235.0),
+            ("STKN400W", 235.0),
+            ("STKN400B", 235.0),
+            ("SSC400", 235.0),
+            ("SWH400", 235.0),
+            ("BCP235", 235.0),
+            ("BCR235", 235.0),
+            ("SNR400A", 235.0),
+            ("SS490", 275.0),
+            ("BCR295", 295.0),
+            ("SM490A", 325.0),
+            ("SM490", 325.0),
+            ("SM490YA", 325.0),
+            ("SM490YB", 325.0),
+            ("SN490B", 325.0),
+            ("SN490C", 325.0),
+            ("STK490", 325.0),
+            ("STKR490", 325.0),
+            ("STKN490B", 325.0),
+            ("SNR490B", 325.0),
+            ("BCP325", 325.0),
+            ("SM520B", 355.0),
+            ("SM520", 355.0),
+        ] {
+            assert_eq!(steel_f_value_prefix(name, 40.0), Some(fy), "{name}");
+        }
         assert_eq!(steel_f_value_prefix("未知", 40.0), None);
     }
 
