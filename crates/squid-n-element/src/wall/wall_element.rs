@@ -1472,7 +1472,7 @@ mod tests {
         let mut rebar = model.materials[0].clone();
         rebar.id = MaterialId(1);
         rebar.name = "SD345".into();
-        rebar.category = MaterialCategory::Steel;
+        rebar.category = MaterialCategory::Rebar;
         rebar.density = 7.85e-9;
         rebar.fy = Some(345.0);
         model.materials.push(rebar);

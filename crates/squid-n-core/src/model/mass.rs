@@ -167,12 +167,41 @@ pub fn validate_section_materials(
         ));
     }
 
+    let steel_shape = matches!(
+        shape,
+        SectionShape::SteelH { .. }
+            | SectionShape::SteelBox { .. }
+            | SectionShape::SteelAngle { .. }
+            | SectionShape::SteelChannel { .. }
+            | SectionShape::SteelTee { .. }
+            | SectionShape::SteelPipe { .. }
+            | SectionShape::SteelFlatBar { .. }
+            | SectionShape::SteelRoundBar { .. }
+            | SectionShape::SteelBuiltH { .. }
+            | SectionShape::SteelLipChannel { .. }
+    );
+    if steel_shape {
+        let Some(main) = main else {
+            return Err(format!("鋼材断面{}の主材料が未設定です", section.name));
+        };
+        if main.category != super::MaterialCategory::Steel {
+            return Err(format!(
+                "鋼材断面{}の主材料が鋼材ではありません",
+                section.name
+            ));
+        }
+    }
+
     if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
         return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
     }
     if matches!(
         shape,
-        SectionShape::RcRect { .. } | SectionShape::RcCircle { .. } | SectionShape::SrcRect { .. }
+        SectionShape::RcRect { .. }
+            | SectionShape::RcCircle { .. }
+            | SectionShape::SrcRect { .. }
+            | SectionShape::RcWall { .. }
+            | SectionShape::RcSlab { .. }
     ) {
         for (role, material) in [("主筋材料", rebar), ("せん断補強筋材料", shear_rebar)]
         {
@@ -251,6 +280,16 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
             ))
         }
     };
+    let relation = |description: &str, condition: bool| {
+        if condition {
+            Ok(())
+        } else {
+            Err(format!(
+                "断面{}の形状寸法の関係が成立しません: {description}",
+                section.name
+            ))
+        }
+    };
     let mut dimensions = Vec::new();
     match shape {
         SectionShape::SteelH {
@@ -264,8 +303,17 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
             width,
             web_thick,
             flange_thick,
+        } => {
+            dimensions.extend([
+                ("height", *height),
+                ("width", *width),
+                ("web_thick", *web_thick),
+                ("flange_thick", *flange_thick),
+            ]);
+            relation("height > 2 * flange_thick", *height > 2.0 * *flange_thick)?;
+            relation("width >= web_thick", *width >= *web_thick)?;
         }
-        | SectionShape::SteelTee {
+        SectionShape::SteelTee {
             height,
             width,
             web_thick,
@@ -277,6 +325,8 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
                 ("web_thick", *web_thick),
                 ("flange_thick", *flange_thick),
             ]);
+            relation("height > flange_thick", *height > *flange_thick)?;
+            relation("width >= web_thick", *width >= *web_thick)?;
         }
         SectionShape::SteelBox {
             height,
@@ -286,20 +336,31 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
         } => {
             dimensions.extend([("height", *height), ("width", *width), ("thick", *thick)]);
             nonnegative("corner_r", *corner_r)?;
+            relation("height > 2 * thick", *height > 2.0 * *thick)?;
+            relation("width > 2 * thick", *width > 2.0 * *thick)?;
         }
         SectionShape::CftBox {
             height,
             width,
             thick,
-        } => dimensions.extend([("height", *height), ("width", *width), ("thick", *thick)]),
+        } => {
+            dimensions.extend([("height", *height), ("width", *width), ("thick", *thick)]);
+            relation("height > 2 * thick", *height > 2.0 * *thick)?;
+            relation("width > 2 * thick", *width > 2.0 * *thick)?;
+        }
         SectionShape::SteelAngle {
             leg_a,
             leg_b,
             thick,
-        } => dimensions.extend([("leg_a", *leg_a), ("leg_b", *leg_b), ("thick", *thick)]),
+        } => {
+            dimensions.extend([("leg_a", *leg_a), ("leg_b", *leg_b), ("thick", *thick)]);
+            relation("leg_a >= thick", *leg_a >= *thick)?;
+            relation("leg_b >= thick", *leg_b >= *thick)?;
+        }
         SectionShape::SteelPipe { outer_dia, thick }
         | SectionShape::CftPipe { outer_dia, thick } => {
-            dimensions.extend([("outer_dia", *outer_dia), ("thick", *thick)])
+            dimensions.extend([("outer_dia", *outer_dia), ("thick", *thick)]);
+            relation("outer_dia > 2 * thick", *outer_dia > 2.0 * *thick)?;
         }
         SectionShape::SteelFlatBar { width, thick } => {
             dimensions.extend([("width", *width), ("thick", *thick)])
@@ -312,25 +373,39 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
             lower_width,
             lower_thick,
             web_thick,
-        } => dimensions.extend([
-            ("height", *height),
-            ("upper_width", *upper_width),
-            ("upper_thick", *upper_thick),
-            ("lower_width", *lower_width),
-            ("lower_thick", *lower_thick),
-            ("web_thick", *web_thick),
-        ]),
+        } => {
+            dimensions.extend([
+                ("height", *height),
+                ("upper_width", *upper_width),
+                ("upper_thick", *upper_thick),
+                ("lower_width", *lower_width),
+                ("lower_thick", *lower_thick),
+                ("web_thick", *web_thick),
+            ]);
+            relation(
+                "height > upper_thick + lower_thick",
+                *height > *upper_thick + *lower_thick,
+            )?;
+            relation("upper_width >= web_thick", *upper_width >= *web_thick)?;
+            relation("lower_width >= web_thick", *lower_width >= *web_thick)?;
+        }
         SectionShape::SteelLipChannel {
             height,
             width,
             lip,
             thick,
-        } => dimensions.extend([
-            ("height", *height),
-            ("width", *width),
-            ("lip", *lip),
-            ("thick", *thick),
-        ]),
+        } => {
+            dimensions.extend([
+                ("height", *height),
+                ("width", *width),
+                ("lip", *lip),
+                ("thick", *thick),
+            ]);
+            relation("height > 2 * thick", *height > 2.0 * *thick)?;
+            relation("width > thick", *width > *thick)?;
+            relation("lip > thick", *lip > *thick)?;
+            relation("height > lip + thick", *height > *lip + *thick)?;
+        }
         SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => {
             dimensions.extend([("b", *b), ("d", *d)]);
             validate_rebar_geometry(rebar, &positive, &nonnegative)?;
@@ -1602,5 +1677,89 @@ mod tests {
             Some(&steel)
         )
         .is_ok());
+    }
+
+    #[test]
+    fn 鋼材形状は鋼材主材料と成立する寸法関係を要求する() {
+        let steel = material(0, MaterialCategory::Steel, 8.0, None);
+        let concrete = material(1, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let h = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 9.0,
+            flange_thick: 12.0,
+        }
+        .to_section(SectionId(0), "H".into());
+        assert!(SectionMassProperties::try_from_section(&h, None, None, None, None).is_err());
+        assert!(
+            SectionMassProperties::try_from_section(&h, Some(&concrete), None, None, None).is_err()
+        );
+        assert!(
+            SectionMassProperties::try_from_section(&h, Some(&steel), None, None, None).is_ok()
+        );
+
+        for shape in [
+            SectionShape::SteelH {
+                height: 24.0,
+                width: 200.0,
+                web_thick: 9.0,
+                flange_thick: 12.0,
+            },
+            SectionShape::SteelPipe {
+                outer_dia: 24.0,
+                thick: 12.0,
+            },
+            SectionShape::SteelBox {
+                height: 24.0,
+                width: 200.0,
+                thick: 12.0,
+                corner_r: 0.0,
+            },
+        ] {
+            let section = shape.to_section(SectionId(1), "invalid-steel".into());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&steel),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn 壁とスラブの補助材料も鉄筋区分を要求する() {
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let steel = material(1, MaterialCategory::Steel, 8.0, None);
+        let rebar = material(2, MaterialCategory::Rebar, 7.0, None);
+        for (id, shape) in [
+            (
+                0,
+                SectionShape::RcWall {
+                    thickness: 150.0,
+                    ps: 0.0025,
+                },
+            ),
+            (1, SectionShape::RcSlab { thickness: 150.0 }),
+        ] {
+            let section = shape.to_section(SectionId(id), "RC板".into());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&concrete),
+                Some(&steel),
+                None,
+                None,
+            )
+            .is_err());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&concrete),
+                Some(&rebar),
+                Some(&rebar),
+                None,
+            )
+            .is_ok());
+        }
     }
 }
