@@ -156,8 +156,10 @@ mod tests {
 
     use squid_n_core::ids::StoryId;
 
+    /// 記録済みの階 ID を添字ではなく `StoryId` で突き合わせて表示名を引く。
+    /// 記録後に削除された階は「(削除済み階)」になる。
     #[test]
-    fn test_story_display_names_matches_by_story_id_not_index() {
+    fn test_story_display_names() {
         // モデル側は StoryId(1),StoryId(0) の順（記録時と並びが入れ替わっている想定）。
         let model_stories = vec![
             (StoryId(1), "2F".to_string()),
@@ -166,43 +168,28 @@ mod tests {
         let recorded = vec![StoryId(0), StoryId(1)];
         assert_eq!(
             story_display_names(&model_stories, &recorded),
-            vec!["1F".to_string(), "2F".to_string()],
-            "添字ではなく StoryId で対応する階名を引くはず"
+            vec!["1F".to_string(), "2F".to_string()]
         );
-    }
 
-    #[test]
-    fn test_story_display_names_missing_story_falls_back() {
         let model_stories = vec![(StoryId(0), "1F".to_string())];
         let recorded = vec![StoryId(0), StoryId(1)];
         assert_eq!(
             story_display_names(&model_stories, &recorded),
-            vec!["1F".to_string(), "(削除済み階)".to_string()],
-            "記録後に削除された階は「(削除済み階)」になるはず"
+            vec!["1F".to_string(), "(削除済み階)".to_string()]
         );
     }
 
     #[test]
-    fn test_story_absmax_takes_abs_value_max_over_frames() {
+    fn test_story_absmax() {
         let series = vec![
             vec![1.0, -2.0, 0.5],
             vec![-3.0, 1.0, -0.2],
             vec![0.0, 0.0, 0.9],
         ];
         assert_eq!(story_absmax(&series, 3), vec![3.0, 2.0, 0.9]);
-    }
-
-    #[test]
-    fn test_story_absmax_empty_series_returns_zeros() {
-        let series: Vec<Vec<f64>> = vec![];
-        assert_eq!(story_absmax(&series, 2), vec![0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_story_absmax_short_frame_is_handled_defensively() {
-        // フレームの要素数が n_story と異なる場合でも panic せず短い方まで集計する。
-        let series = vec![vec![1.0]];
-        assert_eq!(story_absmax(&series, 3), vec![1.0, 0.0, 0.0]);
+        assert_eq!(story_absmax(&[], 2), vec![0.0, 0.0], "系列なしはゼロ埋め");
+        // フレームの要素数が n_story と異なっても panic せず短い方まで集計する。
+        assert_eq!(story_absmax(&[vec![1.0]], 3), vec![1.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -213,19 +200,16 @@ mod tests {
     }
 
     #[test]
-    fn test_story_axis_label_ground_and_stories() {
+    fn test_story_axis_label() {
         let names = vec!["1F".to_string(), "2F".to_string(), "RF".to_string()];
+        // 整数グリッドのみラベル（0 は地盤面 GL、k は story_names[k-1]）。
         assert_eq!(story_axis_label(&names, 0.0), "GL");
         assert_eq!(story_axis_label(&names, 1.0), "1F");
         assert_eq!(story_axis_label(&names, 2.0), "2F");
         assert_eq!(story_axis_label(&names, 3.0), "RF");
         assert_eq!(story_axis_label(&names, 4.0), "");
         assert_eq!(story_axis_label(&names, -1.0), "");
-    }
-
-    #[test]
-    fn test_story_axis_label_non_integer_is_blank() {
-        let names = vec!["1F".to_string()];
+        // 非整数（ズーム時の補助グリッド）は空文字。
         assert_eq!(story_axis_label(&names, 0.5), "");
     }
 
@@ -245,31 +229,15 @@ mod tests {
     }
 
     #[test]
-    fn test_hover_story_index_story_quantity() {
+    fn test_hover_story_index() {
         // 層量: y∈[i, i+1) が層 i。
         assert_eq!(hover_story_index(0.4, 3, true), 0);
         assert_eq!(hover_story_index(1.9, 3, true), 1);
-        assert_eq!(
-            hover_story_index(-1.0, 3, true),
-            0,
-            "範囲外は最寄りへクランプ"
-        );
-        assert_eq!(
-            hover_story_index(10.0, 3, true),
-            2,
-            "範囲外は最寄りへクランプ"
-        );
-    }
-
-    #[test]
-    fn test_hover_story_index_floor_quantity() {
+        assert_eq!(hover_story_index(-1.0, 3, true), 0, "範囲外は最寄りへ");
+        assert_eq!(hover_story_index(10.0, 3, true), 2, "範囲外は最寄りへ");
         // 階量: y=k の最寄りが層 k-1。
         assert_eq!(hover_story_index(1.0, 3, false), 0);
         assert_eq!(hover_story_index(2.2, 3, false), 1);
-        assert_eq!(
-            hover_story_index(0.0, 3, false),
-            0,
-            "範囲外は最寄りへクランプ"
-        );
+        assert_eq!(hover_story_index(0.0, 3, false), 0, "範囲外は最寄りへ");
     }
 }
