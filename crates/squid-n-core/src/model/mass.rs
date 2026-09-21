@@ -293,21 +293,38 @@ fn rectangular_rebar_geometry(rebar: &RcRebar, width: f64, depth: f64) -> Geomet
 }
 
 fn circular_rebar_geometry(rebar: &RcRebar, dia: f64) -> GeometryMass {
-    let total = rebar.main_x.count + rebar.main_y.count;
-    if total == 0 {
+    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
+
+    let sets = [&rebar.main_x, &rebar.main_y];
+    let max_layers = sets.iter().map(|set| set.layers.max(1)).max().unwrap_or(0);
+    if max_layers == 0 {
         return GeometryMass::default();
     }
-    let depth = rebar.cover + rebar.shear.dia;
-    let radius = (dia / 2.0 - depth).max(0.0);
     let mut result = GeometryMass::default();
-    let mut index = 0_u32;
-    for set in [&rebar.main_x, &rebar.main_y] {
-        for _ in 0..set.count {
-            let theta = 2.0 * std::f64::consts::PI * index as f64 / total as f64;
-            let y = radius * theta.cos();
-            let z = radius * theta.sin();
-            result.add_round_bar(one_bar_area(set.dia), set.dia, y, z);
-            index += 1;
+    for layer in 0..max_layers {
+        let total = sets
+            .iter()
+            .filter(|set| layer < set.layers.max(1))
+            .map(|set| set.count)
+            .sum::<u32>();
+        if total == 0 {
+            continue;
+        }
+        let mut index = 0_u32;
+        for set in sets {
+            if layer >= set.layers.max(1) {
+                continue;
+            }
+            let radius = (dia / 2.0
+                - rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer))
+            .max(0.0);
+            for _ in 0..set.count {
+                let theta = 2.0 * std::f64::consts::PI * index as f64 / total as f64;
+                let y = radius * theta.cos();
+                let z = radius * theta.sin();
+                result.add_round_bar(one_bar_area(set.dia), set.dia, y, z);
+                index += 1;
+            }
         }
     }
     result
@@ -497,6 +514,44 @@ mod tests {
             properties.mass_per_length
                 < concrete_density * gross.area + 7.0 * (main.area + shear.area)
         );
+    }
+
+    #[test]
+    fn 円形主筋の多段配置を質量と断面二次モーメントへ反映する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 20.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 0,
+                dia: 20.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        };
+        let geometry = circular_rebar_geometry(&rebar, 500.0);
+        let area = one_bar_area(20.0);
+        let own_i = area * 20.0 * 20.0 / 16.0;
+        let radius_0: f64 = 250.0 - (40.0 + 10.0 + 10.0);
+        let radius_1: f64 = radius_0 - (20.0 + 30.0);
+        let expected_area = 8.0 * area;
+        let expected_inertia = 4.0 * own_i
+            + 2.0 * area * radius_0.powi(2)
+            + 4.0 * own_i
+            + 2.0 * area * radius_1.powi(2);
+
+        assert!((geometry.area - expected_area).abs() < 1e-12);
+        assert!((geometry.iy - expected_inertia).abs() / expected_inertia < 1e-12);
+        assert!((geometry.iz - expected_inertia).abs() / expected_inertia < 1e-12);
     }
 
     #[test]
