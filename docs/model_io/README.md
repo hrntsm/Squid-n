@@ -24,10 +24,4 @@ Squid-n は構造モデルを 2 つのファイル形式で入出力します。
 
 ## MCP サーバでのモデル入力
 
-MCP サーバ（`squid-n-mcp`）は起動時の第 1 引数でモデルファイルを読み込みます。**現状は `.scz` のみ**に対応しており、ST-Bridge ファイルの直接指定には対応していません。ST-Bridge から取り込む場合は、いったん GUI で読み込んで `.scz` として保存し、その `.scz` を MCP サーバに渡します。詳細は [MCP サーバ](../mcp_server/README.md)を参照してください。
-
-<div class="impl-ref">
-
-**実装参照**：`crates/squid-n-mcp/src/main.rs` が起動引数の第 1 引数を `squid_n_io::scz::load_scz`（`crates/squid-n-io/src/scz.rs`）へ渡し、引数なしは空モデルで起動するため、MCP サーバが直接読めるのは `.scz` だけです。ST-Bridge の取り込みは `squid_n_io::stbridge::import_stbridge`（`crates/squid-n-io/src/stbridge/import/mod.rs`）が担います。
-
-</div>
+MCP サーバのモデル入力には制約があります。詳細は [MCP の制約・注意点](../mcp_server/05_制約・注意点.md)を参照してください。
