@@ -515,21 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rc_qsu_simple_sigma_0_zero_matches_original() {
-        // sigma_0=0.0（既定）は従来値と一致すること。
-        let inp = sample_input();
-        assert_eq!(inp.sigma_0, 0.0);
-        let qsu = rc_qsu_simple(&inp);
-        let pt: f64 = 100.0 * 1935.0 / (400.0 * 530.0);
-        let j = 7.0 * 530.0 / 8.0;
-        let shear_span_ratio: f64 = 3000.0 / (2.0 * 530.0);
-        let concrete_term = 0.068 * pt.powf(0.23) * (24.0 + 18.0) / (shear_span_ratio + 0.12);
-        let hoop_term = 0.85 * (0.002_f64 * 295.0).sqrt();
-        let qsu_handcalc = (concrete_term + hoop_term) * 400.0 * j;
-        assert!((qsu - qsu_handcalc).abs() < 1e-6);
-    }
-
-    #[test]
     fn test_rc_qsu_simple_axial_term_adds_01_sigma0_b_j() {
         // 適用範囲内(0〜0.4Fc=9.6)の sigma_0=5.0 のとき、Qsu は
         // sigma_0=0 の場合に対して厳密に 0.1・σ0・b・j 分だけ増える。

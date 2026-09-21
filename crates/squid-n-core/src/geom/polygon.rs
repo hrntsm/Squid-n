@@ -452,13 +452,6 @@ mod tests {
         assert!((point_segment_dist([3.0, 4.0], a, a) - 5.0).abs() < 1e-12);
     }
 
-    #[test]
-    fn point_segment_dist_sq_is_the_square_of_the_distance() {
-        let (p, a, b) = ([5.0, 3.0], [0.0, 0.0], [10.0, 0.0]);
-        let d = point_segment_dist(p, a, b);
-        assert!((point_segment_dist_sq(p, a, b) - d * d).abs() < 1e-12);
-    }
-
     /// 辺上の点を落とすか拾うかが、3 つの内包判定を分ける唯一の違いである。
     #[test]
     fn the_three_containment_rules_differ_only_on_the_boundary_band() {

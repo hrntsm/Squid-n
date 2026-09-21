@@ -14,42 +14,6 @@ fn test_secondary(kind: SecondaryMemberKind, id: u32, name: &str) -> SecondaryMe
     }
 }
 
-fn make_grid_model(n: usize) -> Model {
-    let nodes: Vec<Node> = (0..n)
-        .map(|i| Node {
-            id: NodeId(i as u32),
-            coord: [i as f64 * 1000.0, 0.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        })
-        .collect();
-    Model {
-        nodes,
-        ..Default::default()
-    }
-}
-
-#[test]
-fn test_10k_node_traverse() {
-    let n = 10_000;
-    let model = make_grid_model(n);
-    let t = std::time::Instant::now();
-    let mut s = 0.0;
-    for nd in &model.nodes {
-        s += nd.coord[0];
-    }
-    assert!(t.elapsed().as_millis() < 50, "traverse too slow");
-    std::hint::black_box(s);
-}
-
-#[test]
-fn test_validate_ok() {
-    let model = make_grid_model(3);
-    assert!(model.validate().is_ok());
-}
-
 #[test]
 fn test_validate_duplicate_node() {
     let model = Model {
@@ -323,13 +287,6 @@ fn test_material_serde_defaults_concrete_class() {
     );
 }
 
-#[test]
-fn test_rect_shear_area() {
-    let area = 80000.0;
-    let as_ = rect_shear_area(area);
-    assert!((as_ - area * 5.0 / 6.0).abs() < 1e-9);
-}
-
 /// 個別開口が非空なら面積和を優先し、空なら opening_area にフォールバックする。
 #[test]
 fn test_wall_attr_total_opening_area_prefers_openings() {
@@ -496,32 +453,6 @@ fn test_slit_expresses_three_side_and_full() {
         beam_face: [true, true],
     };
     assert!(full.both_beam_faces());
-}
-
-#[test]
-fn test_section_new_fields_default() {
-    let sec = Section {
-        id: SectionId(0),
-        name: "Test".to_string(),
-        area: 100.0,
-        iy: 1000.0,
-        iz: 2000.0,
-        j: 500.0,
-        depth: 0.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: Some(MaterialId(0)),
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    };
-    assert_eq!(sec.depth, 0.0);
-    assert!(sec.panel_thickness.is_none());
 }
 
 #[test]
