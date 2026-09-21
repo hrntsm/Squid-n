@@ -332,6 +332,14 @@ mod tests {
     }
 
     #[test]
+    fn test_newrc_reference_values() {
+        // 塑性率算定（ファイバー梁）が参照する fc と εc0 をそのまま返すこと。
+        let c = ConcreteNewRc::new(30.0, 2.0);
+        assert_eq!(c.reference_stress(), 30.0);
+        assert_relative_eq!(c.reference_strain(), c.eps_c0);
+    }
+
+    #[test]
     fn test_newrc_envelope_peak_at_ec0() {
         // NewRcEnvelope 単体のピーク: compression(εc0) == (fc, ~0)。
         let env = NewRcEnvelope::new(30.0);
