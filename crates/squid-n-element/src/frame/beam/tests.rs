@@ -35,6 +35,9 @@ fn make_test_beam() -> BeamElement {
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
+        mass_properties_resolver: std::sync::Arc::new(|| {
+            Ok(squid_n_core::model::SectionMassProperties::default())
+        }),
     }
 }
 
@@ -221,12 +224,10 @@ fn test_beam_new_src_cft_composite_props() {
     };
     model.materials[0].fc = None;
     let beam = BeamElement::try_new(&make_elem(0), &model).unwrap();
-    assert!(beam.mass_properties_error.is_some());
-    assert!(beam
-        .mass_matrix(MassOption::Consistent)
-        .data
-        .iter()
-        .all(|value| value.is_finite()));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        beam.mass_matrix(MassOption::Consistent)
+    }));
+    assert!(result.is_err());
 }
 
 /// スラブ協力幅による強軸剛性増大。

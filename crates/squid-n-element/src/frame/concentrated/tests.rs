@@ -36,6 +36,9 @@ fn make_test_beam() -> crate::frame::beam::BeamElement {
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
+        mass_properties_resolver: std::sync::Arc::new(|| {
+            Ok(squid_n_core::model::SectionMassProperties::default())
+        }),
     }
 }
 

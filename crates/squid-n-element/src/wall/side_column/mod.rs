@@ -62,6 +62,9 @@ mod tests {
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),
+            mass_properties_resolver: std::sync::Arc::new(|| {
+                Ok(squid_n_core::model::SectionMassProperties::default())
+            }),
         };
         InPlaneReleasedColumn::new(inner, release_axis)
     }

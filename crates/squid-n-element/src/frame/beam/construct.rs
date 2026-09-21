@@ -4,7 +4,8 @@ use super::element::BeamElement;
 use super::stiffness_factors::{breakdown_with, composite_props_with};
 use crate::frame::section_lookup::{get_material, get_section, sec_material};
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{Model, SectionMassProperties};
+use squid_n_core::model::Model;
+use std::sync::Arc;
 
 /// 危険断面位置を正規化座標 \[0,1\] で算定する。
 ///
@@ -47,10 +48,6 @@ impl BeamElement {
         let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
-        let (mass_properties, mass_properties_error) = match model.element_mass_properties(data) {
-            Ok(properties) => (properties, None),
-            Err(error) => (SectionMassProperties::default(), Some(error)),
-        };
         let g = mat.shear_modulus();
 
         let eval_sections = eval_sections_of(data, model, len);
@@ -227,8 +224,8 @@ impl BeamElement {
             as_z,
             length: len,
             density: mat.density,
-            mass_properties,
-            mass_properties_error,
+            mass_properties: Default::default(),
+            mass_properties_error: None,
             nodes: [n0, n1],
             axis,
             rigid: data.rigid_zone,
@@ -240,6 +237,11 @@ impl BeamElement {
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),
+            mass_properties_resolver: Arc::new({
+                let data = data.clone();
+                let model = model.clone();
+                move || model.element_mass_properties(&data)
+            }),
         })
     }
 }

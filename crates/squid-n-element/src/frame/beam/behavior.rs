@@ -33,6 +33,12 @@ impl ElementBehavior for BeamElement {
                 crate::frame::prismatic::lumped_mass(self.density * self.a_mass * self.length)
             }
             MassOption::Consistent => {
+                let mass_properties = if self.mass_properties != Default::default() {
+                    self.mass_properties
+                } else {
+                    (self.mass_properties_resolver)()
+                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+                };
                 let (li, lj) = self.rigid_lengths();
                 let flex_length = self.length - li - lj;
                 let phi_y = if flex_length > 0.0 && self.g > 0.0 && self.as_z > 0.0 {
@@ -46,7 +52,7 @@ impl ElementBehavior for BeamElement {
                     0.0
                 };
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(
-                    self.mass_properties,
+                    mass_properties,
                     flex_length,
                     phi_z,
                     phi_y,
@@ -56,7 +62,7 @@ impl ElementBehavior for BeamElement {
                 let mm = crate::frame::prismatic::condense_end_releases_with_mass(
                     &k_flex,
                     &flex,
-                    self.mass_properties,
+                    mass_properties,
                     li,
                     lj,
                     &releases,

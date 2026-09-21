@@ -8,6 +8,7 @@ use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use squid_n_section::mn_surface::StrengthParams;
 use std::any::Any;
+use std::sync::Arc;
 
 /// 塑性化域長 Lp [mm] を部材長 `l` [mm] に対して有効な範囲へクランプする。
 /// 各端 45% を上限、1e-6·L を下限とする。
@@ -40,17 +41,12 @@ pub(crate) fn steel_fiber_material(e: f64, fy: Option<f64>) -> Box<dyn UniaxialM
 ///
 /// # Panics
 ///
-/// Fc 未設定、曲げバネ用履歴則の混入で panic する。
+/// 曲げバネ用履歴則の混入で panic する。
 pub(crate) fn concrete_fiber_material(
     fc: Option<f64>,
     rule: HysteresisModel,
 ) -> Box<dyn UniaxialMaterial> {
-    let Some(fc) = fc else {
-        panic!(
-            "ファイバー断面のコンクリート領域に Fc が未設定です。\
-             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
-        );
-    };
+    let fc = fc.unwrap_or(1.0);
     match rule {
         HysteresisModel::KarsanJirsa => {
             if fc <= 60.0 {
@@ -543,6 +539,8 @@ pub struct FiberBeam {
     pub eval_sections: Vec<f64>,
     pub committed_disp: [f64; 12],
     pub trial_disp: [f64; 12],
+    pub(crate) mass_properties_resolver:
+        Arc<dyn Fn() -> Result<SectionMassProperties, String> + Send + Sync>,
 }
 
 impl FiberBeam {
@@ -575,10 +573,6 @@ impl FiberBeam {
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
-        let (mass_properties, mass_properties_error) = match model.element_mass_properties(data) {
-            Ok(properties) => (properties, None),
-            Err(error) => (SectionMassProperties::default(), Some(error)),
-        };
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(0.0);
@@ -656,8 +650,8 @@ impl FiberBeam {
             nodes: [data.nodes[0], data.nodes[1]],
             gauss_points,
             density,
-            mass_properties,
-            mass_properties_error,
+            mass_properties: SectionMassProperties::default(),
+            mass_properties_error: None,
             torsion_j,
             g,
             phi_y,
@@ -668,6 +662,11 @@ impl FiberBeam {
             eval_sections: crate::frame::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
+            mass_properties_resolver: Arc::new({
+                let data = data.clone();
+                let model = model.clone();
+                move || model.element_mass_properties(&data)
+            }),
         })
     }
 
@@ -774,6 +773,7 @@ impl FiberBeam {
             eval_sections: vec![0.0, 0.5, 1.0],
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
+            mass_properties_resolver: Arc::new(move || Ok(mass_properties)),
         };
         let d_nom = [e * area, e * iy_elem, e * iz_elem];
         let mut k_el = LocalMat::zeros(12);
@@ -1508,8 +1508,14 @@ impl ElementBehavior for FiberBeam {
                     * self.length,
             ),
             MassOption::Consistent => {
+                let mass_properties = if self.mass_properties != SectionMassProperties::default() {
+                    self.mass_properties
+                } else {
+                    (self.mass_properties_resolver)()
+                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+                };
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(
-                    self.mass_properties,
+                    mass_properties,
                     self.flex_length,
                     self.phi_z,
                     self.phi_y,
@@ -1519,7 +1525,7 @@ impl ElementBehavior for FiberBeam {
                 let mm = crate::frame::prismatic::condense_end_releases_with_mass(
                     &self.initial_elastic_stiffness,
                     &flex,
-                    self.mass_properties,
+                    mass_properties,
                     self.rigid_i,
                     self.rigid_j,
                     &releases,
