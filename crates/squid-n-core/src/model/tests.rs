@@ -1089,6 +1089,17 @@ fn test_layers_pair_adjacent_stories() {
     assert_eq!(layers[1].weight, Some(800.0));
 }
 
+/// 種別ごとの本数からの最多判定。同数の場合は RC → SRC → S の順で優先し、
+/// S を採らない安全側になる（略算周期 T = h(0.02 + 0.01α) は S の階が多いほど
+/// 周期が長く地震力が下がるため）。対象部材が 1 本もない階は RC。
+#[test]
+fn test_story_structure_majority_tie_breaks_to_safe_side() {
+    assert_eq!(StoryStructure::majority(0, 0, 0), StoryStructure::Rc);
+    assert_eq!(StoryStructure::majority(2, 2, 0), StoryStructure::Rc);
+    assert_eq!(StoryStructure::majority(0, 2, 2), StoryStructure::Src);
+    assert_eq!(StoryStructure::majority(1, 3, 0), StoryStructure::S);
+}
+
 /// 中間高さの節点（柱の分割点）は階には属するが、剛床の床面には載らない。
 #[test]
 fn test_mid_height_node_belongs_to_story_but_not_to_diaphragm_level() {
