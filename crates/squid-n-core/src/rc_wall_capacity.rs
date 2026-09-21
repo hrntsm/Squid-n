@@ -253,6 +253,44 @@ mod tests {
         );
     }
 
+    /// 非零 Dc・非零 σ0 を含む手計算照合。
+    ///
+    /// `d_wall=4600, dc_compression=600, sigma_0=1.0, te=t=180, at=3097,`
+    /// `sigma_wh=295, pwh_ratio=0.004, M/(Q·D)=1.5, Fc=24`。
+    #[test]
+    fn test_qu_matches_handcalc_with_dc_and_axial() {
+        let inp = RcWallShearInput {
+            fc: 24.0,
+            te: 180.0,
+            t: 180.0,
+            d_wall: 4600.0,
+            dc_compression: 600.0,
+            tension_column_at: 3097.0,
+            sigma_wh: 295.0,
+            pwh_ratio: 0.004,
+            sigma_0: 1.0,
+            shear_span_ratio: 1.5,
+            high_strength_shear_rebar: false,
+            opening: None,
+        };
+        // 手計算:
+        let d = 4600.0 - 600.0 / 2.0;
+        let pte: f64 = 100.0 * 3097.0 / (180.0 * d);
+        let j = 7.0 / 8.0 * d;
+        let ssr: f64 = 1.5_f64.clamp(1.0, 3.0);
+        let pwh = (0.004_f64 * 180.0 / 180.0).min(0.012);
+        let concrete = 0.053 * pte.powf(0.23) * (24.0 + 18.0) / (ssr + 0.12);
+        let hoop = 0.85 * (pwh * 295.0_f64).sqrt();
+        let axial = 0.1 * 1.0_f64.clamp(0.0, 0.4 * 24.0);
+        let expect = (concrete + hoop + axial) * 180.0 * j;
+        assert!(
+            (wall_shear_ultimate(&inp) - expect).abs() < 1e-3,
+            "{} vs {}",
+            wall_shear_ultimate(&inp),
+            expect
+        );
+    }
+
     /// 高強度せん断補強筋は係数 0.068・分母 √(M/(Q·D)+0.12) に切り替わり Qu が増える。
     #[test]
     fn test_qu_high_strength_branch_increases() {
