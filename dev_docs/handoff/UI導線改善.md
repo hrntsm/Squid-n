@@ -195,7 +195,7 @@ F 値は材料名の前方一致（最長一致）で引く `steel_f_value_prefi
 job_id を即時返しブロックしない。`analysis_status` が結果 JSON を返せることを
 tokio テスト2件で確認。LinearStatic 以外の JobKind・結果ストア連携は将来課題。
 
-### 7.2 dev_docs/specs/P8 の rmcp API 例の訂正（旧・申し送り2）
+### 7.2 旧 dev_docs/specs/P8（#313 で廃止）の rmcp API 例の訂正（旧・申し送り2）
 「確認済み」と記載されていた実在しない API パス（ToolRouter/Parameters のパス、
 `ServerInfo` 構築、`CallToolResult::error`）を rmcp 1.7 の実 API と現実装に合わせて
 訂正し、訂正日と実装状況の注記を追加。

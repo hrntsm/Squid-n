@@ -1,7 +1,7 @@
 # Domain Docs 基盤導入（CONTEXT.md・ADR） 申し送り
 
 作成日: 2026-09-13
-対象: `CONTEXT.md`、`dev_docs/adr/`、`AGENTS.md`、`dev_docs/specs/`、`docs/`、`dev_docs/v_and_v/`
+対象: `CONTEXT.md`、`dev_docs/adr/`、`AGENTS.md`、旧 `dev_docs/specs/`（#313 で廃止）、`docs/`、`dev_docs/v_and_v/`
 
 ## 背景
 
@@ -15,8 +15,8 @@
 
 - ルートに `CONTEXT.md` を新設。階と剛床・床・壁・断面と材料・柱梁接合部・解析・禁止語の
   7 グループ。1〜2 文の「何であるか」の定義に限定する。
-- `dev_docs/specs/用語集.md` は廃止し、用語の意味は CONTEXT.md に一本化した。実装の詳細は
-  `dev_docs/specs/` とコード検索で辿る（旧リンクは参照先を CONTEXT.md へ付け替え）。
+- 旧 `dev_docs/specs/用語集.md`（#313 で廃止）は廃止し、用語の意味は CONTEXT.md に一本化した。実装の詳細は
+  旧 `dev_docs/specs/`（#313 で廃止）とコード検索で辿る（旧リンクは参照先を CONTEXT.md へ付け替え）。
 
 ### 2. 設計判断の正本 dev_docs/adr
 

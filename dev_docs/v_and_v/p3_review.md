@@ -6,7 +6,7 @@
 > 旧版で主張した「V&V 索引 #13 の ✅ は虚偽」という判断自体が誤りであり、#13 ✅ は妥当である。
 > 本来の問題は UI 横断タスク（UI-1/2/3/4/6 等）の未達であり、2026-06 の改修で対応済み。
 
-本報告は `dev_docs/specs/P3_最小UIと設計.md` と現状実装（主に `squid-n-app`・`squid-n-design-jp`・`squid-n-edit`・関連 `squid-n-core/squid-n-section/squid-n-solver/squid-n-element/squid-n-load`）を照合し、
+本報告は旧 `dev_docs/specs/P3_最小UIと設計.md`（#313 で廃止）と現状実装（主に `squid-n-app`・`squid-n-design-jp`・`squid-n-edit`・関連 `squid-n-core/squid-n-section/squid-n-solver/squid-n-element/squid-n-load`）を照合し、
 「仕様通りか」「実装が間違っていないか」「資料上の報告が間違っていないか」「仕様自体がこのライブラリの目的（日本の建築構造計算一貫プログラム）に適するか」を審査した結果である。
 
 ## 0. サマリ

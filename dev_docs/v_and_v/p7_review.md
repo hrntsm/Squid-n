@@ -1,7 +1,7 @@
 # P7（二次設計：保有水平耐力）監査レポート
 
 **監査日:** 2026-06-22
-**対象:** `crates/squid-n-design-jp`（`holding_capacity.rs` ほか）／`dev_docs/specs/P7_二次設計.md`
+**対象:** `crates/squid-n-design-jp`（`holding_capacity.rs` ほか）／旧 `dev_docs/specs/P7_二次設計.md`（#313 で廃止）
 **結論:** 完了報告は虚偽。実装は約4割、テストはコンパイル不能の状態で放置されていた。
 
 ---
@@ -34,7 +34,7 @@ V&V 索引（`dev_docs/v_and_v/README.md` #14）は「保有耐力 / holding_cap
 
 ---
 
-## 3. 仕様書（`dev_docs/specs/P7_二次設計.md`）自体の構造工学的な誤り
+## 3. 仕様書（旧 `dev_docs/specs/P7_二次設計.md`、#313 で廃止）自体の構造工学的な誤り
 
 核心の式（Rs、偏心率 KR/rex/Re、Fs/Fe、Qun、Ds 値表[ラーメン]、武藤 D値法の閉形式）は
 告示1792・武藤理論に照らし正しい。ただし以下2点に不正確さがある。

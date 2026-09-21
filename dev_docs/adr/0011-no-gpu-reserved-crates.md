@@ -6,4 +6,4 @@ GPU 高速化は恒久的に実装しない。実装の入らない予約クレ�
 
 Legacy source:
 - `dev_docs/handoff/GPUとMLクレートの削除_申し送り.md`
-- `dev_docs/specs/構造計算一貫プログラム_実装設計書.md` §15・§16
+- 初回設計書（#313 で廃止。git 履歴参照）§15・§16
