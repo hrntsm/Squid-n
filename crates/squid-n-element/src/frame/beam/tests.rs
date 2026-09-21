@@ -187,6 +187,30 @@ fn test_beam_new_src_cft_composite_props() {
     assert!((cft_beam.iz - pc.iy).abs() / pc.iy < 1e-12);
     assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
 
+    use crate::behavior::{ElementBehavior, MassOption};
+    for sec in [0, 1] {
+        let beam = BeamElement::new(&make_elem(sec), &model);
+        let mass = beam.mass_matrix(MassOption::Lumped);
+        let nodal_mass = mass.get(0, 0) + mass.get(6, 6);
+        assert!((nodal_mass - beam.density * beam.a_mass * beam.length).abs() < 1e-9);
+    }
+    let rc_rebar = match &src_shape {
+        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        _ => unreachable!(),
+    };
+    model.sections[0] = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rc_rebar,
+    }
+    .to_section(SectionId(0), "RC-600".into());
+    model.sections[0].material = Some(MaterialId(0));
+    let beam = BeamElement::new(&make_elem(0), &model);
+    let mass = beam.mass_matrix(MassOption::Lumped);
+    assert!(
+        (mass.get(0, 0) + mass.get(6, 6) - beam.density * beam.a_mass * beam.length).abs() < 1e-9
+    );
+
     model.materials[0].fc = None;
     let src_fallback = BeamElement::new(&make_elem(0), &model);
     assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
