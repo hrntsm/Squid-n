@@ -285,7 +285,7 @@ impl WallElement {
                 let net_area = (area - opening_area).max(0.0);
                 let mass_properties = model.element_mass_properties(data).ok()?;
                 let concrete_mass_per_area = if t > 0.0 {
-                    mass_properties.mass_per_length * t / 1000.0
+                    mass_properties.mass_per_length / 1000.0
                 } else {
                     0.0
                 };
@@ -1409,7 +1409,6 @@ mod tests {
                     .element_mass_properties(&reordered)
                     .unwrap()
                     .mass_per_length
-                * 150.0
                 / 1000.0;
             let mass = wall.mass_matrix(MassOption::Lumped);
             for dir in 0..3 {
@@ -1436,7 +1435,7 @@ mod tests {
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         let wall = WallElement::try_new(&data, &model).unwrap();
         let properties = model.element_mass_properties(&data).unwrap();
-        let concrete_mass_per_area = properties.mass_per_length * 150.0 / 1000.0;
+        let concrete_mass_per_area = properties.mass_per_length / 1000.0;
         let expected =
             (concrete_mass_per_area * (1.0 - 0.0025) + 7.85e-9 * 150.0 * 0.0025) * 4000.0 * 3000.0;
         let mass = wall.mass_matrix(MassOption::Lumped);

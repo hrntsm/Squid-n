@@ -959,20 +959,20 @@ mod tests {
             d: 400.0,
             rebar: RcRebar {
                 main_x: BarSet {
-                    count: 0,
-                    dia: 0.0,
+                    count: 4,
+                    dia: 20.0,
                     layers: 1,
                 },
                 main_y: BarSet {
-                    count: 0,
-                    dia: 0.0,
+                    count: 4,
+                    dia: 20.0,
                     layers: 1,
                 },
                 cover: 40.0,
                 shear: ShearBar {
-                    dia: 0.0,
-                    pitch: 0.0,
-                    legs: 0,
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
                 },
             },
         };
@@ -985,9 +985,25 @@ mod tests {
             None,
         );
         let gross = rectangle_geometry(400.0, 400.0);
-        let expected_plain = concrete_density(Some(&concrete)) * gross.area;
-        assert!((properties.mass_per_length - expected_plain).abs() < 1e-12);
-        assert!(properties.mass_per_length < concrete.density * gross.area);
+        let main = rectangular_rebar_geometry(
+            match &shape {
+                SectionShape::RcRect { rebar, .. } => rebar,
+                _ => unreachable!(),
+            },
+            400.0,
+            400.0,
+        );
+        let shear = rectangular_shear_geometry(
+            match &shape {
+                SectionShape::RcRect { rebar, .. } => rebar,
+                _ => unreachable!(),
+            },
+            400.0,
+            400.0,
+        );
+        let expected = concrete_density(Some(&concrete)) * (gross.area - main.area - shear.area)
+            + rebar.density * (main.area + shear.area);
+        assert!((properties.mass_per_length - expected).abs() < 1e-12);
     }
 
     #[test]
