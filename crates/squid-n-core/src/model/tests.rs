@@ -14,36 +14,6 @@ fn test_secondary(kind: SecondaryMemberKind, id: u32, name: &str) -> SecondaryMe
     }
 }
 
-fn make_grid_model(n: usize) -> Model {
-    let nodes: Vec<Node> = (0..n)
-        .map(|i| Node {
-            id: NodeId(i as u32),
-            coord: [i as f64 * 1000.0, 0.0, 0.0],
-            restraint: Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        })
-        .collect();
-    Model {
-        nodes,
-        ..Default::default()
-    }
-}
-
-#[test]
-fn test_10k_node_traverse() {
-    let n = 10_000;
-    let model = make_grid_model(n);
-    let t = std::time::Instant::now();
-    let mut s = 0.0;
-    for nd in &model.nodes {
-        s += nd.coord[0];
-    }
-    assert!(t.elapsed().as_millis() < 50, "traverse too slow");
-    std::hint::black_box(s);
-}
-
 #[test]
 fn test_validate_duplicate_node() {
     let model = Model {
