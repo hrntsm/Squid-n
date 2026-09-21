@@ -226,6 +226,15 @@ mod tests {
         assert!(beta > 0.14 && beta < 0.5);
     }
 
+    /// 開口低減率 r の配線 smoke。(l0, h0, h, lw) = (2000, 300, 3000, 4000) で
+    /// max(l0/lw, h0/h, r0) = max(0.5, 0.1, √0.05) = 0.5 → r = 0.5。無開口は 1.0。
+    #[test]
+    fn test_wall_shear_opening_reduction_smoke() {
+        let r = wall_shear_opening_reduction(Some((2000.0, 300.0, 3000.0, 4000.0)));
+        assert!((r - 0.5).abs() < 1e-12, "r={r}");
+        assert_eq!(wall_shear_opening_reduction(None), 1.0);
+    }
+
     #[test]
     fn test_wall_shear_ultimate_opening_reduces() {
         let mut inp = base_input();

@@ -113,6 +113,15 @@ pub fn rc_beam_bending(inp: &RcBeamBendingInput) -> RcBeamBending {
 mod tests {
     use super::*;
 
+    /// 曲げひび割れモーメント Mc = 0.56·√Fc·Ze の配線 smoke。
+    #[test]
+    fn test_rc_beam_crack_moment_smoke() {
+        let ze = 300.0 * 600.0_f64.powi(2) / 6.0;
+        let mc = rc_beam_crack_moment(24.0, ze);
+        assert!((mc - 0.56 * 24.0_f64.sqrt() * ze).abs() < 1e-6, "Mc={mc}");
+        assert!(mc > 0.0);
+    }
+
     #[test]
     fn test_rc_beam_shear_crack_matches_handcalc() {
         let qc = rc_beam_shear_crack(24.0, 1.5, 300.0, 500.0);

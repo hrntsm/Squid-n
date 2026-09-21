@@ -483,6 +483,7 @@ mod tests {
         assert_eq!(steel_f_value("SM490", 41.0), Some(295.0));
         assert_eq!(steel_f_value("SN490", 41.0), Some(295.0));
         assert_eq!(steel_f_value("SM520", 41.0), Some(335.0));
+        assert_eq!(steel_f_value("SM520", 75.0), Some(335.0));
         assert_eq!(steel_f_value("SM520", 76.0), Some(325.0));
         for g in [
             "TMCP325", "TMCP355", "TMCP385", "TMCP440", "SA440", "BCR295", "LY225",
