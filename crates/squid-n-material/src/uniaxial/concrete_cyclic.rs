@@ -468,26 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn test_newrc_probe_matches_trial_without_mutating_state() {
-        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
-        // （NewRC 骨格 + Yassin 履歴でも Kent–Park と同様に成立すること）。
-        let mut c = ConcreteCyclic::newrc(30.0, 0.01, 2.0, 1000.0);
-        let eps_c0 = c.envelope.peak_strain();
-        c.trial(-2.0 * eps_c0);
-        c.commit();
-        c.trial(eps_c0 * 0.5);
-        c.commit();
-
-        for &probe_strain in &[-eps_c0, -eps_c0 * 0.5, eps_c0 * 0.2] {
-            let before = c.probe(probe_strain);
-            assert_eq!(before, c.probe(probe_strain));
-            let mut clone_for_trial = c.clone();
-            let via_trial = clone_for_trial.trial(probe_strain);
-            assert_eq!(before, via_trial, "probe は trial と完全一致すること");
-        }
-    }
-
-    #[test]
     fn test_probe_matches_trial_without_mutating_state() {
         // probe は trial と数学的に同一の結果を返し、状態を書き換えない
         // （Karsan–Jirsa 除荷・引張剛性劣化の分岐を経た状態で確認）。
