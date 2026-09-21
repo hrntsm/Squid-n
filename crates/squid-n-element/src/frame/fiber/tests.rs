@@ -511,6 +511,8 @@ fn test_yield_progression() {
     };
 
     let eps_y = 235.0 / 205000.0;
+    // My 面（κy）の縁距離はファイバ座標の |z| 最大 = 幅/2 = 50mm
+    // （ファイバ格子は y=せい・z=幅で、断面格子を 90° 回転して配置している）。
     let z_max = 50.0;
     let ky_y = eps_y / z_max;
 
@@ -546,6 +548,9 @@ fn test_yield_progression() {
 
         let my = fiber.internal_force(&ctx).data[4];
         let elastic_pred = ky * 205000.0 * iy_disc;
+        // 鋼ファイバはなめらか降伏（MenegottoPinto）のため、ratio=1.0 では
+        // 最外縁が降伏ひずみの約 0.92 倍に達し、既に弾性予測を下回る。
+        // 弾性とみなす境界は section 側（Bilinear の ratio<=1.0）より手前になる。
         if ratio < 1.0 {
             assert_relative_eq!(my, elastic_pred, max_relative = 1e-6);
         } else {
