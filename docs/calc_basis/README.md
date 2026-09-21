@@ -154,7 +154,7 @@
 <details>
 <summary>開発者向け: 仕様書・検証記録</summary>
 
-- [設計仕様（dev_docs/specs/）](https://github.com/hrntsm/squid-n/blob/main/dev_docs/specs/README.md)：フェーズ単位の実装仕様書。出典の分類 A/B の根拠となる[原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/dev_docs/specs/原典照合リスト.md)を含みます。
+- [設計仕様・検証記録（dev_docs/）](https://github.com/hrntsm/squid-n/blob/main/dev_docs/README.md)：開発者向け文書の配置。出典の分類 A/B の根拠となる[原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/原典照合リスト.md)は Verification & Validation として `dev_docs/v_and_v/` にあります。
 - [検証記録（dev_docs/v_and_v/）](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/README.md)：各要素・各設計式の Verification & Validation レポート。
 - 規準・指針が式を直接与えない実務的取扱い（床荷重の分配、壁エレメント置換、剛床への荷重按分など）は、市販の一貫構造計算プログラムとの突合による検証記録を V&V に置いています。
 - 力学の閉形式（ティモシェンコ梁剛性、CMQ、Newmark 更新式など）は、理論解と一致するかどうかの数値 DoD で自己検証し、その記録を V&V に置いています。
