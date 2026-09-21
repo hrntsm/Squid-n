@@ -303,6 +303,24 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_representative_lateral_stress_is_arithmetic_mean() {
+        let h = RectangularHoop {
+            bc: 500.0,
+            dc: 400.0,
+            s: 100.0,
+            s_clear: 80.0,
+            asx: 200.0,
+            asy: 300.0,
+            fyh: 295.0,
+            rho_cc: 0.02,
+            w_clear: vec![100.0, 100.0, 100.0, 100.0],
+        };
+        let (flx, fly) = rectangular_effective_lateral_stress(&h);
+        let rep = rectangular_representative_lateral_stress(&h);
+        assert_relative_eq!(rep, 0.5 * (flx + fly), epsilon = 1e-9);
+    }
+
+    #[test]
     fn rectangular_effective_lateral_stress_does_not_panic_on_bad_input() {
         let h = RectangularHoop {
             bc: 0.0,
