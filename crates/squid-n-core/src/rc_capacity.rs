@@ -296,6 +296,20 @@ mod tests {
         );
     }
 
+    /// 曲げひび割れモーメント Mc = κ·√Fc·Ze（κ=0.56）と不正入力の 0 返し。
+    #[test]
+    fn test_rc_crack_moment_matches_handcalc() {
+        let ze = 300.0 * 600.0_f64.powi(2) / 6.0;
+        let mc = rc_crack_moment(24.0, ze);
+        assert!(
+            (mc - RC_CRACK_COEF * 24.0_f64.sqrt() * ze).abs() < 1e-3,
+            "Mc={mc}"
+        );
+        assert_eq!(rc_crack_moment(0.0, ze), 0.0);
+        assert_eq!(rc_crack_moment(24.0, 0.0), 0.0);
+        assert_eq!(rc_crack_moment(24.0, -1.0), 0.0);
+    }
+
     #[test]
     fn test_rc_column_mu_simple_branches() {
         let inp = sample_input();
