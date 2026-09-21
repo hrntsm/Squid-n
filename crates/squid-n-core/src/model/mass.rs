@@ -59,17 +59,45 @@ impl SectionMassProperties {
     ) -> Result<Self, String> {
         validate_section_materials(section, main, rebar, shear_rebar, steel)?;
 
+        validate_section_geometry(section)?;
+
         let Some(shape) = section.shape.as_ref() else {
-            return Ok(Self::uniform(
+            let properties = Self::uniform(
                 main.map_or(0.0, |m| m.density),
                 section.area,
                 section.iy,
                 section.iz,
-            ));
+            );
+            return if valid_mass_properties(properties) {
+                Ok(properties)
+            } else {
+                Err(format!(
+                    "断面{}の質量特性が有限な非負値ではありません",
+                    section.name
+                ))
+            };
         };
 
-        Ok(shaped_mass(shape, main, rebar, shear_rebar, steel))
+        let properties = shaped_mass(shape, main, rebar, shear_rebar, steel);
+        if valid_mass_properties(properties) {
+            Ok(properties)
+        } else {
+            Err(format!(
+                "断面{}の質量特性が有限な非負値ではありません",
+                section.name
+            ))
+        }
     }
+}
+
+fn valid_mass_properties(properties: SectionMassProperties) -> bool {
+    [
+        properties.mass_per_length,
+        properties.rotary_inertia_y_per_length,
+        properties.rotary_inertia_z_per_length,
+    ]
+    .into_iter()
+    .all(|value| value.is_finite() && value >= 0.0)
 }
 
 pub fn validate_section_materials(
@@ -144,6 +172,26 @@ pub fn validate_section_materials(
     }
     if matches!(
         shape,
+        SectionShape::RcRect { .. } | SectionShape::RcCircle { .. } | SectionShape::SrcRect { .. }
+    ) {
+        for (role, material) in [("主筋材料", rebar), ("せん断補強筋材料", shear_rebar)]
+        {
+            if material.is_some_and(|material| material.category != super::MaterialCategory::Rebar)
+            {
+                return Err(format!("断面{}の{role}が鉄筋ではありません", section.name));
+            }
+        }
+    }
+    if matches!(shape, SectionShape::SrcRect { .. })
+        && steel.is_some_and(|material| material.category != super::MaterialCategory::Steel)
+    {
+        return Err(format!(
+            "SRC断面{}の内蔵鉄骨材料が鋼材ではありません",
+            section.name
+        ));
+    }
+    if matches!(
+        shape,
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
     ) {
         let Some(main) = main else {
@@ -163,6 +211,181 @@ pub fn validate_section_materials(
         }
     }
 
+    Ok(())
+}
+
+fn validate_section_geometry(section: &Section) -> Result<(), String> {
+    let Some(shape) = section.shape.as_ref() else {
+        for (name, value) in [
+            ("断面積", section.area),
+            ("Iy", section.iy),
+            ("Iz", section.iz),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!(
+                    "形状なし断面{}の{name}が有限な非負値ではありません",
+                    section.name
+                ));
+            }
+        }
+        return Ok(());
+    };
+
+    let positive = |name: &str, value: f64| {
+        if value.is_finite() && value > 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "断面{}の形状寸法{name}が有限な正値ではありません",
+                section.name
+            ))
+        }
+    };
+    let nonnegative = |name: &str, value: f64| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "断面{}の形状寸法{name}が有限な非負値ではありません",
+                section.name
+            ))
+        }
+    };
+    let mut dimensions = Vec::new();
+    match shape {
+        SectionShape::SteelH {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        }
+        | SectionShape::SteelChannel {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        }
+        | SectionShape::SteelTee {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        } => {
+            dimensions.extend([
+                ("height", *height),
+                ("width", *width),
+                ("web_thick", *web_thick),
+                ("flange_thick", *flange_thick),
+            ]);
+        }
+        SectionShape::SteelBox {
+            height,
+            width,
+            thick,
+            corner_r,
+        } => {
+            dimensions.extend([("height", *height), ("width", *width), ("thick", *thick)]);
+            nonnegative("corner_r", *corner_r)?;
+        }
+        SectionShape::CftBox {
+            height,
+            width,
+            thick,
+        } => dimensions.extend([("height", *height), ("width", *width), ("thick", *thick)]),
+        SectionShape::SteelAngle {
+            leg_a,
+            leg_b,
+            thick,
+        } => dimensions.extend([("leg_a", *leg_a), ("leg_b", *leg_b), ("thick", *thick)]),
+        SectionShape::SteelPipe { outer_dia, thick }
+        | SectionShape::CftPipe { outer_dia, thick } => {
+            dimensions.extend([("outer_dia", *outer_dia), ("thick", *thick)])
+        }
+        SectionShape::SteelFlatBar { width, thick } => {
+            dimensions.extend([("width", *width), ("thick", *thick)])
+        }
+        SectionShape::SteelRoundBar { dia } => dimensions.push(("dia", *dia)),
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            upper_thick,
+            lower_width,
+            lower_thick,
+            web_thick,
+        } => dimensions.extend([
+            ("height", *height),
+            ("upper_width", *upper_width),
+            ("upper_thick", *upper_thick),
+            ("lower_width", *lower_width),
+            ("lower_thick", *lower_thick),
+            ("web_thick", *web_thick),
+        ]),
+        SectionShape::SteelLipChannel {
+            height,
+            width,
+            lip,
+            thick,
+        } => dimensions.extend([
+            ("height", *height),
+            ("width", *width),
+            ("lip", *lip),
+            ("thick", *thick),
+        ]),
+        SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => {
+            dimensions.extend([("b", *b), ("d", *d)]);
+            validate_rebar_geometry(rebar, &positive, &nonnegative)?;
+            if let SectionShape::SrcRect {
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            } = shape
+            {
+                dimensions.extend([
+                    ("steel_height", *steel_height),
+                    ("steel_width", *steel_width),
+                    ("steel_web_thick", *steel_web_thick),
+                    ("steel_flange_thick", *steel_flange_thick),
+                ]);
+            }
+        }
+        SectionShape::RcCircle { d, rebar } => {
+            dimensions.push(("d", *d));
+            validate_rebar_geometry(rebar, &positive, &nonnegative)?;
+        }
+        SectionShape::RcWall { thickness, ps } => {
+            dimensions.push(("thickness", *thickness));
+            nonnegative("ps", *ps)?;
+        }
+        SectionShape::RcSlab { thickness } => dimensions.push(("thickness", *thickness)),
+    }
+    for (name, value) in dimensions {
+        positive(name, value)?;
+    }
+    Ok(())
+}
+
+fn validate_rebar_geometry(
+    rebar: &RcRebar,
+    positive: &impl Fn(&str, f64) -> Result<(), String>,
+    nonnegative: &impl Fn(&str, f64) -> Result<(), String>,
+) -> Result<(), String> {
+    nonnegative("cover", rebar.cover)?;
+    for (name, set) in [("main_x", &rebar.main_x), ("main_y", &rebar.main_y)] {
+        if set.count > 0 {
+            positive(&format!("{name}.dia"), set.dia)?;
+        } else {
+            nonnegative(&format!("{name}.dia"), set.dia)?;
+        }
+    }
+    if rebar.shear.legs > 0 {
+        positive("shear.dia", rebar.shear.dia)?;
+        positive("shear.pitch", rebar.shear.pitch)?;
+    } else {
+        nonnegative("shear.dia", rebar.shear.dia)?;
+        nonnegative("shear.pitch", rebar.shear.pitch)?;
+    }
     Ok(())
 }
 
@@ -718,11 +941,12 @@ mod tests {
         let section = shape.to_section(SectionId(0), "SRC".into());
         let concrete = material(0, MaterialCategory::Concrete, 2.0, Some(24.0));
         let steel = material(1, MaterialCategory::Steel, 8.0, None);
+        let rebar = material(2, MaterialCategory::Rebar, 8.0, None);
         let properties = SectionMassProperties::from_section(
             &section,
             Some(&concrete),
-            Some(&steel),
-            Some(&steel),
+            Some(&rebar),
+            Some(&rebar),
             Some(&steel),
         );
         let h = SectionShape::SteelH {
@@ -1235,5 +1459,148 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn 質量入口は形状寸法と形状なし断面諸元の異常値を拒否する() {
+        use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 0.0,
+                pitch: 0.0,
+                legs: 0,
+            },
+        };
+        for (b, d) in [
+            (0.0, 400.0),
+            (-1.0, 400.0),
+            (f64::NAN, 400.0),
+            (400.0, f64::INFINITY),
+        ] {
+            let section = SectionShape::RcRect {
+                b,
+                d,
+                rebar: rebar.clone(),
+            }
+            .to_section(SectionId(0), "invalid-shape".into());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0))),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        }
+        for (area, iy, iz) in [
+            (-1.0, 0.0, 0.0),
+            (f64::NAN, 0.0, 0.0),
+            (0.0, f64::INFINITY, 0.0),
+        ] {
+            let section = Section {
+                area,
+                iy,
+                iz,
+                ..Section::zero(SectionId(0), "invalid-properties".into())
+            };
+            assert!(
+                SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn rcとsrcの補助材料は材料区分を検証する() {
+        use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 1,
+                dia: 20.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        };
+        let rc = SectionShape::RcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: rebar.clone(),
+        }
+        .to_section(SectionId(0), "RC".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let steel = material(1, MaterialCategory::Steel, 8.0, None);
+        let rebar_material = material(2, MaterialCategory::Rebar, 8.0, None);
+        assert!(SectionMassProperties::try_from_section(
+            &rc,
+            Some(&concrete),
+            Some(&concrete),
+            None,
+            None
+        )
+        .is_err());
+        assert!(SectionMassProperties::try_from_section(
+            &rc,
+            Some(&concrete),
+            None,
+            Some(&steel),
+            None
+        )
+        .is_err());
+        assert!(SectionMassProperties::try_from_section(
+            &rc,
+            Some(&concrete),
+            Some(&steel),
+            Some(&steel),
+            None
+        )
+        .is_err());
+        let src = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar,
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        }
+        .to_section(SectionId(1), "SRC".into());
+        assert!(SectionMassProperties::try_from_section(
+            &src,
+            Some(&concrete),
+            None,
+            None,
+            Some(&concrete)
+        )
+        .is_err());
+        assert!(SectionMassProperties::try_from_section(
+            &src,
+            Some(&concrete),
+            Some(&rebar_material),
+            Some(&rebar_material),
+            Some(&steel)
+        )
+        .is_ok());
     }
 }
