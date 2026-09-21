@@ -4499,35 +4499,6 @@ fn test_column_live_load_factors_three_story() {
     );
 }
 
-/// 準備計算は階の定義を含む: 階が未定義でも `run_preparation` 1 回で階が生成され、
-/// 主要構造種別が柱・梁の断面形状から自動判定される（門型ラーメンは全て鋼断面 → S）。
-#[test]
-fn test_run_preparation_generates_stories_and_infers_structure() {
-    use squid_n_core::model::StoryStructure;
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    assert!(app.core.model.stories.is_empty(), "前提: 階は未定義");
-
-    app.run_preparation();
-    assert!(
-        app.core.scoped.last_error.is_none(),
-        "{:?}",
-        app.core.scoped.last_error
-    );
-    assert_eq!(
-        app.core.model.stories.len(),
-        2,
-        "準備計算が階（基部の床 + 上の床）を生成するはず"
-    );
-    // 構造種別は層の属性で、層の上端の階が持つ。
-    assert_eq!(
-        app.core.model.stories[1].structure,
-        StoryStructure::S,
-        "鋼断面の柱梁だけの層は S と判定されるはず"
-    );
-    assert!(!app.core.scoped.staleness.preparation_stale);
-}
-
 /// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
 /// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分がなければ
 /// `ApplyStories` を発行しない）。
@@ -6360,8 +6331,12 @@ fn test_run_preparation_populates_result() {
         .preparation
         .as_ref()
         .expect("準備計算の結果があるはず");
+    use squid_n_core::model::StoryStructure;
+
     // 階が未定義だったので自動生成される（基部の床 + 2FL の 2 階、層は 1 つ）。
     assert_eq!(app.core.model.stories.len(), 2);
+    // 構造種別は層の属性で、層の上端の階が持つ。鋼断面の柱梁だけの層は S。
+    assert_eq!(app.core.model.stories[1].structure, StoryStructure::S);
     assert_eq!(prep.stories.len(), 1, "分布表の単位は層");
     let story = &prep.stories[0];
     assert!(story.weight > 0.0, "地震用重量が算定される");
