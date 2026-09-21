@@ -107,10 +107,17 @@ pub fn validate_section_materials(
     shear_rebar: Option<&Material>,
     steel: Option<&Material>,
 ) -> Result<(), String> {
+    let shear_rebar_is_ignored = matches!(
+        section.shape.as_ref(),
+        Some(SectionShape::RcWall { .. } | SectionShape::RcSlab { .. })
+    );
     for (role, material) in [
         ("主材料", main),
         ("主筋材料", rebar),
-        ("せん断補強筋材料", shear_rebar),
+        (
+            "せん断補強筋材料",
+            shear_rebar.filter(|_| !shear_rebar_is_ignored),
+        ),
         ("内蔵鉄骨材料", steel),
     ] {
         if let Some(material) = material {
@@ -202,23 +209,18 @@ pub fn validate_section_materials(
             | SectionShape::SrcRect { .. }
             | SectionShape::RcWall { .. }
     ) {
-        for (role, material) in [("主筋材料", rebar), ("せん断補強筋材料", shear_rebar)]
-        {
+        for (role, material) in [
+            ("主筋材料", rebar),
+            (
+                "せん断補強筋材料",
+                shear_rebar.filter(|_| !shear_rebar_is_ignored),
+            ),
+        ] {
             if material.is_some_and(|material| material.category != super::MaterialCategory::Rebar)
             {
                 return Err(format!("断面{}の{role}が鉄筋ではありません", section.name));
             }
         }
-    }
-    if matches!(
-        shape,
-        SectionShape::RcWall { .. } | SectionShape::RcSlab { .. }
-    ) && shear_rebar.is_some()
-    {
-        return Err(format!(
-            "断面{}の壁・床版はせん断補強筋材料を受け付けません",
-            section.name
-        ));
     }
     if matches!(shape, SectionShape::RcSlab { .. }) && rebar.is_some() {
         return Err(format!(
@@ -682,7 +684,7 @@ fn shaped_mass(
         }
         SectionShape::RcSlab { .. } => {
             result.add(
-                concrete_density(main, ConcreteComposition::Plain),
+                concrete_density(main, ConcreteComposition::Rc),
                 GeometryMass {
                     area: shape.calc_area(),
                     iy: shape.calc_iy(),
@@ -923,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn rc壁と床版は未定義のせん断補強筋質量を拒否する() {
+    fn rc壁と床版はせん断補強筋材料を無視して標準rc密度を適用する() {
         let rebar = material(1, MaterialCategory::Rebar, 7.85e-9, None);
         for shape in [
             SectionShape::RcWall {
@@ -934,15 +936,28 @@ mod tests {
         ] {
             let section = shape.to_section(SectionId(0), "plate".into());
             let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
-            let error = SectionMassProperties::try_from_section(
+            let properties = SectionMassProperties::try_from_section(
                 &section,
                 Some(&concrete),
-                Some(&rebar),
+                None,
                 Some(&rebar),
                 None,
             )
-            .expect_err("形状で定義されないせん断補強筋材料を受け付けない");
-            assert!(error.contains("せん断補強筋"));
+            .expect("壁・床版のせん断補強筋材料は質量計算で無視する");
+            let expected_density = concrete_density(Some(&concrete), ConcreteComposition::Rc);
+            let gross = match shape {
+                SectionShape::RcWall { thickness, .. } => rectangle_geometry(1000.0, thickness),
+                SectionShape::RcSlab { .. } => GeometryMass {
+                    area: shape.calc_area(),
+                    iy: shape.calc_iy(),
+                    iz: shape.calc_iz(),
+                },
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                properties,
+                SectionMassProperties::uniform(expected_density, gross.area, gross.iy, gross.iz,)
+            );
         }
     }
 

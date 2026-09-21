@@ -4,7 +4,7 @@ Status: accepted
 
 ## 決定
 
-RC/SRC の質量は、`Material.fc` と `ConcreteClass` からそれぞれ γRC/γSRC を求め、総断面の面積・断面二次モーメントへ一様に適用する。鉄筋・内蔵鉄骨の実体積置換および密度の別加算は行わない。Fc 未設定は入力エラーとする。したがって Fc により標準単位体積重量は変化する。
+RC/SRC の質量は、`Material.fc` と `ConcreteClass` からそれぞれ γRC/γSRC を求め、総断面の面積・断面二次モーメントへ一様に適用する。鉄筋・内蔵鉄骨の実体積置換および密度の別加算は行わない。RC 壁・床版では、設定されたせん断補強筋材料も γRC に含まれるものとして質量計算では無視する。Fc 未設定は入力エラーとする。したがって Fc により標準単位体積重量は変化する。
 
 Beam と Fiber の整合質量は、断面の材料領域から求めた `SectionMassProperties` を共通の入力とし、`squid_n_element::frame::prismatic::consistent_mass_timoshenko` で算定する。質量特性は単位長さ当たり質量と断面 y 軸・z 軸まわりの質量二次モーメントを持つ。CFT は鋼管と充填コンクリートが幾何的に別領域であるため、鋼管は `Material.density`、充填部は Fc と ConcreteClass による γC を使う。
 
