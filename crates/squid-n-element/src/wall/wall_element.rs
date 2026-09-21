@@ -158,6 +158,7 @@ impl WallElement {
         if !mat.density.is_finite() || mat.density < 0.0 {
             return None;
         }
+        let is_rc_wall = matches!(&sec.shape, Some(SectionShape::RcWall { .. }));
         let r = crate::factory::wall_opening_reduction(data, model).max(1e-6);
 
         let ps = match &sec.shape {
@@ -172,6 +173,16 @@ impl WallElement {
 
         let shear_rigidity = super::shear_section::wall_shear_rigidity(data, model).ok()?;
         let area = t * lw;
+        let section_mass_properties = if is_rc_wall {
+            model.element_mass_properties(data).ok()?
+        } else {
+            squid_n_core::model::SectionMassProperties::uniform(
+                mat.density,
+                area,
+                lw * t.powi(3) / 12.0,
+                t * lw.powi(3) / 12.0,
+            )
+        };
         let column = BeamElement {
             id: data.id,
             e: mat.young * stiffness_scale,
@@ -185,12 +196,7 @@ impl WallElement {
             as_z: r * area / KAPPA_RC,
             length: h,
             density: mat.density,
-            mass_properties: squid_n_core::model::SectionMassProperties::uniform(
-                mat.density,
-                area,
-                lw * t.powi(3) / 12.0,
-                t * lw.powi(3) / 12.0,
-            ),
+            mass_properties: section_mass_properties,
             mass_properties_error: None,
             nodes: [ids_b0, ids_ta],
             axis: LocalFrame::from_nodes(bc, tc, ex_bot),
@@ -281,7 +287,7 @@ impl WallElement {
                 let area = squid_n_core::geom::polygon::area_3d(&points)
                     * squid_n_core::model::wall_clear_area_factor(&points, &dimensions);
                 let net_area = (area - opening_area).max(0.0);
-                let mass_per_area = if t > 0.0 { mat.density * t } else { 0.0 };
+                let mass_per_area = section_mass_properties.mass_per_length / 1000.0;
                 (mass_per_area * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
                     .max(0.0)
             },
@@ -1433,7 +1439,9 @@ mod tests {
             let mut reordered = data.clone();
             reordered.nodes = order.into_iter().map(|i| data.nodes[i]).collect();
             let wall = WallElement::try_new(&reordered, &model).unwrap();
-            let expected = (4000.0 - 600.0) * (3000.0 - 600.0) * 150.0 * 2.4e-9;
+            let rc_density =
+                squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3(24.0);
+            let expected = (4000.0 - 600.0) * (3000.0 - 600.0) * 150.0 * rc_density;
             let mass = wall.mass_matrix(MassOption::Lumped);
             for dir in 0..3 {
                 let total: f64 = (0..4).map(|i| mass.get(i * 6 + dir, i * 6 + dir)).sum();
@@ -1458,13 +1466,31 @@ mod tests {
         model.sections[0].rebar_material = Some(MaterialId(1));
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         let wall = WallElement::try_new(&data, &model).unwrap();
-        let expected = 2.4e-9 * 150.0 * 4000.0 * 3000.0;
+        let rc_density =
+            squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3(24.0);
+        let expected = rc_density * 150.0 * 4000.0 * 3000.0;
         let mass = wall.mass_matrix(MassOption::Lumped);
         let actual: f64 = (0..4).map(|i| mass.get(i * 6, i * 6)).sum();
         assert!(
             (actual - expected).abs() < expected * 1e-12,
             "actual={actual} expected={expected}"
         );
+    }
+
+    #[test]
+    fn test_rc_wall_mass_uses_fc_standard_unit_weight() {
+        let (mut model, data) = make_wall_model();
+        model.materials[0].density = 2.4e-9;
+        let fc24 = WallElement::try_new(&data, &model)
+            .unwrap()
+            .mass_matrix(MassOption::Lumped);
+        model.materials[0].fc = Some(42.0);
+        let fc42 = WallElement::try_new(&data, &model)
+            .unwrap()
+            .mass_matrix(MassOption::Lumped);
+        let total = |mass: &LocalMat| (0..4).map(|i| mass.get(i * 6, i * 6)).sum::<f64>();
+        assert!(total(&fc42) > total(&fc24));
+        assert!((total(&fc24) / total(&fc42) - 24.0 / 24.5).abs() < 1e-12);
     }
 
     #[test]

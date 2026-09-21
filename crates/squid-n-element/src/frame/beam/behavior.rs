@@ -36,12 +36,8 @@ impl ElementBehavior for BeamElement {
                 let mass_properties = if self.mass_properties != Default::default() {
                     self.mass_properties
                 } else {
-                    (self.mass_properties_resolver)().unwrap_or_else(|error| {
-                        if error.contains("Fc") {
-                            panic!("質量特性を解決できません: {error}");
-                        }
-                        Default::default()
-                    })
+                    (self.mass_properties_resolver)()
+                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
                 };
                 let (li, lj) = self.rigid_lengths();
                 let flex_length = self.length - li - lj;

@@ -61,6 +61,16 @@ fn update_state_rejects_mismatched_du_length() {
     elem.update_state(&du, false, &ctx);
 }
 
+#[test]
+#[should_panic(expected = "質量特性を解決できません: 断面形状が不正です")]
+fn consistent_mass_does_not_replace_resolver_errors_with_zero_mass() {
+    use crate::behavior::{ElementBehavior, MassOption};
+
+    let mut beam = make_test_beam();
+    beam.mass_properties_resolver = std::sync::Arc::new(|| Err("断面形状が不正です".into()));
+    beam.mass_matrix(MassOption::Consistent);
+}
+
 /// SRC/CFT の複合換算が要素生成へ配線されていること。
 #[test]
 fn test_beam_new_src_cft_composite_props() {
