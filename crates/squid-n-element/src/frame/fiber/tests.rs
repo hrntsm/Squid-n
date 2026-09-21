@@ -224,6 +224,23 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
         );
         let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
         let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+        let total_fiber_area: f64 = fiber
+            .gauss_points
+            .first()
+            .expect("ファイバ断面が生成される")
+            .section
+            .fibers
+            .iter()
+            .map(|fiber| fiber.area)
+            .sum();
+        let lumped_fiber = fiber.mass_matrix(crate::behavior::MassOption::Lumped);
+        let expected_lumped_mass = fiber.density * total_fiber_area * fiber.length;
+        assert_relative_eq!(
+            lumped_fiber.get(0, 0) * 2.0,
+            expected_lumped_mass,
+            epsilon = 1.0e-12
+        );
+        assert!(lumped_fiber.get(0, 0).is_finite() && lumped_fiber.get(3, 3) == 0.0);
         let expected_mass = model
             .element_mass_properties(&model.elements[0])
             .expect("テスト断面の質量特性を解決できる");
