@@ -295,12 +295,24 @@ impl Model {
     /// 毎回算定するのは、板厚や材料を変えたときに自重が追随しないという食い違いを
     /// 作らないためである。
     pub fn slab_self_weight_intensity(&self, slab: &Slab) -> Option<f64> {
-        let t = self.slab_plate_thickness(slab)?;
-        let mat = self
-            .slab_section(slab)
-            .and_then(|s| s.material)
-            .and_then(|mid| self.materials.get(mid.index()))?;
-        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
+        self.slab_plate_thickness(slab)?;
+        let section = self.slab_section(slab)?;
+        let main = section
+            .material
+            .and_then(|mid| self.materials.get(mid.index()));
+        let rebar = section
+            .rebar_material
+            .and_then(|mid| self.materials.get(mid.index()));
+        let shear_rebar = section
+            .shear_rebar_material
+            .and_then(|mid| self.materials.get(mid.index()));
+        let steel = section
+            .steel_material
+            .and_then(|mid| self.materials.get(mid.index()));
+        let mass =
+            SectionMassProperties::try_from_section(section, main, rebar, shear_rebar, steel)
+                .ok()?;
+        Some(mass.mass_per_length / 1_000.0 * crate::units::GRAVITY_MM_S2)
     }
 
     /// 固定荷重（DL）の面荷重強度 [N/mm²]（版の自重 ＋ 仕上げ等）。
@@ -720,5 +732,90 @@ mod tests {
         assert_eq!(slab.boundary_coords(&model), None);
         assert_eq!(slab.reference_node(&model), None);
         assert_eq!(slab.edge_nodes(&model, 0), None);
+    }
+
+    fn rc_slab_model(
+        fc: f64,
+        concrete_class: crate::units::ConcreteClass,
+        shear_rebar_material: Option<MaterialId>,
+    ) -> (Model, Slab) {
+        let mut model = Model::default();
+        model.materials.push(Material {
+            id: MaterialId(0),
+            name: "コンクリート".into(),
+            category: MaterialCategory::Concrete,
+            young: 25_000.0,
+            poisson: 0.2,
+            density: 9.9e-9,
+            shear: None,
+            fc: Some(fc),
+            fy: None,
+            concrete_class,
+            strength_factor: None,
+        });
+        model.materials.push(Material {
+            id: MaterialId(1),
+            name: "せん断補強筋".into(),
+            category: MaterialCategory::Rebar,
+            young: 200_000.0,
+            poisson: 0.3,
+            density: 1.0,
+            shear: None,
+            fc: None,
+            fy: Some(295.0),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        });
+        model.sections.push(
+            crate::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+                .to_section(SectionId(0), "S1".into()),
+        );
+        model.sections[0].material = Some(MaterialId(0));
+        model.sections[0].shear_rebar_material = shear_rebar_material;
+        let slab = Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed,
+            plate: SlabPlate {
+                section: Some(SectionId(0)),
+                ..SlabPlate::default()
+            },
+        };
+        (model, slab)
+    }
+
+    #[test]
+    fn test_slab_self_weight_uses_main_material_mass_resolver() {
+        let (mut without_shear, slab) =
+            rc_slab_model(24.0, crate::units::ConcreteClass::Normal, None);
+        let without = without_shear.slab_self_weight_intensity(&slab).unwrap();
+        without_shear.materials[1].density = 20.0;
+        let changed_shear_density = without_shear.slab_self_weight_intensity(&slab).unwrap();
+        assert_eq!(without, changed_shear_density);
+
+        let (with_shear, slab) = rc_slab_model(
+            24.0,
+            crate::units::ConcreteClass::Normal,
+            Some(MaterialId(1)),
+        );
+        assert_eq!(
+            without,
+            with_shear.slab_self_weight_intensity(&slab).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_slab_self_weight_changes_with_fc_or_concrete_class() {
+        let (normal, slab) = rc_slab_model(24.0, crate::units::ConcreteClass::Normal, None);
+        let (higher_fc, _) = rc_slab_model(42.0, crate::units::ConcreteClass::Normal, None);
+        let (lightweight, _) = rc_slab_model(24.0, crate::units::ConcreteClass::Lightweight2, None);
+        let normal_weight = normal.slab_self_weight_intensity(&slab).unwrap();
+        assert_ne!(
+            normal_weight,
+            higher_fc.slab_self_weight_intensity(&slab).unwrap()
+        );
+        assert_ne!(
+            normal_weight,
+            lightweight.slab_self_weight_intensity(&slab).unwrap()
+        );
     }
 }

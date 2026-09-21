@@ -16,7 +16,7 @@ use squid_n_core::model::SectionMassProperties;
 ///
 /// `releases` は最大 6 個。
 ///
-/// 縮約行列 Kbb が特異な場合は `None` を返す。
+/// 縮約行列 Kbb が特異な場合は剛性側を Kaa へフォールバックする。
 pub(crate) fn condense_end_releases(
     k_elem: &LocalMat,
     releases: &[(usize, f64)],
