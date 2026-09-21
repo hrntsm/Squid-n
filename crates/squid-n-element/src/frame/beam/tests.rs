@@ -157,6 +157,7 @@ fn test_beam_new_src_cft_composite_props() {
         ],
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let make_elem = |sec: u32| ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -307,6 +308,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         slab_thickness: 150.0,
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -395,7 +397,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
             },
         },
     };
-    let model = Model {
+    let mut model = Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 3000.0]),
             make_node(1, [6000.0, 0.0, 3000.0]),
@@ -455,6 +457,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         slab_thickness: 150.0,
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,

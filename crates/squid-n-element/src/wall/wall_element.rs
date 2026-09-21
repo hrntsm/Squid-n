@@ -155,6 +155,14 @@ impl WallElement {
             return None;
         }
         let mat = model.element_material(data)?;
+        squid_n_core::model::validate_section_materials(
+            sec,
+            Some(mat),
+            model.element_rebar_material(data),
+            model.element_shear_rebar_material(data),
+            model.element_steel_material(data),
+        )
+        .ok()?;
 
         let r = crate::factory::wall_opening_reduction(data, model).max(1e-6);
 
@@ -1388,6 +1396,17 @@ mod tests {
                 assert!((total - expected).abs() < 1e-10);
             }
         }
+    }
+
+    #[test]
+    fn test_wall_element_rejects_nonfinite_main_density() {
+        let (mut model, data) = make_wall_model();
+        model.materials[0].density = f64::NAN;
+        assert!(WallElement::try_new(&data, &model).is_none());
+        model.materials[0].density = f64::INFINITY;
+        assert!(WallElement::try_new(&data, &model).is_none());
+        model.materials[0].density = -1.0;
+        assert!(WallElement::try_new(&data, &model).is_none());
     }
 
     #[test]

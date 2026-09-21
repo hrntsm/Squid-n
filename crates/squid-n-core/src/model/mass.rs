@@ -57,21 +57,7 @@ impl SectionMassProperties {
         shear_rebar: Option<&Material>,
         steel: Option<&Material>,
     ) -> Result<Self, String> {
-        for (role, material) in [
-            ("主材料", main),
-            ("主筋材料", rebar),
-            ("せん断補強筋材料", shear_rebar),
-            ("内蔵鉄骨材料", steel),
-        ] {
-            if let Some(material) = material {
-                if !material.density.is_finite() || material.density < 0.0 {
-                    return Err(format!(
-                        "断面{}の{role}密度が有限な非負値ではありません",
-                        section.name
-                    ));
-                }
-            }
-        }
+        validate_section_materials(section, main, rebar, shear_rebar, steel)?;
 
         let Some(shape) = section.shape.as_ref() else {
             return Ok(Self::uniform(
@@ -82,33 +68,79 @@ impl SectionMassProperties {
             ));
         };
 
-        if matches!(
-            shape,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-        ) && main.is_some_and(|material| {
-            material.category == super::MaterialCategory::Concrete && material.fc.is_none()
-        }) {
-            return Err(format!(
-                "RC/SRC断面{}のコンクリート材料にFcが未設定です",
-                section.name
-            ));
-        }
-
-        if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
-            return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
-        }
-        if matches!(
-            shape,
-            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
-        ) && main.and_then(|m| m.fc).filter(|fc| *fc > 0.0).is_none()
-        {
-            return Err(format!("CFT断面{}のFcが未設定または不正です", section.name));
-        }
-
         Ok(shaped_mass(shape, main, rebar, shear_rebar, steel))
     }
+}
+
+pub fn validate_section_materials(
+    section: &Section,
+    main: Option<&Material>,
+    rebar: Option<&Material>,
+    shear_rebar: Option<&Material>,
+    steel: Option<&Material>,
+) -> Result<(), String> {
+    for (role, material) in [
+        ("主材料", main),
+        ("主筋材料", rebar),
+        ("せん断補強筋材料", shear_rebar),
+        ("内蔵鉄骨材料", steel),
+    ] {
+        if let Some(material) = material {
+            if !material.density.is_finite() || material.density < 0.0 {
+                return Err(format!(
+                    "断面{}の{role}密度が有限な非負値ではありません",
+                    section.name
+                ));
+            }
+        }
+    }
+
+    let Some(shape) = section.shape.as_ref() else {
+        return Ok(());
+    };
+
+    let concrete_shape = matches!(
+        shape,
+        SectionShape::RcRect { .. }
+            | SectionShape::RcCircle { .. }
+            | SectionShape::SrcRect { .. }
+            | SectionShape::RcWall { .. }
+            | SectionShape::RcSlab { .. }
+    );
+    if concrete_shape && main.is_none() {
+        return Err(format!("RC/SRC断面{}の主材料が未設定です", section.name));
+    }
+    if concrete_shape
+        && main.is_some_and(|material| material.category != super::MaterialCategory::Concrete)
+    {
+        return Err(format!(
+            "RC/SRC断面{}の主材料がコンクリートではありません",
+            section.name
+        ));
+    }
+    if concrete_shape
+        && main
+            .and_then(|material| material.fc)
+            .is_none_or(|fc| !fc.is_finite() || fc <= 0.0)
+    {
+        return Err(format!(
+            "RC/SRC断面{}のコンクリート材料のFcが未設定または不正です",
+            section.name
+        ));
+    }
+
+    if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
+        return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
+    }
+    if matches!(
+        shape,
+        SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
+    ) && main.and_then(|m| m.fc).filter(|fc| *fc > 0.0).is_none()
+    {
+        return Err(format!("CFT断面{}のFcが未設定または不正です", section.name));
+    }
+
+    Ok(())
 }
 
 impl Model {
@@ -1017,5 +1049,76 @@ mod tests {
         )
         .expect_err("RCのコンクリート密度はFcなしで解釈してはならない");
         assert!(error.contains("Fc"));
+    }
+
+    #[test]
+    fn rc系断面は主材料の欠落や区分不正やfc不正を受け付けない() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 0.0,
+                pitch: 0.0,
+                legs: 0,
+            },
+        };
+        let shapes = [
+            SectionShape::RcRect {
+                b: 400.0,
+                d: 400.0,
+                rebar: rebar.clone(),
+            },
+            SectionShape::RcCircle {
+                d: 400.0,
+                rebar: rebar.clone(),
+            },
+            SectionShape::SrcRect {
+                b: 400.0,
+                d: 400.0,
+                rebar,
+                steel_height: 200.0,
+                steel_width: 200.0,
+                steel_web_thick: 9.0,
+                steel_flange_thick: 12.0,
+            },
+            SectionShape::RcWall {
+                thickness: 150.0,
+                ps: 0.0025,
+            },
+            SectionShape::RcSlab { thickness: 150.0 },
+        ];
+        for (index, shape) in shapes.into_iter().enumerate() {
+            let section = shape.to_section(SectionId(index as u32), "RC系".into());
+            assert!(
+                SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
+            );
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Steel, 2.4e-9, Some(24.0))),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(0.0))),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        }
     }
 }
