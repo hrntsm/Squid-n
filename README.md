@@ -57,7 +57,7 @@ cargo run -p squid-n-mcp --features mcp
 
 ### 開発者向け（`dev_docs/`）
 
-設計仕様・V&V・申し送りは [dev_docs/](dev_docs/README.md) に集約（ドキュメントサイトには含めない）。
+設計判断（ADR）・アーキテクチャ・検証記録・申し送りは [dev_docs/](dev_docs/README.md) に集約（ドキュメントサイトには含めない）。
 
 | 一覧 | 内容 |
 |------|------|
