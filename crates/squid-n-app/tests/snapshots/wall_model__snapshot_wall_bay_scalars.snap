@@ -3,8 +3,8 @@ source: crates/squid-n-app/tests/wall_model.rs
 expression: out
 ---
 prep.total_seismic_weight = 5.270e4
-eigen.T[0] = 8.851e-2
-eigen.T[1] = 5.498e-2
+eigen.T[0] = 8.849e-2
+eigen.T[1] = 5.497e-2
 eigen.T[2] = 1.411e-2
 static.DL.wall_forces_len = 3
 static.DL.wall_forces_abs_sum = 7.962e4

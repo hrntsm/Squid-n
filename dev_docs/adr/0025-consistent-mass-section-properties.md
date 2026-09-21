@@ -4,9 +4,9 @@ Status: accepted
 
 ## 決定
 
-RC/SRC のコンクリート材料は `Material.fc` から純コンクリート密度を求め、Fc 未設定は入力エラーとする。標準材料の `density` は鉄筋込み γRC であり、鉄筋領域の加算へ流用しない。
+RC/SRC の質量は、`Material.fc` と `ConcreteClass` からそれぞれ γRC/γSRC を求め、総断面の面積・断面二次モーメントへ一様に適用する。鉄筋・内蔵鉄骨の実体積置換および密度の別加算は行わない。Fc 未設定は入力エラーとする。したがって Fc により標準単位体積重量は変化する。
 
-Beam と Fiber の整合質量は、断面の材料領域から求めた `SectionMassProperties` を共通の入力とし、`squid_n_element::frame::prismatic::consistent_mass_timoshenko` で算定する。質量特性は単位長さ当たり質量と断面 y 軸・z 軸まわりの質量二次モーメントを持つ。RC/SRC のコンクリート材料は `Material.fc` から γC（純コンクリート）を単位体積重量表で導き、Fc 未設定は入力エラーとする。標準材料の密度は鉄筋込みの γRC であるため、鉄筋領域の加算へ流用しない。その他の材料は `Material.density` を使い、CFT の充填コンクリートも同じ γC を使う。
+Beam と Fiber の整合質量は、断面の材料領域から求めた `SectionMassProperties` を共通の入力とし、`squid_n_element::frame::prismatic::consistent_mass_timoshenko` で算定する。質量特性は単位長さ当たり質量と断面 y 軸・z 軸まわりの質量二次モーメントを持つ。CFT は鋼管と充填コンクリートが幾何的に別領域であるため、鋼管は `Material.density`、充填部は Fc と ConcreteClass による γC を使う。
 
 材軸まわりの回転慣性には、ねじり剛性 `GJ/L` のねじり定数 `J` ではなく、質量用極二次モーメント `Ip = Iy + Iz` を用いる。剛域を含む場合は、可撓部の質量を剛体アームで変換し、剛域の分布質量を加えて部材全長の質量を保存する。端部解放がある場合も、剛性側と同じ拡大自由度で質量を組み、初期弾性剛性から固定した `S=-Kbb^-1 Kba`, `R=[I;S]` により `M=Rᵀ Mbar R` として縮約する。回転ばねは無質量とする。
 

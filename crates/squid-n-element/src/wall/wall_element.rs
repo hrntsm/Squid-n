@@ -284,19 +284,11 @@ impl WallElement {
                     * squid_n_core::model::wall_clear_area_factor(&points, &dimensions);
                 let net_area = (area - opening_area).max(0.0);
                 let mass_properties = model.element_mass_properties(data).ok()?;
-                let concrete_mass_per_area = if t > 0.0 {
+                let mass_per_area = if t > 0.0 {
                     mass_properties.mass_per_length / 1000.0
                 } else {
                     0.0
                 };
-                let mass_per_area =
-                    model
-                        .element_rebar_material(data)
-                        .map_or(concrete_mass_per_area, |rebar| {
-                            (concrete_mass_per_area
-                                + (rebar.density * t - concrete_mass_per_area) * ps)
-                                .max(0.0)
-                        });
                 (mass_per_area * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
                     .max(0.0)
             },
@@ -1467,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_mass_preserves_section_mass_and_adds_rebar_once() {
+    fn test_wall_mass_preserves_section_mass_with_rebar() {
         let (mut model, mut data) = make_wall_model();
         let mut rebar = model.materials[0].clone();
         rebar.id = MaterialId(1);
@@ -1480,9 +1472,7 @@ mod tests {
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         let wall = WallElement::try_new(&data, &model).unwrap();
         let properties = model.element_mass_properties(&data).unwrap();
-        let concrete_mass_per_area = properties.mass_per_length / 1000.0;
-        let expected =
-            (concrete_mass_per_area * (1.0 - 0.0025) + 7.85e-9 * 150.0 * 0.0025) * 4000.0 * 3000.0;
+        let expected = properties.mass_per_length / 1000.0 * 4000.0 * 3000.0;
         let mass = wall.mass_matrix(MassOption::Lumped);
         let actual: f64 = (0..4).map(|i| mass.get(i * 6, i * 6)).sum();
         assert!(

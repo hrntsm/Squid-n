@@ -1,7 +1,7 @@
 //! 断面の分布質量特性。
 
 use super::{ElementData, Material, Model, Section};
-use crate::section_shape::{one_bar_area, RcRebar, SectionShape};
+use crate::section_shape::{RcRebar, SectionShape};
 use crate::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3,
     ConcreteComposition,
@@ -201,7 +201,6 @@ pub fn validate_section_materials(
             | SectionShape::RcCircle { .. }
             | SectionShape::SrcRect { .. }
             | SectionShape::RcWall { .. }
-            | SectionShape::RcSlab { .. }
     ) {
         for (role, material) in [("主筋材料", rebar), ("せん断補強筋材料", shear_rebar)]
         {
@@ -210,6 +209,22 @@ pub fn validate_section_materials(
                 return Err(format!("断面{}の{role}が鉄筋ではありません", section.name));
             }
         }
+    }
+    if matches!(
+        shape,
+        SectionShape::RcWall { .. } | SectionShape::RcSlab { .. }
+    ) && shear_rebar.is_some()
+    {
+        return Err(format!(
+            "断面{}の壁・床版はせん断補強筋材料を受け付けません",
+            section.name
+        ));
+    }
+    if matches!(shape, SectionShape::RcSlab { .. }) && rebar.is_some() {
+        return Err(format!(
+            "断面{}の床版は主筋材料を受け付けません",
+            section.name
+        ));
     }
     if matches!(shape, SectionShape::SrcRect { .. })
         && steel.is_some_and(|material| material.category != super::MaterialCategory::Steel)
@@ -436,6 +451,7 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
         SectionShape::RcWall { thickness, ps } => {
             dimensions.push(("thickness", *thickness));
             nonnegative("ps", *ps)?;
+            relation("ps <= 1", *ps <= 1.0)?;
         }
         SectionShape::RcSlab { thickness } => dimensions.push(("thickness", *thickness)),
     }
@@ -595,23 +611,6 @@ struct GeometryMass {
     iz: f64,
 }
 
-impl GeometryMass {
-    fn add_round_bar(&mut self, area: f64, dia: f64, y: f64, z: f64) {
-        let own_i = area * dia * dia / 16.0;
-        self.area += area;
-        self.iy += own_i + area * z * z;
-        self.iz += own_i + area * y * y;
-    }
-
-    fn subtract(self, other: Self) -> Self {
-        Self {
-            area: (self.area - other.area).max(0.0),
-            iy: (self.iy - other.iy).max(0.0),
-            iz: (self.iz - other.iz).max(0.0),
-        }
-    }
-}
-
 #[derive(Default)]
 struct WeightedMass {
     mass_per_length: f64,
@@ -638,67 +637,26 @@ impl WeightedMass {
 fn shaped_mass(
     shape: &SectionShape,
     main: Option<&Material>,
-    rebar: Option<&Material>,
-    shear_rebar: Option<&Material>,
-    steel: Option<&Material>,
+    _rebar: Option<&Material>,
+    _shear_rebar: Option<&Material>,
+    _steel: Option<&Material>,
 ) -> SectionMassProperties {
     let main_density = main.map_or(0.0, |m| m.density);
-    let concrete_density = concrete_density(main);
-    let reinforcing_density = reinforcement_density(rebar);
-    let shear_density = reinforcement_density(shear_rebar);
-    let embedded_steel_density = steel_density(steel);
+    let rc_density = concrete_density(main, ConcreteComposition::Rc);
     let mut result = WeightedMass::default();
 
     match shape {
-        SectionShape::RcRect { b, d, rebar } => {
+        SectionShape::RcRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
-            let main_rebar = rectangular_rebar_geometry(rebar, *b, *d);
-            let shear = rectangular_shear_geometry(rebar, *b, *d);
-            result.add(concrete_density, gross.subtract(main_rebar).subtract(shear));
-            result.add(reinforcing_density, main_rebar);
-            result.add(shear_density, shear);
+            result.add(rc_density, gross);
         }
-        SectionShape::RcCircle { d, rebar } => {
+        SectionShape::RcCircle { d, .. } => {
             let gross = circle_geometry(*d);
-            let main_rebar = circular_rebar_geometry(rebar, *d);
-            let shear = circular_shear_geometry(rebar, *d);
-            result.add(concrete_density, gross.subtract(main_rebar).subtract(shear));
-            result.add(reinforcing_density, main_rebar);
-            result.add(shear_density, shear);
+            result.add(rc_density, gross);
         }
-        SectionShape::SrcRect {
-            b,
-            d,
-            rebar,
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-        } => {
+        SectionShape::SrcRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
-            let main_rebar = rectangular_rebar_geometry(rebar, *b, *d);
-            let shear = rectangular_shear_geometry(rebar, *b, *d);
-            let embedded = SectionShape::SteelH {
-                height: *steel_height,
-                width: *steel_width,
-                web_thick: *steel_web_thick,
-                flange_thick: *steel_flange_thick,
-            };
-            let embedded = GeometryMass {
-                area: embedded.calc_area(),
-                iy: embedded.calc_iy(),
-                iz: embedded.calc_iz(),
-            };
-            result.add(
-                concrete_density,
-                gross
-                    .subtract(main_rebar)
-                    .subtract(shear)
-                    .subtract(embedded),
-            );
-            result.add(reinforcing_density, main_rebar);
-            result.add(shear_density, shear);
-            result.add(embedded_steel_density, embedded);
+            result.add(concrete_density(main, ConcreteComposition::Src), gross);
         }
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => {
             let steel = GeometryMass {
@@ -718,9 +676,13 @@ fn shaped_mass(
                 result.add(main_density, steel);
             }
         }
-        SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => {
+        SectionShape::RcWall { thickness, .. } => {
+            let gross = rectangle_geometry(1000.0, *thickness);
+            result.add(rc_density, gross);
+        }
+        SectionShape::RcSlab { .. } => {
             result.add(
-                concrete_density,
+                concrete_density(main, ConcreteComposition::Plain),
                 GeometryMass {
                     area: shape.calc_area(),
                     iy: shape.calc_iy(),
@@ -761,119 +723,6 @@ fn circle_geometry(dia: f64) -> GeometryMass {
     }
 }
 
-fn rectangular_rebar_geometry(rebar: &RcRebar, width: f64, depth: f64) -> GeometryMass {
-    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
-
-    let mut result = GeometryMass::default();
-    let add_set_x = |result: &mut GeometryMass, set: &crate::section_shape::BarSet| {
-        let area = one_bar_area(set.dia);
-        let layers = set.layers.max(1);
-        let span = (width - 2.0 * rebar.cover).max(0.0);
-        for layer in 0..layers {
-            let z0 =
-                depth / 2.0 - rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
-            for i in 0..set.count {
-                let y = if set.count == 1 {
-                    0.0
-                } else {
-                    -span / 2.0 + span * i as f64 / (set.count - 1) as f64
-                };
-                for zsign in [1.0, -1.0] {
-                    result.add_round_bar(area, set.dia, y, zsign * z0);
-                }
-            }
-        }
-    };
-    let add_set_y = |result: &mut GeometryMass, set: &crate::section_shape::BarSet| {
-        let area = one_bar_area(set.dia);
-        let layers = set.layers.max(1);
-        let span = (depth - 2.0 * rebar.cover).max(0.0);
-        for layer in 0..layers {
-            let y0 =
-                width / 2.0 - rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
-            for i in 0..set.count {
-                let z = -span / 2.0 + span * (i as f64 + 1.0) / (set.count + 1) as f64;
-                for ysign in [1.0, -1.0] {
-                    result.add_round_bar(area, set.dia, ysign * y0, z);
-                }
-            }
-        }
-    };
-    add_set_x(&mut result, &rebar.main_x);
-    add_set_y(&mut result, &rebar.main_y);
-    result
-}
-
-fn circular_rebar_geometry(rebar: &RcRebar, dia: f64) -> GeometryMass {
-    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
-
-    let sets = [&rebar.main_x, &rebar.main_y];
-    let max_layers = sets.iter().map(|set| set.layers.max(1)).max().unwrap_or(0);
-    if max_layers == 0 {
-        return GeometryMass::default();
-    }
-    let mut result = GeometryMass::default();
-    for layer in 0..max_layers {
-        let total = sets
-            .iter()
-            .filter(|set| layer < set.layers.max(1))
-            .map(|set| set.count)
-            .sum::<u32>();
-        if total == 0 {
-            continue;
-        }
-        let mut index = 0_u32;
-        for set in sets {
-            if layer >= set.layers.max(1) {
-                continue;
-            }
-            let radius = (dia / 2.0
-                - rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer))
-            .max(0.0);
-            for _ in 0..set.count {
-                let theta = 2.0 * std::f64::consts::PI * index as f64 / total as f64;
-                let y = radius * theta.cos();
-                let z = radius * theta.sin();
-                result.add_round_bar(one_bar_area(set.dia), set.dia, y, z);
-                index += 1;
-            }
-        }
-    }
-    result
-}
-
-fn rectangular_shear_geometry(rebar: &RcRebar, width: f64, depth: f64) -> GeometryMass {
-    let shear = &rebar.shear;
-    if shear.pitch <= 0.0 || shear.legs == 0 || shear.dia <= 0.0 {
-        return GeometryMass::default();
-    }
-    let center_width = (width - 2.0 * rebar.cover - shear.dia).max(0.0);
-    let center_depth = (depth - 2.0 * rebar.cover - shear.dia).max(0.0);
-    let scale = shear.legs as f64 / 2.0;
-    let line_density = scale * one_bar_area(shear.dia) / shear.pitch;
-    GeometryMass {
-        area: line_density * 2.0 * (center_width + center_depth),
-        iy: line_density * (center_width * center_depth.powi(2) / 2.0 + center_depth.powi(3) / 6.0),
-        iz: line_density * (center_depth * center_width.powi(2) / 2.0 + center_width.powi(3) / 6.0),
-    }
-}
-
-fn circular_shear_geometry(rebar: &RcRebar, dia: f64) -> GeometryMass {
-    let shear = &rebar.shear;
-    if shear.pitch <= 0.0 || shear.legs == 0 || shear.dia <= 0.0 {
-        return GeometryMass::default();
-    }
-    let radius = (dia / 2.0 - rebar.cover - shear.dia / 2.0).max(0.0);
-    let line_density = shear.legs as f64 / 2.0 * one_bar_area(shear.dia) / shear.pitch;
-    let circumference = 2.0 * std::f64::consts::PI * radius;
-    let inertia = std::f64::consts::PI * radius.powi(3);
-    GeometryMass {
-        area: line_density * circumference,
-        iy: line_density * inertia,
-        iz: line_density * inertia,
-    }
-}
-
 fn cft_core_density(material: Option<&Material>) -> f64 {
     material.map_or(0.0, |m| {
         m.fc.filter(|fc| *fc > 0.0).map_or(0.0, |fc| {
@@ -886,24 +735,16 @@ fn cft_core_density(material: Option<&Material>) -> f64 {
     })
 }
 
-fn concrete_density(material: Option<&Material>) -> f64 {
+fn concrete_density(material: Option<&Material>, composition: ConcreteComposition) -> f64 {
     material.map_or(0.0, |m| {
         m.fc.filter(|fc| *fc > 0.0).map_or(m.density, |fc| {
             mass_density_from_unit_weight_kn_m3(concrete_unit_weight_kn_m3(
                 fc,
                 m.concrete_class,
-                ConcreteComposition::Plain,
+                composition,
             ))
         })
     })
-}
-
-fn reinforcement_density(material: Option<&Material>) -> f64 {
-    material.map_or(0.0, |m| m.density)
-}
-
-fn steel_density(material: Option<&Material>) -> f64 {
-    material.map_or(0.0, |m| m.density)
 }
 
 #[cfg(test)]
@@ -973,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn rcはコンクリートと主筋とせん断補強筋を重複なく積分する() {
+    fn rcは鉄筋材料によらず標準rc密度を総断面へ適用する() {
         use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
         let shape = SectionShape::RcRect {
@@ -1012,80 +853,97 @@ mod tests {
             None,
         );
         let gross = rectangle_geometry(400.0, 400.0);
-        let main = rectangular_rebar_geometry(
-            match &shape {
-                SectionShape::RcRect { rebar, .. } => rebar,
-                _ => unreachable!(),
+        let expected_density = concrete_density(Some(&concrete), ConcreteComposition::Rc);
+        assert_eq!(
+            properties,
+            SectionMassProperties::uniform(expected_density, gross.area, gross.iy, gross.iz,)
+        );
+        let changed_rebar = material(1, MaterialCategory::Rebar, 100.0, None);
+        let changed = SectionMassProperties::from_section(
+            &section,
+            Some(&concrete),
+            Some(&changed_rebar),
+            Some(&changed_rebar),
+            None,
+        );
+        assert_eq!(properties, changed);
+    }
+
+    #[test]
+    fn rc密度はfcとコンクリート種類で変わる() {
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: crate::section_shape::RcRebar {
+                main_x: crate::section_shape::BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                main_y: crate::section_shape::BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: crate::section_shape::ShearBar {
+                    dia: 0.0,
+                    pitch: 0.0,
+                    legs: 0,
+                },
             },
-            400.0,
-            400.0,
-        );
-        let shear = rectangular_shear_geometry(
-            match &shape {
-                SectionShape::RcRect { rebar, .. } => rebar,
-                _ => unreachable!(),
-            },
-            400.0,
-            400.0,
-        );
-        let concrete_density = concrete_density(Some(&concrete));
-        let expected = concrete_density * (gross.area - main.area - shear.area)
-            + 7.0 * (main.area + shear.area);
-        assert!((properties.mass_per_length - expected).abs() / expected.abs() < 1e-12);
-        let expected_iy =
-            concrete_density * (gross.iy - main.iy - shear.iy) + 7.0 * (main.iy + shear.iy);
-        let expected_iz =
-            concrete_density * (gross.iz - main.iz - shear.iz) + 7.0 * (main.iz + shear.iz);
-        assert!(
-            (properties.rotary_inertia_y_per_length - expected_iy).abs() / expected_iy.abs()
-                < 1e-12
-        );
-        assert!(
-            (properties.rotary_inertia_z_per_length - expected_iz).abs() / expected_iz.abs()
-                < 1e-12
-        );
-        assert!(
-            properties.mass_per_length
-                < concrete_density * gross.area + 7.0 * (main.area + shear.area)
+        };
+        let section = shape.to_section(SectionId(0), "RC".into());
+        let normal = material(0, MaterialCategory::Concrete, 1.0, Some(24.0));
+        let high_strength = material(1, MaterialCategory::Concrete, 1.0, Some(42.0));
+        let normal_mass =
+            SectionMassProperties::from_section(&section, Some(&normal), None, None, None);
+        let high_strength_mass =
+            SectionMassProperties::from_section(&section, Some(&high_strength), None, None, None);
+        assert!(high_strength_mass.mass_per_length > normal_mass.mass_per_length);
+    }
+
+    #[test]
+    fn rc壁は標準rc密度を総断面へ適用する() {
+        let shape = SectionShape::RcWall {
+            thickness: 200.0,
+            ps: 0.0025,
+        };
+        let section = shape.to_section(SectionId(0), "W".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let properties =
+            SectionMassProperties::try_from_section(&section, Some(&concrete), None, None, None)
+                .unwrap();
+        let gross = rectangle_geometry(1000.0, 200.0);
+        let rho_rc = concrete_density(Some(&concrete), ConcreteComposition::Rc);
+        assert_eq!(
+            properties,
+            SectionMassProperties::uniform(rho_rc, gross.area, gross.iy, gross.iz,)
         );
     }
 
     #[test]
-    fn 円形主筋の多段配置を質量と断面二次モーメントへ反映する() {
-        use crate::section_shape::{BarSet, RcRebar, ShearBar};
-
-        let rebar = RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 20.0,
-                layers: 2,
+    fn rc壁と床版は未定義のせん断補強筋質量を拒否する() {
+        let rebar = material(1, MaterialCategory::Rebar, 7.85e-9, None);
+        for shape in [
+            SectionShape::RcWall {
+                thickness: 200.0,
+                ps: 0.0025,
             },
-            main_y: BarSet {
-                count: 0,
-                dia: 20.0,
-                layers: 1,
-            },
-            cover: 40.0,
-            shear: ShearBar {
-                dia: 10.0,
-                pitch: 100.0,
-                legs: 2,
-            },
-        };
-        let geometry = circular_rebar_geometry(&rebar, 500.0);
-        let area = one_bar_area(20.0);
-        let own_i = area * 20.0 * 20.0 / 16.0;
-        let radius_0: f64 = 250.0 - (40.0 + 10.0 + 10.0);
-        let radius_1: f64 = radius_0 - (20.0 + 30.0);
-        let expected_area = 8.0 * area;
-        let expected_inertia = 4.0 * own_i
-            + 2.0 * area * radius_0.powi(2)
-            + 4.0 * own_i
-            + 2.0 * area * radius_1.powi(2);
-
-        assert!((geometry.area - expected_area).abs() < 1e-12);
-        assert!((geometry.iy - expected_inertia).abs() / expected_inertia < 1e-12);
-        assert!((geometry.iz - expected_inertia).abs() / expected_inertia < 1e-12);
+            SectionShape::RcSlab { thickness: 150.0 },
+        ] {
+            let section = shape.to_section(SectionId(0), "plate".into());
+            let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+            let error = SectionMassProperties::try_from_section(
+                &section,
+                Some(&concrete),
+                Some(&rebar),
+                Some(&rebar),
+                None,
+            )
+            .expect_err("形状で定義されないせん断補強筋材料を受け付けない");
+            assert!(error.contains("せん断補強筋"));
+        }
     }
 
     #[test]
@@ -1129,30 +987,17 @@ mod tests {
             Some(&rebar),
             Some(&steel),
         );
-        let h = SectionShape::SteelH {
-            height: 400.0,
-            width: 200.0,
-            web_thick: 9.0,
-            flange_thick: 12.0,
-        };
-        let steel_area = h.calc_area();
-        let shear = rectangular_shear_geometry(
-            match &shape {
-                SectionShape::SrcRect { rebar, .. } => rebar,
-                _ => unreachable!(),
-            },
-            600.0,
-            600.0,
-        );
-        let concrete_density = concrete_density(Some(&concrete));
-        let expected = concrete_density * (600.0 * 600.0 - steel_area - shear.area)
-            + 8.0 * steel_area
-            + 8.0 * shear.area;
+        let expected = concrete_density(Some(&concrete), ConcreteComposition::Src) * 600.0 * 600.0;
         assert!((properties.mass_per_length - expected).abs() < 1e-9);
-        let double_counted =
-            concrete_density * (600.0 * 600.0 - shear.area) + 8.0 * (steel_area + shear.area);
-        assert!(properties.mass_per_length < double_counted);
-        assert!(properties.mass_per_length > 8.0 * steel_area);
+        let heavier_steel = material(1, MaterialCategory::Steel, 100.0, None);
+        let changed = SectionMassProperties::from_section(
+            &section,
+            Some(&concrete),
+            Some(&rebar),
+            Some(&rebar),
+            Some(&heavier_steel),
+        );
+        assert_eq!(properties, changed);
     }
 
     #[test]
@@ -1311,15 +1156,7 @@ mod tests {
         let properties =
             SectionMassProperties::from_section(&section, Some(&concrete), None, None, None);
         let gross = rectangle_geometry(400.0, 400.0);
-        let main = match &shape {
-            SectionShape::RcRect { rebar, .. } => rectangular_rebar_geometry(rebar, 400.0, 400.0),
-            _ => unreachable!(),
-        };
-        let shear = match &shape {
-            SectionShape::RcRect { rebar, .. } => rectangular_shear_geometry(rebar, 400.0, 400.0),
-            _ => unreachable!(),
-        };
-        let expected = concrete_density(Some(&concrete)) * (gross.area - main.area - shear.area);
+        let expected = concrete_density(Some(&concrete), ConcreteComposition::Rc) * gross.area;
         assert!((properties.mass_per_length - expected).abs() < 1e-12);
     }
 
@@ -1354,22 +1191,11 @@ mod tests {
         let main = material(1, MaterialCategory::Rebar, 7.0, None);
         let shear = material(2, MaterialCategory::Rebar, 8.0, None);
         let gross = rectangle_geometry(400.0, 400.0);
-        let main_geometry = match &shape {
-            SectionShape::RcRect { rebar, .. } => rectangular_rebar_geometry(rebar, 400.0, 400.0),
-            _ => unreachable!(),
-        };
-        let shear_geometry = match &shape {
-            SectionShape::RcRect { rebar, .. } => rectangular_shear_geometry(rebar, 400.0, 400.0),
-            _ => unreachable!(),
-        };
-
         let main_only =
             SectionMassProperties::from_section(&section, Some(&concrete), Some(&main), None, None);
         assert!(
             (main_only.mass_per_length
-                - concrete_density(Some(&concrete))
-                    * (gross.area - main_geometry.area - shear_geometry.area)
-                - main.density * main_geometry.area)
+                - concrete_density(Some(&concrete), ConcreteComposition::Rc) * gross.area)
                 .abs()
                 < 1e-12
         );
@@ -1383,9 +1209,7 @@ mod tests {
         );
         assert!(
             (shear_only.mass_per_length
-                - concrete_density(Some(&concrete))
-                    * (gross.area - main_geometry.area - shear_geometry.area)
-                - shear.density * shear_geometry.area)
+                - concrete_density(Some(&concrete), ConcreteComposition::Rc) * gross.area)
                 .abs()
                 < 1e-12
         );
@@ -1488,24 +1312,7 @@ mod tests {
             None,
         );
         let gross = rectangle_geometry(400.0, 400.0);
-        let main = rectangular_rebar_geometry(
-            match &shape {
-                SectionShape::RcRect { rebar, .. } => rebar,
-                _ => unreachable!(),
-            },
-            400.0,
-            400.0,
-        );
-        let shear = rectangular_shear_geometry(
-            match &shape {
-                SectionShape::RcRect { rebar, .. } => rebar,
-                _ => unreachable!(),
-            },
-            400.0,
-            400.0,
-        );
-        let expected = concrete_density(Some(&concrete)) * (gross.area - main.area - shear.area)
-            + rebar.density * (main.area + shear.area);
+        let expected = concrete_density(Some(&concrete), ConcreteComposition::Rc) * gross.area;
         assert!((properties.mass_per_length - expected).abs() < 1e-12);
     }
 
@@ -1945,21 +1752,42 @@ mod tests {
     }
 
     #[test]
-    fn 壁とスラブの補助材料も鉄筋区分を要求する() {
+    fn 壁とスラブの補助材料の対応範囲を検証する() {
         let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
         let steel = material(1, MaterialCategory::Steel, 8.0, None);
         let rebar = material(2, MaterialCategory::Rebar, 7.0, None);
-        for (id, shape) in [
-            (
-                0,
-                SectionShape::RcWall {
-                    thickness: 150.0,
-                    ps: 0.0025,
-                },
-            ),
-            (1, SectionShape::RcSlab { thickness: 150.0 }),
-        ] {
-            let section = shape.to_section(SectionId(id), "RC板".into());
+        let wall = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        }
+        .to_section(SectionId(0), "RC壁".into());
+        assert!(SectionMassProperties::try_from_section(
+            &wall,
+            Some(&concrete),
+            Some(&steel),
+            None,
+            None,
+        )
+        .is_err());
+        assert!(SectionMassProperties::try_from_section(
+            &wall,
+            Some(&concrete),
+            Some(&rebar),
+            None,
+            None,
+        )
+        .is_ok());
+        let slab =
+            SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(1), "RC床版".into());
+        assert!(SectionMassProperties::try_from_section(
+            &slab,
+            Some(&concrete),
+            Some(&rebar),
+            None,
+            None,
+        )
+        .is_err());
+        for section in [wall, slab] {
             assert!(SectionMassProperties::try_from_section(
                 &section,
                 Some(&concrete),
@@ -1968,14 +1796,6 @@ mod tests {
                 None,
             )
             .is_err());
-            assert!(SectionMassProperties::try_from_section(
-                &section,
-                Some(&concrete),
-                Some(&rebar),
-                Some(&rebar),
-                None,
-            )
-            .is_ok());
         }
     }
 }
