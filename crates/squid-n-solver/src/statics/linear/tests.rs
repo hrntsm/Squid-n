@@ -1317,6 +1317,7 @@ fn test_axial_cut_applies_to_composite_src_column() {
     });
     model.materials[0].fc = Some(24.0);
     model.materials[0].young = 2.27e4;
+    model.sections[0].steel_material = Some(MaterialId(0));
 
     let elem = &model.elements[0];
     let normal = build_behavior_with_axial_factor(elem, &model, 1.0);

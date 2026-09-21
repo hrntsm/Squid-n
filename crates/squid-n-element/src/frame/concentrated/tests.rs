@@ -258,6 +258,21 @@ fn test_condense_springs_zero_stiffness() {
 }
 
 #[test]
+fn test_condense_springs_singular_kbb_uses_kaa() {
+    let k = LocalMat::zeros(12);
+    let condensed = condense_springs(&k, 0.0, 5.0);
+    assert_eq!(condensed.get(5, 5), 0.0);
+    assert_eq!(condensed.get(11, 11), 5.0);
+    assert!(condensed.data.iter().enumerate().all(|(index, value)| {
+        let row = index / 12;
+        let col = index % 12;
+        (row, col) == (5, 5) && *value == 0.0
+            || (row, col) == (11, 11) && *value == 5.0
+            || *value == 0.0
+    }));
+}
+
+#[test]
 fn test_concentrated_spring_checkpoint_roundtrip() {
     let mut elem = make_test_element();
     let ctx = Ctx {

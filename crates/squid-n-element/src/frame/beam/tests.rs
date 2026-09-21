@@ -218,9 +218,7 @@ fn test_beam_new_src_cft_composite_props() {
         ..src_shape.to_section(SectionId(0), "SRC-600".into())
     };
     model.materials[0].fc = None;
-    let src_fallback = BeamElement::new(&make_elem(0), &model);
-    assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
-    assert!((src_fallback.iz - model.sections[0].iy).abs() < 1e-6);
+    assert!(BeamElement::try_new(&make_elem(0), &model).is_err());
 }
 
 /// スラブ協力幅による強軸剛性増大。

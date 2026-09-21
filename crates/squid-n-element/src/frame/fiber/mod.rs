@@ -551,6 +551,16 @@ impl FiberBeam {
         basis: crate::factory::StrengthBasis,
         kind: AnalysisKind,
     ) -> Self {
+        Self::try_new(data, model, basis, kind)
+            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+    }
+
+    pub fn try_new(
+        data: &squid_n_core::model::ElementData,
+        model: &squid_n_core::model::Model,
+        basis: crate::factory::StrengthBasis,
+        kind: AnalysisKind,
+    ) -> Result<Self, String> {
         let n0 = &model.nodes[data.nodes[0].index()];
         let n1 = &model.nodes[data.nodes[1].index()];
         let length = squid_n_core::geom::vec3::dist(n0.coord, n1.coord);
@@ -564,16 +574,14 @@ impl FiberBeam {
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
-        let mass_properties = model
-            .element_mass_properties(data)
-            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"));
+        let mass_properties = model.element_mass_properties(data)?;
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(0.0);
         let depth = sec.map(|s| s.depth).unwrap_or(0.0);
         let torsion_j = sec.map(|s| s.j).unwrap_or(0.0);
 
-        let beam_props = crate::frame::beam::BeamElement::new(data, model);
+        let beam_props = crate::frame::beam::BeamElement::try_new(data, model)?;
         let sec_iy = beam_props.iz;
         let sec_iz = beam_props.iy;
         let sec_as_y = beam_props.as_z;
@@ -632,7 +640,7 @@ impl FiberBeam {
         );
         let trial_int = SmallVec::from_elem(0.0, releases.len());
 
-        FiberBeam {
+        Ok(FiberBeam {
             length,
             rigid_i,
             rigid_j,
@@ -655,7 +663,7 @@ impl FiberBeam {
             eval_sections: crate::frame::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
-        }
+        })
     }
 
     fn compute_shear_stiffness(l: f64, phi_y: f64, phi_z: f64, gas_y: f64, gas_z: f64) -> LocalMat {

@@ -34,6 +34,11 @@ pub(crate) fn eval_sections_of(
 
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
+        Self::try_new(data, model)
+            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+    }
+
+    pub fn try_new(data: &squid_n_core::model::ElementData, model: &Model) -> Result<Self, String> {
         let geom = crate::transform::EndGeometry::of_element(data, model);
         let [n0, n1] = geom.nodes;
         let [p0, p1] = geom.coords;
@@ -42,9 +47,7 @@ impl BeamElement {
         let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
-        let mass_properties = model
-            .element_mass_properties(data)
-            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"));
+        let mass_properties = model.element_mass_properties(data)?;
         let g = mat.shear_modulus();
 
         let eval_sections = eval_sections_of(data, model, len);
@@ -208,7 +211,7 @@ impl BeamElement {
             }
         }
 
-        Self {
+        Ok(Self {
             id: data.id,
             e: mat.young,
             g,
@@ -233,6 +236,6 @@ impl BeamElement {
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),
-        }
+        })
     }
 }

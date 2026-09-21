@@ -22,9 +22,9 @@ impl SectionMassProperties {
     /// 均質な断面から質量特性を作る。
     pub fn uniform(density: f64, area: f64, iy: f64, iz: f64) -> Self {
         Self {
-            mass_per_length: density.max(0.0) * area.max(0.0),
-            rotary_inertia_y_per_length: density.max(0.0) * iy.max(0.0),
-            rotary_inertia_z_per_length: density.max(0.0) * iz.max(0.0),
+            mass_per_length: density * area.max(0.0),
+            rotary_inertia_y_per_length: density * iy.max(0.0),
+            rotary_inertia_z_per_length: density * iz.max(0.0),
         }
     }
 
@@ -57,6 +57,22 @@ impl SectionMassProperties {
         shear_rebar: Option<&Material>,
         steel: Option<&Material>,
     ) -> Result<Self, String> {
+        for (role, material) in [
+            ("主材料", main),
+            ("主筋材料", rebar),
+            ("せん断補強筋材料", shear_rebar),
+            ("内蔵鉄骨材料", steel),
+        ] {
+            if let Some(material) = material {
+                if !material.density.is_finite() || material.density < 0.0 {
+                    return Err(format!(
+                        "断面{}の{role}密度が有限な非負値ではありません",
+                        section.name
+                    ));
+                }
+            }
+        }
+
         let Some(shape) = section.shape.as_ref() else {
             return Ok(Self::uniform(
                 main.map_or(0.0, |m| m.density),
@@ -65,6 +81,20 @@ impl SectionMassProperties {
                 section.iz,
             ));
         };
+
+        if matches!(
+            shape,
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::SrcRect { .. }
+        ) && main.is_some_and(|material| {
+            material.category == super::MaterialCategory::Concrete && material.fc.is_none()
+        }) {
+            return Err(format!(
+                "RC/SRC断面{}のコンクリート材料にFcが未設定です",
+                section.name
+            ));
+        }
 
         if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
             return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
@@ -133,7 +163,6 @@ struct WeightedMass {
 
 impl WeightedMass {
     fn add(&mut self, density: f64, geometry: GeometryMass) {
-        let density = density.max(0.0);
         self.mass_per_length += density * geometry.area.max(0.0);
         self.rotary_inertia_y_per_length += density * geometry.iy.max(0.0);
         self.rotary_inertia_z_per_length += density * geometry.iz.max(0.0);
@@ -927,5 +956,66 @@ mod tests {
         let expected_plain = concrete_density(Some(&concrete)) * gross.area;
         assert!((properties.mass_per_length - expected_plain).abs() < 1e-12);
         assert!(properties.mass_per_length < concrete.density * gross.area);
+    }
+
+    #[test]
+    fn 密度が負値または非有限値なら質量特性を解決できない() {
+        let section = Section {
+            id: SectionId(0),
+            name: "invalid-density".into(),
+            area: 100.0,
+            iy: 200.0,
+            iz: 300.0,
+            ..Section::zero(SectionId(0), "invalid-density".into())
+        };
+        for density in [-1.0, f64::NAN, f64::INFINITY] {
+            let error = SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Steel, density, None)),
+                None,
+                None,
+                None,
+            )
+            .expect_err("異常な密度は質量特性へ進めてはならない");
+            assert!(error.contains("密度"));
+        }
+    }
+
+    #[test]
+    fn rcはfc未設定のコンクリート材料を受け付けない() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 0.0,
+                    pitch: 0.0,
+                    legs: 0,
+                },
+            },
+        };
+        let section = shape.to_section(SectionId(0), "RC".into());
+        let error = SectionMassProperties::try_from_section(
+            &section,
+            Some(&material(0, MaterialCategory::Concrete, 2.4e-9, None)),
+            None,
+            None,
+            None,
+        )
+        .expect_err("RCのコンクリート密度はFcなしで解釈してはならない");
+        assert!(error.contains("Fc"));
     }
 }
