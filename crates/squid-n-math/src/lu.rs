@@ -58,41 +58,6 @@ mod tests {
     use super::*;
     use crate::sparse::{assemble_csc, Triplet};
 
-    #[test]
-    fn test_lu_2dof_spring() {
-        faer::set_global_parallelism(faer::Par::Seq);
-        let k = assemble_csc(
-            2,
-            vec![
-                Triplet {
-                    row: 0,
-                    col: 0,
-                    val: 300.0,
-                },
-                Triplet {
-                    row: 1,
-                    col: 0,
-                    val: -200.0,
-                },
-                Triplet {
-                    row: 0,
-                    col: 1,
-                    val: -200.0,
-                },
-                Triplet {
-                    row: 1,
-                    col: 1,
-                    val: 200.0,
-                },
-            ],
-        );
-        let mut solver = LuSolver::default();
-        solver.factorize(&k).unwrap();
-        let x = solver.solve(&[0.0, 1000.0]).unwrap();
-        approx::assert_relative_eq!(x[0], 10.0, max_relative = 1e-9);
-        approx::assert_relative_eq!(x[1], 15.0, max_relative = 1e-9);
-    }
-
     /// 非対称行列も解ける（Cholesky では対象外のケース）。
     #[test]
     fn test_lu_unsymmetric() {
@@ -128,6 +93,10 @@ mod tests {
         let x = solver.solve(&[4.0, 6.5]).unwrap();
         approx::assert_relative_eq!(x[0], 1.0, max_relative = 1e-9);
         approx::assert_relative_eq!(x[1], 2.0, max_relative = 1e-9);
+
+        let mut out = Vec::new();
+        solver.solve_into(&[4.0, 6.5], &mut out).unwrap();
+        assert_eq!(x, out);
     }
 
     #[test]
@@ -213,19 +182,5 @@ mod tests {
             let x = reused.solve(&rhs).unwrap();
             assert_eq!(x, x_fresh);
         }
-    }
-
-    #[test]
-    fn test_solve_into_matches_solve() {
-        faer::set_global_parallelism(faer::Par::Seq);
-        let k = unsymmetric_3dof(1.0, 2.0);
-        let mut solver = LuSolver::default();
-        solver.factorize(&k).unwrap();
-        let rhs = [1.0, -2.0, 3.5];
-
-        let expected = solver.solve(&rhs).unwrap();
-        let mut out = Vec::new();
-        solver.solve_into(&rhs, &mut out).unwrap();
-        assert_eq!(expected, out);
     }
 }

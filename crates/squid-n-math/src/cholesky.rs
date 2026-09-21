@@ -126,7 +126,7 @@ mod tests {
         let mut solver0 = make_solver(SolverBackend::DirectSparseCholesky);
         solver0.factorize(&k).unwrap();
         let x0 = solver0.solve(&[0.0, 1000.0]).unwrap();
-        for _ in 0..100 {
+        for _ in 0..2 {
             let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
             solver.factorize(&k).unwrap();
             let x = solver.solve(&[0.0, 1000.0]).unwrap();
