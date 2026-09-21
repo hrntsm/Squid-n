@@ -1,7 +1,7 @@
 //! 断面の分布質量特性。
 
 use super::{ElementData, Material, Model, Section};
-use crate::section_shape::SectionShape;
+use crate::section_shape::{RcRebar, SectionShape};
 use crate::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3,
     ConcreteComposition,
@@ -226,6 +226,190 @@ pub fn validate_section_materials(
         }
     }
 
+    Ok(())
+}
+
+pub fn validate_section_inputs(
+    section: &Section,
+    main: Option<&Material>,
+    rebar: Option<&Material>,
+    shear_rebar: Option<&Material>,
+    steel: Option<&Material>,
+) -> Result<(), String> {
+    validate_section_materials(section, main, None, None, None)?;
+    validate_section_geometry(section)?;
+    if let Some(shape) = section.shape.as_ref() {
+        if matches!(
+            shape,
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::SrcRect { .. }
+        ) {
+            let rebar_shape = match shape {
+                SectionShape::RcRect { rebar, .. }
+                | SectionShape::RcCircle { rebar, .. }
+                | SectionShape::SrcRect { rebar, .. } => rebar,
+                _ => unreachable!(),
+            };
+            validate_rebar_geometry(rebar_shape, section)?;
+            match (rebar, shear_rebar) {
+                (Some(material), _) if material.category != super::MaterialCategory::Rebar => {
+                    return Err(format!(
+                        "断面{}の主筋材料が鉄筋ではありません",
+                        section.name
+                    ))
+                }
+                (_, Some(material)) if material.category != super::MaterialCategory::Rebar => {
+                    return Err(format!(
+                        "断面{}のせん断補強筋材料が鉄筋ではありません",
+                        section.name
+                    ))
+                }
+                _ => {}
+            }
+            if let SectionShape::SrcRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            } = shape
+            {
+                for (name, value) in [
+                    ("steel_height", *steel_height),
+                    ("steel_width", *steel_width),
+                    ("steel_web_thick", *steel_web_thick),
+                    ("steel_flange_thick", *steel_flange_thick),
+                ] {
+                    if !value.is_finite() || value <= 0.0 {
+                        return Err(format!(
+                            "SRC断面{}の内蔵鉄骨寸法が不正です: {name}",
+                            section.name
+                        ));
+                    }
+                }
+                if *steel_height > *d || *steel_width > *b {
+                    return Err(format!(
+                        "SRC断面{}の内蔵鉄骨が母断面内に収まりません",
+                        section.name
+                    ));
+                }
+                if let Some(material) = steel {
+                    if material.category != super::MaterialCategory::Steel {
+                        return Err(format!(
+                            "SRC断面{}の内蔵鉄骨材料が鋼材ではありません",
+                            section.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_rebar_geometry(rebar: &RcRebar, section: &Section) -> Result<(), String> {
+    let positive = |name: &str, value: f64| {
+        if value.is_finite() && value > 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "断面{}の配筋寸法{name}が有限な正値ではありません",
+                section.name
+            ))
+        }
+    };
+    let nonnegative = |name: &str, value: f64| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "断面{}の配筋寸法{name}が有限な非負値ではありません",
+                section.name
+            ))
+        }
+    };
+    nonnegative("cover", rebar.cover)?;
+    for (name, set) in [("main_x", &rebar.main_x), ("main_y", &rebar.main_y)] {
+        if set.count > 0 {
+            positive(&format!("{name}.dia"), set.dia)?;
+        } else {
+            nonnegative(&format!("{name}.dia"), set.dia)?;
+        }
+    }
+    if rebar.shear.legs > 0 {
+        positive("shear.dia", rebar.shear.dia)?;
+        positive("shear.pitch", rebar.shear.pitch)?;
+    } else {
+        nonnegative("shear.dia", rebar.shear.dia)?;
+        nonnegative("shear.pitch", rebar.shear.pitch)?;
+    }
+    match &section.shape {
+        Some(SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. }) => {
+            validate_rectangular_rebar_fit(rebar, *b, *d)?;
+        }
+        Some(SectionShape::RcCircle { d, .. }) => validate_circular_rebar_fit(rebar, *d)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_rectangular_rebar_fit(rebar: &RcRebar, width: f64, depth: f64) -> Result<(), String> {
+    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
+    let check = |ok: bool| {
+        ok.then_some(())
+            .ok_or_else(|| "配筋が母断面内に収まりません".to_string())
+    };
+    for (set, span, limit, coordinate) in [
+        (&rebar.main_x, width - 2.0 * rebar.cover, depth, width),
+        (&rebar.main_y, depth - 2.0 * rebar.cover, width, depth),
+    ] {
+        if set.count == 0 {
+            continue;
+        }
+        check(span >= 0.0)?;
+        for layer in 0..set.layers.max(1) {
+            check(
+                rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer)
+                    + set.dia / 2.0
+                    <= limit / 2.0,
+            )?;
+        }
+        for i in 0..set.count {
+            let position = if set.count == 1 {
+                0.0
+            } else {
+                -span / 2.0 + span * i as f64 / (set.count - 1) as f64
+            };
+            check(position.abs() + set.dia / 2.0 <= coordinate / 2.0)?;
+        }
+    }
+    if rebar.shear.legs > 0 {
+        check(2.0 * rebar.cover + rebar.shear.dia <= width)?;
+        check(2.0 * rebar.cover + rebar.shear.dia <= depth)?;
+    }
+    Ok(())
+}
+
+fn validate_circular_rebar_fit(rebar: &RcRebar, dia: f64) -> Result<(), String> {
+    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
+    let radius = dia / 2.0;
+    for set in [&rebar.main_x, &rebar.main_y] {
+        for layer in 0..set.layers.max(1) {
+            if set.count > 0
+                && rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer)
+                    + set.dia / 2.0
+                    > radius
+            {
+                return Err("配筋が母断面内に収まりません".into());
+            }
+        }
+    }
+    if rebar.shear.legs > 0 && rebar.cover + rebar.shear.dia / 2.0 > radius {
+        return Err("配筋が母断面内に収まりません".into());
+    }
     Ok(())
 }
 
@@ -1614,5 +1798,51 @@ mod tests {
             )
             .is_ok());
         }
+    }
+
+    #[test]
+    fn 入力検証は質量解決と配筋および内蔵鉄骨の検証を分離する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::SrcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 2,
+                    dia: 20.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+            steel_height: 500.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        }
+        .to_section(SectionId(0), "SRC".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let steel = material(1, MaterialCategory::Steel, 8.0, None);
+        assert!(SectionMassProperties::try_from_section(
+            &shape,
+            Some(&concrete),
+            None,
+            None,
+            Some(&steel),
+        )
+        .is_ok());
+        assert!(
+            validate_section_inputs(&shape, Some(&concrete), None, None, Some(&steel)).is_err()
+        );
     }
 }

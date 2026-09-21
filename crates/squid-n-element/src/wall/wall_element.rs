@@ -186,8 +186,9 @@ impl WallElement {
                 )
             })
             .unwrap_or(mat.density);
-        let rc_mass_properties_valid =
-            !is_rc_wall || mat.fc.is_some_and(|fc| fc.is_finite() && fc > 0.0);
+        let rc_mass_properties_valid = !is_rc_wall
+            || squid_n_core::model::validate_section_materials(sec, Some(mat), None, None, None)
+                .is_ok();
         let section_mass_properties = if is_rc_wall && rc_mass_properties_valid {
             squid_n_core::model::SectionMassProperties::uniform(
                 rc_density,

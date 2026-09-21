@@ -273,6 +273,20 @@ impl Model {
                     }
                 }
             }
+            let Some(material) = sec.material.and_then(|id| self.materials.get(id.index())) else {
+                continue;
+            };
+            let rebar = sec
+                .rebar_material
+                .and_then(|id| self.materials.get(id.index()));
+            let shear_rebar = sec
+                .shear_rebar_material
+                .and_then(|id| self.materials.get(id.index()));
+            let steel = sec
+                .steel_material
+                .and_then(|id| self.materials.get(id.index()));
+            crate::model::validate_section_inputs(sec, Some(material), rebar, shear_rebar, steel)
+                .map_err(CoreError::DanglingRef)?;
         }
 
         check_id_consistency(
