@@ -687,10 +687,16 @@ mod tests {
         let ec60 = 3.35e4 * (60.0f64 / 60.0).powf(1.0 / 3.0);
         assert!((fc60.young - ec60).abs() < 1e-9);
 
-        // 密度: 鋼は γs=77 kN/m³、コンクリートは γRC（Fc≤36 で 24.0 kN/m³）。
+        // 密度: 鋼は γs=77 kN/m³（≒7.85 t/m³ とは別値）、コンクリートは
+        // γRC（Fc≤36 の全プリセットで 24.0 kN/m³）。
         let rho_steel = mass_density_from_unit_weight_kn_m3(77.0);
         assert!((ss400.density - rho_steel).abs() < 1e-18);
+        assert_ne!(rho_steel, 7.85e-9);
         let rho_rc = mass_density_from_unit_weight_kn_m3(24.0);
-        assert!((fc24.density - rho_rc).abs() < 1e-18);
+        for name in ["Fc18", "Fc21", "Fc24", "Fc27", "Fc30", "Fc33", "Fc36"] {
+            let p = find(name);
+            assert_eq!(p.category, MaterialCategory::Concrete);
+            assert!((p.density - rho_rc).abs() < 1e-18, "{name}");
+        }
     }
 }

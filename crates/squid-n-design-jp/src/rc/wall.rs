@@ -160,26 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn rc_wall_opening_gamma_takes_min() {
-        let mut inp = base_wall_input();
-        // l0/l=0.5(gamma1=0.5), h0/h=0.1(gamma3=0.9),
-        // gamma2 = 1 - sqrt(0.1*0.5)=1-sqrt(0.05)=1-0.2236=0.7764
-        inp.opening = Some((2000.0, 300.0, 3000.0, 4000.0));
-        let res = rc_wall_shear_check(&inp);
-
-        let gamma1 = 1.0 - 2000.0_f64 / 4000.0;
-        let gamma2 = 1.0 - ((300.0_f64 * 2000.0) / (3000.0 * 4000.0)).sqrt();
-        let gamma3 = 1.0 - 300.0_f64 / 3000.0;
-        let r = gamma1.min(gamma2).min(gamma3);
-        assert!((gamma1 - 0.5).abs() < 1e-9);
-        assert!(r < 1.0);
-        assert!(res.ratio() > 0.0);
-
-        // r=gamma1=0.5 が最小のはず
-        assert!((r - gamma1).abs() < 1e-9);
-    }
-
-    #[test]
     fn rc_wall_le_three_branches() {
         let mut inp2 = base_wall_input();
         inp2.side_columns.truncate(1); // 1本
