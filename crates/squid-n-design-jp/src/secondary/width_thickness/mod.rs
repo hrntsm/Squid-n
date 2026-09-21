@@ -58,6 +58,20 @@ mod tests {
         assert!((wt - 26.8).abs() < 1e-9, "expected 26.8, got {}", wt);
     }
 
+    /// H-300x300x10x15（ポータルフレーム柱）: flange=300/(2*15)=10,
+    /// web=(300-30)/10=27 → max=27
+    #[test]
+    fn test_max_width_thickness_steel_h_portal_frame_column() {
+        let shape = SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let wt = max_width_thickness(&shape).unwrap();
+        assert!((wt - 27.0).abs() < 1e-9, "expected 27.0, got {}", wt);
+    }
+
     /// BOX-200x150x9: hi=(200-18)/9=20.2222, wi=(150-18)/9=14.6667 → max=20.2222
     #[test]
     fn test_max_width_thickness_steel_box() {
