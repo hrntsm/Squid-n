@@ -183,6 +183,12 @@ impl WallElement {
             as_z: r * area / KAPPA_RC,
             length: h,
             density: mat.density,
+            mass_properties: squid_n_core::model::SectionMassProperties::uniform(
+                mat.density,
+                area,
+                lw * t.powi(3) / 12.0,
+                t * lw.powi(3) / 12.0,
+            ),
             nodes: [ids_b0, ids_ta],
             axis: LocalFrame::from_nodes(bc, tc, ex_bot),
             rigid: Default::default(),
@@ -363,6 +369,7 @@ impl WallElement {
             col.length,
             col.axis,
             col.density,
+            col.mass_properties,
             col.e,
             col.g,
             col.a,
@@ -824,6 +831,11 @@ impl WallElement {
             &self.column.local_stiffness(),
             &[(4, 0.0), (10, 0.0)],
         )
+        .unwrap_or_else(|| {
+            panic!(
+                "壁柱の端部解放剛性を縮約できません: Kbb が特異です（解放条件を確認してください）"
+            )
+        })
     }
 
     /// 壁柱の全体系 12×12 接線剛性（ファイバー壁柱があればその整合接線、

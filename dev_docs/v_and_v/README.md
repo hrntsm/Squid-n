@@ -64,6 +64,7 @@
 | レポート | 対象 | 状態 |
 |---|---|---|
 | [壁版の支持範囲判定_2026-09.md](壁版の支持範囲判定_2026-09.md) | 壁の支持辺・間柱端部の負担率の明示入力、部分支持・支持梁重複の診断 | 🔶 |
+| [整合質量_2026-09.md](整合質量_2026-09.md) | Beam/Fiber の整合質量、材料領域質量、回転慣性、剛域質量、端部解放の質量縮約 | 🔶 |
 
 ### 参照実装マニュアル照合
 
@@ -130,6 +131,7 @@
 | # | 対象 | クレート | ソースファイル | テスト関数 | フェーズ | 状態 |
 |---|------|----------|---------------|-----------|---------|------|
 | 1 | ティモシェンコ梁 | squid-n-element | beam.rs | `test_phi_zero_converges_to_bernoulli`（Bernoulli 極限。軸 EA/L・ねじり GJ/L を含む 12×12 成分。テスト再編により旧 `test_beam_axial_stiffness`・`test_beam_torsion_stiffness` を統合）, `test_torsion_not_stiffened_by_rigid_zone`（剛域ありでもねじりは GJ/L のまま） | P1 | ✅ |
+| 1a | 線材の整合質量 | squid-n-core / squid-n-element / squid-n-solver | model/mass.rs, frame/prismatic.rs, frame/rigid_arm.rs, beam/behavior.rs, fiber/mod.rs, dynamic/eigen/tests.rs | 材料領域入口・共通実装・`rigid_zone_mass`・`transform_mass`・Beam/Fiber 質量入口・座標変換。対応テストと条件は [整合質量_2026-09.md](整合質量_2026-09.md) の追跡表を正とする | P1/P2 | 🔶（Kbb 特異時の失敗経路を含む） |
 | 2 | 剛域あり梁 | squid-n-element | beam.rs | `test_apply_auto_rigid_zones_and_manual_protection`, `test_auto_rigid_zone_only_when_all_members_are_rc`（自動剛域の適用と手動端の保護・適用条件。テスト再編により旧 `test_auto_rigid_zone_standard_formula` を統合） | P1 | 🔶 |
 | 3 | 端部ばね（ピン・半剛） | squid-n-element | beam.rs | `test_pinned_end_rotation_stiffness_exactly_zero`（テスト再編により旧 `test_pinned_end_releases_moment` を統合） | P1 | 🔶 |
 | 4 | MITC4 シェル（膜） | squid-n-element | shell.rs | `test_patch_membrane_distorted`（歪みメッシュ・機械精度） | P1.5 | ✅ |

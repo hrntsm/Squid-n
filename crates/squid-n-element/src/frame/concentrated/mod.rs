@@ -186,7 +186,11 @@ const SPRING_ROT_DOFS: [usize; 2] = [5, 11];
 
 fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
     let releases = [(SPRING_ROT_DOFS[0], k_i), (SPRING_ROT_DOFS[1], k_j)];
-    crate::frame::prismatic::condense_end_releases(k_elem, &releases)
+    crate::frame::prismatic::condense_end_releases(k_elem, &releases).unwrap_or_else(|| {
+        panic!(
+            "集中ばね梁の端部解放剛性を縮約できません: Kbb が特異です（解放条件を確認してください）"
+        )
+    })
 }
 
 fn compute_kstar(

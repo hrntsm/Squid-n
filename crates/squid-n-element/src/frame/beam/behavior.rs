@@ -28,12 +28,43 @@ impl ElementBehavior for BeamElement {
     crate::behavior::elastic_disp_behavior!(BeamElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        let m = self.density * self.a_mass * self.length;
+        let m = self.mass_properties.total_mass(self.length);
         match opt {
             MassOption::Lumped => crate::frame::prismatic::lumped_mass(m),
             MassOption::Consistent => {
-                let ct = self.density * self.j * self.length / 6.0;
-                let mm = crate::frame::prismatic::consistent_mass(m, self.length, ct);
+                let (li, lj) = self.rigid_lengths();
+                let flex_length = self.length - li - lj;
+                let phi_y = if flex_length > 0.0 && self.g > 0.0 && self.as_z > 0.0 {
+                    12.0 * self.e * self.iy / (self.g * self.as_z * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let phi_z = if flex_length > 0.0 && self.g > 0.0 && self.as_y > 0.0 {
+                    12.0 * self.e * self.iz / (self.g * self.as_y * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let flex = crate::frame::prismatic::consistent_mass_timoshenko(
+                    self.mass_properties,
+                    flex_length,
+                    phi_z,
+                    phi_y,
+                );
+                let k_flex = self.local_stiffness_flex_raw();
+                let releases = self.end_releases();
+                let mm = crate::frame::prismatic::condense_end_releases_with_mass(
+                    &k_flex,
+                    &flex,
+                    self.mass_properties,
+                    li,
+                    lj,
+                    &releases,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "BeamElement の端部解放質量を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                    )
+                });
                 self.axis.to_global(&mm)
             }
         }

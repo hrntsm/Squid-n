@@ -410,6 +410,23 @@ fn test_1dof_period() {
     );
 }
 
+/// 固定端−自由端の軸振動で、整合質量の自由端側質量 `m/3` と理論固有値を照合する。
+#[test]
+fn test_1dof_beam_consistent_axial_mass_matches_theory() {
+    let mut model = make_1dof_spring_model();
+    model.nodes[1].mass = None;
+    model.materials[0].density = 1.0e-3;
+
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = solve_eigen(&model, &dofmap, &reducer, 1).unwrap();
+    let total_mass = model.materials[0].density * model.sections[0].area * 1000.0;
+    let stiffness = model.materials[0].young * model.sections[0].area / 1000.0;
+    let expected_omega2 = 3.0 * stiffness / total_mass;
+
+    assert!((result.omega2[0] - expected_omega2).abs() / expected_omega2 < 1e-8);
+}
+
 /// 2層せん断モデル: T1=0.32150、T2=0.12280 へ収束し、2モードで有効質量比合計が約100%になること。
 #[test]
 fn test_2dof_shear_period_and_mass() {

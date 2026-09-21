@@ -2,7 +2,7 @@ use crate::behavior::{Ctx, DuctilityProbe, ElementBehavior, LocalMat, LocalVec, 
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{AnalysisKind, HysteresisModel};
+use squid_n_core::model::{AnalysisKind, HysteresisModel, SectionMassProperties};
 use squid_n_core::section_shape::SectionShape;
 use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
@@ -518,6 +518,7 @@ pub struct FiberBeam {
     pub nodes: [NodeId; 2],
     pub gauss_points: Vec<GaussPoint>,
     pub density: f64,
+    pub mass_properties: SectionMassProperties,
     /// ねじり定数 J [mm⁴]。
     pub torsion_j: f64,
     /// せん断弾性係数 G [N/mm²]。
@@ -533,6 +534,7 @@ pub struct FiberBeam {
     pub hinge: Option<HingeState>,
     /// 材端解放で分離した要素端回転。空なら全端剛接。
     pub releases: SmallVec<[EndRelease; 6]>,
+    initial_elastic_stiffness: LocalMat,
     /// 内部自由度の現在値（`releases` と同順）。
     pub trial_int: SmallVec<[f64; 6]>,
     pub committed_int: SmallVec<[f64; 6]>,
@@ -562,16 +564,18 @@ impl FiberBeam {
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
+        let mass_properties = model.element_mass_properties(data);
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(0.0);
         let depth = sec.map(|s| s.depth).unwrap_or(0.0);
         let torsion_j = sec.map(|s| s.j).unwrap_or(0.0);
 
-        let sec_iy = sec.map(|s| s.iy).unwrap_or(0.0);
-        let sec_iz = sec.map(|s| s.iz).unwrap_or(0.0);
-        let sec_as_y = sec.map(|s| s.as_y).unwrap_or(0.0);
-        let sec_as_z = sec.map(|s| s.as_z).unwrap_or(0.0);
+        let beam_props = crate::frame::beam::BeamElement::new(data, model);
+        let sec_iy = beam_props.iz;
+        let sec_iz = beam_props.iy;
+        let sec_as_y = beam_props.as_z;
+        let sec_as_z = beam_props.as_y;
         let phi_of = |ei: f64, gas: f64| {
             if gas > 0.0 && ei > 0.0 && flex_length > 0.0 {
                 12.0 * ei / (gas * flex_length * flex_length)
@@ -608,6 +612,7 @@ impl FiberBeam {
                 phi_z,
             ),
         ];
+        let initial_elastic_stiffness = beam_props.local_stiffness_flex_raw();
 
         let axis = crate::transform::LocalFrame::from_nodes(
             n0.coord,
@@ -631,11 +636,13 @@ impl FiberBeam {
             rigid_j,
             flex_length,
             releases,
+            initial_elastic_stiffness,
             committed_int: trial_int.clone(),
             trial_int,
             nodes: [data.nodes[0], data.nodes[1]],
             gauss_points,
             density,
+            mass_properties,
             torsion_j,
             g,
             phi_y,
@@ -697,6 +704,7 @@ impl FiberBeam {
         length: f64,
         axis: crate::transform::LocalFrame,
         density: f64,
+        mass_properties: SectionMassProperties,
         e: f64,
         g: f64,
         area: f64,
@@ -733,11 +741,13 @@ impl FiberBeam {
             rigid_j: 0.0,
             flex_length,
             releases: SmallVec::new(),
+            initial_elastic_stiffness: LocalMat::zeros(12),
             committed_int: SmallVec::new(),
             trial_int: SmallVec::new(),
             nodes,
             gauss_points,
             density,
+            mass_properties,
             torsion_j,
             g,
             phi_y,
@@ -781,6 +791,7 @@ impl FiberBeam {
             k_el.set(3, 9, k_el.get(3, 9) - kt);
             k_el.set(9, 3, k_el.get(9, 3) - kt);
         }
+        fb.initial_elastic_stiffness = k_el.clone();
         let sec_ei = std::array::from_fn(|end| {
             let (_, d) = Self::section_response_from_cache(&fb.gauss_points[end]);
             [d[1][1], d[2][2]]
@@ -876,6 +887,7 @@ impl FiberBeam {
             k_el.set(3, 9, k_el.get(3, 9) - kt);
             k_el.set(9, 3, k_el.get(9, 3) - kt);
         }
+        fb.initial_elastic_stiffness = k_el.clone();
 
         let sec_ei = std::array::from_fn(|end| {
             let (_, d) = Self::section_response_from_cache(&fb.gauss_points[end]);
@@ -1100,7 +1112,11 @@ impl FiberBeam {
     fn condense_releases(&self, k_elem: &LocalMat) -> LocalMat {
         let releases: SmallVec<[(usize, f64); 6]> =
             self.releases.iter().map(|r| (r.dof, r.spring)).collect();
-        crate::frame::prismatic::condense_end_releases(k_elem, &releases)
+        crate::frame::prismatic::condense_end_releases(k_elem, &releases).unwrap_or_else(|| {
+            panic!(
+                "FiberBeam の端部解放剛性を縮約できません: Kbb が特異です（解放条件を確認してください）"
+            )
+        })
     }
 
     fn section_response_from_cache(gp: &GaussPoint) -> ([f64; 3], [[f64; 3]; 3]) {
@@ -1462,16 +1478,31 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        let total_area: f64 = self
-            .gauss_points
-            .first()
-            .map(|gp| gp.section.fibers.iter().map(|f| f.area).sum())
-            .unwrap_or(0.0);
-        let total_mass = self.density * total_area * self.length;
+        let total_mass = self.mass_properties.total_mass(self.length);
         match opt {
             MassOption::Lumped => crate::frame::prismatic::lumped_mass(total_mass),
             MassOption::Consistent => {
-                let mm = crate::frame::prismatic::consistent_mass(total_mass, self.length, 0.0);
+                let flex = crate::frame::prismatic::consistent_mass_timoshenko(
+                    self.mass_properties,
+                    self.flex_length,
+                    self.phi_z,
+                    self.phi_y,
+                );
+                let releases: SmallVec<[(usize, f64); 6]> =
+                    self.releases.iter().map(|r| (r.dof, r.spring)).collect();
+                let mm = crate::frame::prismatic::condense_end_releases_with_mass(
+                    &self.initial_elastic_stiffness,
+                    &flex,
+                    self.mass_properties,
+                    self.rigid_i,
+                    self.rigid_j,
+                    &releases,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "FiberBeam の端部解放質量を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                    )
+                });
                 self.axis.to_global(&mm)
             }
         }

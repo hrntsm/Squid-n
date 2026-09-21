@@ -1004,6 +1004,7 @@ mod tests {
             as_z: 66666.67,
             length: 1000.0,
             density: 0.0,
+            mass_properties: squid_n_core::model::SectionMassProperties::default(),
             nodes: [NodeId(0), NodeId(1)],
             axis: LocalFrame::from_nodes([0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             rigid: RigidZone::default(),

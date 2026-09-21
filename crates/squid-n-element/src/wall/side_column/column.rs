@@ -50,7 +50,12 @@ impl InPlaneReleasedColumn {
             rot: std::array::from_fn(|i| std::array::from_fn(|j| frame.rot[j][i])),
         };
         let k = inverse.to_global(&self.inner.local_stiffness());
-        let condensed = crate::frame::prismatic::condense_end_releases(&k, &[(4, 0.0), (10, 0.0)]);
+        let condensed = crate::frame::prismatic::condense_end_releases(&k, &[(4, 0.0), (10, 0.0)])
+            .unwrap_or_else(|| {
+                panic!(
+                    "壁柱の端部解放剛性を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                )
+            });
         frame.to_global(&condensed)
     }
 

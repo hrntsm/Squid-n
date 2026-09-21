@@ -3,7 +3,7 @@ use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, LocalAxis, Material, MaterialCategory, Model, Node,
-    RigidZone, Section,
+    RigidZone, Section, SectionMassProperties,
 };
 
 fn make_test_beam() -> BeamElement {
@@ -20,6 +20,7 @@ fn make_test_beam() -> BeamElement {
         as_z: 66666.67,
         length: 3000.0,
         density: 0.0,
+        mass_properties: SectionMassProperties::default(),
         nodes: [NodeId(0), NodeId(1)],
         axis: LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -2926,9 +2927,7 @@ fn test_beam_torsion_mode_keep_retains_torsion() {
 }
 
 /// ねじり剛性がない部材（J≤0）の rx は端条件がピンでも解放しない。解放しても
-/// 静縮約の `Kbb` が特異になり縮約の意味がないため（ファイバー梁
-/// `resolve_end_releases` と同じ規則。特異な `Kbb` は `invert_small` が `None` を
-/// 返し補正項が省略される）。
+/// 静縮約の `Kbb` が特異になり縮約の意味がないため、ねじり解放を行わない。
 #[test]
 fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
     let mut beam = make_test_beam();
@@ -2944,6 +2943,15 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
         }
     }
     assert_eq!(k.get(3, 3), 0.0);
+}
+
+#[test]
+#[should_panic(expected = "BeamElement の端部解放剛性を縮約できません")]
+fn beamはkbb特異時に端部解放剛性を明示的に失敗させる() {
+    let mut beam = make_test_beam();
+    beam.e = 0.0;
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    beam.local_stiffness();
 }
 
 /// 剛域の適用条件・重なり処理のテスト用に、柱 2 本＋梁 1 本の門型を作る。

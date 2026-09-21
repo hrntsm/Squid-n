@@ -42,6 +42,7 @@ impl BeamElement {
         let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
+        let mass_properties = model.element_mass_properties(data);
         let g = mat.shear_modulus();
 
         let eval_sections = eval_sections_of(data, model, len);
@@ -218,6 +219,7 @@ impl BeamElement {
             as_z,
             length: len,
             density: mat.density,
+            mass_properties,
             nodes: [n0, n1],
             axis,
             rigid: data.rigid_zone,
