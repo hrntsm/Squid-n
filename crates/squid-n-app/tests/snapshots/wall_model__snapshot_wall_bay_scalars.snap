@@ -4,9 +4,9 @@ assertion_line: 730
 expression: out
 ---
 prep.total_seismic_weight = 5.270e4
-eigen.T[0] = 9.340e-2
-eigen.T[1] = 6.053e-2
-eigen.T[2] = 1.524e-2
+eigen.T[0] = 6.174e-1
+eigen.T[1] = 3.517e-1
+eigen.T[2] = 1.052e-1
 static.DL.wall_forces_len = 3
 static.DL.wall_forces_abs_sum = 7.962e4
 static.EX.wall_forces_abs_sum = 3.321e7

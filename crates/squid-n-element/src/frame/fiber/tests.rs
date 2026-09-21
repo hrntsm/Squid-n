@@ -1310,7 +1310,7 @@ fn test_torsional_stiffness_and_internal_force() {
 }
 
 #[test]
-fn fiberの固定端自由端純ねじり固有値は質量極二次モーメントを使う() {
+fn fiberの純ねじり行列は質量極二次モーメントを使う() {
     let g = 78846.0;
     let j = 1.0e6;
     let iy = 2.0e8;

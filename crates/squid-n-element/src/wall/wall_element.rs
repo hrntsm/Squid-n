@@ -283,7 +283,21 @@ impl WallElement {
                 let area = squid_n_core::geom::polygon::area_3d(&points)
                     * squid_n_core::model::wall_clear_area_factor(&points, &dimensions);
                 let net_area = (area - opening_area).max(0.0);
-                (mat.density * t * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
+                let mass_properties = model.element_mass_properties(data).ok()?;
+                let concrete_mass_per_area = if t > 0.0 {
+                    mass_properties.mass_per_length * t / 1000.0
+                } else {
+                    0.0
+                };
+                let mass_per_area =
+                    model
+                        .element_rebar_material(data)
+                        .map_or(concrete_mass_per_area, |rebar| {
+                            (concrete_mass_per_area
+                                + (rebar.density * t - concrete_mass_per_area) * ps)
+                                .max(0.0)
+                        });
+                (mass_per_area * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
                     .max(0.0)
             },
             committed_disp: [0.0; 24],
@@ -1389,13 +1403,48 @@ mod tests {
             let mut reordered = data.clone();
             reordered.nodes = order.into_iter().map(|i| data.nodes[i]).collect();
             let wall = WallElement::try_new(&reordered, &model).unwrap();
-            let expected = (4000.0 - 600.0) * (3000.0 - 600.0) * 150.0 * 2.4e-9;
+            let expected = (4000.0 - 600.0)
+                * (3000.0 - 600.0)
+                * model
+                    .element_mass_properties(&reordered)
+                    .unwrap()
+                    .mass_per_length
+                * 150.0
+                / 1000.0;
             let mass = wall.mass_matrix(MassOption::Lumped);
             for dir in 0..3 {
                 let total: f64 = (0..4).map(|i| mass.get(i * 6 + dir, i * 6 + dir)).sum();
-                assert!((total - expected).abs() < 1e-10);
+                assert!(
+                    (total - expected).abs() < 1e-10,
+                    "total={total} expected={expected}"
+                );
             }
         }
+    }
+
+    #[test]
+    fn test_wall_mass_preserves_section_mass_and_adds_rebar_once() {
+        let (mut model, mut data) = make_wall_model();
+        let mut rebar = model.materials[0].clone();
+        rebar.id = MaterialId(1);
+        rebar.name = "SD345".into();
+        rebar.category = MaterialCategory::Steel;
+        rebar.density = 7.85e-9;
+        rebar.fy = Some(345.0);
+        model.materials.push(rebar);
+        model.sections[0].rebar_material = Some(MaterialId(1));
+        data.nodes = smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+        let wall = WallElement::try_new(&data, &model).unwrap();
+        let properties = model.element_mass_properties(&data).unwrap();
+        let concrete_mass_per_area = properties.mass_per_length * 150.0 / 1000.0;
+        let expected =
+            (concrete_mass_per_area * (1.0 - 0.0025) + 7.85e-9 * 150.0 * 0.0025) * 4000.0 * 3000.0;
+        let mass = wall.mass_matrix(MassOption::Lumped);
+        let actual: f64 = (0..4).map(|i| mass.get(i * 6, i * 6)).sum();
+        assert!(
+            (actual - expected).abs() < expected * 1e-12,
+            "actual={actual} expected={expected}"
+        );
     }
 
     #[test]
