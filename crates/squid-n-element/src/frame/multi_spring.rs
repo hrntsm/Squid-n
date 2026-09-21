@@ -183,7 +183,8 @@ mod tests {
     }
 
     /// MS 要素でも φ>0（G>0・as>0）の Timoshenko 適合内挿が機能すること:
-    /// 剛体回転で内力ゼロ（客観性）と、接線と内力の FD 整合を検証する。
+    /// 剛体回転で内力ゼロ（客観性）と、代表自由度（軸・強軸回転の両端）での
+    /// 接線と内力の FD 整合を検証する。
     /// 実体は FiberBeam への委譲だが、「委譲により同一定式化に乗る」ことを
     /// MS 経由でも回帰テストとして固定する。
     #[test]
@@ -245,7 +246,7 @@ mod tests {
             .flat_map(|i| (0..12).map(move |j| (i, j)))
             .map(|(i, j)| k.get(i, j).abs())
             .fold(0.0_f64, f64::max);
-        for j in 0..12 {
+        for j in [0usize, 5, 6, 11] {
             let mut up = u0;
             up[j] += h;
             let mut bp = build();

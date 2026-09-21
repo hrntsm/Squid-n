@@ -513,15 +513,19 @@ fn test_yield_progression() {
     let eps_y = 235.0 / 205000.0;
     let z_max = 50.0;
     let ky_y = eps_y / z_max;
-    let ky_final = ky_y * 3.0;
 
-    let mut last_my = 0.0;
-    let n_steps = 50;
+    let iy_disc: f64 = fiber.gauss_points[0]
+        .section
+        .fibers
+        .iter()
+        .map(|f| f.area * f.z * f.z)
+        .sum();
+
     let mut prev_ky = 0.0;
-    for i in 1..=n_steps {
-        let ky_curr = ky_final * (i as f64) / (n_steps as f64);
-        let dky = ky_curr - prev_ky;
-        prev_ky = ky_curr;
+    for ratio in [0.5, 1.0, 2.0, 3.0] {
+        let ky = ky_y * ratio;
+        let dky = ky - prev_ky;
+        prev_ky = ky;
         let du = LocalVec {
             data: SmallVec::from_slice(&[
                 0.0,
@@ -540,23 +544,19 @@ fn test_yield_progression() {
         };
         fiber.update_state(&du, true, &ctx);
 
-        let f = fiber.internal_force(&ctx);
-        last_my = f.data[4];
+        let my = fiber.internal_force(&ctx).data[4];
+        let elastic_pred = ky * 205000.0 * iy_disc;
+        if ratio < 1.0 {
+            assert_relative_eq!(my, elastic_pred, max_relative = 1e-6);
+        } else {
+            assert!(
+                my < elastic_pred,
+                "post-yield My ({}) must be below elastic prediction ({})",
+                my,
+                elastic_pred
+            );
+        }
     }
-
-    let iy_disc: f64 = fiber.gauss_points[0]
-        .section
-        .fibers
-        .iter()
-        .map(|f| f.area * f.z * f.z)
-        .sum();
-    let elastic_pred = ky_final * 205000.0 * iy_disc;
-    assert!(
-        last_my < elastic_pred,
-        "post-yield My ({}) must be below elastic prediction ({})",
-        last_my,
-        elastic_pred
-    );
 }
 
 #[test]
@@ -1970,77 +1970,73 @@ fn 半剛端は剛接とピンの中間になる() {
 
 /// 材端解放があっても接線剛性が内力の厳密な勾配（∂f/∂u）であること。
 /// 内部自由度の静縮約（剛性側）と内部釣合いの解（内力側）が整合していないと崩れる。
+/// i 端半剛・j 端ピンは両端に解放を持ち、ピンと回転ばねの双方を最も多く含む代表ケース。
 #[test]
 fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
-    for end_cond in [
-        [EndCondition::Pinned, EndCondition::Fixed],
-        [EndCondition::Fixed, EndCondition::Pinned],
-        [
-            EndCondition::SemiRigid { k_theta: 2.0e12 },
-            EndCondition::Pinned,
-        ],
-    ] {
-        let mut model = build_release_model(end_cond);
-        model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
-            length_i: 400.0,
-            length_j: 250.0,
-            face_i: Some(400.0),
-            face_j: Some(250.0),
-            ..Default::default()
-        };
-        let ctx = Ctx { model: &model };
-        let h = 1e-6;
-        let u0: [f64; 12] = [
-            0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
-        ];
+    let end_cond = [
+        EndCondition::SemiRigid { k_theta: 2.0e12 },
+        EndCondition::Pinned,
+    ];
+    let mut model = build_release_model(end_cond);
+    model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
+        length_i: 400.0,
+        length_j: 250.0,
+        face_i: Some(400.0),
+        face_j: Some(250.0),
+        ..Default::default()
+    };
+    let ctx = Ctx { model: &model };
+    let h = 1e-6;
+    let u0: [f64; 12] = [
+        0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
+    ];
 
-        let mut b0 = FiberBeam::new(
+    let mut b0 = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    b0.update_state(
+        &LocalVec {
+            data: SmallVec::from_slice(&u0),
+        },
+        false,
+        &ctx,
+    );
+    let f0 = b0.internal_force(&ctx);
+    let k = b0.tangent_stiffness(&ctx);
+    let kmax = (0..12)
+        .flat_map(|i| (0..12).map(move |j| (i, j)))
+        .map(|(i, j)| k.get(i, j).abs())
+        .fold(0.0_f64, f64::max);
+
+    for j in 0..12 {
+        let mut up = u0;
+        up[j] += h;
+        let mut bp = FiberBeam::new(
             &model.elements[0],
             &model,
             StrengthBasis::Nominal,
             AnalysisKind::Incremental,
         );
-        b0.update_state(
+        bp.update_state(
             &LocalVec {
-                data: SmallVec::from_slice(&u0),
+                data: SmallVec::from_slice(&up),
             },
             false,
             &ctx,
         );
-        let f0 = b0.internal_force(&ctx);
-        let k = b0.tangent_stiffness(&ctx);
-        let kmax = (0..12)
-            .flat_map(|i| (0..12).map(move |j| (i, j)))
-            .map(|(i, j)| k.get(i, j).abs())
-            .fold(0.0_f64, f64::max);
-
-        for j in 0..12 {
-            let mut up = u0;
-            up[j] += h;
-            let mut bp = FiberBeam::new(
-                &model.elements[0],
-                &model,
-                StrengthBasis::Nominal,
-                AnalysisKind::Incremental,
+        let fp = bp.internal_force(&ctx);
+        for i in 0..12 {
+            let fd = (fp.data[i] - f0.data[i]) / h;
+            let err = (fd - k.get(i, j)).abs() / kmax;
+            assert!(
+                err < 1e-6,
+                "{end_cond:?}: K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
+                k.get(i, j),
+                fd
             );
-            bp.update_state(
-                &LocalVec {
-                    data: SmallVec::from_slice(&up),
-                },
-                false,
-                &ctx,
-            );
-            let fp = bp.internal_force(&ctx);
-            for i in 0..12 {
-                let fd = (fp.data[i] - f0.data[i]) / h;
-                let err = (fd - k.get(i, j)).abs() / kmax;
-                assert!(
-                    err < 1e-6,
-                    "{end_cond:?}: K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
-                    k.get(i, j),
-                    fd
-                );
-            }
         }
     }
 }

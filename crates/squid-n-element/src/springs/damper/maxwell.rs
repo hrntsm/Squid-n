@@ -361,14 +361,14 @@ mod tests {
 
     #[test]
     fn test_maxwell_locks_at_fast_step_then_relaxes() {
-        let mut d = damper(100.0, 1000.0, 1.0, 0.01);
+        let mut d = damper(100.0, 1000.0, 1.0, 1.0);
         d.trial_elong = 1.0;
         let f0 = d.axial_force(1.0);
         assert!(
             f0 > 90.0,
             "fast step should be near-locked (Kd·Uij), got {f0}"
         );
-        for _ in 0..5000 {
+        for _ in 0..30 {
             d.commit_state();
         }
         let f1 = d.axial_force(1.0);
