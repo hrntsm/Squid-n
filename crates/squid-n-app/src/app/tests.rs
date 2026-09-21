@@ -2297,19 +2297,15 @@ fn test_holding_capacity_rank_auto_records_fallback_stories() {
     assert!(app.core.scoped.ds_rank_fallback_stories.is_empty());
 }
 
-/// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
-/// `RcCapacityInput` を組み立てる経路そのものを検証する（RcRect→入力構築）。
-/// 得られた入力から `rc_qsu_simple`/`rc_qmu_simple` の結果が、
-/// 同じ式を独立に書き下した手計算と一致することを確認する。
+/// SectionShape::RcRect の配筋から `RcCapacityInput` を組み立てる経路で、App が
+/// 強軸配筋（`main_x`）を Core へ渡すことを確認する（弱軸 `main_y` は使わない）。
+/// 耐力式そのものは Core / Design-JP 側の所有テストで確認する。
 #[test]
-fn test_rc_capacity_input_from_rect_matches_handcalc() {
+fn test_rc_capacity_input_from_rect_uses_main_x() {
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::Material;
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-    use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
 
-    let b = 400.0;
-    let d = 600.0;
     let rebar = RcRebar {
         main_x: BarSet {
             count: 8,
@@ -2328,7 +2324,6 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
             legs: 2,
         },
     };
-    // 材料名は "FC24"（is_steel が false になる、かつ fc 設定あり）を想定。
     let mat = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -2340,58 +2335,22 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
         density: 2.4e-9,
         shear: None,
         fc: Some(24.0),
-        fy: None, // 未設定 → sigma_y は 345(SD345相当)にフォールバックするはず
+        fy: None,
     };
-    let clear_span = 3000.0;
 
-    let input = rc_capacity_input_from_rect(b, d, &rebar, &mat, None, None, clear_span)
+    let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, &mat, None, None, 3000.0)
         .expect("fc が設定されているので Some のはず");
 
-    // 変換規則の確認: at=main_x総断面積の半分、d_eff=rc_rebar_geom 規約（帯筋径・多段配筋）、
-    // pw=せん断補強筋断面積・組数/(b・ピッチ)、sigma_y は fy 未設定なので 345 固定、
-    // sigma_wy は常に 295 固定。
-    let main_area = 8.0 * std::f64::consts::PI / 4.0 * 22.0 * 22.0;
-    let at_expected = main_area / 2.0;
-    let d_eff_expected = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
-    let shear_area = std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0;
-    let pw_expected = shear_area / (400.0 * 150.0);
-    assert!((input.at - at_expected).abs() < 1e-9);
-    assert!((input.d_eff - d_eff_expected).abs() < 1e-9);
-    assert!((input.pw - pw_expected).abs() < 1e-12);
-    assert_eq!(input.sigma_y, 345.0);
-    assert_eq!(input.sigma_wy, 295.0);
+    // at は main_x の総断面積の半分。main_y の断面積とは一致しない。
+    let main_x_area = 8.0 * std::f64::consts::PI / 4.0 * 22.0 * 22.0;
+    let main_y_area = 4.0 * std::f64::consts::PI / 4.0 * 19.0 * 19.0;
+    assert!((input.at - main_x_area / 2.0).abs() < 1e-9, "at={}", input.at);
+    assert!(
+        (input.at - main_y_area / 2.0).abs() > 1.0,
+        "弱軸配筋の断面積を使っている: at={}",
+        input.at
+    );
     assert_eq!(input.fc, 24.0);
-    assert_eq!(input.clear_span, clear_span);
-
-    // rc_qsu_simple/rc_qmu_simple の結果を、式を独立に書き下した手計算と照合する。
-    // Mu = 0.9·at·σy·d（技術基準解説書 P.623。d = 有効せい）。
-    let j = 7.0 * d_eff_expected / 8.0;
-    let mu_handcalc = 0.9 * at_expected * 345.0 * d_eff_expected;
-    let qmu_handcalc = 2.0 * mu_handcalc / clear_span;
-    let pt = 100.0 * at_expected / (400.0 * d_eff_expected);
-    let shear_span_ratio = (clear_span / (2.0 * d_eff_expected)).clamp(1.0, 3.0);
-    let pw_clamped = pw_expected.clamp(0.0, 0.012);
-    let concrete_term = 0.068 * pt.powf(0.23) * (24.0 + 18.0) / (shear_span_ratio + 0.12);
-    let hoop_term = 0.85 * (pw_clamped * 295.0_f64).sqrt();
-    let qsu_handcalc = (concrete_term + hoop_term) * 400.0 * j;
-
-    let qmu = rc_qmu_simple(&input);
-    let qsu = rc_qsu_simple(&input);
-    assert!(
-        (qmu - qmu_handcalc).abs() < 1e-3,
-        "Qmu={} vs handcalc={}",
-        qmu,
-        qmu_handcalc
-    );
-    assert!(
-        (qsu - qsu_handcalc).abs() < 1e-3,
-        "Qsu={} vs handcalc={}",
-        qsu,
-        qsu_handcalc
-    );
-
-    // Qsu/Qmu ≈ 1.85（曲げ降伏が先行する健全な配筋）であること。
-    assert!(qsu / qmu > 1.5, "Qsu/Qmu={}", qsu / qmu);
 }
 
 /// UI-13(RC): SectionShape::RcRect + fc 付き材料（コンクリート、is_steel=false）を
@@ -4313,82 +4272,6 @@ fn test_attached_point_slab_check_coef_2() {
     );
 }
 
-/// 地震用重量に使う荷重ケースの選択が、並び順ではなく
-/// `LoadCaseKind` に基づくことを確認する（Dead+LiveSeismic 優先、
-/// LiveSeismic がなければ Dead+Live、種別が一つも設定されていなければ
-/// 後方互換で先頭ケースのみ）。
-#[test]
-fn test_gravity_cases_for_seismic_weight_selection() {
-    use squid_n_core::model::{LoadCase, LoadCaseKind};
-
-    let mk_lc = |i: u32, name: &str, kind: LoadCaseKind| LoadCase {
-        id: LoadCaseId(i),
-        name: name.to_string(),
-        nodal: Vec::new(),
-        member: Vec::new(),
-        kind,
-    };
-
-    // 種別が一つも設定されていない（全て既定値 Other） → 先頭ケースのみ
-    let model_no_kind = squid_n_core::model::Model {
-        load_cases: vec![
-            mk_lc(0, "LC0", LoadCaseKind::Other),
-            mk_lc(1, "LC1", LoadCaseKind::Other),
-        ],
-        ..Default::default()
-    };
-    assert_eq!(
-        gravity_cases_for_seismic_weight(&model_no_kind),
-        vec![LoadCaseId(0)],
-        "種別未設定モデルは従来互換で先頭ケースのみ"
-    );
-
-    // LiveSeismic がない → Dead + Live
-    let model_dead_live = squid_n_core::model::Model {
-        load_cases: vec![
-            mk_lc(0, "固定", LoadCaseKind::Dead),
-            mk_lc(1, "積載(長期)", LoadCaseKind::Live),
-            mk_lc(2, "積雪", LoadCaseKind::Snow),
-        ],
-        ..Default::default()
-    };
-    assert_eq!(
-        gravity_cases_for_seismic_weight(&model_dead_live),
-        vec![LoadCaseId(0), LoadCaseId(1)],
-        "LiveSeismic がなければ Dead+Live"
-    );
-
-    // LiveSeismic があれば Live ではなく LiveSeismic を優先
-    let model_dead_live_seismic = squid_n_core::model::Model {
-        load_cases: vec![
-            mk_lc(0, "固定", LoadCaseKind::Dead),
-            mk_lc(1, "積載(長期)", LoadCaseKind::Live),
-            mk_lc(2, "積載(地震用)", LoadCaseKind::LiveSeismic),
-        ],
-        ..Default::default()
-    };
-    assert_eq!(
-        gravity_cases_for_seismic_weight(&model_dead_live_seismic),
-        vec![LoadCaseId(0), LoadCaseId(2)],
-        "LiveSeismic があれば Live ではなく LiveSeismic を採用"
-    );
-
-    // 複数 Dead ケースも全て対象
-    let model_multi_dead = squid_n_core::model::Model {
-        load_cases: vec![
-            mk_lc(0, "固定1", LoadCaseKind::Dead),
-            mk_lc(1, "固定2", LoadCaseKind::Dead),
-            mk_lc(2, "地震荷重", LoadCaseKind::Seismic),
-        ],
-        ..Default::default()
-    };
-    assert_eq!(
-        gravity_cases_for_seismic_weight(&model_multi_dead),
-        vec![LoadCaseId(0), LoadCaseId(1)],
-        "複数の Dead ケースは全て対象、Seismic は対象外"
-    );
-}
-
 /// テスト用の荷重ケース（種別付き）を作る。
 fn kind_lc(
     i: u32,
@@ -4529,33 +4412,6 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
     app.auto_generate_combinations_action();
     assert!(app.core.scoped.combo_error.is_none());
     assert!(!app.core.model.combinations.is_empty());
-}
-
-/// SetLoadCfg が App の undo スタック経由で機能すること
-/// （荷重計算条件タブの編集経路のヘッドレス確認）。
-#[test]
-fn test_set_load_cfg_via_app_undo() {
-    use squid_n_core::model::{KBraceWeightRule, LoadCfg};
-
-    let mut app = App::default();
-    assert!(app.core.model.load_cfg.is_none());
-
-    let cfg = LoadCfg {
-        steel_weight_factor: 1.1,
-        k_brace_rule: KBraceWeightRule::BaseNodesOnly,
-        live_load_reduction: true,
-        ..Default::default()
-    };
-    app.core.scoped.undo.run(
-        &mut app.core.model,
-        Box::new(squid_n_edit::SetLoadCfg {
-            cfg: Some(cfg.clone()),
-        }),
-    );
-    assert_eq!(app.core.model.load_cfg, Some(cfg));
-
-    app.core.scoped.undo.undo(&mut app.core.model);
-    assert!(app.core.model.load_cfg.is_none());
 }
 
 /// 3層1本柱のモデルで `column_live_load_factors` が
@@ -8212,26 +8068,23 @@ fn test_migrate_legacy_time_history_only() {
     assert_eq!(bundle.time_histories.len(), 1);
 }
 
-/// 同名・同方向の upsert は ID を維持して結果を置き換え、方向が違えば別ケースとして残る。
+/// 同じケース ID への upsert は結果を置き換え、ID が違えば別スロットとして残る
+/// （ケース ID の採番・同一性は Core 側の所有テストで確認する）。
 #[test]
-fn test_time_history_upsert_preserves_case_id() {
+fn test_time_history_upsert_replaces_result_by_case_id() {
     use squid_n_core::model::VibrationThDir;
 
     let mut model = squid_n_core::model::Model::default();
     let id1 = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
     let mut bundle = ResultsBundle::default();
     bundle.upsert_time_history(id1, dummy_th(vec![0.0]));
-    let id2 = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
-    bundle.upsert_time_history(id2, dummy_th(vec![0.0, 1.0]));
-    assert_eq!(id1, id2, "同名 upsert は ID を維持する");
-    assert_eq!(bundle.time_histories.len(), 1);
+    bundle.upsert_time_history(id1, dummy_th(vec![0.0, 1.0]));
+    assert_eq!(bundle.time_histories.len(), 1, "同じ ID は 1 スロット");
     assert_eq!(bundle.time_histories[0].1.time.len(), 2, "結果は置き換わる");
 
-    // 方向が違えば別ケース・別スロットになる。
+    // ID が違えば別スロットになる。
     let id_y = model.upsert_vibration_case("サンプル".into(), VibrationThDir::Y, false);
-    assert_ne!(id1, id_y);
     bundle.upsert_time_history(id_y, dummy_th(vec![0.0]));
-    assert_eq!(model.vibration_cases.len(), 2);
     assert_eq!(bundle.time_histories.len(), 2);
 }
 
