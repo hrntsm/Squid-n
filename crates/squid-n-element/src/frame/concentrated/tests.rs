@@ -258,7 +258,7 @@ fn test_condense_springs_zero_stiffness() {
 }
 
 #[test]
-fn test_consistent_mass_follows_end_spring_stiffness() {
+fn test_consistent_mass_uses_initial_end_spring_stiffness_after_yield() {
     let mut elastic = make_test_beam();
     elastic.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
         2.4e-9,
@@ -266,20 +266,34 @@ fn test_consistent_mass_follows_end_spring_stiffness() {
         elastic.iz,
         elastic.iy,
     );
-    let make = |stiffness| {
-        ConcentratedSpringBeam::new_one_component(
-            elastic.clone(),
-            Box::new(Bilinear::new(stiffness, 1.0e20, 0.01)),
-            Box::new(Bilinear::new(stiffness, 1.0e20, 0.01)),
-        )
+    let mut elem = ConcentratedSpringBeam::new_one_component(
+        elastic,
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+    );
+    let before = elem.mass_matrix(MassOption::Consistent);
+    let ctx = Ctx {
+        model: &squid_n_core::model::Model::default(),
     };
-    let soft = make(1.0e5).mass_matrix(MassOption::Consistent);
-    let stiff = make(1.0e12).mass_matrix(MassOption::Consistent);
-    assert!((soft.get(5, 5) - stiff.get(5, 5)).abs() > 1.0e-12);
-    assert!((soft.get(5, 5) - stiff.get(5, 5)).abs() / stiff.get(5, 5).abs() > 1e-3);
-    let lumped_soft = make(1.0e5).mass_matrix(MassOption::Lumped);
-    let lumped_stiff = make(1.0e12).mass_matrix(MassOption::Lumped);
-    assert_eq!(lumped_soft.data, lumped_stiff.data);
+    elem.update_state(
+        &LocalVec {
+            data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        false,
+        &ctx,
+    );
+    assert!(elem.spring_i.probe(elem.trial_rot_i).1 < 1.0e12);
+    let after = elem.mass_matrix(MassOption::Consistent);
+    assert_eq!(before.data, after.data);
+
+    let lumped_after = elem.mass_matrix(MassOption::Lumped);
+    let lumped_before = ConcentratedSpringBeam::new_one_component(
+        make_test_beam(),
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+    )
+    .mass_matrix(MassOption::Lumped);
+    assert_eq!(lumped_before.data, lumped_after.data);
 }
 
 #[test]

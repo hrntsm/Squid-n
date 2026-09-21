@@ -41,6 +41,8 @@ pub struct ConcentratedSpringBeam {
     pub elastic: crate::frame::beam::BeamElement,
     pub spring_i: Box<dyn UniaxialMaterial>,
     pub spring_j: Box<dyn UniaxialMaterial>,
+    initial_spring_stiffness_i: f64,
+    initial_spring_stiffness_j: f64,
     pub model: SpringModel,
     /// N-M 相関。
     pub mn: Option<MnInteraction>,
@@ -67,6 +69,8 @@ impl ConcentratedSpringBeam {
         model: SpringModel,
     ) -> Self {
         Self {
+            initial_spring_stiffness_i: spring_i.probe(0.0).1,
+            initial_spring_stiffness_j: spring_j.probe(0.0).1,
             elastic,
             spring_i,
             spring_j,
@@ -318,8 +322,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
                     phi_y,
                 );
                 let releases = [
-                    (SPRING_ROT_DOFS[0], self.spring_i.probe(self.trial_rot_i).1),
-                    (SPRING_ROT_DOFS[1], self.spring_j.probe(self.trial_rot_j).1),
+                    (SPRING_ROT_DOFS[0], self.initial_spring_stiffness_i),
+                    (SPRING_ROT_DOFS[1], self.initial_spring_stiffness_j),
                 ];
                 let mm = crate::frame::prismatic::condense_end_releases_with_mass(
                     self.k_flex(),
