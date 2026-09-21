@@ -6886,8 +6886,8 @@ fn test_preparation_lists_width_thickness() {
         .expect("柱の行");
     assert_eq!(col.n_elements, 2);
     assert_eq!(col.material, "SN400B");
-    // H-300x300x10x15: フランジ 300/(2·15)=10、ウェブ (300−30)/10=27 → max 27。
-    assert!((col.max_ratio.unwrap() - 27.0).abs() < 1e-9);
+    // 幅厚比の値そのものは Design-JP の所有テストで確認する（ここでは行が埋まることのみ）。
+    assert!(col.max_ratio.is_some());
     assert!(col.rank.is_some());
 
     let beam = prep
