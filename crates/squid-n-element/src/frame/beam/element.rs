@@ -32,6 +32,7 @@ pub struct BeamElement {
     pub length: f64,
     pub density: f64,
     pub mass_properties: SectionMassProperties,
+    pub mass_properties_error: Option<String>,
     pub nodes: [NodeId; 2],
     pub axis: LocalFrame,
     pub rigid: RigidZone,

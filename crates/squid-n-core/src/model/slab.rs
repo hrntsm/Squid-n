@@ -295,24 +295,12 @@ impl Model {
     /// 毎回算定するのは、板厚や材料を変えたときに自重が追随しないという食い違いを
     /// 作らないためである。
     pub fn slab_self_weight_intensity(&self, slab: &Slab) -> Option<f64> {
-        self.slab_plate_thickness(slab)?;
-        let section = self.slab_section(slab)?;
-        let main = section
-            .material
-            .and_then(|mid| self.materials.get(mid.index()));
-        let rebar = section
-            .rebar_material
-            .and_then(|mid| self.materials.get(mid.index()));
-        let shear_rebar = section
-            .shear_rebar_material
-            .and_then(|mid| self.materials.get(mid.index()));
-        let steel = section
-            .steel_material
-            .and_then(|mid| self.materials.get(mid.index()));
-        let mass =
-            SectionMassProperties::try_from_section(section, main, rebar, shear_rebar, steel)
-                .ok()?;
-        Some(mass.mass_per_length / 1_000.0 * crate::units::GRAVITY_MM_S2)
+        let t = self.slab_plate_thickness(slab)?;
+        let mat = self
+            .slab_section(slab)
+            .and_then(|s| s.material)
+            .and_then(|mid| self.materials.get(mid.index()))?;
+        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
     }
 
     /// 固定荷重（DL）の面荷重強度 [N/mm²]（版の自重 ＋ 仕上げ等）。
@@ -804,16 +792,16 @@ mod tests {
     }
 
     #[test]
-    fn test_slab_self_weight_changes_with_fc_or_concrete_class() {
+    fn test_slab_self_weight_uses_main_material_density() {
         let (normal, slab) = rc_slab_model(24.0, crate::units::ConcreteClass::Normal, None);
         let (higher_fc, _) = rc_slab_model(42.0, crate::units::ConcreteClass::Normal, None);
         let (lightweight, _) = rc_slab_model(24.0, crate::units::ConcreteClass::Lightweight2, None);
         let normal_weight = normal.slab_self_weight_intensity(&slab).unwrap();
-        assert_ne!(
+        assert_eq!(
             normal_weight,
             higher_fc.slab_self_weight_intensity(&slab).unwrap()
         );
-        assert_ne!(
+        assert_eq!(
             normal_weight,
             lightweight.slab_self_weight_intensity(&slab).unwrap()
         );

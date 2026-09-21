@@ -155,15 +155,9 @@ impl WallElement {
             return None;
         }
         let mat = model.element_material(data)?;
-        squid_n_core::model::validate_section_materials(
-            sec,
-            Some(mat),
-            model.element_rebar_material(data),
-            model.element_shear_rebar_material(data),
-            model.element_steel_material(data),
-        )
-        .ok()?;
-
+        if !mat.density.is_finite() || mat.density < 0.0 {
+            return None;
+        }
         let r = crate::factory::wall_opening_reduction(data, model).max(1e-6);
 
         let ps = match &sec.shape {
@@ -197,6 +191,7 @@ impl WallElement {
                 lw * t.powi(3) / 12.0,
                 t * lw.powi(3) / 12.0,
             ),
+            mass_properties_error: None,
             nodes: [ids_b0, ids_ta],
             axis: LocalFrame::from_nodes(bc, tc, ex_bot),
             rigid: Default::default(),
@@ -283,12 +278,7 @@ impl WallElement {
                 let area = squid_n_core::geom::polygon::area_3d(&points)
                     * squid_n_core::model::wall_clear_area_factor(&points, &dimensions);
                 let net_area = (area - opening_area).max(0.0);
-                let mass_properties = model.element_mass_properties(data).ok()?;
-                let mass_per_area = if t > 0.0 {
-                    mass_properties.mass_per_length / 1000.0
-                } else {
-                    0.0
-                };
+                let mass_per_area = if t > 0.0 { mat.density * t } else { 0.0 };
                 (mass_per_area * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
                     .max(0.0)
             },
@@ -1440,13 +1430,7 @@ mod tests {
             let mut reordered = data.clone();
             reordered.nodes = order.into_iter().map(|i| data.nodes[i]).collect();
             let wall = WallElement::try_new(&reordered, &model).unwrap();
-            let expected = (4000.0 - 600.0)
-                * (3000.0 - 600.0)
-                * model
-                    .element_mass_properties(&reordered)
-                    .unwrap()
-                    .mass_per_length
-                / 1000.0;
+            let expected = (4000.0 - 600.0) * (3000.0 - 600.0) * 150.0 * 2.4e-9;
             let mass = wall.mass_matrix(MassOption::Lumped);
             for dir in 0..3 {
                 let total: f64 = (0..4).map(|i| mass.get(i * 6 + dir, i * 6 + dir)).sum();
@@ -1471,8 +1455,7 @@ mod tests {
         model.sections[0].rebar_material = Some(MaterialId(1));
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         let wall = WallElement::try_new(&data, &model).unwrap();
-        let properties = model.element_mass_properties(&data).unwrap();
-        let expected = properties.mass_per_length / 1000.0 * 4000.0 * 3000.0;
+        let expected = 2.4e-9 * 150.0 * 4000.0 * 3000.0;
         let mass = wall.mass_matrix(MassOption::Lumped);
         let actual: f64 = (0..4).map(|i| mass.get(i * 6, i * 6)).sum();
         assert!(

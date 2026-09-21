@@ -19,6 +19,7 @@ fn make_test_beam() -> crate::frame::beam::BeamElement {
         length: 3000.0,
         density: 0.0,
         mass_properties: squid_n_core::model::SectionMassProperties::default(),
+        mass_properties_error: None,
         nodes: [NodeId(0), NodeId(1)],
         axis: crate::transform::LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],

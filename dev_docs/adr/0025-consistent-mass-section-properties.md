@@ -10,7 +10,7 @@ Beam と Fiber の整合質量は、断面の材料領域から求めた `Sectio
 
 材軸まわりの回転慣性には、ねじり剛性 `GJ/L` のねじり定数 `J` ではなく、質量用極二次モーメント `Ip = Iy + Iz` を用いる。剛域を含む場合は、可撓部の質量を剛体アームで変換し、剛域の分布質量を加えて部材全長の質量を保存する。端部解放がある場合も、剛性側と同じ拡大自由度で質量を組み、初期弾性剛性から固定した `S=-Kbb^-1 Kba`, `R=[I;S]` により `M=Rᵀ Mbar R` として縮約する。回転ばねは無質量とする。
 
-質量特性の解決は主材料の検証だけを行い、主筋・せん断補強筋・SRC 内蔵鉄骨の未設定や区分不正を理由に停止しない。
+質量特性の解決は主材料の検証だけを行い、主筋・せん断補強筋・SRC 内蔵鉄骨の未設定や区分不正を理由に停止しない。要素生成時に解決できない場合はエラーを要素へ保持し、静的解析と Lumped 質量を停止させない。Consistent 質量は不正特性を零特性として扱い、固有値等の後段で質量不足を明示的に検出する。
 
 ## 背景と理由
 
@@ -20,7 +20,8 @@ Beam と Fiber の整合質量は、断面の材料領域から求めた `Sectio
 
 ## 影響
 
-- `MassOption::Lumped` と `MassOption::Consistent` は共通の `SectionMassProperties` を使う。
+- `MassOption::Lumped` は Beam の `density × a_mass × L`、Fiber の `density × Σfiber.area × L` という既存契約を維持する。`SectionMassProperties` は `MassOption::Consistent` のみに使う。
+- 自重は主材料の密度（RC/SRC は標準 γ、CFT は鋼管と充填コンクリート）から算定し、床版自重も整合質量の resolver とは分離する。
 - `MassOption::Consistent` を使う固有値解析・時刻歴解析では、Beam と Fiber の質量行列および材軸回転慣性が変わる。
 - 端部解放の質量縮約は Beam/Fiber で共通化し、Fiber は塑性状態の接線剛性を使わない。
 - `Kbb` が特異な端部解放では、解放なし質量へフォールバックせず、Beam/Fiber とも明示的に失敗する。

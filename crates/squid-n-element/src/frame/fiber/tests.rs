@@ -33,6 +33,7 @@ fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
         length: 3000.0,
         density: 0.0,
         mass_properties: squid_n_core::model::SectionMassProperties::default(),
+        mass_properties_error: None,
         nodes: [NodeId(0), NodeId(1)],
         axis: crate::transform::LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -225,7 +226,14 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
         let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
         let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
         let lumped_fiber = fiber.mass_matrix(crate::behavior::MassOption::Lumped);
-        let expected_lumped_mass = fiber.mass_properties.mass_per_length * fiber.length;
+        let expected_lumped_mass = fiber.density
+            * fiber.gauss_points[0]
+                .section
+                .fibers
+                .iter()
+                .map(|fiber| fiber.area)
+                .sum::<f64>()
+            * fiber.length;
         assert_relative_eq!(
             lumped_fiber.get(0, 0) * 2.0,
             expected_lumped_mass,

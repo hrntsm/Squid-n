@@ -519,6 +519,7 @@ pub struct FiberBeam {
     pub gauss_points: Vec<GaussPoint>,
     pub density: f64,
     pub mass_properties: SectionMassProperties,
+    pub mass_properties_error: Option<String>,
     /// ねじり定数 J [mm⁴]。
     pub torsion_j: f64,
     /// せん断弾性係数 G [N/mm²]。
@@ -574,7 +575,10 @@ impl FiberBeam {
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
-        let mass_properties = model.element_mass_properties(data)?;
+        let (mass_properties, mass_properties_error) = match model.element_mass_properties(data) {
+            Ok(properties) => (properties, None),
+            Err(error) => (SectionMassProperties::default(), Some(error)),
+        };
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(0.0);
@@ -653,6 +657,7 @@ impl FiberBeam {
             gauss_points,
             density,
             mass_properties,
+            mass_properties_error,
             torsion_j,
             g,
             phi_y,
@@ -758,6 +763,7 @@ impl FiberBeam {
             gauss_points,
             density,
             mass_properties,
+            mass_properties_error: None,
             torsion_j,
             g,
             phi_y,
@@ -1490,7 +1496,16 @@ impl ElementBehavior for FiberBeam {
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         match opt {
             MassOption::Lumped => crate::frame::prismatic::lumped_mass(
-                self.mass_properties.mass_per_length * self.length,
+                self.density
+                    * self.gauss_points.first().map_or(0.0, |point| {
+                        point
+                            .section
+                            .fibers
+                            .iter()
+                            .map(|fiber| fiber.area)
+                            .sum::<f64>()
+                    })
+                    * self.length,
             ),
             MassOption::Consistent => {
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(

@@ -48,6 +48,7 @@ mod tests {
             mass_properties: squid_n_core::model::SectionMassProperties::uniform(
                 2.4e-9, 250_000.0, 3.0e9, 5.0e9,
             ),
+            mass_properties_error: None,
             nodes: [NodeId(0), NodeId(1)],
             axis: LocalFrame {
                 rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
