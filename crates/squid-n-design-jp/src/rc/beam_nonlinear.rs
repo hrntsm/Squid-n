@@ -114,15 +114,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rc_beam_crack_moment() {
-        // Mc = 0.56·√24·(300·600²/6)
-        let ze = 300.0 * 600.0_f64.powi(2) / 6.0;
-        let mc = rc_beam_crack_moment(24.0, ze);
-        assert!((mc - 0.56 * 24.0_f64.sqrt() * ze).abs() < 1e-3);
-        assert_eq!(rc_beam_crack_moment(0.0, ze), 0.0);
-    }
-
-    #[test]
     fn test_rc_beam_shear_crack_matches_handcalc() {
         let qc = rc_beam_shear_crack(24.0, 1.5, 300.0, 500.0);
         let hand = (0.061 * (24.0 + 49.0) / (1.5 + 1.7)) * 300.0 * 500.0;

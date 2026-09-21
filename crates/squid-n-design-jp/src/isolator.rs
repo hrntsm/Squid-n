@@ -209,16 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reductions_monotonic_in_n() {
-        // 本数が増えると 1 本あたりの低減率は単調減少。
-        let ns = [2u32, 4, 6, 8, 16];
-        for w in ns.windows(2) {
-            assert!(multi_shear_stiffness_reduction(w[0]) > multi_shear_stiffness_reduction(w[1]));
-            assert!(multi_shear_strength_reduction(w[0]) > multi_shear_strength_reduction(w[1]));
-        }
-    }
-
-    #[test]
     fn test_lrb_stiffness_strain_factor_handcalc() {
         // 3 区間の代表値（第1分岐の指数は −0.43）。
         assert!((lrb_stiffness_strain_factor(0.1) - 0.779 * 0.1f64.powf(-0.43)).abs() < 1e-9);

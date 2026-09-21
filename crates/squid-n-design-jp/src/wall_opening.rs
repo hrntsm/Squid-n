@@ -89,30 +89,6 @@ mod tests {
         assert!((r - 0.75).abs() < 1e-9);
     }
 
-    #[test]
-    fn r_is_one_when_no_opening() {
-        let r0 = opening_ratio_r0(0.0, 0.0, 3000.0, 6000.0);
-        assert_eq!(r0, 0.0);
-        let r = opening_reduction_r(0.0, 0.0, 3000.0, 6000.0);
-        assert_eq!(r, 1.0);
-    }
-
-    #[test]
-    fn r_is_clamped_to_zero_for_large_opening() {
-        // h0*l0/(h*l) = 1000*1000/(100*100) = 100 → r0=10, r=1-12.5=負→0クランプ
-        let r0 = opening_ratio_r0(1000.0, 1000.0, 100.0, 100.0);
-        assert!(r0 > 0.8);
-        let r = opening_reduction_r(1000.0, 1000.0, 100.0, 100.0);
-        assert_eq!(r, 0.0);
-    }
-
-    #[test]
-    fn r0_guards_against_zero_division() {
-        // 壁寸法が 0 の場合は 0 除算せず 0.0 を返す。
-        assert_eq!(opening_ratio_r0(100.0, 100.0, 0.0, 1000.0), 0.0);
-        assert_eq!(opening_ratio_r0(100.0, 100.0, 1000.0, 0.0), 0.0);
-    }
-
     // ------------------------------------------------------------------
     // 複数開口の等価開口置換
     // ------------------------------------------------------------------

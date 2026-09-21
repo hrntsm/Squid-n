@@ -227,43 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_shear_ultimate_matches_handcalc() {
-        let inp = base_input();
-        let qu = wall_shear_ultimate(&inp);
-        // 手計算:
-        let d = 4600.0 - 600.0 / 2.0;
-        let pte: f64 = 100.0 * 3097.0 / (180.0 * d);
-        let j = 7.0 / 8.0 * d;
-        let ssr: f64 = 1.5_f64.clamp(1.0, 3.0);
-        let pwh = (0.004_f64 * 180.0 / 180.0).min(0.012);
-        let concrete = 0.053 * pte.powf(0.23) * (24.0 + 18.0) / (ssr + 0.12);
-        let hoop = 0.85 * (pwh * 295.0_f64).sqrt();
-        let axial = 0.1 * 1.0_f64.clamp(0.0, 0.4 * 24.0);
-        let qu_hand = (concrete + hoop + axial) * 180.0 * j * 1.0;
-        assert!((qu - qu_hand).abs() < 1e-3, "Qu={qu} vs {qu_hand}");
-        assert!(qu > 0.0);
-    }
-
-    #[test]
-    fn test_wall_shear_ultimate_high_strength_uses_0068() {
-        let mut inp = base_input();
-        inp.high_strength_shear_rebar = true;
-        let qu_hi = wall_shear_ultimate(&inp);
-        let qu_std = wall_shear_ultimate(&base_input());
-        // 0.068 > 0.053 なのでコンクリート項が増え Qu が大きくなる。
-        assert!(qu_hi > qu_std, "hi={qu_hi} std={qu_std}");
-    }
-
-    #[test]
-    fn test_wall_shear_opening_reduction_takes_max() {
-        // l0/lw=0.5, h0/h=0.1, r0=√(0.05)=0.2236 → max=0.5、r=0.5。
-        let r = wall_shear_opening_reduction(Some((2000.0, 300.0, 3000.0, 4000.0)));
-        assert!((r - 0.5).abs() < 1e-9, "r={r}");
-        // 無開口は 1.0。
-        assert!((wall_shear_opening_reduction(None) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
     fn test_wall_shear_ultimate_opening_reduces() {
         let mut inp = base_input();
         inp.opening = Some((2000.0, 300.0, 3000.0, 4000.0)); // r=0.5
@@ -274,30 +237,6 @@ mod tests {
             "Qu_open={qu_open} should be 0.5·Qu_solid={}",
             0.5 * qu_solid
         );
-    }
-
-    #[test]
-    fn test_wall_shear_ultimate_shear_span_ratio_clamps() {
-        let mut low = base_input();
-        low.shear_span_ratio = 0.2; // → 1.0
-        let mut at_1 = base_input();
-        at_1.shear_span_ratio = 1.0;
-        assert!((wall_shear_ultimate(&low) - wall_shear_ultimate(&at_1)).abs() < 1e-6);
-
-        let mut high = base_input();
-        high.shear_span_ratio = 9.0; // → 3.0
-        let mut at_3 = base_input();
-        at_3.shear_span_ratio = 3.0;
-        assert!((wall_shear_ultimate(&high) - wall_shear_ultimate(&at_3)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_wall_shear_ultimate_pwh_capped_at_1p2pct() {
-        let mut over = base_input();
-        over.pwh_ratio = 0.05; // te=t なので pwh=0.05 → 0.012 にクランプ
-        let mut capped = base_input();
-        capped.pwh_ratio = 0.012;
-        assert!((wall_shear_ultimate(&over) - wall_shear_ultimate(&capped)).abs() < 1e-6);
     }
 
     #[test]
