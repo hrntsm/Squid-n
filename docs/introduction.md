@@ -56,7 +56,7 @@ Squid-n は、国土交通大臣の認定を受けた構造計算プログラム
 
 ## 開発者向け資料
 
-設計仕様・検証記録・開発運用ドキュメントは開発者向けのため本サイトには含めていません。
+設計判断・検証記録・開発運用ドキュメントは開発者向けのため本サイトには含めていません。
 これらは [dev_docs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs) に集約しており、リポジトリの以下を参照してください。
 
 - [dev_docs/architecture.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/architecture.md)：クレート階層と依存方向
