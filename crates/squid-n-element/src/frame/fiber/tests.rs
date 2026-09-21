@@ -536,8 +536,7 @@ fn fiberはkbb特異時に端部解放質量を明示的に失敗させる() {
 }
 
 #[test]
-#[should_panic(expected = "FiberBeam の端部解放剛性を縮約できません")]
-fn fiberはkbb特異時に端部解放剛性を明示的に失敗させる() {
+fn fiberはkbb特異時に剛性をkaaへフォールバックする() {
     let mut model = build_test_model(Some(78846.15));
     model.materials[0].young = 0.0;
     model.elements[0].end_cond = [EndCondition::Pinned, EndCondition::Fixed];
@@ -547,7 +546,8 @@ fn fiberはkbb特異時に端部解放剛性を明示的に失敗させる() {
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
     );
-    fiber.condense_releases(&LocalMat::zeros(12));
+    let k = fiber.condense_releases(&LocalMat::zeros(12));
+    assert!(k.data.iter().all(|v| v.is_finite()));
 }
 
 fn build_test_model(shear_mod: Option<f64>) -> Model {

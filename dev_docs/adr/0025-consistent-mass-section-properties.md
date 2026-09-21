@@ -4,7 +4,7 @@ Status: accepted
 
 ## 決定
 
-Beam と Fiber の整合質量は、断面の材料領域から求めた `SectionMassProperties` を共通の入力とし、`squid_n_element::frame::prismatic::consistent_mass_timoshenko` で算定する。質量特性は単位長さ当たり質量と断面 y 軸・z 軸まわりの質量二次モーメントを持つ。材料領域の密度は `Material.density` を使い、CFT の充填コンクリートだけは `Material.fc` から単位体積重量表で導く。
+Beam と Fiber の整合質量は、断面の材料領域から求めた `SectionMassProperties` を共通の入力とし、`squid_n_element::frame::prismatic::consistent_mass_timoshenko` で算定する。質量特性は単位長さ当たり質量と断面 y 軸・z 軸まわりの質量二次モーメントを持つ。材料領域の密度は、コンクリートの `Material.fc` が設定されている場合は γC（純コンクリート）を単位体積重量表から導き、鉄筋込みの γRC を二重計上しない。その他の材料は `Material.density` を使い、CFT の充填コンクリートも同じ γC を使う。
 
 材軸まわりの回転慣性には、ねじり剛性 `GJ/L` のねじり定数 `J` ではなく、質量用極二次モーメント `Ip = Iy + Iz` を用いる。剛域を含む場合は、可撓部の質量を剛体アームで変換し、剛域の分布質量を加えて部材全長の質量を保存する。端部解放がある場合も、剛性側と同じ拡大自由度で質量を組み、初期弾性剛性から固定した `S=-Kbb^-1 Kba`, `R=[I;S]` により `M=Rᵀ Mbar R` として縮約する。回転ばねは無質量とする。
 
@@ -16,12 +16,12 @@ Beam と Fiber の整合質量は、断面の材料領域から求めた `Sectio
 
 ## 影響
 
-- `MassOption::Lumped` の並進質量は従来どおりである。
+- `MassOption::Lumped` は Beam が `density × a_mass × L`、Fiber が `density × ΣAf × L` を使う従来契約を維持する。
 - `MassOption::Consistent` を使う固有値解析・時刻歴解析では、Beam と Fiber の質量行列および材軸回転慣性が変わる。
 - 端部解放の質量縮約は Beam/Fiber で共通化し、Fiber は塑性状態の接線剛性を使わない。
 - `Kbb` が特異な端部解放では、解放なし質量へフォールバックせず、Beam/Fiber とも明示的に失敗する。
 - 形状を持たない断面は、主材料の密度と `Section` の断面諸元へフォールバックする。
-- 材料領域質量、Beam/Fiber 一致、剛域質量保存、1 自由度固有値をテストで検証する。
+- 材料領域質量、標準 Fc/SD 材料、Beam/Fiber 一致、剛域質量保存、軸振動および純ねじり固有値をテストで検証する。
 
 ## 関連
 

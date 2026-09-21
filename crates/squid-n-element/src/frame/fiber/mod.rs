@@ -1478,9 +1478,15 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        let total_mass = self.mass_properties.total_mass(self.length);
         match opt {
-            MassOption::Lumped => crate::frame::prismatic::lumped_mass(total_mass),
+            MassOption::Lumped => {
+                let total_area: f64 = self
+                    .gauss_points
+                    .first()
+                    .map(|gp| gp.section.fibers.iter().map(|f| f.area).sum())
+                    .unwrap_or(0.0);
+                crate::frame::prismatic::lumped_mass(self.density * total_area * self.length)
+            }
             MassOption::Consistent => {
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(
                     self.mass_properties,

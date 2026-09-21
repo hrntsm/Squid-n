@@ -43,7 +43,7 @@ pub(crate) fn condense_end_releases_with_mass(
     lj: f64,
     releases: &[(usize, f64)],
 ) -> Option<LocalMat> {
-    condense_expanded(k_elem, Some(m_elem), properties, li, lj, releases).map(|(m, _)| m)
+    condense_expanded(k_elem, Some(m_elem), properties, li, lj, releases).and_then(|(m, _)| m)
 }
 
 pub(crate) fn mass_without_end_releases(
@@ -69,7 +69,7 @@ fn condense_expanded(
     li: f64,
     lj: f64,
     releases: &[(usize, f64)],
-) -> Option<(LocalMat, LocalMat)> {
+) -> Option<(Option<LocalMat>, LocalMat)> {
     const NA: usize = 12;
 
     if releases.is_empty() {
@@ -81,7 +81,7 @@ fn condense_expanded(
             || LocalMat::zeros(NA),
             |m| mass_without_end_releases(m, properties, li, lj),
         );
-        return Some((m, k));
+        return Some((m_elem.map(|_| m), k));
     }
 
     let nb = releases.len();
@@ -172,21 +172,22 @@ fn condense_expanded(
         }
     }
 
-    let kbb_inv = invert_small(&kbb[..nb * nb], nb)?;
-
+    let mut kstar = LocalMat::zeros(NA);
+    let Some(kbb_inv) = invert_small(&kbb[..nb * nb], nb) else {
+        for i in 0..NA {
+            for j in 0..NA {
+                kstar.set(i, j, kaa[i * NA + j]);
+            }
+        }
+        return Some((None, kstar));
+    };
     let mut kab_kbbinv = [0.0_f64; NA * 6];
     for i in 0..NA {
         for j in 0..nb {
-            let mut s = 0.0;
             for l in 0..nb {
-                s += kab[i * nb + l] * kbb_inv[l * nb + j];
+                kab_kbbinv[i * nb + j] += kab[i * nb + l] * kbb_inv[l * nb + j];
             }
-            kab_kbbinv[i * nb + j] = s;
         }
-    }
-
-    let mut kstar = LocalMat::zeros(NA);
-    for i in 0..NA {
         for j in 0..NA {
             let mut s = kaa[i * NA + j];
             for l in 0..nb {
@@ -220,7 +221,7 @@ fn condense_expanded(
             mstar.set(i, j, s);
         }
     }
-    Some((mstar, kstar))
+    Some((Some(mstar), kstar))
 }
 
 /// 軸力 `n_axial` による幾何剛性を局所 12×12 で返す。
@@ -553,11 +554,11 @@ mod tests {
     }
 
     #[test]
-    fn kbb特異時は剛性と質量の縮約に失敗する() {
+    fn kbb特異時は剛性をkaaへフォールバックし質量の縮約に失敗する() {
         let k = LocalMat::zeros(12);
         let m = LocalMat::zeros(12);
         let releases = [(5, 0.0)];
-        assert!(condense_end_releases(&k, &releases).is_none());
+        assert!(condense_end_releases(&k, &releases).is_some());
         assert!(condense_end_releases_with_mass(
             &k,
             &m,

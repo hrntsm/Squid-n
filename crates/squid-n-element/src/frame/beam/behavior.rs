@@ -28,9 +28,10 @@ impl ElementBehavior for BeamElement {
     crate::behavior::elastic_disp_behavior!(BeamElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        let m = self.mass_properties.total_mass(self.length);
         match opt {
-            MassOption::Lumped => crate::frame::prismatic::lumped_mass(m),
+            MassOption::Lumped => {
+                crate::frame::prismatic::lumped_mass(self.density * self.a_mass * self.length)
+            }
             MassOption::Consistent => {
                 let (li, lj) = self.rigid_lengths();
                 let flex_length = self.length - li - lj;

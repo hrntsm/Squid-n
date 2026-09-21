@@ -2946,12 +2946,12 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
 }
 
 #[test]
-#[should_panic(expected = "BeamElement の端部解放剛性を縮約できません")]
-fn beamはkbb特異時に端部解放剛性を明示的に失敗させる() {
+fn beamはkbb特異時に剛性をkaaへフォールバックする() {
     let mut beam = make_test_beam();
     beam.e = 0.0;
     beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
-    beam.local_stiffness();
+    let k = beam.local_stiffness();
+    assert!(k.data.iter().all(|v| v.is_finite()));
 }
 
 /// 剛域の適用条件・重なり処理のテスト用に、柱 2 本＋梁 1 本の門型を作る。
