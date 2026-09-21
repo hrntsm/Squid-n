@@ -56,88 +56,69 @@ pub fn story_ds(ranks: &[MemberRank], frame: FrameType, mechanism: &MechanismTyp
 mod tests {
     use super::*;
 
-    // ===== worst_rank テスト =====
-
+    /// 最も不利（FD 寄り）なランクの選択。空は `None`。
     #[test]
-    fn test_worst_rank_picks_fd_leaning() {
-        let ranks = [MemberRank::FA, MemberRank::FC, MemberRank::FB];
-        assert_eq!(worst_rank(&ranks), Some(MemberRank::FC));
+    fn test_worst_rank_cases() {
+        for (ranks, expected) in [
+            (
+                vec![MemberRank::FA, MemberRank::FC, MemberRank::FB],
+                Some(MemberRank::FC),
+            ),
+            (vec![MemberRank::FD, MemberRank::FA], Some(MemberRank::FD)),
+            (vec![], None),
+        ] {
+            assert_eq!(worst_rank(&ranks), expected, "{ranks:?}");
+        }
     }
 
+    /// 層 Ds: 代表ランク（最悪）＋崩壊機構補正（StoryCollapse・Partial で 1 段階不利、
+    /// Overall は補正なし、空は FA、FD は据え置き）を表で確認する。
     #[test]
-    fn test_worst_rank_empty_is_none() {
-        assert_eq!(worst_rank(&[]), None);
-    }
-
-    // ===== story_ds テスト =====
-
-    /// ranks=[FA,FC,FB], RcFrame, Overall → 代表 FC → ds_value(RcFrame,FC) = 0.40
-    #[test]
-    fn test_story_ds_rc_frame_overall() {
-        let ranks = vec![MemberRank::FA, MemberRank::FC, MemberRank::FB];
-        let ds = story_ds(&ranks, FrameType::RcFrame, &MechanismType::Overall);
-        assert!((ds - 0.40).abs() < 1e-9, "expected 0.40, got {}", ds);
-    }
-
-    /// 同上で StoryCollapse → 代表 FC → FD → ds_value(RcFrame,FD) = 0.45
-    #[test]
-    fn test_story_ds_rc_frame_story_collapse() {
-        let ranks = vec![MemberRank::FA, MemberRank::FC, MemberRank::FB];
-        let ds = story_ds(
-            &ranks,
-            FrameType::RcFrame,
-            &MechanismType::StoryCollapse { layer: 0 },
-        );
-        assert!((ds - 0.45).abs() < 1e-9, "expected 0.45, got {}", ds);
-    }
-
-    /// ranks=[FA], SteelFrame, Overall → 代表 FA → ds_value(SteelFrame,FA) = 0.25
-    #[test]
-    fn test_story_ds_steel_frame_fa_overall() {
-        let ranks = vec![MemberRank::FA];
-        let ds = story_ds(&ranks, FrameType::SteelFrame, &MechanismType::Overall);
-        assert!((ds - 0.25).abs() < 1e-9, "expected 0.25, got {}", ds);
-    }
-
-    /// 空 ranks → FA 扱い → ds_value(RcFrame, FA) = 0.30
-    #[test]
-    fn test_story_ds_empty_ranks() {
-        let ds = story_ds(&[], FrameType::RcFrame, &MechanismType::Overall);
-        assert!(
-            (ds - 0.30).abs() < 1e-9,
-            "expected 0.30 for empty ranks, got {}",
-            ds
-        );
-    }
-
-    /// Partial でも1段階不利になる: [FA,FC,FB], RcFrame, Partial → FC → FD → 0.45
-    #[test]
-    fn test_story_ds_partial_downgrades_one_step() {
-        let ranks = vec![MemberRank::FA, MemberRank::FC, MemberRank::FB];
-        let ds = story_ds(&ranks, FrameType::RcFrame, &MechanismType::Partial);
-        assert!((ds - 0.45).abs() < 1e-9, "expected 0.45, got {}", ds);
-    }
-
-    /// FD は据え置き（StoryCollapse でも FD → FD）
-    #[test]
-    fn test_story_ds_fd_stays_fd() {
-        let ranks = vec![MemberRank::FD];
-        let ds_overall = story_ds(&ranks, FrameType::RcFrame, &MechanismType::Overall);
-        let ds_collapse = story_ds(
-            &ranks,
-            FrameType::RcFrame,
-            &MechanismType::StoryCollapse { layer: 0 },
-        );
-        // FD は最悪なので補正後も FD のまま
-        assert!(
-            (ds_overall - 0.45).abs() < 1e-9,
-            "FD Overall expected 0.45, got {}",
-            ds_overall
-        );
-        assert!(
-            (ds_collapse - 0.45).abs() < 1e-9,
-            "FD StoryCollapse expected 0.45 (FD stays FD), got {}",
-            ds_collapse
-        );
+    fn test_story_ds_cases() {
+        for (ranks, frame, mechanism, expected) in [
+            (
+                vec![MemberRank::FA, MemberRank::FC, MemberRank::FB],
+                FrameType::RcFrame,
+                MechanismType::Overall,
+                0.40,
+            ),
+            (
+                vec![MemberRank::FA, MemberRank::FC, MemberRank::FB],
+                FrameType::RcFrame,
+                MechanismType::StoryCollapse { layer: 0 },
+                0.45,
+            ),
+            (
+                vec![MemberRank::FA, MemberRank::FC, MemberRank::FB],
+                FrameType::RcFrame,
+                MechanismType::Partial,
+                0.45,
+            ),
+            (
+                vec![MemberRank::FA],
+                FrameType::SteelFrame,
+                MechanismType::Overall,
+                0.25,
+            ),
+            (vec![], FrameType::RcFrame, MechanismType::Overall, 0.30),
+            (
+                vec![MemberRank::FD],
+                FrameType::RcFrame,
+                MechanismType::Overall,
+                0.45,
+            ),
+            (
+                vec![MemberRank::FD],
+                FrameType::RcFrame,
+                MechanismType::StoryCollapse { layer: 0 },
+                0.45,
+            ),
+        ] {
+            let ds = story_ds(&ranks, frame, &mechanism);
+            assert!(
+                (ds - expected).abs() < 1e-9,
+                "story_ds({ranks:?}, {frame:?}, {mechanism:?}) expected {expected}, got {ds}"
+            );
+        }
     }
 }
