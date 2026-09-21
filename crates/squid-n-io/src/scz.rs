@@ -266,6 +266,7 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::*;
     use squid_n_core::model::*;
+    use squid_n_core::section_shape::SectionShape;
 
     fn make_3node_model() -> Model {
         Model {
@@ -299,8 +300,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_roundtrip() {
+    /// 特徴あるフィールドを一通り持つモデル。`save_scz` / `load_scz` を共有する
+    /// 個別の往復テストを 1 本へ統合するための fixture。
+    ///
+    /// - 断面 shape（`SectionShape::SteelH`）
+    /// - 一般ブレース要素（`ElementKind::Brace { tension_only: true }`）
+    /// - 部材付帯情報（両端ハンチ・片端ハンチ・現場／工場継手）
+    /// - スラブ厚・二次部材の次安定 ID・壁版・未割当二次部材
+    fn make_rich_model() -> Model {
         let mut model = make_3node_model();
         model.slab_thickness = 150.0;
         model.next_secondary_member_id = 7;
@@ -328,11 +335,93 @@ mod tests {
                 section: None,
                 name: "P1".into(),
             });
+
+        let shape = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 9.0,
+            flange_thick: 12.0,
+        };
+        model
+            .sections
+            .push(shape.to_section(SectionId(0), "H-400x200x9x12".to_string()));
+
+        model.elements.push(ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Brace { tension_only: true },
+            nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+
+        model.member_detail_attrs = vec![
+            MemberDetailAttr {
+                elem: ElemId(0),
+                haunch_i: Some(Haunch {
+                    length: 700.0,
+                    depth_increase: 200.0,
+                    width_increase: 50.0,
+                }),
+                haunch_j: Some(Haunch {
+                    length: 500.0,
+                    depth_increase: 150.0,
+                    width_increase: 0.0,
+                }),
+                joints: vec![
+                    MemberJoint {
+                        distance: 1000.0,
+                        kind: JointKind::Site,
+                    },
+                    MemberJoint {
+                        distance: 3000.0,
+                        kind: JointKind::Shop,
+                    },
+                ],
+            },
+            MemberDetailAttr {
+                elem: ElemId(1),
+                haunch_i: Some(Haunch {
+                    length: 400.0,
+                    depth_increase: 100.0,
+                    width_increase: 0.0,
+                }),
+                haunch_j: None,
+                joints: Vec::new(),
+            },
+        ];
+        model
+    }
+
+    /// テスト用: manifest.json を読み出して復元する。
+    fn read_manifest(path: &Path) -> Manifest {
+        let f = std::fs::File::open(path).unwrap();
+        let mut ar = zip::ZipArchive::new(f).unwrap();
+        let mut mb = Vec::new();
+        ar.by_name("manifest.json")
+            .unwrap()
+            .read_to_end(&mut mb)
+            .unwrap();
+        serde_json::from_slice(&mb).unwrap()
+    }
+
+    /// 断面 shape・一般ブレース・部材付帯情報・スラブ厚・二次部材などを含む
+    /// rich なモデルが、保存→読込で各フィールドとも完全一致すること。
+    #[test]
+    fn test_roundtrip_preserves_rich_model() {
+        let model = make_rich_model();
         let dir = crate::test_util::test_tmp();
-        let path = dir.join("p.scz");
+        let path = dir.join("p_rich_roundtrip.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;
-        assert_eq!(model.nodes.len(), back.nodes.len());
+
+        assert_eq!(back.nodes.len(), model.nodes.len());
         assert_eq!(
             back.slab_thickness, model.slab_thickness,
             "床スラブ厚は往復で保持される"
@@ -341,6 +430,24 @@ mod tests {
             back.next_secondary_member_id, model.next_secondary_member_id,
             "二次部材の次安定 ID は往復で保持される"
         );
+        assert_eq!(back.sections.len(), 1);
+        assert!(
+            matches!(back.sections[0].shape, Some(SectionShape::SteelH { .. })),
+            "断面 shape の種別が往復で保持される"
+        );
+        assert_eq!(back.sections[0].shape, model.sections[0].shape);
+        assert_eq!(back.elements.len(), 1);
+        assert_eq!(
+            back.elements[0].kind,
+            ElementKind::Brace { tension_only: true },
+            "一般ブレースの構造体バリアントが往復で保持される"
+        );
+        assert_eq!(
+            back.member_detail_attrs, model.member_detail_attrs,
+            "部材付帯情報（ハンチ・継手）が往復で保持される"
+        );
+        assert_eq!(back.wall_plates, model.wall_plates);
+        assert_eq!(back.unassigned_posts, model.unassigned_posts);
         assert!(model.eq_ignoring_dofmap(&back));
         let _ = std::fs::remove_file(&path);
     }
@@ -387,83 +494,28 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 未リリースのため後方互換なし: 現行版以外（旧版 2 や未来版 999 を名乗る
+    /// ファイル）は version 検証で `UnsupportedVersion` として拒否されること。
     #[test]
-    fn test_unsupported_version() {
-        let model = make_3node_model();
+    fn test_rejects_unsupported_versions() {
         let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_ver.scz");
-        save_scz(&path, &model, SczExtras::default()).unwrap();
+        for version in [2u32, 999] {
+            let path = dir.join(format!("p_unsupported_ver_{version}.scz"));
+            let manifest = Manifest {
+                schema_version: version,
+                units: "internal: N-mm-s".to_string(),
+                created_by: "test".to_string(),
+                entries: vec![],
+            };
+            write_zip_with_manifest(&path, &manifest, &[], &[]);
 
-        let bad_manifest = Manifest {
-            schema_version: 999,
-            units: "internal: N-mm-s".to_string(),
-            created_by: "test".to_string(),
-            entries: vec![],
-        };
-        let bad_bytes = serde_json::to_vec(&bad_manifest).unwrap();
-        let tmp_path = path.with_extension("scz.tmp");
-        {
-            let f = std::fs::File::create(&tmp_path).unwrap();
-            let mut zip = zip::ZipWriter::new(f);
-            let opts = zip::write::FileOptions::<()>::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            zip.start_file("manifest.json", opts).unwrap();
-            zip.write_all(&bad_bytes).unwrap();
-            zip.finish().unwrap();
+            let result = load_scz(&path);
+            assert!(
+                matches!(result, Err(IoError::UnsupportedVersion(v)) if v == version),
+                "schema_version {version} は拒否されるべき"
+            );
+            let _ = std::fs::remove_file(&path);
         }
-        std::fs::rename(&tmp_path, &path).unwrap();
-
-        let result = load_scz(&path);
-        assert!(matches!(result, Err(IoError::UnsupportedVersion(999))));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 未リリースのため後方互換なし: 現行版以外（例: 旧版 2 を名乗るファイル）は
-    /// UnsupportedVersion で拒否されること。
-    #[test]
-    fn test_old_version_rejected() {
-        let model = make_3node_model();
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_old_ver.scz");
-        // まず通常保存し、その model.msgpack / settings.json を取り出す。
-        save_scz(&path, &model, SczExtras::default()).unwrap();
-        let (model_bytes, settings_bytes) = {
-            let f = std::fs::File::open(&path).unwrap();
-            let mut ar = zip::ZipArchive::new(f).unwrap();
-            let mut mb = Vec::new();
-            ar.by_name("model.msgpack")
-                .unwrap()
-                .read_to_end(&mut mb)
-                .unwrap();
-            let mut sb = Vec::new();
-            ar.by_name("settings.json")
-                .unwrap()
-                .read_to_end(&mut sb)
-                .unwrap();
-            (mb, sb)
-        };
-
-        // 版を 2 と偽った manifest（entries のハッシュは実バイトに一致させる）。
-        let manifest = Manifest {
-            schema_version: 2,
-            units: "internal: N-mm-s".to_string(),
-            created_by: "test".to_string(),
-            entries: vec![
-                crate::manifest::EntryHash {
-                    name: "model.msgpack".to_string(),
-                    sha256: sha256_of(&model_bytes),
-                },
-                crate::manifest::EntryHash {
-                    name: "settings.json".to_string(),
-                    sha256: sha256_of(&settings_bytes),
-                },
-            ],
-        };
-        write_zip_with_manifest(&path, &manifest, &model_bytes, &settings_bytes);
-
-        let result = load_scz(&path);
-        assert!(matches!(result, Err(IoError::UnsupportedVersion(2))));
-        let _ = std::fs::remove_file(&path);
     }
 
     /// manifest.entries から model.msgpack を落としたファイルが、ハッシュ未検証のまま
@@ -532,107 +584,22 @@ mod tests {
         std::fs::rename(&tmp_path, path).unwrap();
     }
 
-    /// UI設計 §4.2: Section は SectionShape の派生。`to_section` で生成した断面を
-    /// 持つモデルを保存→読込しても `shape` が失われず、Some のまま完全一致することを確認する。
+    /// 準備計算の結果と解析タブの設定値（いずれもアプリ層が直列化した任意バイト列）が
+    /// 保存→読込で往復し、それぞれ manifest のハッシュ検証対象になること。解析タブの
+    /// 設定値は `results` を生成した条件（波形パラメータ・減衰モデル等）を保持しないと
+    /// 再現性が保てないため同梱する。
     #[test]
-    fn test_roundtrip_preserves_section_shape() {
-        use squid_n_core::section_shape::SectionShape;
-
-        let shape = SectionShape::SteelH {
-            height: 400.0,
-            width: 200.0,
-            web_thick: 9.0,
-            flange_thick: 12.0,
-        };
-        let section = shape.to_section(SectionId(0), "H-400x200x9x12".to_string());
-        assert!(section.shape.is_some());
-
-        let mut model = make_3node_model();
-        model.sections.push(section.clone());
-
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_shape_roundtrip.scz");
-        save_scz(&path, &model, SczExtras::default()).unwrap();
-        let back = load_scz(&path).unwrap().model;
-
-        assert_eq!(back.sections.len(), 1);
-        assert_eq!(back.sections[0].shape, Some(shape));
-        assert!(model.eq_ignoring_dofmap(&back));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 準備計算の結果（アプリ層が直列化した任意バイト列）が保存→読込で往復し、
-    /// manifest のハッシュ検証対象になること。
-    #[test]
-    fn test_roundtrip_preserves_preparation_entry() {
+    fn test_roundtrip_preserves_optional_entries() {
         let model = make_3node_model();
         let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_prep_roundtrip.scz");
+        let path = dir.join("p_optional_roundtrip.scz");
         let prep = b"preparation payload".to_vec();
-        save_scz(
-            &path,
-            &model,
-            SczExtras {
-                preparation: Some(&prep),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let loaded = load_scz(&path).unwrap();
-        let (back, back_prep) = (loaded.model, loaded.preparation);
-        assert!(model.eq_ignoring_dofmap(&back));
-        assert_eq!(back_prep.as_deref(), Some(prep.as_slice()));
-
-        // manifest に列挙され、ハッシュ検証の対象になっている。
-        let manifest: Manifest = {
-            let f = std::fs::File::open(&path).unwrap();
-            let mut ar = zip::ZipArchive::new(f).unwrap();
-            let mut mb = Vec::new();
-            ar.by_name("manifest.json")
-                .unwrap()
-                .read_to_end(&mut mb)
-                .unwrap();
-            serde_json::from_slice(&mb).unwrap()
-        };
-        let entry = manifest
-            .entries
-            .iter()
-            .find(|e| e.name == PREPARATION_ENTRY)
-            .expect("準備計算エントリが manifest にあるはず");
-        assert_eq!(entry.sha256, sha256_of(&prep));
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 準備計算を同梱しないで保存したファイルは、準備計算が `None` として読める。
-    #[test]
-    fn test_load_without_preparation_entry() {
-        let model = make_3node_model();
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_prep_absent.scz");
-        save_scz(&path, &model, SczExtras::default()).unwrap();
-
-        let loaded = load_scz(&path).unwrap();
-        let (back, back_prep) = (loaded.model, loaded.preparation);
-        assert!(model.eq_ignoring_dofmap(&back));
-        assert!(back_prep.is_none());
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 解析タブの設定値（アプリ層が直列化した任意バイト列）が保存→読込で往復し、
-    /// manifest のハッシュ検証対象になること。`results` を生成した条件（波形
-    /// パラメータ・減衰モデル等）が保存されないと再現性が保てないための同梱。
-    #[test]
-    fn test_roundtrip_preserves_analysis_settings_entry() {
-        let model = make_3node_model();
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_analysis_settings_roundtrip.scz");
         let cfg = b"analysis settings payload".to_vec();
         save_scz(
             &path,
             &model,
             SczExtras {
+                preparation: Some(&prep),
                 analysis_settings: Some(&cfg),
                 ..Default::default()
             },
@@ -640,127 +607,37 @@ mod tests {
         .unwrap();
 
         let loaded = load_scz(&path).unwrap();
+        assert!(model.eq_ignoring_dofmap(&loaded.model));
+        assert_eq!(loaded.preparation.as_deref(), Some(prep.as_slice()));
         assert_eq!(loaded.analysis_settings.as_deref(), Some(cfg.as_slice()));
 
-        let manifest: Manifest = {
-            let f = std::fs::File::open(&path).unwrap();
-            let mut ar = zip::ZipArchive::new(f).unwrap();
-            let mut mb = Vec::new();
-            ar.by_name("manifest.json")
-                .unwrap()
-                .read_to_end(&mut mb)
-                .unwrap();
-            serde_json::from_slice(&mb).unwrap()
-        };
-        let entry = manifest
-            .entries
-            .iter()
-            .find(|e| e.name == ANALYSIS_SETTINGS_ENTRY)
-            .expect("解析タブの設定値エントリが manifest にあるはず");
-        assert_eq!(entry.sha256, sha256_of(&cfg));
+        // manifest に列挙され、ハッシュ検証の対象になっている。
+        let manifest = read_manifest(&path);
+        for (name, data) in [(PREPARATION_ENTRY, &prep), (ANALYSIS_SETTINGS_ENTRY, &cfg)] {
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name} エントリが manifest にあるはず"));
+            assert_eq!(entry.sha256, sha256_of(data));
+        }
 
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 解析タブの設定値を同梱しないで保存したファイル（旧プロジェクトファイル
-    /// 相当）は、解析タブの設定値が `None` として読める。
+    /// 任意エントリ（準備計算の結果・解析タブの設定値）を同梱しないで保存した
+    /// ファイルは、いずれも `None` として読める（旧プロジェクトファイル相当）。
     #[test]
-    fn test_load_without_analysis_settings_entry() {
+    fn test_load_without_optional_entries() {
         let model = make_3node_model();
         let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_analysis_settings_absent.scz");
+        let path = dir.join("p_optional_absent.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
 
         let loaded = load_scz(&path).unwrap();
+        assert!(model.eq_ignoring_dofmap(&loaded.model));
+        assert!(loaded.preparation.is_none());
         assert!(loaded.analysis_settings.is_none());
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 一般ブレース要素（軸剛性 KB=E·A/L は材料力学）対応: `ElementKind::Brace`
-    /// （構造体バリアント `tension_only`）を持つ要素が保存→読込で完全一致すること。
-    #[test]
-    fn test_roundtrip_preserves_brace_element() {
-        let mut model = make_3node_model();
-        model.elements.push(ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Brace { tension_only: true },
-            nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
-            section: None,
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: RigidZone::default(),
-            plastic_zone: None,
-            spring: None,
-        });
-
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_brace_roundtrip.scz");
-        save_scz(&path, &model, SczExtras::default()).unwrap();
-        let back = load_scz(&path).unwrap().model;
-
-        assert_eq!(back.elements.len(), 1);
-        assert_eq!(
-            back.elements[0].kind,
-            ElementKind::Brace { tension_only: true }
-        );
-        assert!(model.eq_ignoring_dofmap(&back));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 部材付帯情報（ハンチ・継手位置）: `Model::member_detail_attrs`
-    /// （両端ハンチあり・片端のみハンチ・継手複数（`JointKind::Shop` を含む））
-    /// を持つモデルが保存→読込で完全一致すること。
-    #[test]
-    fn test_roundtrip_preserves_member_detail_attrs() {
-        let mut model = make_3node_model();
-        model.member_detail_attrs = vec![
-            // 両端ハンチあり + 継手複数（現場・工場混在）
-            MemberDetailAttr {
-                elem: ElemId(0),
-                haunch_i: Some(Haunch {
-                    length: 700.0,
-                    depth_increase: 200.0,
-                    width_increase: 50.0,
-                }),
-                haunch_j: Some(Haunch {
-                    length: 500.0,
-                    depth_increase: 150.0,
-                    width_increase: 0.0,
-                }),
-                joints: vec![
-                    MemberJoint {
-                        distance: 1000.0,
-                        kind: JointKind::Site,
-                    },
-                    MemberJoint {
-                        distance: 3000.0,
-                        kind: JointKind::Shop,
-                    },
-                ],
-            },
-            // 片端のみハンチ（i 端のみ）、継手なし
-            MemberDetailAttr {
-                elem: ElemId(1),
-                haunch_i: Some(Haunch {
-                    length: 400.0,
-                    depth_increase: 100.0,
-                    width_increase: 0.0,
-                }),
-                haunch_j: None,
-                joints: Vec::new(),
-            },
-        ];
-
-        let dir = crate::test_util::test_tmp();
-        let path = dir.join("p_member_detail_roundtrip.scz");
-        save_scz(&path, &model, SczExtras::default()).unwrap();
-        let back = load_scz(&path).unwrap().model;
-
-        assert_eq!(back.member_detail_attrs, model.member_detail_attrs);
-        assert!(model.eq_ignoring_dofmap(&back));
         let _ = std::fs::remove_file(&path);
     }
 }
