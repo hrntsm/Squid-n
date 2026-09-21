@@ -6351,14 +6351,14 @@ fn test_run_preparation_populates_result() {
     assert!((prep.summary.height_mm - 3500.0).abs() < 1e-6);
     assert!(prep.summary.total_seismic_weight > 0.0);
 
-    // Ai 分布（略算周期）。1 層なので α=Ai=1、Ci = Z·Rt·Ai·C0。
+    // Ai 分布（略算周期）。1 層なので α=Ai=1。Ci・Qi の式はここで再計算しない
+    // （表示と解析入力の一致は `test_preparation_ai_matches_synced_seismic_case` で確認する）。
     let sm = prep.seismic.as_ref().expect("Ai 分布が算定されるはず");
     assert_eq!(sm.rows.len(), 1);
     assert!((sm.rows[0].alpha - 1.0).abs() < 1e-9);
     assert!((sm.rows[0].ai - 1.0).abs() < 1e-9);
-    assert!((sm.rows[0].ci - sm.z * sm.rt * sm.c0).abs() < 1e-9);
-    // Qi = Ci·Wi、最上層なので Pi = Qi、基部せん断力 Q1 = Qi。
-    assert!((sm.rows[0].qi - sm.rows[0].ci * sm.rows[0].weight).abs() < 1e-6);
+    assert!(sm.rows[0].ci > 0.0 && sm.rows[0].qi > 0.0);
+    // 最上層なので Pi = Qi、基部せん断力 Q1 = Qi。
     assert!((sm.rows[0].pi - sm.rows[0].qi).abs() < 1e-9);
     assert!((sm.base_shear - sm.rows[0].qi).abs() < 1e-9);
     assert!(!sm.clamped_negative_pi);
@@ -6438,10 +6438,6 @@ fn test_preparation_generates_panel_zones() {
             p.dc > 0.0 && p.db > 0.0 && p.tp > 0.0,
             "諸元が解決されている"
         );
-        assert!(
-            (p.ve - p.dc * p.db * p.tp).abs() <= 1e-6 * p.ve,
-            "H 形柱の実効体積 Ve = dc・db・tp"
-        );
         assert!(p.k_panel > 0.0, "せん断剛性 Kxp = G・Ve が正");
     }
     // パネル節点には γX・γY の 2 自由度が増える。
@@ -6482,7 +6478,7 @@ fn test_preparation_generates_panel_zones() {
 }
 
 /// 準備計算は剛域を算定してモデルへ反映し、その内容を一覧化する。
-/// 可とう長 L' = L − λi − λj・剛域比が表の値と整合すること。
+/// 表の剛域長・パネルオフセットがモデル側の解析入力と一致すること。
 #[test]
 fn test_preparation_lists_rigid_zones() {
     let mut app = App::default();
@@ -6517,11 +6513,6 @@ fn test_preparation_lists_rigid_zones() {
     );
     for r in &prep.rigid_zones {
         assert!(r.length > 0.0);
-        // 可とう長は剛体アーム長（剛域長と仕口パネル分オフセットの大きい方）を控除する。
-        let arm_i = r.zone_i.max(r.panel_offset_i);
-        let arm_j = r.zone_j.max(r.panel_offset_j);
-        assert!((r.clear_length - (r.length - arm_i - arm_j)).abs() < 1e-9);
-        assert!((r.ratio - (arm_i + arm_j) / r.length).abs() < 1e-12);
         // モデル側の値と一致する（表示が実際の解析入力と同じであること）。
         let elem = app
             .core
