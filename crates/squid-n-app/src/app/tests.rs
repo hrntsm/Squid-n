@@ -2344,7 +2344,11 @@ fn test_rc_capacity_input_from_rect_uses_main_x() {
     // at は main_x の総断面積の半分。main_y の断面積とは一致しない。
     let main_x_area = 8.0 * std::f64::consts::PI / 4.0 * 22.0 * 22.0;
     let main_y_area = 4.0 * std::f64::consts::PI / 4.0 * 19.0 * 19.0;
-    assert!((input.at - main_x_area / 2.0).abs() < 1e-9, "at={}", input.at);
+    assert!(
+        (input.at - main_x_area / 2.0).abs() < 1e-9,
+        "at={}",
+        input.at
+    );
     assert!(
         (input.at - main_y_area / 2.0).abs() > 1.0,
         "弱軸配筋の断面積を使っている: at={}",
