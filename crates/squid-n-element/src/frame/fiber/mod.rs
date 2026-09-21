@@ -8,7 +8,6 @@ use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use squid_n_section::mn_surface::StrengthParams;
 use std::any::Any;
-use std::sync::Arc;
 
 /// 塑性化域長 Lp [mm] を部材長 `l` [mm] に対して有効な範囲へクランプする。
 /// 各端 45% を上限、1e-6·L を下限とする。
@@ -544,8 +543,6 @@ pub struct FiberBeam {
     pub eval_sections: Vec<f64>,
     pub committed_disp: [f64; 12],
     pub trial_disp: [f64; 12],
-    pub(crate) mass_properties_resolver:
-        Arc<dyn Fn() -> Result<SectionMassProperties, String> + Send + Sync>,
 }
 
 impl FiberBeam {
@@ -655,8 +652,8 @@ impl FiberBeam {
             nodes: [data.nodes[0], data.nodes[1]],
             gauss_points,
             density,
-            mass_properties: SectionMassProperties::default(),
-            mass_properties_error: None,
+            mass_properties: beam_props.mass_properties,
+            mass_properties_error: beam_props.mass_properties_error,
             torsion_j,
             g,
             phi_y,
@@ -667,11 +664,6 @@ impl FiberBeam {
             eval_sections: crate::frame::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
-            mass_properties_resolver: Arc::new({
-                let data = data.clone();
-                let model = model.clone();
-                move || model.element_mass_properties(&data)
-            }),
         })
     }
 
@@ -778,7 +770,6 @@ impl FiberBeam {
             eval_sections: vec![0.0, 0.5, 1.0],
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
-            mass_properties_resolver: Arc::new(move || Ok(mass_properties)),
         };
         let d_nom = [e * area, e * iy_elem, e * iz_elem];
         let mut k_el = LocalMat::zeros(12);
@@ -1513,12 +1504,12 @@ impl ElementBehavior for FiberBeam {
                     * self.length,
             ),
             MassOption::Consistent => {
-                let mass_properties = if self.mass_properties != SectionMassProperties::default() {
-                    self.mass_properties
-                } else {
-                    (self.mass_properties_resolver)()
-                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
-                };
+                let mass_properties = self
+                    .mass_properties_error
+                    .as_ref()
+                    .map_or(self.mass_properties, |error| {
+                        panic!("質量特性を解決できません: {error}")
+                    });
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(
                     mass_properties,
                     self.flex_length,

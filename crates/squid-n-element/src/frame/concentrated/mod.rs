@@ -299,14 +299,13 @@ impl ElementBehavior for ConcentratedSpringBeam {
         match opt {
             MassOption::Lumped => self.elastic.mass_matrix(opt),
             MassOption::Consistent => {
-                let mass_properties = if self.elastic.mass_properties
-                    != squid_n_core::model::SectionMassProperties::default()
-                {
-                    self.elastic.mass_properties
-                } else {
-                    (self.elastic.mass_properties_resolver)()
-                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
-                };
+                let mass_properties = self
+                    .elastic
+                    .mass_properties_error
+                    .as_ref()
+                    .map_or(self.elastic.mass_properties, |error| {
+                        panic!("質量特性を解決できません: {error}")
+                    });
                 let (li, lj) = self.elastic.rigid_lengths();
                 let flex_length = self.elastic.length - li - lj;
                 let phi_y = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_z > 0.0

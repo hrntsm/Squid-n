@@ -33,12 +33,12 @@ impl ElementBehavior for BeamElement {
                 crate::frame::prismatic::lumped_mass(self.density * self.a_mass * self.length)
             }
             MassOption::Consistent => {
-                let mass_properties = if self.mass_properties != Default::default() {
-                    self.mass_properties
-                } else {
-                    (self.mass_properties_resolver)()
-                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
-                };
+                let mass_properties = self
+                    .mass_properties_error
+                    .as_ref()
+                    .map_or(self.mass_properties, |error| {
+                        panic!("質量特性を解決できません: {error}")
+                    });
                 let (li, lj) = self.rigid_lengths();
                 let flex_length = self.length - li - lj;
                 let phi_y = if flex_length > 0.0 && self.g > 0.0 && self.as_z > 0.0 {

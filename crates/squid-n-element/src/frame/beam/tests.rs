@@ -35,9 +35,6 @@ fn make_test_beam() -> BeamElement {
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
-        mass_properties_resolver: std::sync::Arc::new(|| {
-            Ok(squid_n_core::model::SectionMassProperties::default())
-        }),
     }
 }
 
@@ -67,7 +64,7 @@ fn consistent_mass_does_not_replace_resolver_errors_with_zero_mass() {
     use crate::behavior::{ElementBehavior, MassOption};
 
     let mut beam = make_test_beam();
-    beam.mass_properties_resolver = std::sync::Arc::new(|| Err("断面形状が不正です".into()));
+    beam.mass_properties_error = Some("断面形状が不正です".into());
     beam.mass_matrix(MassOption::Consistent);
 }
 

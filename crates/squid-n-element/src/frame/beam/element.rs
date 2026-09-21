@@ -4,7 +4,6 @@ use crate::behavior::LocalMat;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{EndCondition, RigidZone, SectionMassProperties};
-use std::sync::Arc;
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -55,6 +54,4 @@ pub struct BeamElement {
     ///
     /// 構築直後は必ず未計算（`OnceLock::new()`）で渡すこと。
     pub local_stiffness_cache: OnceLock<LocalMat>,
-    pub(crate) mass_properties_resolver:
-        Arc<dyn Fn() -> Result<SectionMassProperties, String> + Send + Sync>,
 }

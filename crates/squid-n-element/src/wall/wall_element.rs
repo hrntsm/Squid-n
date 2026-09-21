@@ -186,8 +186,15 @@ impl WallElement {
                 )
             })
             .unwrap_or(mat.density);
-        let section_mass_properties = if is_rc_wall {
-            squid_n_core::model::SectionMassProperties::default()
+        let rc_mass_properties_valid =
+            !is_rc_wall || mat.fc.is_some_and(|fc| fc.is_finite() && fc > 0.0);
+        let section_mass_properties = if is_rc_wall && rc_mass_properties_valid {
+            squid_n_core::model::SectionMassProperties::uniform(
+                rc_density,
+                area,
+                lw * t.powi(3) / 12.0,
+                t * lw.powi(3) / 12.0,
+            )
         } else {
             squid_n_core::model::SectionMassProperties::uniform(
                 mat.density,
@@ -210,7 +217,8 @@ impl WallElement {
             length: h,
             density: mat.density,
             mass_properties: section_mass_properties,
-            mass_properties_error: None,
+            mass_properties_error: (!rc_mass_properties_valid)
+                .then(|| "RC壁の整合質量には正の Fc が必要です".to_string()),
             nodes: [ids_b0, ids_ta],
             axis: LocalFrame::from_nodes(bc, tc, ex_bot),
             rigid: Default::default(),
@@ -225,35 +233,6 @@ impl WallElement {
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),
-            mass_properties_resolver: std::sync::Arc::new({
-                let data = data.clone();
-                let model = model.clone();
-                move || {
-                    if !is_rc_wall {
-                        return Ok(squid_n_core::model::SectionMassProperties::default());
-                    }
-                    let mat = model
-                        .element_material(&data)
-                        .ok_or_else(|| "壁柱の主材料を解決できません".to_string())?;
-                    let fc = mat
-                        .fc
-                        .filter(|fc| fc.is_finite() && *fc > 0.0)
-                        .ok_or_else(|| "RC壁の整合質量には正の Fc が必要です".to_string())?;
-                    model.element_mass_properties(&data)?;
-                    Ok(squid_n_core::model::SectionMassProperties::uniform(
-                        squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3(
-                            squid_n_core::units::concrete_unit_weight_kn_m3(
-                                fc,
-                                mat.concrete_class,
-                                squid_n_core::units::ConcreteComposition::Rc,
-                            ),
-                        ),
-                        t * lw,
-                        lw * t.powi(3) / 12.0,
-                        t * lw.powi(3) / 12.0,
-                    ))
-                }
-            }),
         };
 
         let mut a_mat = vec![0.0; 12 * 24];
@@ -1251,12 +1230,13 @@ impl ElementBehavior for WallElement {
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         if matches!(opt, MassOption::Consistent) {
-            let column_mass_properties = if self.column.mass_properties != Default::default() {
-                self.column.mass_properties
-            } else {
-                (self.column.mass_properties_resolver)()
-                    .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
-            };
+            let column_mass_properties = self
+                .column
+                .mass_properties_error
+                .as_ref()
+                .map_or(self.column.mass_properties, |error| {
+                    panic!("質量特性を解決できません: {error}")
+                });
             let column_mass = crate::frame::prismatic::condense_end_releases_with_mass(
                 &self.column.local_stiffness(),
                 &self
@@ -1549,7 +1529,7 @@ mod tests {
         let density = squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3(24.0);
         let t: f64 = 150.0;
         let lw: f64 = 4000.0;
-        let properties = (wall.column.mass_properties_resolver)().unwrap();
+        let properties = wall.column.mass_properties;
         assert!((properties.mass_per_length - density * lw * t).abs() < 1e-12);
         assert!(
             (properties.rotary_inertia_y_per_length - density * lw * t.powi(3) / 12.0).abs()

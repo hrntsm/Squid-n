@@ -47,9 +47,6 @@ fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
-        mass_properties_resolver: std::sync::Arc::new(|| {
-            Ok(squid_n_core::model::SectionMassProperties::default())
-        }),
     }
 }
 
@@ -248,9 +245,7 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
             .expect("テスト断面の質量特性を解決できる");
         assert_relative_eq!(
             expected_mass.mass_per_length * beam.length,
-            (beam.mass_properties_resolver)()
-                .unwrap()
-                .total_mass(beam.length),
+            beam.mass_properties.total_mass(beam.length),
             epsilon = 1.0e-10
         );
         for i in 0..12 {
@@ -357,26 +352,12 @@ fn 端部解放質量はbeamとfiberで一致し剛体並進質量を保存す�
                 .flat_map(|i| (0..12).map(move |j| (i, j)))
                 .map(|(i, j)| u[i] * mass_beam.get(i, j) * u[j])
                 .sum::<f64>();
-            assert!(
-                (total
-                    - (beam.mass_properties_resolver)()
-                        .unwrap()
-                        .total_mass(beam.length))
-                .abs()
-                    < 1.0e-8
-            );
+            assert!((total - beam.mass_properties.total_mass(beam.length)).abs() < 1.0e-8);
             let fiber_total = (0..12)
                 .flat_map(|i| (0..12).map(move |j| (i, j)))
                 .map(|(i, j)| u[i] * mass_fiber.get(i, j) * u[j])
                 .sum::<f64>();
-            assert!(
-                (fiber_total
-                    - (fiber.mass_properties_resolver)()
-                        .unwrap()
-                        .total_mass(fiber.length))
-                .abs()
-                    < 1.0e-8
-            );
+            assert!((fiber_total - fiber.mass_properties.total_mass(fiber.length)).abs() < 1.0e-8);
         }
         for i in [4, 5, 10, 11] {
             assert!(
@@ -1376,7 +1357,7 @@ fn 不正な質量特性でもfiberはlumpedで生成できconsistentで失敗�
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
     );
-    fiber.mass_properties_resolver = std::sync::Arc::new(|| Err("断面形状が不正です".into()));
+    fiber.mass_properties_error = Some("断面形状が不正です".into());
     assert!(fiber
         .mass_matrix(crate::behavior::MassOption::Lumped)
         .data

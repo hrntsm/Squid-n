@@ -36,9 +36,6 @@ fn make_test_beam() -> crate::frame::beam::BeamElement {
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
-        mass_properties_resolver: std::sync::Arc::new(|| {
-            Ok(squid_n_core::model::SectionMassProperties::default())
-        }),
     }
 }
 
@@ -316,7 +313,7 @@ fn rc_consistent_mass_resolver_matches_beam() {
         1.0666667e9,
     );
     let mut elastic = make_test_beam();
-    elastic.mass_properties_resolver = std::sync::Arc::new(move || Ok(rc_properties));
+    elastic.mass_properties = rc_properties;
     let beam = elastic.clone();
     let concentrated = ConcentratedSpringBeam::new_one_component(
         elastic,
