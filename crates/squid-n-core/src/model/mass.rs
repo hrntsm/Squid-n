@@ -46,26 +46,51 @@ impl SectionMassProperties {
         shear_rebar: Option<&Material>,
         steel: Option<&Material>,
     ) -> Self {
+        Self::try_from_section(section, main, rebar, shear_rebar, steel)
+            .unwrap_or_else(|error| panic!("断面質量特性を解決できません: {error}"))
+    }
+
+    pub fn try_from_section(
+        section: &Section,
+        main: Option<&Material>,
+        rebar: Option<&Material>,
+        shear_rebar: Option<&Material>,
+        steel: Option<&Material>,
+    ) -> Result<Self, String> {
         let Some(shape) = section.shape.as_ref() else {
-            return Self::uniform(
+            return Ok(Self::uniform(
                 main.map_or(0.0, |m| m.density),
                 section.area,
                 section.iy,
                 section.iz,
-            );
+            ));
         };
 
-        shaped_mass(shape, main, rebar, shear_rebar, steel)
+        if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
+            return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
+        }
+        if matches!(
+            shape,
+            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
+        ) && main.and_then(|m| m.fc).filter(|fc| *fc > 0.0).is_none()
+        {
+            return Err(format!("CFT断面{}のFcが未設定または不正です", section.name));
+        }
+
+        Ok(shaped_mass(shape, main, rebar, shear_rebar, steel))
     }
 }
 
 impl Model {
     /// 要素断面の材料領域から分布質量特性を求める。
-    pub fn element_mass_properties(&self, elem: &ElementData) -> SectionMassProperties {
+    pub fn element_mass_properties(
+        &self,
+        elem: &ElementData,
+    ) -> Result<SectionMassProperties, String> {
         let Some(section) = self.element_section(elem) else {
-            return SectionMassProperties::default();
+            return Ok(SectionMassProperties::default());
         };
-        SectionMassProperties::from_section(
+        SectionMassProperties::try_from_section(
             section,
             self.element_material(elem),
             self.element_rebar_material(elem),
@@ -639,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn cftはfc未設定ならコアを質量計上しない() {
+    fn cftはfc未設定なら質量特性を解決できない() {
         let shape = SectionShape::CftBox {
             height: 400.0,
             width: 400.0,
@@ -647,10 +672,48 @@ mod tests {
         };
         let section = shape.to_section(SectionId(0), "CFT".into());
         let steel = material(0, MaterialCategory::Steel, 8.0, None);
-        let properties =
-            SectionMassProperties::from_section(&section, Some(&steel), None, None, None);
-        assert!((properties.mass_per_length - 8.0 * shape.calc_area()).abs() < 1e-9);
-        assert_eq!(cft_core_density(Some(&steel)), 0.0);
+        let error =
+            SectionMassProperties::try_from_section(&section, Some(&steel), None, None, None)
+                .expect_err("Fc未設定のCFTは質量を計算してはならない");
+        assert!(error.contains("CFT"));
+    }
+
+    #[test]
+    fn srcは内蔵鉄骨材料未設定なら質量特性を解決できない() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 0,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        };
+        let section = shape.to_section(SectionId(0), "SRC".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let error =
+            SectionMassProperties::try_from_section(&section, Some(&concrete), None, None, None)
+                .expect_err("内蔵鉄骨材料未設定のSRCは質量を計算してはならない");
+        assert!(error.contains("SRC"));
     }
 
     #[test]
@@ -796,26 +859,10 @@ mod tests {
         };
         let section = shape.to_section(SectionId(0), "SRC".into());
         let main = material(0, MaterialCategory::Steel, 8.0, None);
-        let embedded = SectionShape::SteelH {
-            height: 400.0,
-            width: 200.0,
-            web_thick: 9.0,
-            flange_thick: 12.0,
-        };
-        let properties =
-            SectionMassProperties::from_section(&section, Some(&main), None, None, None);
-
-        let shear = match &shape {
-            SectionShape::SrcRect { rebar, .. } => rectangular_shear_geometry(rebar, 600.0, 600.0),
-            _ => unreachable!(),
-        };
-        assert!(
-            (properties.mass_per_length
-                - main.density
-                    * (rectangle_geometry(600.0, 600.0).area - embedded.calc_area() - shear.area))
-                .abs()
-                < 1e-9
-        );
+        let error =
+            SectionMassProperties::try_from_section(&section, Some(&main), None, None, None)
+                .expect_err("主材料をSRCの内蔵鉄骨へ流用してはならない");
+        assert!(error.contains("SRC"));
     }
 
     #[test]

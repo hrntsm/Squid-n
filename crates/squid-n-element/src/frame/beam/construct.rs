@@ -42,7 +42,9 @@ impl BeamElement {
         let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
-        let mass_properties = model.element_mass_properties(data);
+        let mass_properties = model
+            .element_mass_properties(data)
+            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"));
         let g = mat.shear_modulus();
 
         let eval_sections = eval_sections_of(data, model, len);

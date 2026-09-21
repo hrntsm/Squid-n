@@ -564,7 +564,9 @@ impl FiberBeam {
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
-        let mass_properties = model.element_mass_properties(data);
+        let mass_properties = model
+            .element_mass_properties(data)
+            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"));
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(0.0);

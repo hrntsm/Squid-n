@@ -224,7 +224,9 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
         );
         let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
         let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
-        let expected_mass = model.element_mass_properties(&model.elements[0]);
+        let expected_mass = model
+            .element_mass_properties(&model.elements[0])
+            .expect("テスト断面の質量特性を解決できる");
         assert_relative_eq!(
             expected_mass.mass_per_length * beam.length,
             beam.mass_properties.total_mass(beam.length),
@@ -1305,6 +1307,37 @@ fn test_torsional_stiffness_and_internal_force() {
         -expected_mx_i,
         f.data[9]
     );
+}
+
+#[test]
+fn fiberの固定端自由端純ねじり固有値は質量極二次モーメントを使う() {
+    let g = 78846.0;
+    let j = 1.0e6;
+    let iy = 2.0e8;
+    let iz = 5.0e7;
+    let density = 7.85e-9;
+    let length: f64 = 3000.0;
+    let mut model = build_test_model(Some(g));
+    model.sections[0].j = j;
+    model.sections[0].iy = iy;
+    model.sections[0].iz = iz;
+    model.materials[0].density = density;
+    let mut fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    let ctx = Ctx { model: &model };
+    let zero_du = LocalVec {
+        data: SmallVec::from_elem(0.0, 12),
+    };
+    fiber.update_state(&zero_du, false, &ctx);
+    let stiffness = fiber.tangent_stiffness(&ctx);
+    let mass = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    let expected = 3.0 * g * j / (density * (iy + iz) * length.powi(2));
+    let actual = stiffness.get(9, 9) / mass.get(9, 9);
+    assert_relative_eq!(actual, expected, max_relative = 1e-10);
 }
 
 /// 鉛直柱（Z整列）でねじり剛性 GJ 追加後、グローバル rz DOF (index 5, 11) が

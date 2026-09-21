@@ -119,6 +119,7 @@ fn test_beam_new_src_cft_composite_props() {
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
+                steel_material: Some(MaterialId(1)),
                 ..src_shape.to_section(SectionId(0), "SRC-600".into())
             },
             Section {
@@ -213,6 +214,7 @@ fn test_beam_new_src_cft_composite_props() {
 
     model.sections[0] = Section {
         material: Some(MaterialId(0)),
+        steel_material: Some(MaterialId(1)),
         ..src_shape.to_section(SectionId(0), "SRC-600".into())
     };
     model.materials[0].fc = None;
