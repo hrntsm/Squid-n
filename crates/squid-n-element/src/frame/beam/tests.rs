@@ -211,6 +211,10 @@ fn test_beam_new_src_cft_composite_props() {
         (mass.get(0, 0) + mass.get(6, 6) - beam.density * beam.a_mass * beam.length).abs() < 1e-9
     );
 
+    model.sections[0] = Section {
+        material: Some(MaterialId(0)),
+        ..src_shape.to_section(SectionId(0), "SRC-600".into())
+    };
     model.materials[0].fc = None;
     let src_fallback = BeamElement::new(&make_elem(0), &model);
     assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
