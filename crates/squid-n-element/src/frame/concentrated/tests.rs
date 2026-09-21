@@ -287,8 +287,15 @@ fn test_consistent_mass_uses_initial_end_spring_stiffness_after_yield() {
     assert_eq!(before.data, after.data);
 
     let lumped_after = elem.mass_matrix(MassOption::Lumped);
+    let mut beam_before = make_test_beam();
+    beam_before.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        beam_before.a_mass,
+        beam_before.iz,
+        beam_before.iy,
+    );
     let lumped_before = ConcentratedSpringBeam::new_one_component(
-        make_test_beam(),
+        beam_before,
         Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
         Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
     )

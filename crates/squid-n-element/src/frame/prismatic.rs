@@ -34,7 +34,8 @@ pub(crate) fn condense_end_releases(
 
 /// 端部解放を質量へ反映した局所質量を返す。
 ///
-/// `Kbb` が特異な場合は `None` とし、解放なし質量へのフォールバックは行わない。
+/// 剛性の縮約では `Kbb` が特異な場合に `Kaa` を返す。質量の縮約では
+/// `None` とし、解放なし質量へのフォールバックは行わない。
 pub(crate) fn condense_end_releases_with_mass(
     k_elem: &LocalMat,
     m_elem: &LocalMat,

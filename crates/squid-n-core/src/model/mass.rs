@@ -103,30 +103,16 @@ fn valid_mass_properties(properties: SectionMassProperties) -> bool {
 pub fn validate_section_materials(
     section: &Section,
     main: Option<&Material>,
-    rebar: Option<&Material>,
-    shear_rebar: Option<&Material>,
-    steel: Option<&Material>,
+    _rebar: Option<&Material>,
+    _shear_rebar: Option<&Material>,
+    _steel: Option<&Material>,
 ) -> Result<(), String> {
-    let shear_rebar_is_ignored = matches!(
-        section.shape.as_ref(),
-        Some(SectionShape::RcWall { .. } | SectionShape::RcSlab { .. })
-    );
-    for (role, material) in [
-        ("主材料", main),
-        ("主筋材料", rebar),
-        (
-            "せん断補強筋材料",
-            shear_rebar.filter(|_| !shear_rebar_is_ignored),
-        ),
-        ("内蔵鉄骨材料", steel),
-    ] {
-        if let Some(material) = material {
-            if !material.density.is_finite() || material.density < 0.0 {
-                return Err(format!(
-                    "断面{}の{role}密度が有限な非負値ではありません",
-                    section.name
-                ));
-            }
+    if let Some(material) = main {
+        if !material.density.is_finite() || material.density < 0.0 {
+            return Err(format!(
+                "断面{}の主材料密度が有限な非負値ではありません",
+                section.name
+            ));
         }
     }
 
@@ -199,43 +185,6 @@ pub fn validate_section_materials(
         }
     }
 
-    if matches!(shape, SectionShape::SrcRect { .. }) && steel.is_none() {
-        return Err(format!("SRC断面{}の内蔵鉄骨材料が未設定です", section.name));
-    }
-    if matches!(
-        shape,
-        SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::SrcRect { .. }
-            | SectionShape::RcWall { .. }
-    ) {
-        for (role, material) in [
-            ("主筋材料", rebar),
-            (
-                "せん断補強筋材料",
-                shear_rebar.filter(|_| !shear_rebar_is_ignored),
-            ),
-        ] {
-            if material.is_some_and(|material| material.category != super::MaterialCategory::Rebar)
-            {
-                return Err(format!("断面{}の{role}が鉄筋ではありません", section.name));
-            }
-        }
-    }
-    if matches!(shape, SectionShape::RcSlab { .. }) && rebar.is_some() {
-        return Err(format!(
-            "断面{}の床版は主筋材料を受け付けません",
-            section.name
-        ));
-    }
-    if matches!(shape, SectionShape::SrcRect { .. })
-        && steel.is_some_and(|material| material.category != super::MaterialCategory::Steel)
-    {
-        return Err(format!(
-            "SRC断面{}の内蔵鉄骨材料が鋼材ではありません",
-            section.name
-        ));
-    }
     if matches!(
         shape,
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
@@ -1103,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn srcは内蔵鉄骨材料未設定なら質量特性を解決できない() {
+    fn srcは内蔵鉄骨材料未設定でも質量特性を解決できる() {
         use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
         let shape = SectionShape::SrcRect {
@@ -1134,10 +1083,14 @@ mod tests {
         };
         let section = shape.to_section(SectionId(0), "SRC".into());
         let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
-        let error =
-            SectionMassProperties::try_from_section(&section, Some(&concrete), None, None, None)
-                .expect_err("内蔵鉄骨材料未設定のSRCは質量を計算してはならない");
-        assert!(error.contains("SRC"));
+        assert!(SectionMassProperties::try_from_section(
+            &section,
+            Some(&concrete),
+            None,
+            None,
+            None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1231,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn srcの内蔵鉄骨材料未設定時は主材料を流用しない() {
+    fn srcの主材料は内蔵鉄骨材料へ流用しない() {
         use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
         let shape = SectionShape::SrcRect {
@@ -1265,7 +1218,7 @@ mod tests {
         let error =
             SectionMassProperties::try_from_section(&section, Some(&main), None, None, None)
                 .expect_err("主材料をSRCの内蔵鉄骨へ流用してはならない");
-        assert!(error.contains("SRC"));
+        assert!(error.contains("主材料"));
     }
 
     #[test]
@@ -1635,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn rcとsrcの補助材料は材料区分を検証する() {
+    fn rcとsrcは補助材料なしで質量特性を解決する() {
         use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
         let rebar = RcRebar {
@@ -1663,32 +1616,9 @@ mod tests {
         }
         .to_section(SectionId(0), "RC".into());
         let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
-        let steel = material(1, MaterialCategory::Steel, 8.0, None);
-        let rebar_material = material(2, MaterialCategory::Rebar, 8.0, None);
-        assert!(SectionMassProperties::try_from_section(
-            &rc,
-            Some(&concrete),
-            Some(&concrete),
-            None,
-            None
-        )
-        .is_err());
-        assert!(SectionMassProperties::try_from_section(
-            &rc,
-            Some(&concrete),
-            None,
-            Some(&steel),
-            None
-        )
-        .is_err());
-        assert!(SectionMassProperties::try_from_section(
-            &rc,
-            Some(&concrete),
-            Some(&steel),
-            Some(&steel),
-            None
-        )
-        .is_err());
+        assert!(
+            SectionMassProperties::try_from_section(&rc, Some(&concrete), None, None, None).is_ok()
+        );
         let src = SectionShape::SrcRect {
             b: 600.0,
             d: 600.0,
@@ -1699,22 +1629,10 @@ mod tests {
             steel_flange_thick: 12.0,
         }
         .to_section(SectionId(1), "SRC".into());
-        assert!(SectionMassProperties::try_from_section(
-            &src,
-            Some(&concrete),
-            None,
-            None,
-            Some(&concrete)
-        )
-        .is_err());
-        assert!(SectionMassProperties::try_from_section(
-            &src,
-            Some(&concrete),
-            Some(&rebar_material),
-            Some(&rebar_material),
-            Some(&steel)
-        )
-        .is_ok());
+        assert!(
+            SectionMassProperties::try_from_section(&src, Some(&concrete), None, None, None)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1767,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn 壁とスラブの補助材料の対応範囲を検証する() {
+    fn 壁とスラブは補助材料の有無や区分によらず質量を解決する() {
         let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
         let steel = material(1, MaterialCategory::Steel, 8.0, None);
         let rebar = material(2, MaterialCategory::Rebar, 7.0, None);
@@ -1783,7 +1701,7 @@ mod tests {
             None,
             None,
         )
-        .is_err());
+        .is_ok());
         assert!(SectionMassProperties::try_from_section(
             &wall,
             Some(&concrete),
@@ -1801,7 +1719,7 @@ mod tests {
             None,
             None,
         )
-        .is_err());
+        .is_ok());
         for section in [wall, slab] {
             assert!(SectionMassProperties::try_from_section(
                 &section,
@@ -1810,7 +1728,7 @@ mod tests {
                 None,
                 None,
             )
-            .is_err());
+            .is_ok());
         }
     }
 }

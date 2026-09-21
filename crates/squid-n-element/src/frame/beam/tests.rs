@@ -194,7 +194,7 @@ fn test_beam_new_src_cft_composite_props() {
         let beam = BeamElement::new(&make_elem(sec), &model);
         let mass = beam.mass_matrix(MassOption::Lumped);
         let nodal_mass = mass.get(0, 0) + mass.get(6, 6);
-        assert!((nodal_mass - beam.density * beam.a_mass * beam.length).abs() < 1e-9);
+        assert!((nodal_mass - beam.mass_properties.mass_per_length * beam.length).abs() < 1e-9);
     }
     let rc_rebar = match &src_shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -210,7 +210,9 @@ fn test_beam_new_src_cft_composite_props() {
     let beam = BeamElement::new(&make_elem(0), &model);
     let mass = beam.mass_matrix(MassOption::Lumped);
     assert!(
-        (mass.get(0, 0) + mass.get(6, 6) - beam.density * beam.a_mass * beam.length).abs() < 1e-9
+        (mass.get(0, 0) + mass.get(6, 6) - beam.mass_properties.mass_per_length * beam.length)
+            .abs()
+            < 1e-9
     );
 
     model.sections[0] = Section {
