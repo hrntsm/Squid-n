@@ -1369,13 +1369,14 @@ fn 不正な質量特性でもfiberはlumpedで生成できconsistentで失敗�
             },
         },
     });
-    model.materials[0].fc = None;
-    let fiber = FiberBeam::new(
+    model.materials[0].fc = Some(30.0);
+    let mut fiber = FiberBeam::new(
         &model.elements[0],
         &model,
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
     );
+    fiber.mass_properties_resolver = std::sync::Arc::new(|| Err("断面形状が不正です".into()));
     assert!(fiber
         .mass_matrix(crate::behavior::MassOption::Lumped)
         .data
@@ -2173,6 +2174,12 @@ fn test_all_fiber_materials_return_initial_tangent_at_zero_strain() {
     let (s, t) = steel.trial(0.0);
     assert_eq!(s, 0.0);
     assert_relative_eq!(t, 205000.0, max_relative = 1e-9);
+}
+
+#[test]
+#[should_panic(expected = "設計基準強度 Fc が未設定です")]
+fn concrete_fiber_material_rejects_missing_fc() {
+    concrete_fiber_material(None, HysteresisModel::Retrograde);
 }
 
 /// 塑性化域考慮ファイバー梁（RC 断面）は、**弾性域では接線剛性が正定値**である。

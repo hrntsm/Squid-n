@@ -46,7 +46,12 @@ pub(crate) fn concrete_fiber_material(
     fc: Option<f64>,
     rule: HysteresisModel,
 ) -> Box<dyn UniaxialMaterial> {
-    let fc = fc.unwrap_or(1.0);
+    let Some(fc) = fc.filter(|fc| *fc > 0.0) else {
+        panic!(
+            "ファイバー断面のコンクリートに設計基準強度 Fc が未設定です。\
+             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
+        );
+    };
     match rule {
         HysteresisModel::KarsanJirsa => {
             if fc <= 60.0 {

@@ -299,6 +299,14 @@ impl ElementBehavior for ConcentratedSpringBeam {
         match opt {
             MassOption::Lumped => self.elastic.mass_matrix(opt),
             MassOption::Consistent => {
+                let mass_properties = if self.elastic.mass_properties
+                    != squid_n_core::model::SectionMassProperties::default()
+                {
+                    self.elastic.mass_properties
+                } else {
+                    (self.elastic.mass_properties_resolver)()
+                        .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+                };
                 let (li, lj) = self.elastic.rigid_lengths();
                 let flex_length = self.elastic.length - li - lj;
                 let phi_y = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_z > 0.0
@@ -316,7 +324,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
                     0.0
                 };
                 let flex = crate::frame::prismatic::consistent_mass_timoshenko(
-                    self.elastic.mass_properties,
+                    mass_properties,
                     flex_length,
                     phi_z,
                     phi_y,
@@ -328,7 +336,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
                 let mm = crate::frame::prismatic::condense_end_releases_with_mass(
                     self.k_flex(),
                     &flex,
-                    self.elastic.mass_properties,
+                    mass_properties,
                     li,
                     lj,
                     &releases,

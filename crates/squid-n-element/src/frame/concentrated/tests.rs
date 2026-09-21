@@ -308,6 +308,35 @@ fn test_consistent_mass_uses_initial_end_spring_stiffness_after_yield() {
 }
 
 #[test]
+fn rc_consistent_mass_resolver_matches_beam() {
+    let rc_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        80000.0,
+        1.0666667e9,
+        1.0666667e9,
+    );
+    let mut elastic = make_test_beam();
+    elastic.mass_properties_resolver = std::sync::Arc::new(move || Ok(rc_properties));
+    let beam = elastic.clone();
+    let concentrated = ConcentratedSpringBeam::new_one_component(
+        elastic,
+        Box::new(Bilinear::new(1.0e20, 1.0e30, 0.01)),
+        Box::new(Bilinear::new(1.0e20, 1.0e30, 0.01)),
+    );
+    let concentrated_mass = concentrated.mass_matrix(MassOption::Consistent);
+    let beam_mass = beam.mass_matrix(MassOption::Consistent);
+
+    let concentrated_total = concentrated_mass.get(0, 0) + concentrated_mass.get(6, 6);
+    let beam_total = beam_mass.get(0, 0) + beam_mass.get(6, 6);
+    let concentrated_polar = concentrated_mass.get(3, 3) + concentrated_mass.get(9, 9);
+    let beam_polar = beam_mass.get(3, 3) + beam_mass.get(9, 9);
+    assert!(concentrated_total > 0.0);
+    assert!(concentrated_polar > 0.0);
+    assert_relative_eq!(concentrated_total, beam_total, max_relative = 1e-10);
+    assert_relative_eq!(concentrated_polar, beam_polar, max_relative = 1e-10);
+}
+
+#[test]
 fn test_condense_springs_singular_kbb_uses_kaa() {
     let k = LocalMat::zeros(12);
     let condensed = condense_springs(&k, 0.0, 5.0);
