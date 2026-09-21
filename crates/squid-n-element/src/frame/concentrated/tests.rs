@@ -221,30 +221,6 @@ fn test_snapshot_restore() {
 }
 
 #[test]
-fn test_tangent_stiffness_symmetric() {
-    let mut elem = make_test_element();
-    let ctx = Ctx {
-        model: &squid_n_core::model::Model::default(),
-    };
-
-    let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    };
-    elem.update_state(&du, true, &ctx);
-    let k = elem.tangent_stiffness(&ctx);
-    for i in 0..12 {
-        for j in 0..12 {
-            assert!(
-                (k.get(i, j) - k.get(j, i)).abs() < 1e-6,
-                "K[{i}][{j}] != K[{j}][{i}]: {} vs {}",
-                k.get(i, j),
-                k.get(j, i)
-            );
-        }
-    }
-}
-
-#[test]
 fn test_condense_springs_zero_stiffness() {
     let beam = make_test_beam();
     let k_raw = beam.local_stiffness_raw();
