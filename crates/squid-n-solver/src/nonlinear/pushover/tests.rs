@@ -3048,24 +3048,33 @@ fn run_rigid_zone_pushover(rigid: f64) -> PushoverResult {
     .expect("pushover should run end-to-end")
 }
 
-/// 系レベル V&V（1）: 剛域つき門形フレームの**崩壊荷重が可撓長基準の理論値**に
-/// 一致すること。
+/// 系レベル V&V: 剛域つき門形フレームの 3 保証を、剛域なし・ありの 2 解析（1 fixture）
+/// で確認する。
 ///
-/// 柱両端 4 ヒンジの崩壊機構では Qu = 4·My/L'（L' = 柱の可撓長）であり、剛域を
-/// 与えると L' = H − 2λ に短くなるぶん崩壊荷重は H/L' 倍になる。断面のファイバー
-/// 離散化や荷重ステップの量子化による誤差を打ち消すため、**剛域なしとの比**で
-/// 照合する（絶対値は既存 `test_portal_frame_collapse_load` が別途照合済み）。
+/// (1) **崩壊荷重が可撓長基準の理論値**に一致すること。柱両端 4 ヒンジの崩壊機構では
+///     Qu = 4·My/L'（L' = 柱の可撓長）であり、剛域を与えると L' = H − 2λ に短くなる
+///     ぶん崩壊荷重は H/L' 倍になる。断面のファイバー離散化や荷重ステップの量子化に
+///     よる誤差を打ち消すため、**剛域なしとの比**で照合する（絶対値は既存
+///     `test_portal_frame_collapse_load` が別途照合済み）。
+/// (2) **柱の崩壊機構が成立する**こと。はりを強くしているため柱の全体機構になり、
+///     崩壊ヒンジはすべて柱（要素 0・2）に生じる。機構種別は Ds の機構補正
+///     （`squid_n_design_jp::secondary::story_ds`）へ直接効く。
+/// (3) **層の弾性剛性が可撓長の三乗で増大する**こと。両端固定柱の層せん断剛性は
+///     12EI/L'³（節点変位基準。剛体アームは変形しない）で、剛域を与えると (H/L')³ 倍
+///     になる。剛性率 Rs・層間変形角の検定
+///     （`squid_n_design_jp::secondary::holding_capacity`）は層剛性に直接依存する。
 #[test]
-fn vnv_剛域つき門形フレームの崩壊荷重が可撓長基準になる() {
+fn vnv_剛域つき門形フレームの系レベル保証() {
     let h: f64 = 3000.0;
     let lam: f64 = 300.0;
     let l_flex = h - 2.0 * lam;
 
     let r0 = run_rigid_zone_pushover(0.0);
     let r1 = run_rigid_zone_pushover(lam);
+
+    // (1) 崩壊荷重比が可撓長基準 H/L' になる。
     let q0 = observed_collapse_shear(&r0).expect("剛域なしで崩壊機構が成立しない");
     let q1 = observed_collapse_shear(&r1).expect("剛域ありで崩壊機構が成立しない");
-
     let ratio = q1 / q0;
     let theory = h / l_flex;
     // 荷重ステップの量子化（400 ステップ）で数 % のばらつきが出るため許容 5%。
@@ -3077,16 +3086,9 @@ fn vnv_剛域つき門形フレームの崩壊荷重が可撓長基準になる(
         ratio > 1.1,
         "剛域が崩壊荷重に反映されていない（比 {ratio:.4}）"
     );
-}
 
-/// 系レベル V&V（2）: 剛域があっても崩壊機構が成立し、崩壊ヒンジが**柱に**
-/// 形成されること（はりを強くしているため柱の全体機構になる）。
-/// 崩壊機構種別は Ds の機構補正（`squid_n_design_jp::secondary::story_ds`）へ
-/// 直接効くため、剛域の導入で機構分類が崩れないことを確認する。
-#[test]
-fn vnv_剛域つきでも柱の崩壊機構が成立する() {
-    let result = run_rigid_zone_pushover(300.0);
-    let yielded: Vec<&HingeEvent> = result
+    // (2) 剛域ありでも柱の崩壊機構が成立し、降伏ヒンジは柱だけに生じる。
+    let yielded: Vec<&HingeEvent> = r1
         .hinges
         .iter()
         .filter(|h| !matches!(h.level, HingeLevel::Crack))
@@ -3096,7 +3098,6 @@ fn vnv_剛域つきでも柱の崩壊機構が成立する() {
         "柱両端 4 ヒンジの機構に達していない: 降伏ヒンジ {} 個",
         yielded.len()
     );
-    // 降伏ヒンジはすべて柱（要素 0・2）に生じる（はりは弾性に留める設計）。
     assert!(
         yielded
             .iter()
@@ -3104,34 +3105,21 @@ fn vnv_剛域つきでも柱の崩壊機構が成立する() {
         "はりに降伏ヒンジが生じた（柱の崩壊機構になっていない）"
     );
     assert!(
-        !matches!(result.mechanism, MechanismType::Partial),
+        !matches!(r1.mechanism, MechanismType::Partial),
         "崩壊機構が Partial のまま（機構が成立していない）"
     );
-}
 
-/// 系レベル V&V（3）: 剛域が層の弾性剛性を理論どおり増大させること。
-/// 剛性率 Rs・層間変形角の検定（`squid_n_design_jp::secondary::holding_capacity`）は
-/// 層剛性に直接依存するため、要素レベルだけでなく層レベルでも確認する。
-///
-/// 両端固定柱の層せん断剛性は 12EI/L'³（節点変位基準。剛体アームは変形しない）で、
-/// 剛域を与えると (H/L')³ 倍になる。
-#[test]
-fn vnv_剛域は層の弾性剛性を可撓長の三乗で増大させる() {
-    let h: f64 = 3000.0;
-    let lam: f64 = 300.0;
-    let l_flex = h - 2.0 * lam;
+    // (3) 層の弾性剛性比が (H/L')³ になる。
     let elastic_k = |r: &PushoverResult| -> f64 {
         let p = &r.capacity_curve[0];
         p.base_shear / p.roof_disp
     };
-    let k0 = elastic_k(&run_rigid_zone_pushover(0.0));
-    let k1 = elastic_k(&run_rigid_zone_pushover(lam));
-    let ratio = k1 / k0;
-    let theory = (h / l_flex).powi(3);
+    let k_ratio = elastic_k(&r1) / elastic_k(&r0);
+    let k_theory = (h / l_flex).powi(3);
     // せん断変形・はりの弾性変形の寄与で理論値から数 % ずれる。
     assert!(
-        (ratio / theory - 1.0).abs() < 0.05,
-        "層剛性比が (H/L')³ から外れている: 実測 {ratio:.4}, 理論 {theory:.4}"
+        (k_ratio / k_theory - 1.0).abs() < 0.05,
+        "層剛性比が (H/L')³ から外れている: 実測 {k_ratio:.4}, 理論 {k_theory:.4}"
     );
 }
 
