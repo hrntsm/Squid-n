@@ -409,6 +409,7 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
         SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => {
             dimensions.extend([("b", *b), ("d", *d)]);
             validate_rebar_geometry(rebar, &positive, &nonnegative)?;
+            validate_rectangular_rebar_fit(rebar, *b, *d)?;
             if let SectionShape::SrcRect {
                 steel_height,
                 steel_width,
@@ -423,11 +424,14 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
                     ("steel_web_thick", *steel_web_thick),
                     ("steel_flange_thick", *steel_flange_thick),
                 ]);
+                relation("steel_height <= d", *steel_height <= *d)?;
+                relation("steel_width <= b", *steel_width <= *b)?;
             }
         }
         SectionShape::RcCircle { d, rebar } => {
             dimensions.push(("d", *d));
             validate_rebar_geometry(rebar, &positive, &nonnegative)?;
+            validate_circular_rebar_fit(rebar, *d)?;
         }
         SectionShape::RcWall { thickness, ps } => {
             dimensions.push(("thickness", *thickness));
@@ -460,6 +464,107 @@ fn validate_rebar_geometry(
     } else {
         nonnegative("shear.dia", rebar.shear.dia)?;
         nonnegative("shear.pitch", rebar.shear.pitch)?;
+    }
+    Ok(())
+}
+
+fn validate_rectangular_rebar_fit(rebar: &RcRebar, width: f64, depth: f64) -> Result<(), String> {
+    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
+
+    let check = |description: &str, condition: bool| {
+        if condition {
+            Ok(())
+        } else {
+            Err(format!(
+                "矩形断面の配筋が母断面内に収まりません: {description}"
+            ))
+        }
+    };
+    let check_set_x = |set: &crate::section_shape::BarSet| -> Result<(), String> {
+        if set.count == 0 {
+            return Ok(());
+        }
+        let span = width - 2.0 * rebar.cover;
+        check("主筋の幅方向の中心または径", span >= 0.0)?;
+        for layer in 0..set.layers.max(1) {
+            let depth_from_edge =
+                rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
+            check(
+                "主筋のせい方向の中心または径",
+                depth_from_edge + set.dia / 2.0 <= depth / 2.0,
+            )?;
+        }
+        for i in 0..set.count {
+            let y = if set.count == 1 {
+                0.0
+            } else {
+                -span / 2.0 + span * i as f64 / (set.count - 1) as f64
+            };
+            check(
+                "主筋の幅方向の中心または径",
+                y.abs() + set.dia / 2.0 <= width / 2.0,
+            )?;
+        }
+        Ok(())
+    };
+    let check_set_y = |set: &crate::section_shape::BarSet| -> Result<(), String> {
+        if set.count == 0 {
+            return Ok(());
+        }
+        let span = depth - 2.0 * rebar.cover;
+        check("主筋のせい方向の中心または径", span >= 0.0)?;
+        for layer in 0..set.layers.max(1) {
+            let depth_from_edge =
+                rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
+            check(
+                "主筋の幅方向の中心または径",
+                depth_from_edge + set.dia / 2.0 <= width / 2.0,
+            )?;
+        }
+        for i in 0..set.count {
+            let z = -span / 2.0 + span * (i as f64 + 1.0) / (set.count + 1) as f64;
+            check(
+                "主筋のせい方向の中心または径",
+                z.abs() + set.dia / 2.0 <= depth / 2.0,
+            )?;
+        }
+        Ok(())
+    };
+    check_set_x(&rebar.main_x)?;
+    check_set_y(&rebar.main_y)?;
+    if rebar.shear.legs > 0 {
+        check(
+            "せん断補強筋の幅方向の中心または径",
+            2.0 * rebar.cover + rebar.shear.dia <= width,
+        )?;
+        check(
+            "せん断補強筋のせい方向の中心または径",
+            2.0 * rebar.cover + rebar.shear.dia <= depth,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_circular_rebar_fit(rebar: &RcRebar, dia: f64) -> Result<(), String> {
+    use crate::rc_rebar_geom::rebar_layer_depth_from_edge;
+
+    let radius = dia / 2.0;
+    for (name, set) in [("main_x", &rebar.main_x), ("main_y", &rebar.main_y)] {
+        if set.count == 0 {
+            continue;
+        }
+        for layer in 0..set.layers.max(1) {
+            let depth_from_edge =
+                rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
+            if depth_from_edge + set.dia / 2.0 > radius {
+                return Err(format!(
+                    "円形断面の配筋が母断面内に収まりません: {name} の中心または径"
+                ));
+            }
+        }
+    }
+    if rebar.shear.legs > 0 && rebar.cover + rebar.shear.dia / 2.0 > radius {
+        return Err("円形断面の配筋が母断面内に収まりません: せん断補強筋の中心または径".into());
     }
     Ok(())
 }
@@ -1594,6 +1699,117 @@ mod tests {
                 SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
             );
         }
+    }
+
+    #[test]
+    fn 矩形_rcの母断面外配筋を拒否する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::RcRect {
+            b: 100.0,
+            d: 100.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 2,
+                    dia: 20.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 45.0,
+                shear: ShearBar {
+                    dia: 0.0,
+                    pitch: 0.0,
+                    legs: 0,
+                },
+            },
+        };
+        let section = shape.to_section(SectionId(0), "RC矩形".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let error =
+            SectionMassProperties::try_from_section(&section, Some(&concrete), None, None, None)
+                .expect_err("矩形RCの断面外主筋を拒否する");
+        assert!(error.contains("母断面内"));
+    }
+
+    #[test]
+    fn 円形_rcの母断面外配筋を拒否する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::RcCircle {
+            d: 100.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 4,
+                    dia: 20.0,
+                    layers: 2,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 20.0,
+                shear: ShearBar {
+                    dia: 0.0,
+                    pitch: 0.0,
+                    legs: 0,
+                },
+            },
+        };
+        let section = shape.to_section(SectionId(0), "RC円形".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let error =
+            SectionMassProperties::try_from_section(&section, Some(&concrete), None, None, None)
+                .expect_err("円形RCの断面外主筋を拒否する");
+        assert!(error.contains("母断面内"));
+    }
+
+    #[test]
+    fn srcの母断面外内蔵鉄骨を拒否する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let shape = SectionShape::SrcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 0,
+                    dia: 0.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 0.0,
+                    pitch: 0.0,
+                    legs: 0,
+                },
+            },
+            steel_height: 500.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        };
+        let section = shape.to_section(SectionId(0), "SRC".into());
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let steel = material(1, MaterialCategory::Steel, 8.0, None);
+        let error = SectionMassProperties::try_from_section(
+            &section,
+            Some(&concrete),
+            None,
+            None,
+            Some(&steel),
+        )
+        .expect_err("SRCの母断面外鉄骨を拒否する");
+        assert!(error.contains("steel_height <= d"));
     }
 
     #[test]
