@@ -134,7 +134,6 @@ pub fn validate_section_materials(
         shape,
         SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
-            | SectionShape::SrcRect { .. }
             | SectionShape::RcWall { .. }
             | SectionShape::RcSlab { .. }
     );
@@ -158,6 +157,27 @@ pub fn validate_section_materials(
             "RC/SRC断面{}のコンクリート材料のFcが未設定または不正です",
             section.name
         ));
+    }
+
+    if matches!(shape, SectionShape::SrcRect { .. }) {
+        let Some(main) = main else {
+            return Err(format!("SRC断面{}の主材料が未設定です", section.name));
+        };
+        if !matches!(
+            main.category,
+            super::MaterialCategory::Concrete | super::MaterialCategory::Steel
+        ) {
+            return Err(format!(
+                "SRC断面{}の主材料はコンクリートまたは鋼材である必要があります",
+                section.name
+            ));
+        }
+        if main.fc.is_none_or(|fc| !fc.is_finite() || fc <= 0.0) {
+            return Err(format!(
+                "SRC断面{}の主材料のコンクリート材料のFcが未設定または不正です",
+                section.name
+            ));
+        }
     }
 
     let steel_shape = matches!(
@@ -1393,18 +1413,19 @@ mod tests {
             SectionShape::RcSlab { thickness: 150.0 },
         ];
         for (index, shape) in shapes.into_iter().enumerate() {
+            let src = matches!(&shape, SectionShape::SrcRect { .. });
             let section = shape.to_section(SectionId(index as u32), "RC系".into());
             assert!(
                 SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
             );
-            assert!(SectionMassProperties::try_from_section(
+            let steel_result = SectionMassProperties::try_from_section(
                 &section,
                 Some(&material(0, MaterialCategory::Steel, 2.4e-9, Some(24.0))),
                 None,
                 None,
                 None,
-            )
-            .is_err());
+            );
+            assert_eq!(steel_result.is_ok(), src);
             assert!(SectionMassProperties::try_from_section(
                 &section,
                 Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(0.0))),
