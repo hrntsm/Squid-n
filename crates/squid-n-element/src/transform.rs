@@ -134,6 +134,27 @@ impl LocalFrame {
         kg
     }
 
+    pub fn to_local(&self, k_global: &LocalMat) -> LocalMat {
+        let r = self.make_r12();
+        let rt = self.make_r12_transpose();
+        let mut tmp = vec![0.0; 144];
+        for i in 0..12 {
+            for j in 0..12 {
+                for k in 0..12 {
+                    tmp[i * 12 + j] += r[i * 12 + k] * k_global.get(k, j);
+                }
+            }
+        }
+        let mut local = LocalMat::zeros(12);
+        for i in 0..12 {
+            for j in 0..12 {
+                let value = (0..12).map(|k| tmp[i * 12 + k] * rt[k * 12 + j]).sum();
+                local.set(i, j, value);
+            }
+        }
+        local
+    }
+
     pub fn rotate_to_global(&self, v_local: &[f64; 12]) -> [f64; 12] {
         let rt = self.make_r12_transpose();
         let mut vg = [0.0; 12];

@@ -12,7 +12,7 @@ pub use detect::{
 };
 
 #[cfg(test)]
-use crate::behavior::{Ctx, ElementBehavior, LocalMat};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 #[cfg(test)]
 use crate::frame::beam::BeamElement;
 #[cfg(test)]
@@ -128,6 +128,19 @@ mod tests {
             (e_uy - expected_uy).abs() / expected_uy < 1e-6,
             "面外剛性が変化した: e_uy={e_uy} expected={expected_uy}"
         );
+    }
+
+    #[test]
+    fn test_consistent_mass_has_the_same_released_rotation_mapping() {
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+        let column = make_test_column(ReleaseAxis::LocalY);
+        let mass = column.mass_matrix(MassOption::Consistent);
+        assert!(mass.get(4, 4).abs() < 1e-12);
+        assert!(mass.get(10, 10).abs() < 1e-12);
+        let lumped = column.mass_matrix(MassOption::Lumped);
+        assert!(lumped.get(4, 4).abs() < 1e-12);
+        let _ = ctx;
     }
 
     #[test]

@@ -96,6 +96,16 @@ pub fn validate_section_materials(
     }
 
     let Some(shape) = section.shape.as_ref() else {
+        if main.is_none()
+            && [section.area, section.iy, section.iz]
+                .into_iter()
+                .any(|value| value.is_finite() && value > 0.0)
+        {
+            return Err(format!(
+                "形状なし断面{}は正の断面諸元があるため主材料が必要です",
+                section.name
+            ));
+        }
         return Ok(());
     };
 
@@ -135,7 +145,10 @@ pub fn validate_section_materials(
     if matches!(
         shape,
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
-    ) && main.and_then(|m| m.fc).filter(|fc| *fc > 0.0).is_none()
+    ) && main
+        .and_then(|m| m.fc)
+        .filter(|fc| fc.is_finite() && *fc > 0.0)
+        .is_none()
     {
         return Err(format!("CFT断面{}のFcが未設定または不正です", section.name));
     }
@@ -525,6 +538,28 @@ mod tests {
     }
 
     #[test]
+    fn 形状なしで正の断面諸元があり主材料がなければエラーになる() {
+        let section = Section {
+            area: 100.0,
+            ..Section::zero(SectionId(0), "unassigned".into())
+        };
+        assert!(
+            SectionMassProperties::try_from_section(&section, None, None, None, None)
+                .expect_err("正の断面諸元には主材料が必要")
+                .contains("主材料")
+        );
+    }
+
+    #[test]
+    fn 形状なしでゼロ断面かつ主材料なしは意図的な無質量として許可する() {
+        let section = Section::zero(SectionId(0), "massless".into());
+        assert_eq!(
+            SectionMassProperties::try_from_section(&section, None, None, None, None).unwrap(),
+            SectionMassProperties::default()
+        );
+    }
+
+    #[test]
     fn rcはコンクリートと主筋とせん断補強筋を重複なく積分する() {
         use crate::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -737,6 +772,27 @@ mod tests {
             SectionMassProperties::try_from_section(&section, Some(&steel), None, None, None)
                 .expect_err("Fc未設定のCFTは質量を計算してはならない");
         assert!(error.contains("CFT"));
+    }
+
+    #[test]
+    fn cftはfcの非有限値を受け付けない() {
+        let shape = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 12.0,
+        };
+        let section = shape.to_section(SectionId(0), "CFT".into());
+        for fc in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let steel = material(0, MaterialCategory::Steel, 8.0, Some(fc));
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&steel),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        }
     }
 
     #[test]

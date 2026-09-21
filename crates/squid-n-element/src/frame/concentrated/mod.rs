@@ -292,7 +292,51 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        self.elastic.mass_matrix(opt)
+        match opt {
+            MassOption::Lumped => self.elastic.mass_matrix(opt),
+            MassOption::Consistent => {
+                let (li, lj) = self.elastic.rigid_lengths();
+                let flex_length = self.elastic.length - li - lj;
+                let phi_y = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_z > 0.0
+                {
+                    12.0 * self.elastic.e * self.elastic.iy
+                        / (self.elastic.g * self.elastic.as_z * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let phi_z = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_y > 0.0
+                {
+                    12.0 * self.elastic.e * self.elastic.iz
+                        / (self.elastic.g * self.elastic.as_y * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let flex = crate::frame::prismatic::consistent_mass_timoshenko(
+                    self.elastic.mass_properties,
+                    flex_length,
+                    phi_z,
+                    phi_y,
+                );
+                let releases = [
+                    (SPRING_ROT_DOFS[0], self.spring_i.probe(self.trial_rot_i).1),
+                    (SPRING_ROT_DOFS[1], self.spring_j.probe(self.trial_rot_j).1),
+                ];
+                let mm = crate::frame::prismatic::condense_end_releases_with_mass(
+                    self.k_flex(),
+                    &flex,
+                    self.elastic.mass_properties,
+                    li,
+                    lj,
+                    &releases,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ConcentratedSpringBeam の端部解放質量を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                    )
+                });
+                self.elastic.axis.to_global(&mm)
+            }
+        }
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {

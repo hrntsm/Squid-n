@@ -1215,7 +1215,52 @@ impl ElementBehavior for WallElement {
         self.fiber_column.as_ref().and_then(|f| f.ductility_probe())
     }
 
-    fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
+    fn mass_matrix(&self, opt: MassOption) -> LocalMat {
+        if matches!(opt, MassOption::Consistent) {
+            let column_mass = crate::frame::prismatic::condense_end_releases_with_mass(
+                &self.column.local_stiffness(),
+                &self
+                    .column
+                    .axis
+                    .to_local(&self.column.mass_matrix(MassOption::Consistent)),
+                self.column.mass_properties,
+                0.0,
+                0.0,
+                &[(4, 0.0), (10, 0.0)],
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "壁柱の整合質量を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                )
+            });
+            let column_mass = self.column.axis.to_global(&column_mass);
+            let reference_mass = self.column.mass_properties.total_mass(self.column.length);
+            let scale = if reference_mass > 0.0 {
+                self.mass_total / reference_mass
+            } else {
+                0.0
+            };
+            let mut mass = LocalMat::zeros(24);
+            for p in 0..24 {
+                for q in 0..24 {
+                    let mut value = 0.0;
+                    for i in 0..12 {
+                        let aip = self.a_mat[i * 24 + p];
+                        if aip == 0.0 {
+                            continue;
+                        }
+                        for j in 0..12 {
+                            let ajq = self.a_mat[j * 24 + q];
+                            if ajq != 0.0 {
+                                value += aip * column_mass.get(i, j) * ajq;
+                            }
+                        }
+                    }
+                    mass.set(p, q, value * scale);
+                }
+            }
+            return mass;
+        }
         let mut mm = LocalMat::zeros(24);
         let m_node = self.mass_total / 4.0;
         for i in 0..4 {
@@ -1444,6 +1489,22 @@ mod tests {
             (actual - expected).abs() < expected * 1e-12,
             "actual={actual} expected={expected}"
         );
+    }
+
+    #[test]
+    fn test_wall_consistent_mass_preserves_total_mass_and_differs_from_lumped() {
+        let (model, data) = make_wall_model();
+        let wall = WallElement::try_new(&data, &model).unwrap();
+        let consistent = wall.mass_matrix(MassOption::Consistent);
+        let lumped = wall.mass_matrix(MassOption::Lumped);
+        let total_consistent: f64 = (0..24)
+            .map(|i| (0..24).map(|j| consistent.get(i, j)).sum::<f64>())
+            .sum();
+        let total_lumped: f64 = (0..24)
+            .map(|i| (0..24).map(|j| lumped.get(i, j)).sum::<f64>())
+            .sum();
+        assert!((total_consistent - total_lumped).abs() < total_lumped * 1e-12);
+        assert!((consistent.get(0, 6) - lumped.get(0, 6)).abs() > 1e-12);
     }
 
     #[test]

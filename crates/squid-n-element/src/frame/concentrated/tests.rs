@@ -258,6 +258,31 @@ fn test_condense_springs_zero_stiffness() {
 }
 
 #[test]
+fn test_consistent_mass_follows_end_spring_stiffness() {
+    let mut elastic = make_test_beam();
+    elastic.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        elastic.a_mass,
+        elastic.iz,
+        elastic.iy,
+    );
+    let make = |stiffness| {
+        ConcentratedSpringBeam::new_one_component(
+            elastic.clone(),
+            Box::new(Bilinear::new(stiffness, 1.0e20, 0.01)),
+            Box::new(Bilinear::new(stiffness, 1.0e20, 0.01)),
+        )
+    };
+    let soft = make(1.0e5).mass_matrix(MassOption::Consistent);
+    let stiff = make(1.0e12).mass_matrix(MassOption::Consistent);
+    assert!((soft.get(5, 5) - stiff.get(5, 5)).abs() > 1.0e-12);
+    assert!((soft.get(5, 5) - stiff.get(5, 5)).abs() / stiff.get(5, 5).abs() > 1e-3);
+    let lumped_soft = make(1.0e5).mass_matrix(MassOption::Lumped);
+    let lumped_stiff = make(1.0e12).mass_matrix(MassOption::Lumped);
+    assert_eq!(lumped_soft.data, lumped_stiff.data);
+}
+
+#[test]
 fn test_condense_springs_singular_kbb_uses_kaa() {
     let k = LocalMat::zeros(12);
     let condensed = condense_springs(&k, 0.0, 5.0);
