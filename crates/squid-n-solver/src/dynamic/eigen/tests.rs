@@ -405,7 +405,7 @@ fn test_1dof_period() {
     );
     assert!(
         (result.period[0] - 0.198692).abs() < 1e-5,
-        "T={} 設計書例 0.198692 と不一致",
+        "T={} 参照値 0.198692 と不一致",
         result.period[0]
     );
 }

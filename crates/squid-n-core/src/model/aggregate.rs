@@ -88,8 +88,8 @@ pub struct Model {
     #[serde(default)]
     pub damper_attrs: Vec<DamperAttr>,
     /// 部材の付帯情報（端部ハンチ・継手位置）。剛性・応力解析には影響しない
-    /// （設計書 §6.2。剛性は基準断面のまま）。断面算定の検定位置の追加
-    /// （ハンチ端・継手位置、§6.2.3）と数量拾いに用いる。
+    /// （剛性は基準断面のまま）。断面算定の検定位置の追加
+    /// （ハンチ端・継手位置）と数量拾いに用いる。
     #[serde(default)]
     pub member_detail_attrs: Vec<MemberDetailAttr>,
     /// 所属未割当の小梁（`rebuild_floor_regions` でどの床領域にも入らなかったもの）。

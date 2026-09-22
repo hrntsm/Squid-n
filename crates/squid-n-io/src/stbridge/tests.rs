@@ -164,7 +164,7 @@ fn test_roundtrip_semantic() {
 
 #[test]
 fn test_roundtrip_twice_stable() {
-    // import→export→再import で安定（DoD §8.3）。
+    // import→export→再import で安定。
     let m = representative_model();
     let xml1 = export_stbridge(&m).unwrap();
     let m2 = import_stbridge(&xml1).unwrap();

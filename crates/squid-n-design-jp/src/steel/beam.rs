@@ -625,7 +625,7 @@ mod tests {
     /// σ=18.75 N/mm², fb=F/1.5=156.6667 N/mm²（矩形は横座屈対象外＝fb=ft）,
     /// 検定比=0.1197（相対 1e-9）。
     #[test]
-    fn test_beam_check_bending_spec_p3_6_4() {
+    fn test_beam_check_bending_rect_section_hand_calc() {
         let sec = rect_section(200.0, 400.0, "矩形200x400");
         let mat_v = mat("SN400");
         let forces = MemberForcesAt {

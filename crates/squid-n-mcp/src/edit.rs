@@ -1,4 +1,4 @@
-//! モデル編集（P8 T2: `model.edit`）。GUI と同一の `EditCommand` + `UndoStack` 経路。
+//! モデル編集（`model.edit`）。GUI と同一の `EditCommand` + `UndoStack` 経路。
 
 use super::*;
 use squid_n_core::ids::{
@@ -37,7 +37,7 @@ pub struct WriteResult {
 
 /// JSON 引数から `EditCommand` を生成する。`command` キーで種別を指定する。
 ///
-/// MCP ツール引数は `command` をトップレベルに置く（P8 T2）。
+/// MCP ツール引数は `command` をトップレベルに置く。
 /// `{ "body": { "command": ... } }` も受け付ける。
 pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditCommand>, String> {
     let value = resolve_edit_payload(value);

@@ -1,18 +1,18 @@
-//! チェックポイント／再開（設計書 §12.4）。
+//! チェックポイント／再開。
 //! 長時間の非線形／時刻歴の再開・巻き戻しのため、解析状態をバイナリ保存する。
 
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
 
-/// P5 §6 の StateSnapshot を直列化したバイト列（全要素・全材料の committed 状態）。
+/// StateSnapshot を直列化したバイト列（全要素・全材料の committed 状態）。
 /// 線形時刻歴では空配列でよい。
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 pub struct StateBlob {
     pub element_states: Vec<Vec<u8>>,
 }
 
-/// チェックポイント内容（設計書 §12.4）。
+/// チェックポイント内容。
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 pub struct Checkpoint {
     pub schema_version: u32,
@@ -185,7 +185,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 非線形チェックポイントのラウンドトリップテスト（P6 §5 §6）。
+    /// 非線形チェックポイントのラウンドトリップテスト。
     /// FiberBeam 1要素の状態を保存→復元し、直列化バイト列が一致することを確認。
     #[test]
     fn test_nonlinear_checkpoint_roundtrip() {

@@ -1,4 +1,4 @@
-//! ST-Bridge パース（Import）。設計書 §12.5。
+//! ST-Bridge パース（Import）。
 //!
 //! [`import_stbridge`] は ST-Bridge 標準スキーマ（2.0.2）の断面要素
 //! （`StbSecColumn_S`/`StbSecBeam_S`/`StbSecColumn_RC`/`StbSecBeam_RC`/`StbSecColumn_CFT`/

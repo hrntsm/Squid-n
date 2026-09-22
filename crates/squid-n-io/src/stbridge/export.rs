@@ -1,4 +1,4 @@
-//! ST-Bridge 直列化（Export）。設計書 §12.5。
+//! ST-Bridge 直列化（Export）。
 //!
 //! 出力は **ST-Bridge 2.0.2 標準スキーマ準拠**の幾何モデル（他ソフト・BIM が読める形）。
 //! - 断面は標準要素（`StbSecColumn_S`/`StbSecBeam_RC` 等）＋形鋼ライブラリ `StbSecSteel`。

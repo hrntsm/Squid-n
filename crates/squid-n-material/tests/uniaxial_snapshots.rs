@@ -1,4 +1,4 @@
-//! 単軸履歴則（Concrete/Bilinear/MP）のスナップショットテスト（仕様書 §8.1）。
+//! 単軸履歴則（Concrete/Bilinear/MP）のスナップショットテスト。
 //! 規定の繰り返しひずみ履歴に対する (ε, σ) ループを insta で固定し、回帰を検出する。
 
 use squid_n_material::{Bilinear, Concrete, ConcreteCyclic, MenegottoPinto, UniaxialMaterial};

@@ -9,7 +9,7 @@
 //!   **断面**（形状＝鋼各種・RC・SRC・CFT ＋形鋼ライブラリ `StbSecSteel`）、
 //!   **部材**（柱・大梁・間柱・ブレース・スラブ・壁。向き `rotate`・端部 `condition_*`）、
 //!   **材料**（グレード名。`StbModel` は材料テーブルを持たないため断面の `strength_*` で表す）。
-//! - import→export→再import で上記が意味的に一致する（DoD §8.3）。
+//! - import→export→再import で上記が意味的に一致する。
 //! - 要素ごとの詳細な変換状況は利用者ドキュメント
 //!   `docs/model_io/03_ST-Bridge_要素別変換状況.md` を参照。
 //!

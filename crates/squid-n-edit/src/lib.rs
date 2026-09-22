@@ -1,6 +1,6 @@
 use squid_n_core::model::Model;
 
-/// 編集コマンド。`Send` を要求するのは、MCP サーバ(P8)が `UndoStack` を
+/// 編集コマンド。`Send` を要求するのは、MCP サーバが `UndoStack` を
 /// スレッド間で共有する(`rmcp::ServerHandler: Send + Sync`)ため。
 /// コマンドはモデルデータの断片のみを保持するプレーンな構造体であり、
 /// 全実装が自然に `Send` を満たす。

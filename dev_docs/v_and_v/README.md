@@ -153,7 +153,7 @@
 | 11 | 床荷重分割 | squid-n-load | floor.rs | `test_*` | P2 | ✅ |
 | 11a | 壁・間柱の自重支持先 | squid-n-load / squid-n-app | wall_plate_load.rs / cascade.rs | `wall_plate_load::tests`・`vertical_post_uses_explicit_end_shares`・`明示負担率で密度直接集計とdl集計の階重量が一致する` | [検証記録](壁版の支持範囲判定_2026-09.md) | 🔶（実測照合は未実施） |
 | 12 | 荷重組合せ | squid-n-load | combo.rs | `test_combinations` | P2 | ✅ |
-| 13 | 許容応力度設計 | squid-n-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
+| 13 | 許容応力度設計 | squid-n-design-jp | allowable_stress.rs | `test_beam_check_bending_rect_section_hand_calc` 他 | P3 | ✅ |
 | 14 | 保有耐力 | squid-n-design-jp | holding_capacity.rs | `test_*` | P7 | 🔶 |
 | 15 | プッシュオーバー | squid-n-solver | pushover.rs | — | P5 | 🔶 |
 | 16 | 壁（TVLEM） | squid-n-element | — | — | P5.5 | 対象外 |

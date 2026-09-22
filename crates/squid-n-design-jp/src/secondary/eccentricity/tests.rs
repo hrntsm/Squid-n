@@ -19,7 +19,7 @@ fn test_d_value_formula_and_degenerate() {
 
 // 剛心の検算例
 #[test]
-fn test_center_of_rigidity_and_eccentricity_dod_example() {
+fn test_center_of_rigidity_and_eccentricity_known_values() {
     // 確定値: Dy=[100,300] @ x=[0,6000] → Xs = 4500
     let cols = vec![
         ColumnStiffness {
@@ -36,7 +36,7 @@ fn test_center_of_rigidity_and_eccentricity_dod_example() {
     let cr = center_of_rigidity(&cols);
     assert!((cr[0] - 4500.0).abs() < 1e-9, "Xs got {}", cr[0]);
 
-    // 上の剛心に重心 Xg=3000 → ex = 1500（DoD §8.1）
+    // 上の剛心に重心 Xg=3000 → ex = 1500
     let ecc = eccentricity(&cols, [3000.0, 0.0], cr);
     assert!((ecc.ex - 1500.0).abs() < 1e-9, "ex got {}", ecc.ex);
 }
