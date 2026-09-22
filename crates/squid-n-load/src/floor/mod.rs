@@ -267,4 +267,6 @@ pub fn distribute_region(
 }
 
 #[cfg(test)]
+mod distribution_verification;
+#[cfg(test)]
 mod tests;
