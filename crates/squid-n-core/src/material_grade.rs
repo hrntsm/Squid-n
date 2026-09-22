@@ -217,12 +217,15 @@ pub const SHEAR_REBAR_DEFAULT_FY: f64 = 295.0;
 
 /// せん断補強筋として対応するグレードかどうかを判定する。
 ///
-/// 対応グレードは `SR235`・`SR295`・`SD295`（`SD295A`・`SD295B` を含む前方一致）・
-/// `SD345`・`SD390`・`SD490`。名称は trim のみを行い、許容応力度表の行選択にのみ
+/// 対応グレードは `SR235`・`SR295`・`SD295`・`SD295A`・`SD295B`・`SD345`・`SD390`・
+/// `SD490`（名称の明示一致）。名称は trim のみを行い、許容応力度表の行選択にのみ
 /// 用いる（材料の降伏強度は `Material.fy` から解決する）。
 pub fn is_supported_shear_rebar_grade(name: &str) -> bool {
     let g = name.trim();
-    matches!(g, "SR235" | "SR295" | "SD345" | "SD390" | "SD490") || g.starts_with("SD295")
+    matches!(
+        g,
+        "SR235" | "SR295" | "SD295" | "SD295A" | "SD295B" | "SD345" | "SD390" | "SD490"
+    )
 }
 
 /// 未対応のせん断補強筋グレードに対するエラー文言を組み立てる。
@@ -652,7 +655,7 @@ mod tests {
     }
 
     /// せん断補強筋として対応するグレードの判定。対応は SR235・SR295・SD295 系・
-    /// SD345・SD390・SD490 のみで、高強度製品名は未対応とする。
+    /// SD345・SD390・SD490 の明示一致のみで、高強度製品名・`SD295` の未知名は未対応とする。
     #[test]
     fn test_is_supported_shear_rebar_grade() {
         for name in [
@@ -668,7 +671,18 @@ mod tests {
         ] {
             assert!(is_supported_shear_rebar_grade(name), "{name} は対応");
         }
-        for name in ["KH785", "UB785", "SBPD1275", "USD685", "", "S", "SS400"] {
+        for name in [
+            "KH785",
+            "UB785",
+            "SBPD1275",
+            "USD685",
+            "",
+            "S",
+            "SS400",
+            "SD295X",
+            "SD295Z",
+            "SD295-FOO",
+        ] {
             assert!(!is_supported_shear_rebar_grade(name), "{name} は未対応");
         }
     }
@@ -698,6 +712,13 @@ mod tests {
         for fy in [None, Some(0.0)] {
             let msg = shear_rebar_material_issue(Some(&rebar_mat("SR235", fy))).unwrap();
             assert!(msg.contains("SR235") && msg.contains("fy"), "{msg}");
+        }
+        // SD295 の未知名は、fy を設定しても未対応として不備を返す
+        // （終局 σwy にこの fy を使わせない）。
+        for name in ["SD295X", "SD295Z", "SD295-FOO"] {
+            let msg = shear_rebar_material_issue(Some(&rebar_mat(name, Some(295.0)))).unwrap();
+            assert!(msg.contains(name), "{msg}");
+            assert!(msg.contains("未対応"), "{msg}");
         }
     }
 

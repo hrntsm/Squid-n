@@ -255,6 +255,27 @@ fn test_ultimate_sr235_requires_fy() {
     assert!(beam.qsu > 0.0);
 }
 
+/// `SD295` の未知名（`SD295X` 等）は未対応として停止し、設定した `fy` を
+/// 終局 σwy に使わない（`SD295` の前方一致で任意の `fy` をすり抜けさせない）。
+#[test]
+fn test_ultimate_unknown_sd295_is_unsupported() {
+    let opts = UltimateShearOptions::default();
+    for name in ["SD295X", "SD295Z", "SD295-FOO"] {
+        let mut model = column_and_beam_model();
+        model.materials.push(Material {
+            id: MaterialId(model.materials.len() as u32),
+            name: name.to_string(),
+            fy: Some(295.0),
+            ..material()
+        });
+        let shear_id = MaterialId(model.materials.len() as u32 - 1);
+        model.sections[1].shear_rebar_material = Some(shear_id);
+        let err = collect_rc_ultimate_checks(&model, &[], &opts).unwrap_err();
+        assert!(err.contains(name), "{name}: {err}");
+        assert!(err.contains("未対応"), "{name}: {err}");
+    }
+}
+
 #[test]
 fn test_ultimate_check_ql_subtraction_and_unsupported_error() {
     // 余裕率の QL 控除は `q_long` のみで行う。
