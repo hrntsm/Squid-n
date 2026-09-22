@@ -153,8 +153,9 @@ pub enum StoryLevelKind {
     Normal,
     /// 塔屋（PH）階。層せん断力 Qi = k·ΣWj（k は 0.5〜1.0 の指定震度）。
     Penthouse { k: f64 },
-    /// 地下階。Qi = Q(i+1) + K·Wi、K = 0.1·(1 − H/40)·Z（H は地盤面からの深さ[m]、20m 超は 20m）。
-    Basement { depth_m: f64 },
+    /// 地下階。Qi = Q(i+1) + K·Wi、K = 0.1·(1 − H/40)·Z
+    /// （H は地盤面からの深さ depth_mm [mm] を m 換算した値、20m 超は 20m）。
+    Basement { depth_mm: f64 },
 }
 
 /// 階（床）の定義。法規上の「層」は [`Layer`] である。

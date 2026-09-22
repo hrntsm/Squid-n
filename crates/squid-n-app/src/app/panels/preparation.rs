@@ -4,8 +4,7 @@
 
 use super::*;
 use crate::table_util::Col;
-use squid_n_core::units::to_display::force_kn;
-use squid_n_core::units::to_internal;
+use squid_n_core::units::{to_display, to_internal};
 
 impl App {
     /// 右ドック「① 準備計算」パネル：解析条件の入力・階の定義と、準備計算の実行。
@@ -474,7 +473,7 @@ impl App {
                             let cell_id = egui::Id::new(("story_weight", story.0));
                             let mut w = ui
                                 .data(|d| d.get_temp::<f64>(cell_id))
-                                .unwrap_or(force_kn(weight.unwrap_or(0.0)));
+                                .unwrap_or(to_display::force_kn(weight.unwrap_or(0.0)));
                             ui.horizontal_wrapped(|ui| {
                                 let resp = ui
                                     .add(
@@ -521,9 +520,10 @@ impl App {
                             let label = match level_kind {
                                 StoryLevelKind::Normal => "一般".to_string(),
                                 StoryLevelKind::Penthouse { k } => format!("PH(k={k:.2})"),
-                                StoryLevelKind::Basement { depth_m } => {
-                                    format!("地下(H={depth_m:.1}m)")
-                                }
+                                StoryLevelKind::Basement { depth_mm } => format!(
+                                    "地下(H={:.1}m)",
+                                    to_display::length_m(*depth_mm)
+                                ),
                             };
                             egui::ComboBox::from_id_salt(("story_level_kind", story.0))
                                 .selected_text(label)
@@ -560,15 +560,16 @@ impl App {
                                         )
                                         .clicked()
                                     {
-                                        let depth_m =
-                                            if let StoryLevelKind::Basement { depth_m } = level_kind
+                                        let depth_mm =
+                                            if let StoryLevelKind::Basement { depth_mm } =
+                                                level_kind
                                             {
-                                                *depth_m
+                                                *depth_mm
                                             } else {
-                                                3.0
+                                                3000.0
                                             };
                                         new_level_kind =
-                                            Some(StoryLevelKind::Basement { depth_m });
+                                            Some(StoryLevelKind::Basement { depth_mm });
                                     }
                                 });
                             if let StoryLevelKind::Penthouse { k } = level_kind {
@@ -592,23 +593,24 @@ impl App {
                                     ui.data_mut(|d| d.remove::<f64>(cell_id));
                                 }
                             }
-                            if let StoryLevelKind::Basement { depth_m } = level_kind {
+                            if let StoryLevelKind::Basement { depth_mm } = level_kind {
                                 let cell_id = egui::Id::new(("story_bs_d", story.0));
-                                let mut dv = ui
+                                let mut dv_m = ui
                                     .data(|d| d.get_temp::<f64>(cell_id))
-                                    .unwrap_or(*depth_m);
+                                    .unwrap_or(to_display::length_m(*depth_mm));
                                 let resp = ui.add(
-                                    egui::DragValue::new(&mut dv)
+                                    egui::DragValue::new(&mut dv_m)
                                         .speed(0.1)
                                         .range(0.0..=100.0)
                                         .suffix("m"),
                                 );
                                 if resp.has_focus() || resp.dragged() {
-                                    ui.data_mut(|d| d.insert_temp(cell_id, dv));
+                                    ui.data_mut(|d| d.insert_temp(cell_id, dv_m));
                                 } else if resp.drag_stopped() || resp.lost_focus() {
-                                    if (dv - *depth_m).abs() > 1e-9 {
-                                        new_level_kind =
-                                            Some(StoryLevelKind::Basement { depth_m: dv });
+                                    if (dv_m - to_display::length_m(*depth_mm)).abs() > 1e-9 {
+                                        new_level_kind = Some(StoryLevelKind::Basement {
+                                            depth_mm: to_internal::length_m(dv_m),
+                                        });
                                     }
                                     ui.data_mut(|d| d.remove::<f64>(cell_id));
                                 }

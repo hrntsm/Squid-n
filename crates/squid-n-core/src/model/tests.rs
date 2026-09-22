@@ -585,6 +585,20 @@ fn test_node_support_spring_msgpack_backward_compat() {
     assert_eq!(node.support_spring, None);
 }
 
+/// 地下階の深さは内部単位の mm（`depth_mm`）で保存され、msgpack
+/// （.scz の `model.msgpack` と同じ位置ベースの形式）を往復しても値が保たれること。
+#[test]
+fn test_story_level_kind_basement_msgpack_roundtrip() {
+    let kind = StoryLevelKind::Basement { depth_mm: 5000.0 };
+    let bytes = rmp_serde::to_vec(&kind).expect("msgpack serialize");
+    let back: StoryLevelKind = rmp_serde::from_slice(&bytes).expect("msgpack deserialize");
+    assert_eq!(back, kind);
+
+    let json = serde_json::to_string(&kind).expect("json serialize");
+    let back: StoryLevelKind = serde_json::from_str(&json).expect("json deserialize");
+    assert_eq!(back, kind);
+}
+
 #[test]
 fn test_validate_index_mismatch() {
     let model = Model {
