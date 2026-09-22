@@ -229,6 +229,9 @@ mod tests {
         }
     }
 
+    /// `rc_capacity_input_from_rect` が `RcRebar`/`Material` を `RcCapacityInput` へ
+    /// 配線する処理を、独立に計算した代表値で確認する。main_x = 8-D22 の総断面積の
+    /// 半分が引張側 `at`、かぶり・带筋径・主筋径から決まる有効せいが `d_eff`。
     #[test]
     fn rc_capacity_input_from_rect_matches_handcalc_without_strength_factor() {
         let rebar = RcRebar {
@@ -273,9 +276,8 @@ mod tests {
             3000.0,
         )
         .expect("fc set");
-        let at_expected = crate::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-        let d_eff_expected =
-            crate::rc_rebar_geom::tension_effective_depth(600.0, 40.0, 10.0, &rebar.main_x);
+        let at_expected = 8.0 * std::f64::consts::PI * (22.0_f64 / 2.0).powi(2) / 2.0;
+        let d_eff_expected = 600.0 - (40.0 + 10.0 + 22.0 / 2.0);
         assert!((input.at - at_expected).abs() < 1e-9);
         assert!((input.d_eff - d_eff_expected).abs() < 1e-9);
         assert_eq!(input.sigma_y, 345.0);
