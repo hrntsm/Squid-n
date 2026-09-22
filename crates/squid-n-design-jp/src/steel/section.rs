@@ -8,7 +8,7 @@
 use crate::material_strength::{big_lambda, steel_ft};
 use crate::{DesignCtx, LoadTerm};
 use squid_n_core::model::Section;
-use squid_n_core::section_shape::SectionShape;
+use squid_n_core::section_shape::{SectionShape, E_STEEL};
 
 use super::section_modulus;
 
@@ -84,6 +84,7 @@ pub(crate) fn steel_lateral_buckling_i_af(sec: &Section, tf: f64, tw: f64) -> (f
 ///
 /// `lb`: 圧縮フランジ支点間距離（横座屈長さ）[mm]、`i`: [`steel_i_t`] の
 /// 断面二次半径、`h`: 梁せい [mm]、`af`: 圧縮フランジ断面積 `B·tf` [mm²]。
+/// 限界細長比 `Λ` は基準資料の鉄骨固定ヤング係数 `E_STEEL` を用いる。
 ///
 /// 修正係数 `c` は呼び出し側で [`steel_lateral_buckling_c`] を用いて求め、
 /// ここでは既に確定した値を受け取る（`c=1.0` は安全側・最も不利な等曲げ
@@ -94,7 +95,7 @@ pub fn steel_fb_h(f: f64, term: LoadTerm, lb: f64, i: f64, h: f64, af: f64, c: f
     let c = if c > 1e-9 { c } else { 1.0 };
     let i = i.max(1e-9);
     let af = af.max(1e-9);
-    let big_l = big_lambda(f);
+    let big_l = big_lambda(f, E_STEEL);
     let big_l2 = (big_l.max(1e-9)).powi(2);
 
     let fb1 = f * (2.0 / 3.0 - (4.0 / 15.0) * (lb / i).powi(2) / (c * big_l2));

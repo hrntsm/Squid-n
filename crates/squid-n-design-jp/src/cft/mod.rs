@@ -149,12 +149,12 @@ fn cft_axis_capacity(
 /// s_fc は座屈を考慮する（SRC 規準準用。細長比の記号
 /// λ=Lk/i・Lk/D に対応）。細長比 λ は**鋼管単体**の断面二次半径で評価する
 /// （充填コンクリートの曲げ剛性寄与を無視するため実際より λ が大きく
-/// 算定され、安全側）。λ=0（座屈長さ 0）のとき s_fc は長期 F/1.5（=s_ft）
-/// に一致する。
-fn cft_common_steel(f_value: f64, term: LoadTerm, lambda: f64) -> (f64, f64, f64) {
+/// 算定され、安全側）。`e` は鋼管材料のヤング係数 [N/mm²]。λ=0（座屈長さ 0）
+/// のとき s_fc は長期 F/1.5（=s_ft）に一致する。
+fn cft_common_steel(f_value: f64, e: f64, term: LoadTerm, lambda: f64) -> (f64, f64, f64) {
     let s_ft = steel_ft(f_value, term);
     let s_fs = steel_fs(f_value, term);
-    let s_fc = steel_fc(f_value, lambda, term);
+    let s_fc = steel_fc(f_value, e, lambda, term);
     (s_ft, s_fs, s_fc)
 }
 
@@ -228,7 +228,7 @@ fn cft_box_check(
         ctx.lk_y,
         ctx.lk_z,
     );
-    let (s_ft, s_fs, s_fc) = cft_common_steel(f_value, ctx.term, lambda);
+    let (s_ft, s_fs, s_fc) = cft_common_steel(f_value, mat.young, ctx.term, lambda);
     let s_nt = sa * s_ft;
     let s_nc = sa * s_fc;
 
@@ -345,7 +345,7 @@ fn cft_pipe_check(
     let shape = SectionShape::CftPipe { outer_dia, thick };
     let iy = shape.calc_iy();
     let lambda = effective_slenderness(iy, iy, sa, ctx.length, ctx.lk_y, ctx.lk_z);
-    let (s_ft, s_fs, s_fc) = cft_common_steel(f_value, ctx.term, lambda);
+    let (s_ft, s_fs, s_fc) = cft_common_steel(f_value, mat.young, ctx.term, lambda);
     let s_nt = sa * s_ft;
     let s_nc = sa * s_fc;
 

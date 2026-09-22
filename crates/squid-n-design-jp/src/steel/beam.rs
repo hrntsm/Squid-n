@@ -69,7 +69,7 @@ pub(crate) fn check_beam(
     let fs_val = steel_fs(f, term);
 
     let lambda = effective_slenderness(sec.iy, sec.iz, area, ctx.length, ctx.lk_y, ctx.lk_z);
-    let fc_val = steel_fc(f, lambda, term);
+    let fc_val = steel_fc(f, mat.young, lambda, term);
 
     let fb_weak = ft_val;
     let fb_strong = match shape {
@@ -809,7 +809,7 @@ mod tests {
 
         let i_min = (sec.iy.min(sec.iz) / area).sqrt();
         let lambda = 4000.0 / i_min;
-        let fc = steel_fc(f, lambda, LoadTerm::Long);
+        let fc = steel_fc(f, mat_v.young, lambda, LoadTerm::Long);
         let ft = steel_ft(f, LoadTerm::Long);
         // fb_strong は横座屈考慮（既存ロジック、H形は steel_lateral_buckling_i_af
         // で (i,af) を解決する）。この内力配分では組合せ式が支配的となる
