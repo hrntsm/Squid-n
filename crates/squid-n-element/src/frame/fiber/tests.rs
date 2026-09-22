@@ -937,7 +937,7 @@ fn test_elastic_stiffness_symmetric() {
     }
 }
 
-  /// 弾性応答の手計算照合: 軸力は N=E·A_disc·ε、曲げは M=E·I_disc·κ となり、
+/// 弾性応答の手計算照合: 軸力は N=E·A_disc·ε、曲げは M=E·I_disc·κ となり、
 /// 軸と曲げを同時に与えても互いに連成しないこと（断面格子の図心・対称性）。
 #[test]
 fn test_elastic_force_matches_hand_calc() {
