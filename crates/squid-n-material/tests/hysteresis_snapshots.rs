@@ -1,4 +1,4 @@
-//! 履歴則のスナップショットテスト（仕様書 §8.1）。
+//! 履歴則のスナップショットテスト。
 //! 規定の繰り返し変位履歴に対する (θ, M) ループを insta で固定し、回帰を検出する。
 
 use squid_n_material::{HysteresisMaterial, HysteresisRule, UniaxialMaterial};

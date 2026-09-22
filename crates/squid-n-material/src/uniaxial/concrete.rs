@@ -1,4 +1,4 @@
-//! コンクリートの一軸履歴モデル（設計書 §7）。
+//! コンクリートの一軸履歴モデル。
 
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;

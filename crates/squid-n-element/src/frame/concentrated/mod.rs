@@ -229,7 +229,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
         let k_local = match self.model {
             SpringModel::OneComponent => compute_kstar(&self.elastic, self.k_flex(), kti, ktj),
             SpringModel::TwoComponent => unimplemented!(
-                "TwoComponent spring model is not yet implemented (P5 §3). Use OneComponent."
+                "TwoComponent spring model is not yet implemented. Use OneComponent."
             ),
         };
         self.elastic.axis.to_global(&k_local)

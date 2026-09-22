@@ -45,7 +45,7 @@ pub struct ResultEntry {
     pub path: String,
 }
 
-/// 結果ストア。`Send` を要求するのは、MCP サーバ(P8)が `ServerState` を
+/// 結果ストア。`Send` を要求するのは、MCP サーバが `ServerState` を
 /// スレッド間で共有する(`rmcp::ServerHandler: Send + Sync`)ため。
 /// IO 失敗・未対応の kind・該当エントリなしはいずれも `Err` で返す（panic しない）。
 pub trait ResultStore: Send {

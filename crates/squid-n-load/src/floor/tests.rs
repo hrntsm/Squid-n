@@ -339,7 +339,7 @@ fn total_load(loads: &[BeamLoad]) -> f64 {
 
 #[test]
 fn test_slab_conservation_square_triangle() {
-    // 設計書 §7.3: 1辺 a=4000, w=0.005 → 総和 = w·a² = 80000 N（厳密）
+    // 1辺 a=4000, w=0.005 → 総和 = w·a² = 80000 N（厳密）
     let w = 0.005_f64;
     let a = 4000.0_f64;
     let (model, slab) = make_square_slab_model(a, DistributionMethod::TriTrapezoid, w);
