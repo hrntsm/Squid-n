@@ -17,7 +17,7 @@ use crate::{
     DesignCtx, LoadTerm, MemberForcesAt,
 };
 use squid_n_core::model::{Material, Section};
-use squid_n_core::section_shape::SectionShape;
+use squid_n_core::section_shape::{SectionShape, E_STEEL};
 
 use crate::ratio_or_large;
 
@@ -149,12 +149,14 @@ fn cft_axis_capacity(
 /// s_fc は座屈を考慮する（SRC 規準準用。細長比の記号
 /// λ=Lk/i・Lk/D に対応）。細長比 λ は**鋼管単体**の断面二次半径で評価する
 /// （充填コンクリートの曲げ剛性寄与を無視するため実際より λ が大きく
-/// 算定され、安全側）。λ=0（座屈長さ 0）のとき s_fc は長期 F/1.5（=s_ft）
-/// に一致する。
+/// 算定され、安全側）。CFT 断面は鋼管専用の材料参照を持たず、主材料の
+/// `young` は充填コンクリートのヤング係数になり得るため、鋼管側の許容応力度は
+/// 基準資料の鉄骨固定ヤング係数 `E_STEEL` を用いる。λ=0（座屈長さ 0）
+/// のとき s_fc は長期 F/1.5（=s_ft）に一致する。
 fn cft_common_steel(f_value: f64, term: LoadTerm, lambda: f64) -> (f64, f64, f64) {
     let s_ft = steel_ft(f_value, term);
     let s_fs = steel_fs(f_value, term);
-    let s_fc = steel_fc(f_value, lambda, term);
+    let s_fc = steel_fc(f_value, E_STEEL, lambda, term);
     (s_ft, s_fs, s_fc)
 }
 

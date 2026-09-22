@@ -6,7 +6,7 @@ use crate::{
     effective_slenderness, CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm,
     MemberForcesAt,
 };
-use squid_n_core::model::Section;
+use squid_n_core::model::{Material, Section};
 
 use super::{nonzero, safe_denom};
 
@@ -16,6 +16,7 @@ use super::{nonzero, safe_denom};
 pub(crate) fn check_brace(
     forces: &MemberForcesAt,
     sec: &Section,
+    mat: &Material,
     ctx: &DesignCtx,
     f: f64,
     term: LoadTerm,
@@ -37,7 +38,7 @@ pub(crate) fn check_brace(
 
     if forces.n < 0.0 {
         let sigma_c = forces.n.abs() / area;
-        let fc_val = steel_fc(f, lambda, term);
+        let fc_val = steel_fc(f, mat.young, lambda, term);
         let ratio = sigma_c / safe_denom(fc_val);
         CheckResult {
             basis: format!(
