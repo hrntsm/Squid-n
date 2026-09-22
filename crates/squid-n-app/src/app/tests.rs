@@ -7075,6 +7075,98 @@ fn test_preparation_member_stiffness_reports_composite_props() {
     assert_eq!(props.area_ax, c.area_ax);
 }
 
+/// SRC 断面の主材料に Fc が無いとき、材料由来の等価断面性能を算定できず既定値
+/// N_S_EQ=15 へフォールバックする。部材剛性表はその行と種別を表示する。
+#[test]
+fn test_preparation_member_stiffness_reports_src_fallback_without_fc() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let bars = BarSet {
+        dia: 22.0,
+        count: 8,
+        layers: 1,
+    };
+    let src = SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: bars.clone(),
+            main_y: bars,
+            cover: 50.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    };
+
+    let mut model = crate::sample::portal_frame();
+    // 柱を SRC に差し替える。主材料は割り当て済みだが Fc が無い。
+    model.sections[0] = squid_n_core::model::Section {
+        material: Some(squid_n_core::ids::MaterialId(0)),
+        ..src.to_section(SectionId(0), "SRC-600".into())
+    };
+    model.materials[0].fc = None;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
+    let row = prep
+        .member_stiffness
+        .iter()
+        .find(|r| r.elem == squid_n_core::ids::ElemId(0))
+        .expect("SRC フォールバックの行があるはず");
+    assert!(row.composite.is_none());
+    assert_eq!(
+        row.composite_fallback,
+        Some(CompositeFallbackKind::SrcNsDefault)
+    );
+}
+
+/// CFT 断面の主材料に Fc が無いとき、充填コンクリートを無視して鋼管のみで剛性を
+/// 評価する。部材剛性表はその行と種別を表示する。
+#[test]
+fn test_preparation_member_stiffness_reports_cft_fallback_without_fc() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    let cft = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    };
+    let mut model = crate::sample::portal_frame();
+    model.sections[0] = squid_n_core::model::Section {
+        material: Some(squid_n_core::ids::MaterialId(0)),
+        ..cft.to_section(SectionId(0), "CFT-□400x400x16".into())
+    };
+    model.materials[0].fc = None;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
+    let row = prep
+        .member_stiffness
+        .iter()
+        .find(|r| r.elem == squid_n_core::ids::ElemId(0))
+        .expect("CFT フォールバックの行があるはず");
+    assert!(row.composite.is_none());
+    assert_eq!(
+        row.composite_fallback,
+        Some(CompositeFallbackKind::CftSteelOnly)
+    );
+}
+
 /// 解析結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
 /// 復元できた場合は再計算不要（stale でない）扱いになる。
 #[test]

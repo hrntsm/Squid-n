@@ -11,7 +11,7 @@ use squid_n_core::units::to_display::{area_cm2, force_kn, inertia_cm4, length_m,
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
     steel_member_use_label, story_level_kind_label, story_structure_label, zone_source_label, App,
-    PreparationResult, RIGID_ZONE_RATIO_WARN,
+    CompositeFallbackKind, PreparationResult, RIGID_ZONE_RATIO_WARN,
 };
 
 /// 準備計算ビュー内の表示切替。
@@ -825,24 +825,36 @@ fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(member_kind_label(r.kind));
             });
             row.col(|ui| {
-                let text = if r.composite.is_some() {
-                    format!("{}（等価換算）", r.section_name)
-                } else {
-                    r.section_name.clone()
-                };
-                ui.label(text).on_hover_text(match &r.composite {
-                    Some(c) => format!(
-                        "SRC/CFT 等価断面: A={:.1} cm², Iy={:.0} cm⁴, Iz={:.0} cm⁴,\n\
-                             J={:.0} cm⁴, Asy={:.1} cm², Asz={:.1} cm²",
-                        c.area_ax * 1e-2,
-                        c.iy * 1e-4,
-                        c.iz * 1e-4,
-                        c.j * 1e-4,
-                        c.as_y * 1e-2,
-                        c.as_z * 1e-2
+                let (text, hover) = match (&r.composite, r.composite_fallback) {
+                    (Some(c), _) => (
+                        format!("{}（等価換算）", r.section_name),
+                        format!(
+                            "SRC/CFT 等価断面: A={:.1} cm², Iy={:.0} cm⁴, Iz={:.0} cm⁴,\n\
+                                 J={:.0} cm⁴, Asy={:.1} cm², Asz={:.1} cm²",
+                            c.area_ax * 1e-2,
+                            c.iy * 1e-4,
+                            c.iz * 1e-4,
+                            c.j * 1e-4,
+                            c.as_y * 1e-2,
+                            c.as_z * 1e-2
+                        ),
                     ),
-                    None => "等価換算なし".to_string(),
-                });
+                    (None, Some(CompositeFallbackKind::SrcNsDefault)) => (
+                        format!("{}（既定値 15）", r.section_name),
+                        "材料からヤング係数比を算定できないため、既定値 N_S_EQ=15 で\
+                         鉄骨を等価換算しています（暫定値・要照合）。\
+                         診断タブにも警告が出ます。"
+                            .to_string(),
+                    ),
+                    (None, Some(CompositeFallbackKind::CftSteelOnly)) => (
+                        format!("{}（鋼管のみ）", r.section_name),
+                        "充填コンクリートの Fc やヤング係数を算定できないため、\
+                         鋼管のみで剛性を評価しています。診断タブにも警告が出ます。"
+                            .to_string(),
+                    ),
+                    (None, None) => (r.section_name.clone(), "等価換算なし".to_string()),
+                };
+                ui.label(text).on_hover_text(hover);
             });
             row.col(|ui| {
                 crate::table_util::text_cell(ui, &r.material);
@@ -874,7 +886,8 @@ fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         "「スラブ」は RC 矩形梁のスラブ協力幅（T 形断面）・H 形鋼梁の合成梁による\
          強軸曲げの増大率、「壁上下梁」は壁エレメント上下大梁の一律倍率です。\
          「実効 Iy」は等価換算とこれらをすべて適用した強軸曲げ剛性用の値で、\
-         フレーム内雑壁（腰壁・垂壁・袖壁）の算入分は含みません。",
+          フレーム内雑壁（腰壁・垂壁・袖壁）の算入分は含みません。\
+          材料から等価断面性能を算定できない SRC/CFT は、既定値で評価した行も表示します。",
     );
 }
 
