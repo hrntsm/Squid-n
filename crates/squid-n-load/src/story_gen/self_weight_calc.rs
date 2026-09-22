@@ -133,8 +133,9 @@ pub(crate) enum SelfWeightItem {
 ///   （w_c = γ·b(D−t)+…。スラブ重量は構造芯間の面積で別途計上されるため、
 ///   控除しないと梁幅×スラブ厚の体積が二重計上になる）。スラブが定義されて
 ///   いないモデル（純フレーム等）では控除しない。
-///   §柱の長さ: コンクリート柱（2 節点の鉛直 `ElementKind::Beam`）で下端へ別の柱が
-///   接続しない場合、下端節点に取り付く非鉛直 Beam の最大せい [mm] に相当する重量を
+///   §柱の長さ: コンクリート柱（2 節点の鉛直 `ElementKind::Beam`）で下端へ別の柱
+///   （同じく 2 節点の鉛直 `ElementKind::Beam`）が接続しない場合、下端節点に取り付く
+///   非鉛直 Beam の最大せい [mm] に相当する重量を
 ///   追加自重として下端節点だけへ加算する（通常自重は上下へ 1/2 ずつ。柱以外・S 柱・
 ///   下階柱ありは 0。ブレースは柱とみなさない）。総重量は `w·(L+Dmax)` で保存する。
 ///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を乗じ、
@@ -223,7 +224,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                         .unwrap_or(&[]);
                     let has_column_below = adj_at_bottom.iter().any(|&idx| {
                         let e2 = &model.elements[idx];
-                        e2.id != elem.id && e2.kind == ElementKind::Beam && {
+                        e2.id != elem.id && e2.kind == ElementKind::Beam && e2.nodes.len() == 2 && {
                             let (a, b) = (
                                 model.nodes[e2.nodes[0].index()].coord,
                                 model.nodes[e2.nodes[1].index()].coord,
