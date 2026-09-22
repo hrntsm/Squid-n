@@ -248,6 +248,48 @@ mod tests {
         );
     }
 
+    /// `wall_shear_ultimate` が全フィールドを Core の `RcWallShearInput` へ
+    /// 正しく配線していること。式そのものの所有テストは core 側にある。
+    #[test]
+    fn test_wall_shear_ultimate_wires_all_fields_to_core() {
+        let inp = WallShearTrilinearInput {
+            fc: 27.0,
+            aw: 1_200_000.0,
+            tension_column_main_area: 0.0,
+            pw_vertical: 0.0,
+            sigma_y_wall: 0.0,
+            te: 200.0,
+            t: 180.0,
+            d_wall: 5_000.0,
+            dc_compression: 700.0,
+            tension_column_at: 3_200.0,
+            sigma_wh: 345.0,
+            pwh_ratio: 0.005,
+            sigma_0: 2.5,
+            shear_span_ratio: 2.0,
+            high_strength_shear_rebar: true,
+            opening: Some((2_000.0, 300.0, 3_000.0, 4_000.0)),
+        };
+        let expected = squid_n_core::rc_wall_capacity::wall_shear_ultimate(
+            &squid_n_core::rc_wall_capacity::RcWallShearInput {
+                fc: 27.0,
+                te: 200.0,
+                t: 180.0,
+                d_wall: 5_000.0,
+                dc_compression: 700.0,
+                tension_column_at: 3_200.0,
+                sigma_wh: 345.0,
+                pwh_ratio: 0.005,
+                sigma_0: 2.5,
+                shear_span_ratio: 2.0,
+                high_strength_shear_rebar: true,
+                opening: Some((2_000.0, 300.0, 3_000.0, 4_000.0)),
+            },
+        );
+        assert!(expected > 0.0);
+        assert_eq!(wall_shear_ultimate(&inp), expected);
+    }
+
     #[test]
     fn test_trilinear_skeleton_points_monotonic() {
         let tri = wall_shear_trilinear(&base_input());
