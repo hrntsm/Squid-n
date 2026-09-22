@@ -1717,7 +1717,7 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
 
 /// 断面に割り当てた鉄筋の材料が耐力へ反映されること。
 ///
-/// - せん断補強筋の材料は荒川式の σwy を通じて Qy を変える（高強度品ほど大きい）。
+/// - せん断補強筋の材料は荒川式の σwy を通じて Qy を変える（材料の `fy` が大きいほど大きい）。
 /// - 主筋の材料は曲げ降伏 My = 0.9·at·σy·d を通じて曲げヒンジ閾値を変える
 ///   （SD295A は SD345 より小さい）。荒川式のせん断終局強度は主筋量 pt に
 ///   依存し σy には依らないため、主筋の材料は Qy を変えない。
@@ -1773,7 +1773,7 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
 
     let sec = section();
     let sd295 = rebar_mat("SD295A", 295.0);
-    let kh785 = rebar_mat("KH785", 785.0);
+    let sd390 = rebar_mat("SD390", 390.0);
     let sd345 = rebar_mat("SD345", 345.0);
     let qy = |shear_mat: &Material| {
         compute_shear_yield_qy(
@@ -1790,9 +1790,9 @@ fn test_section_rebar_materials_are_reflected_in_capacities() {
         )
     };
     assert!(
-        qy(&kh785) > qy(&sd295),
-        "高強度せん断補強筋は Qy を上げるはず: {} vs {}",
-        qy(&kh785),
+        qy(&sd390) > qy(&sd295),
+        "せん断補強筋の fy が大きいほど Qy が上がるはず: {} vs {}",
+        qy(&sd390),
         qy(&sd295)
     );
 

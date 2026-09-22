@@ -32,10 +32,6 @@ pub struct MemberDemand {
     /// 分子を `(Qsu − QL)`・`(Qbu − QL)` とする（余裕率
     /// `(Qsu−QL)/Qmu ≥ 1.0` の定義。`None` は QL=0 扱い）。
     pub q_long: Option<f64>,
-    /// 長期荷重による単純梁せん断力 Q0 [N]（絶対値で扱う）。せん断補強筋に
-    /// MK785/SPR785/SPR685 を使用した部材では、余裕率の QL 控除を `QL=Q0` と
-    /// 読み替える（各製品の技術評定の規定）。`None` のときは `q_long` を用いる。
-    pub q_simple: Option<f64>,
 }
 
 impl MemberDemand {
@@ -49,7 +45,6 @@ impl MemberDemand {
             shear_weak: None,
             rp: None,
             q_long: None,
-            q_simple: None,
         }
     }
 
@@ -73,7 +68,6 @@ impl MemberDemand {
             shear_weak: Some(shear_weak),
             rp: Some(rp),
             q_long: None,
-            q_simple: None,
         }
     }
 }
@@ -100,12 +94,6 @@ pub struct UltimateShearOptions {
     /// せん断補強筋の降伏強度算定用強度 σwy [N/mm²]（断面に材料が割り当てられて
     /// いない場合の代表値。既定 295 = SD295 相当）。
     pub sigma_wy: f64,
-    /// せん断補強筋の材質名。高強度せん断補強筋（`MK785`・`SPR785` 等）の製品別
-    /// 規定を適用するかの判定に用いる。`None` は未割当で、普通強度として扱う。
-    ///
-    /// **利用者が指定する欄ではない。** 部材ごとに断面のせん断補強筋材料
-    /// （`Section::shear_rebar_material`）の名前が入る（`rc_check` が載せ替える）。
-    pub shear_grade: Option<String>,
     /// 付着割裂の検定を含める場合 true。
     pub include_bond: bool,
     /// 終局せん断強度の算定方法（既定 塑性理論式）。靭性指針式を選ぶと Qsu 列に
@@ -129,7 +117,6 @@ impl Default for UltimateShearOptions {
             lightweight: false,
             upper_strength_factor: 1.0,
             sigma_wy: 295.0,
-            shear_grade: None,
             include_bond: true,
             shear_method: ShearMethod::default(),
             biaxial_shear: false,

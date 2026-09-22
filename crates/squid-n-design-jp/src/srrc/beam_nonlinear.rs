@@ -114,8 +114,6 @@ pub struct SrcNonSolidWebShearInput {
     pub s_band_sigma_y: f64,
     /// せん断スパン比 M/(Q·d)（適用範囲 1.0〜3.0 にクランプ）。
     pub m_over_qd: f64,
-    /// 高強度せん断補強筋を用いる場合 true（κ 0.053→0.068）。
-    pub high_strength_shear_rebar: bool,
     /// RC 部分の応力中心間距離 rj [mm]（ラチス材のみ）。
     pub rj: f64,
     /// ラチス材 1 本の断面積 DA [mm²]（ラチス材のみ）。
@@ -130,23 +128,14 @@ pub struct SrcNonSolidWebShearInput {
     pub clear_span: f64,
 }
 
-/// κ（せん断補強筋係数）を返す。
-fn nonweb_kappa(high: bool) -> f64 {
-    if high {
-        0.068
-    } else {
-        0.053
-    }
-}
-
 /// 非充腹 SRC 梁（**格子材**）のせん断終局強度 Qsu [N]（荒川mean式系）。
 ///
 /// ```text
-/// Qsu = { κ·pt^0.23·kcs·(18+Fc)/(M/(Q·d)+0.12) + 0.85·√(rpw·rσwy)
+/// Qsu = { 0.053·pt^0.23·kcs·(18+Fc)/(M/(Q·d)+0.12) + 0.85·√(rpw·rσwy)
 ///         + (1/2)·√(spw·sσwy) }·be·j
 /// ```
 /// - `pt = rpt + spt` [%]、`j = 0.8·D`、`M/(Q·d)` は 1.0〜3.0 にクランプ、
-///   `kcs ≤ 1.0`、κ=0.053/0.068。
+///   `kcs ≤ 1.0`。
 ///
 /// 不正入力（Fc・be・D のいずれかが 0 以下）は 0.0。
 pub fn src_beam_shear_grid(inp: &SrcNonSolidWebShearInput) -> f64 {
@@ -157,8 +146,7 @@ pub fn src_beam_shear_grid(inp: &SrcNonSolidWebShearInput) -> f64 {
     let kcs = inp.kcs.clamp(0.0, 1.0);
     let ssr = inp.m_over_qd.clamp(1.0, 3.0);
     let j = 0.8 * inp.d_full;
-    let k = nonweb_kappa(inp.high_strength_shear_rebar);
-    let concrete = k * pt.powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
+    let concrete = 0.053 * pt.powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
     let hoop = 0.85
         * ((inp.rpw * inp.rw_sigma_y).max(0.0) + 0.5 * (inp.spw * inp.s_band_sigma_y).max(0.0))
             .sqrt();
@@ -168,7 +156,7 @@ pub fn src_beam_shear_grid(inp: &SrcNonSolidWebShearInput) -> f64 {
 /// 非充腹 SRC 梁（**ラチス材**）のせん断終局強度 Qsu [N]（荒川mean式系）。
 ///
 /// ```text
-/// Qsu = { κ·rpt^0.23·kcs·(18+Fc)/(M/(Q·d)+0.12) + 0.85·√(rpw·rσwy) }·be·rj + sQu
+/// Qsu = { 0.053·rpt^0.23·kcs·(18+Fc)/(M/(Q·d)+0.12) + 0.85·√(rpw·rσwy) }·be·rj + sQu
 /// sQu = min( 2·sM0/h0 ,  DA·sσy·sinθ )
 /// ```
 /// - RC 部分は `rpt`（引張鉄筋比 [%]）のみ、`rj`（RC 部応力中心間距離）を用いる。
@@ -181,8 +169,7 @@ pub fn src_beam_shear_lattice(inp: &SrcNonSolidWebShearInput) -> f64 {
     }
     let kcs = inp.kcs.clamp(0.0, 1.0);
     let ssr = inp.m_over_qd.clamp(1.0, 3.0);
-    let k = nonweb_kappa(inp.high_strength_shear_rebar);
-    let concrete = k * inp.rpt.max(0.0).powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
+    let concrete = 0.053 * inp.rpt.max(0.0).powf(0.23) * kcs * (18.0 + inp.fc) / (ssr + 0.12);
     let hoop_r = 0.85 * (inp.rpw * inp.rw_sigma_y).max(0.0).sqrt();
     let rc_part = (concrete + hoop_r) * inp.be * inp.rj;
     let squ_bending = if inp.clear_span > 0.0 {
@@ -298,7 +285,6 @@ mod tests {
             spw: 0.003,
             s_band_sigma_y: 235.0,
             m_over_qd: 2.0,
-            high_strength_shear_rebar: false,
             rj: 560.0,
             lattice_area: 800.0,
             lattice_sigma_y: 235.0,
@@ -345,14 +331,6 @@ mod tests {
         let mut no_band = nonweb_input();
         no_band.spw = 0.0;
         assert!(src_beam_shear_grid(&inp) > src_beam_shear_grid(&no_band));
-    }
-
-    #[test]
-    fn test_src_beam_shear_nonweb_high_strength_uses_0068() {
-        let mut hi = nonweb_input();
-        hi.high_strength_shear_rebar = true;
-        assert!(src_beam_shear_grid(&hi) > src_beam_shear_grid(&nonweb_input()));
-        assert!(src_beam_shear_lattice(&hi) > src_beam_shear_lattice(&nonweb_input()));
     }
 
     #[test]

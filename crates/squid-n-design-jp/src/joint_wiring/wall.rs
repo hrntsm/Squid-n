@@ -4,7 +4,7 @@ use super::common::{rc_dt, ForcesAt, MemberInfo};
 use crate::rc::wall::{rc_wall_shear_check, RcWallInput, WallSideColumn};
 use crate::rc::wall_nonlinear::{wall_shear_trilinear, WallShearTrilinearInput};
 use crate::wall_opening::equivalent_opening;
-use crate::{CheckComponent, CheckKind, CheckResult, LoadTerm};
+use crate::{CheckComponent, CheckKind, CheckOutcome, CheckResult, LoadTerm};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementKind, Model};
 use squid_n_core::section_shape::SectionShape;
@@ -15,9 +15,9 @@ pub(super) fn check_walls(
     member_forces: &[(ElemId, ForcesAt<'_>)],
     members: &[MemberInfo<'_>],
     term: LoadTerm,
-    out: &mut Vec<(NodeId, String, CheckResult)>,
+    out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
-    for (eid, forces) in member_forces {
+    'walls: for (eid, forces) in member_forces {
         let Some(elem) = model.element(*eid) else {
             continue;
         };
@@ -43,8 +43,6 @@ pub(super) fn check_walls(
                 .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
         let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(wall_shear_mat)
             .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
-        let high_strength_shear_rebar =
-            squid_n_core::material_grade::is_high_strength_shear_material(wall_shear_mat);
         let coords: Vec<[f64; 3]> = elem
             .nodes
             .iter()
@@ -97,6 +95,17 @@ pub(super) fn check_walls(
         if !squid_n_element::wall::misc_wall::is_rc_wall(elem, model) {
             continue;
         }
+        if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(wall_shear_mat)
+        {
+            out.push((
+                elem.nodes[0],
+                "耐震壁(RC)".to_string(),
+                CheckOutcome::Skipped {
+                    reason: format!("耐震壁 ID {} の{}", elem.id.0, msg),
+                },
+            ));
+            continue;
+        }
         let wall_nodes = &elem.nodes;
         let mut side_columns = Vec::new();
         let mut sum_col_depth = 0.0;
@@ -141,6 +150,17 @@ pub(super) fn check_walls(
             let Some((b, d, rebar)) = bd_rebar else {
                 continue;
             };
+            if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(m.shear_mat)
+            {
+                out.push((
+                    elem.nodes[0],
+                    "耐震壁(RC)".to_string(),
+                    CheckOutcome::Skipped {
+                        reason: format!("耐震壁 ID {} の側柱の{}", elem.id.0, msg),
+                    },
+                ));
+                continue 'walls;
+            }
             let dt = rc_dt(rebar);
             let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
             side_columns.push(WallSideColumn {
@@ -185,7 +205,11 @@ pub(super) fn check_walls(
             long_term: term == LoadTerm::Long,
         };
         let cr = rc_wall_shear_check(&inp);
-        out.push((elem.nodes[0], "耐震壁(RC)".to_string(), cr));
+        out.push((
+            elem.nodes[0],
+            "耐震壁(RC)".to_string(),
+            CheckOutcome::Checked(cr),
+        ));
 
         let aw = thickness * l + col_gross_area;
         let d_wall = l + sum_col_depth / 2.0;
@@ -221,7 +245,6 @@ pub(super) fn check_walls(
                 pwh_ratio: ps,
                 sigma_0,
                 shear_span_ratio,
-                high_strength_shear_rebar,
                 opening: if l0p > 1e-9 && h0p > 1e-9 {
                     Some((l0p, h0p, h, l))
                 } else {
@@ -241,7 +264,7 @@ pub(super) fn check_walls(
             out.push((
                 elem.nodes[0],
                 "耐震壁(RC)せん断非線形".to_string(),
-                CheckResult {
+                CheckOutcome::Checked(CheckResult {
                     basis: "技術基準解説書 耐震壁せん断非線形(Qc/βu/Qu)".to_string(),
                     detail: String::new(),
                     components: vec![CheckComponent {
@@ -249,7 +272,7 @@ pub(super) fn check_walls(
                         ratio,
                         detail,
                     }],
-                },
+                }),
             ));
         }
     }

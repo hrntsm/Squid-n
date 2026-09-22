@@ -3,7 +3,7 @@
 use super::common::{rc_dt, MemberInfo};
 use crate::rc::joint::JointShape;
 use crate::srrc::panel_zone::{src_panel_zone_check, SrcPanelInput};
-use crate::{CheckResult, LoadTerm};
+use crate::{CheckOutcome, LoadTerm};
 use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
 
@@ -13,7 +13,7 @@ pub(super) fn check_src_panel(
     beams: &[&MemberInfo<'_>],
     nid: NodeId,
     term: LoadTerm,
-    out: &mut Vec<(NodeId, String, CheckResult)>,
+    out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let src_col = cols.iter().find(|c| {
         matches!(c.sec.shape, Some(SectionShape::SrcRect { .. })) && c.mat.fc.unwrap_or(0.0) > 0.0
@@ -82,7 +82,7 @@ pub(super) fn check_src_panel(
             out.push((
                 nid,
                 "柱梁接合部(SRC)".to_string(),
-                src_panel_zone_check(&inp),
+                CheckOutcome::Checked(src_panel_zone_check(&inp)),
             ));
         }
     }

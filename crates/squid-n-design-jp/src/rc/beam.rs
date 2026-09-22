@@ -2,8 +2,7 @@
 //! 強軸曲げ（`mz`）とそれに対のせん断（`qy`）のみを検定する。
 
 use super::{
-    circle_axis_props, effective_damage_control, high_strength_w_ft, is_high_strength_shear_grade,
-    main_rebar_grade, rc_allow, rc_beam_bond_check, rc_beam_bond_check_1991,
+    circle_axis_props, main_rebar_grade, rc_allow, rc_beam_bond_check, rc_beam_bond_check_1991,
     rebar_allowable_tension, rebar_sigma_y_of, rect_axis_props_strong, seismic_design_shear,
     shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
 };
@@ -83,20 +82,12 @@ pub(crate) fn beam_check(
     };
     let long_term = ctx.term == LoadTerm::Long;
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
-    let mut allow = rc_allow(
+    let allow = rc_allow(
         fc_raw,
         mat.concrete_class,
         shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
         long_term,
     );
-    let shear_grade = ctx
-        .shear_rebar_material
-        .as_ref()
-        .map(|m| m.name.as_str())
-        .filter(|g| is_high_strength_shear_grade(g));
-    if let Some(g) = shear_grade {
-        allow.w_ft = high_strength_w_ft(g, long_term);
-    }
 
     let props = if let SectionShape::RcCircle { d, .. } = shape {
         circle_axis_props(*d, rebar)
@@ -113,18 +104,8 @@ pub(crate) fn beam_check(
 
     let (m_for_alpha, q_for_alpha) = ctx.shear_span.unwrap_or((forces.mz.abs(), forces.qy.abs()));
     let alpha = shear_alpha(m_for_alpha, q_for_alpha, props.d, 2.0);
-    let damage_control =
-        effective_damage_control(ctx.rc_damage_control, shear_grade, mat.concrete_class);
-    let qa = shear_capacity_for(
-        &props,
-        &allow,
-        alpha,
-        ctx.term,
-        damage_control,
-        false,
-        shear_grade,
-        fc_raw,
-    );
+    let damage_control = ctx.rc_damage_control;
+    let qa = shear_capacity_for(&props, &allow, alpha, ctx.term, damage_control, false);
     let q_design = if ctx.seismic_qd.is_some() {
         let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
             b: props.b,
@@ -208,10 +189,6 @@ pub(crate) fn beam_check(
     };
 
     let basis = "RC 規準13条（梁の曲げ・せん断・付着）".to_string();
-    let shear_grade_detail = match shear_grade {
-        Some(g) => format!(", 高強度せん断補強筋={g}, w_ft={:.1} N/mm²", allow.w_ft),
-        None => String::new(),
-    };
     let mid_slab_note = if use_t_flange {
         ", 中央+スラブ正曲げ: MA=at·ft·j"
     } else {
@@ -222,8 +199,8 @@ pub(crate) fn beam_check(
         bm.ma_t, bm.ma_c, ma, forces.mz, mid_slab_note,
     );
     let shear_detail = format!(
-        "QA={:.1} N, |qy|={:.1} N, α={:.3}, pw={:.5}{}",
-        qa, forces.qy, alpha, props.pw, shear_grade_detail,
+        "QA={:.1} N, |qy|={:.1} N, α={:.3}, pw={:.5}",
+        qa, forces.qy, alpha, props.pw,
     );
     let detail = format!(
         "at={:.1} mm², d={:.1} mm, j={:.1} mm{}",
@@ -495,27 +472,6 @@ mod tests {
             .any(|c| c.kind == crate::CheckKind::Shear));
     }
 
-    #[test]
-    fn test_beam_check_high_strength_grade_reflected_in_detail() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-        let sec = make_section(shape);
-        let mat = make_material(24.0, "Fc24");
-        // 高強度せん断補強筋は断面のせん断補強筋材料で指定する。
-        let ctx = crate::rc::tests::with_shear_grade(ctx_beam(LoadTerm::Short), "KH785", 785.0);
-        let forces = MemberForcesAt {
-            pos: 0.5,
-            n: 0.0,
-            qy: 20_000.0,
-            qz: 0.0,
-            my: 0.0,
-            mz: 5_000_000.0,
-        };
-        let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-        assert!(crate::full_detail(&result).contains("KH785"));
-        assert!(crate::full_detail(&result).contains("w_ft=590"));
-    }
-
     /// 軽量1種の RcDesign 検定は、普通コンクリートより検定比が大きくなる
     /// （fc・fs の 0.9 倍低減が `mat.concrete_class` 経由で効いている）。
     #[test]
@@ -541,56 +497,6 @@ mod tests {
             "軽量1種は許容応力度低減により検定比が大きくなるはず: normal={}, light={}",
             r_n.ratio(),
             r_l.ratio()
-        );
-    }
-
-    /// 軽量 + 高強度フープの梁検定は、損傷制御指定でも安全確保式で算定される
-    /// （damage_control=true/false で結果が一致する）。普通コンクリートでは
-    /// 両者は異なる（回帰）。
-    #[test]
-    fn test_beam_check_lightweight_high_strength_forces_safety_formula() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-        let sec = make_section(shape);
-        let mat_l = make_material_class(24.0, "Fc24", ConcreteClass::Lightweight1);
-        let mat_n = make_material(24.0, "Fc24");
-        let hs = |ctx| crate::rc::tests::with_shear_grade(ctx, "KH785", 785.0);
-        let mut ctx_damage = hs(ctx_beam(LoadTerm::Short));
-        ctx_damage.rc_damage_control = true;
-        let mut ctx_safety = hs(ctx_beam(LoadTerm::Short));
-        ctx_safety.rc_damage_control = false;
-        // せん断支配になるよう大きな qy を与える。
-        let forces = MemberForcesAt {
-            pos: 0.5,
-            n: 0.0,
-            qy: 300_000.0,
-            qz: 0.0,
-            my: 0.0,
-            mz: 1_000_000.0,
-        };
-        let design = crate::rc::RcDesign;
-
-        let r_l_damage = design
-            .check(&forces, &sec, &mat_l, &ctx_damage)
-            .unwrap_checked();
-        let r_l_safety = design
-            .check(&forces, &sec, &mat_l, &ctx_safety)
-            .unwrap_checked();
-        assert!(
-            (r_l_damage.ratio() - r_l_safety.ratio()).abs() < 1e-12,
-            "軽量+高強度は損傷制御指定でも安全確保式: damage={}, safety={}",
-            r_l_damage.ratio(),
-            r_l_safety.ratio()
-        );
-
-        let r_n_damage = design
-            .check(&forces, &sec, &mat_n, &ctx_damage)
-            .unwrap_checked();
-        let r_n_safety = design
-            .check(&forces, &sec, &mat_n, &ctx_safety)
-            .unwrap_checked();
-        assert!(
-            (r_n_damage.ratio() - r_n_safety.ratio()).abs() > 1e-9,
-            "普通コンクリートでは損傷制御式と安全確保式は異なるはず（回帰）"
         );
     }
 

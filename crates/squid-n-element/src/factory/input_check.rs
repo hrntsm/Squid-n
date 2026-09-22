@@ -161,6 +161,11 @@ pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option
                 data.id.0
             ));
         }
+        if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
+            model.element_shear_rebar_material(data),
+        ) {
+            return Some(format!("部材 ID {} の{}", data.id.0, msg));
+        }
         let fiber_shape = sec.and_then(|s| s.shape.as_ref());
         if fiber_shape.is_some_and(shape_has_steel_fiber_region)
             && !crate::frame::fiber::resolve_steel_fiber_fy(

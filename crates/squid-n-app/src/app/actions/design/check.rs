@@ -92,10 +92,10 @@ impl App {
         let joint_checks = report
             .joint_checks
             .into_iter()
-            .map(|(node, label, cr)| JointCheck {
+            .map(|(node, label, outcome)| JointCheck {
                 node,
                 label,
-                outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
+                outcome,
             })
             .collect();
         let (joist_checks, slab_checks) = self.floor_design_checks();

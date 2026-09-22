@@ -1,4 +1,5 @@
 use super::*;
+use crate::CheckResult;
 use smallvec::SmallVec;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -148,11 +149,19 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
 
 /// 壁要素 ElemId(0) の耐震壁(RC)検定結果（なければ None）。
 fn wall_check_result(model: &Model, forces: ForcesAt<'_>) -> Option<CheckResult> {
+    wall_check_outcome(model, forces).and_then(|outcome| match outcome {
+        CheckOutcome::Checked(cr) => Some(cr),
+        CheckOutcome::Skipped { .. } => None,
+    })
+}
+
+/// 壁要素 ElemId(0) の耐震壁(RC)検定アウトカム（検定不能なら `Skipped`）。
+fn wall_check_outcome(model: &Model, forces: ForcesAt<'_>) -> Option<CheckOutcome> {
     let member_forces = vec![(ElemId(0), forces)];
     collect_joint_checks(model, &member_forces, LoadTerm::Short)
         .into_iter()
         .find(|(_, label, _)| label == "耐震壁(RC)")
-        .map(|(_, _, cr)| cr)
+        .map(|(_, _, outcome)| outcome)
 }
 
 /// 開口あり（`wall_attrs` に `opening_area>0` を登録）の壁は、無開口より
@@ -185,6 +194,32 @@ fn wall_with_opening_has_larger_ratio_than_without() {
     );
 }
 
+/// 対応グレード（SR235）でも壁横筋の fy が未設定なら検定不能（Skipped）とし、
+/// fy を設定すれば検定する。
+#[test]
+fn wall_shear_rebar_fy_missing_is_skipped() {
+    let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+
+    let mut model = wall_model(None);
+    model.materials[1].name = "SR235".into();
+    model.materials[1].fy = None;
+    match wall_check_outcome(&model, &forces).expect("耐震壁(RC)の結果") {
+        CheckOutcome::Skipped { reason } => {
+            assert!(
+                reason.contains("SR235") && reason.contains("fy"),
+                "{reason}"
+            );
+        }
+        CheckOutcome::Checked(_) => panic!("fy 未設定は検定不能(Skipped)のはず"),
+    }
+
+    model.materials[1].fy = Some(235.0);
+    match wall_check_outcome(&model, &forces).expect("耐震壁(RC)の結果") {
+        CheckOutcome::Checked(_) => {}
+        CheckOutcome::Skipped { reason } => panic!("fy 設定時は検定するはず: {reason}"),
+    }
+}
+
 /// 柱際スリットが指定された壁は耐震壁として扱われず、耐震壁検定自体が
 /// 出力されない。
 #[test]
@@ -202,6 +237,30 @@ fn wall_with_column_face_slit_is_not_checked() {
         finish_intensity: 0.0,
     }));
     assert!(wall_check_result(&model, &forces).is_none());
+}
+
+/// 壁横筋に未対応グレード（KH785）を割り当てた壁は、普通強度式で代替せず
+/// 検定不能（`Skipped`）とし、壁要素 ID と理由を返す（検定比 0 の偽の安全側
+/// 結果を出さない）。
+#[test]
+fn wall_with_unsupported_shear_rebar_grade_is_skipped_with_reason() {
+    let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+    let mut model = wall_model(None);
+    model.materials[1].name = "KH785".to_string();
+
+    let outcome =
+        wall_check_outcome(&model, &forces).expect("未対応グレードの壁も検定行（検定不能）を返す");
+    match outcome {
+        CheckOutcome::Skipped { reason } => {
+            assert!(reason.contains("耐震壁 ID 0"), "壁要素 ID を含む: {reason}");
+            assert!(reason.contains("KH785"), "材料名を含む: {reason}");
+            assert!(
+                reason.contains("SR235・SR295・SD295・SD345・SD390・SD490"),
+                "対応グレードの一覧を含む: {reason}"
+            );
+        }
+        CheckOutcome::Checked(_) => panic!("未対応グレードの壁は検定してはならない"),
+    }
 }
 
 /// 開口寸法の与え方（実寸法・面積のみ・複数開口）が検定比へ反映されること。
@@ -544,12 +603,11 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
 
     let nl = checks
         .iter()
-        .find(|(_, label, _)| label == "耐震壁(RC)せん断非線形");
-    assert!(
-        nl.is_some(),
-        "側柱付き壁でせん断非線形トリリニアが出力される"
-    );
-    let (_, _, cr) = nl.unwrap();
+        .find(|(_, label, _)| label == "耐震壁(RC)せん断非線形")
+        .expect("側柱付き壁でせん断非線形トリリニアが出力される");
+    let CheckOutcome::Checked(cr) = &nl.2 else {
+        panic!("せん断非線形検定は検定実施（Checked）のはず: {:?}", nl.2);
+    };
     let full = crate::full_detail(cr);
     assert!(
         full.contains("Qc=") && full.contains("βu=") && full.contains("Qu="),
@@ -718,8 +776,11 @@ fn rc_cross_joint_emits_ultimate_check() {
         .iter()
         .find(|(_, label, _)| label == "接合部終局(RC)")
         .expect("十字形 RC 接合部は終局検定が出力されるはず");
+    let CheckOutcome::Checked(cr) = &ult.2 else {
+        panic!("接合部終局(RC) は検定実施（Checked）のはず: {:?}", ult.2);
+    };
     // Vju/Qdu が有限で、詳細に κ=1.00（十字形）が含まれる。
-    assert!(ult.2.ratio().is_finite());
-    let full = crate::full_detail(&ult.2);
+    assert!(cr.ratio().is_finite());
+    let full = crate::full_detail(cr);
     assert!(full.contains("κ=1.00"), "detail={}", full);
 }
