@@ -1,6 +1,7 @@
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
+use squid_n_core::section_shape::concrete_young_modulus;
 use squid_n_core::units::ConcreteClass;
 
 fn make_material(fc: f64, grade: &str) -> Material {
@@ -10,7 +11,7 @@ fn make_material(fc: f64, grade: &str) -> Material {
         id: MaterialId(0),
         name: grade.to_string(),
         category: MaterialCategory::Concrete,
-        young: 205000.0,
+        young: concrete_young_modulus(fc),
         poisson: 0.3,
         density: 0.0,
         shear: None,
@@ -251,6 +252,63 @@ fn test_cft_box_lightweight_reduces_cnc() {
         "軽量1種は cNc 低減で検定比が大きいはず: normal={}, light={}",
         r_n.ratio(),
         r_l.ratio()
+    );
+}
+
+/// CFT の鋼管部分の許容圧縮応力度 s_fc は、主材料の `young`（CFT では充填
+/// コンクリートのヤング係数）ではなく鉄骨固定ヤング係数 `E_STEEL` で算定する。
+/// 主材料 E を誤って用いた場合とは検定比が異なることを確認する。
+#[test]
+fn test_cft_box_steel_fc_uses_fixed_e_steel() {
+    let (height, width, thick) = (400.0, 300.0, 9.0);
+    let sec = cft_box_section(height, width, thick);
+    let mat = make_material(24.0, "Fc24");
+    let mut ctx = ctx_column(LoadTerm::Long);
+    ctx.length = 4000.0;
+    let design = CftDesign;
+
+    let shape = SectionShape::CftBox {
+        height,
+        width,
+        thick,
+    };
+    let (sa, _sz_z, _sz_y) = cft_box_steel_props(height, width, thick);
+    let lambda = effective_slenderness(
+        shape.calc_iy(),
+        shape.calc_iz(),
+        sa,
+        ctx.length,
+        ctx.lk_y,
+        ctx.lk_z,
+    );
+    let f_value = steel_f_value_prefix(&mat.name, thick)
+        .or(mat.fy)
+        .unwrap_or(235.0);
+    let fc_allow = concrete_allowable_compression_class(24.0, mat.concrete_class, true);
+    let cnc = (width - 2.0 * thick) * (height - 2.0 * thick) * fc_allow;
+    let s_fc = steel_fc(f_value, E_STEEL, lambda, LoadTerm::Long);
+    let s_nc = sa * s_fc;
+
+    // 圧縮軸力超過（ratio_axial = N/(cNc+sNc) が支配）にする。
+    let n_design = (cnc + s_nc) * 1.5;
+    let forces = MemberForcesAt {
+        n: -n_design,
+        ..zero_forces()
+    };
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+
+    let expected = n_design / (cnc + s_nc);
+    assert!(
+        (r.ratio() - expected).abs() / expected < 1e-6,
+        "ratio={}, expected={expected}",
+        r.ratio()
+    );
+
+    // 主材料 E を使った場合とは値が異なる（E の取り違えを検出できる）。
+    let s_fc_wrong = steel_fc(f_value, mat.young, lambda, LoadTerm::Long);
+    assert!(
+        (s_fc - s_fc_wrong).abs() > 1e-6,
+        "s_fc={s_fc}, s_fc_wrong={s_fc_wrong}"
     );
 }
 

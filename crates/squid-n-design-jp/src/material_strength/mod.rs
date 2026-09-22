@@ -138,13 +138,69 @@ mod tests {
 
     #[test]
     fn test_steel_fc_continuous_at_lambda() {
-        // λ=0 で fc = F/1.5（=ft長期）、λ=Λ で両分岐が連続。
+        // λ=0 で fc = F/1.5（=ft長期）、λ=Λ で両分岐が連続（0.277F 近傍）。
         let f = 235.0;
-        assert!((steel_fc(f, 0.0, LoadTerm::Long) - f / 1.5).abs() < 1e-6);
-        let big_l = big_lambda(f);
-        let below = steel_fc(f, big_l - 1e-6, LoadTerm::Long);
-        let above = steel_fc(f, big_l + 1e-6, LoadTerm::Long);
-        assert!((below - above).abs() < 1e-3);
-        assert!((below - (18.0 / 65.0) * f).abs() < 1e-2);
+        let e = 205_000.0;
+        assert!((steel_fc(f, e, 0.0, LoadTerm::Long) - f / 1.5).abs() < 1e-6);
+        let big_l = big_lambda(f, e);
+        let below = steel_fc(f, e, big_l - 1e-9, LoadTerm::Long);
+        let above = steel_fc(f, e, big_l + 1e-9, LoadTerm::Long);
+        // 両分岐の差は 0.277 と 3.6/13 の丸め分のみ（F の 1e-4 未満）。
+        assert!(
+            (below - above).abs() < 1e-4 * f,
+            "below={} above={}",
+            below,
+            above
+        );
+        // λ>Λ 側は λ=Λ（r=1）で 0.277F に一致する。
+        assert!((above - 0.277 * f).abs() < 1e-6, "above={}", above);
+    }
+
+    /// 代表値: `big_lambda(235, 205000) = √(π²·205000/(0.6·235)) ≈ 119.7891`。
+    #[test]
+    fn test_big_lambda_representative_value() {
+        let expected = (std::f64::consts::PI.powi(2) * 205_000.0 / (0.6 * 235.0)).sqrt();
+        assert!((expected - 119.7891).abs() < 1e-3, "expected={}", expected);
+        assert!((big_lambda(235.0, 205_000.0) - expected).abs() < 1e-12);
+    }
+
+    /// E を小さくすると Λ が小さくなり、同じ λ（λ<Λ 側）で r=λ/Λ が増えて
+    /// fc が下がることを確認する。
+    #[test]
+    fn test_steel_fc_decreases_with_smaller_e() {
+        let f = 235.0;
+        let lambda = 50.0;
+        let fc_e205 = steel_fc(f, 205_000.0, lambda, LoadTerm::Long);
+        let fc_e100 = steel_fc(f, 100_000.0, lambda, LoadTerm::Long);
+        assert!(
+            fc_e100 < fc_e205,
+            "fc(E=100000)={} fc(E=205000)={}",
+            fc_e100,
+            fc_e205
+        );
+    }
+
+    /// λ>Λ 側は `0.277·F/(λ/Λ)²` に一致する。
+    #[test]
+    fn test_steel_fc_elastic_branch_matches_formula() {
+        let f = 235.0;
+        let e = 205_000.0;
+        let lambda = 300.0;
+        let big_l = big_lambda(f, e);
+        let r = lambda / big_l;
+        let expected = 0.277 * f / (r * r);
+        assert!((steel_fc(f, e, lambda, LoadTerm::Long) - expected).abs() < 1e-9);
+    }
+
+    /// 短期は長期の 1.5 倍。
+    #[test]
+    fn test_steel_fc_short_is_1_5x_long() {
+        let f = 235.0;
+        let e = 205_000.0;
+        for lambda in [0.0, 50.0, 300.0] {
+            let long = steel_fc(f, e, lambda, LoadTerm::Long);
+            let short = steel_fc(f, e, lambda, LoadTerm::Short);
+            assert!((short - long * 1.5).abs() < 1e-9, "λ={}", lambda);
+        }
     }
 }

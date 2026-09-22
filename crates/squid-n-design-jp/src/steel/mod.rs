@@ -189,7 +189,7 @@ impl DesignCheck for SteelDesign {
         let cr = match ctx.kind {
             MemberKind::Beam => beam::check_beam(forces, sec, mat, ctx, f, term),
             MemberKind::Column => column::check_column(forces, sec, mat, ctx, f, term),
-            MemberKind::Brace => brace::check_brace(forces, sec, ctx, f, term),
+            MemberKind::Brace => brace::check_brace(forces, sec, mat, ctx, f, term),
         };
         CheckOutcome::Checked(cr)
     }

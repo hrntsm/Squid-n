@@ -45,7 +45,7 @@ pub(crate) fn check_column(
         ""
     };
     let lambda = effective_slenderness(sec.iy, sec.iz, area, ctx.length, ctx.lk_y, ctx.lk_z);
-    let fc_val = steel_fc(f, lambda, term);
+    let fc_val = steel_fc(f, mat.young, lambda, term);
 
     let c = steel_c_factor(ctx, false);
     let fb_strong = match shape {
@@ -239,7 +239,7 @@ mod tests {
 
         let i_min = (sec.iy.min(sec.iz) / area).sqrt();
         let lambda = 3500.0 / i_min;
-        let fc = steel_fc(235.0, lambda, LoadTerm::Long);
+        let fc = steel_fc(235.0, mat_v.young, lambda, LoadTerm::Long);
         let ft = steel_ft(235.0, LoadTerm::Long);
         // fbX は横座屈考慮（H形）、fbY=ft。ここでは非負・上限 ft であることのみ検証。
         assert!(crate::full_detail(&result).contains("軸曲げ比"));
@@ -406,7 +406,7 @@ mod tests {
         let area = sec.area;
         let i_min = (sec.iy.min(sec.iz) / area).sqrt();
         let lambda = 4000.0 / i_min;
-        let fc = steel_fc(235.0, lambda, LoadTerm::Long);
+        let fc = steel_fc(235.0, mat_v.young, lambda, LoadTerm::Long);
         let expected = (100_000.0 / area) / fc;
         assert!(
             (result.ratio() - expected).abs() < 1e-9,
