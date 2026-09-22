@@ -13,7 +13,7 @@
 //! - [`DistributionMethod`] — 床荷重の分配方法。
 //! - [`AreaLoad`] — 面荷重。
 //! - [`OneWayDir`] — 一方向スラブの伝達方向。
-//! - [`LoadPurpose`] — 積載荷重の用途（床用／骨組用／地震用。令85条1項）。
+//! - [`LoadPurpose`] — 積載荷重の用途（床用／小梁用／大梁・柱・基礎用／地震力用。令85条1項）。
 //! - [`SlabUsage`] — 室用途（令別表第1 の積載荷重プリセット）。
 
 use super::*;
@@ -52,6 +52,7 @@ impl SlabPlate {
     }
 
     /// 用途別の積載荷重（LL）の面荷重強度 [N/mm²]。`usage` 未設定なら 0。
+    /// 床用・小梁用・大梁用・地震用の 4 区分を `purpose` で選ぶ。
     pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
         self.usage.map(|u| u.live_load(purpose)).unwrap_or(0.0)
     }
@@ -226,6 +227,7 @@ impl Slab {
     }
 
     /// 用途別の積載荷重（LL）の面荷重強度 [N/mm²]。用途未設定は 0。
+    /// 床用・小梁用・大梁用・地震用の 4 区分を `purpose` で選ぶ。
     pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
         self.plate.live_intensity(purpose)
     }
@@ -312,7 +314,7 @@ impl Model {
     }
 
     /// 用途に応じた合成面荷重強度 [N/mm²]（固定 DL ＋ 積載 LL(purpose)）。
-    /// 長期骨組解析は `Frame`、地震用重量は `Seismic`、床・小梁設計は `Floor`。
+    /// 床スラブは `Floor`、小梁は `Joist`、長期骨組は `Frame`、地震用重量は `Seismic`。
     pub fn slab_intensity(&self, slab: &Slab, purpose: LoadPurpose) -> f64 {
         self.slab_dead_intensity(slab) + slab.plate.live_intensity(purpose)
     }
@@ -483,20 +485,19 @@ pub enum DistributionMethod {
     TributaryArea,
 }
 
-/// 積載荷重の用途（令85条1項・令別表第1 の 3 欄）。
-/// - `Floor`（床用）: 床スラブ・小梁の設計用。最も大きい。
-/// - `Frame`（骨組用）: 大梁・柱・基礎の設計用（長期骨組解析に用いる）。
-/// - `Seismic`（地震用）: 地震力（地震用重量）の算定用。最も小さい。
+/// 積載荷重の用途（令85条1項・令別表第1）。`Floor`（床用）と `Joist`（小梁用）は (い) 欄「床の構造計算を
+/// する場合」に、`Frame`（大梁・柱・基礎用）は (ろ) 欄、`Seismic`（地震力用）は (は) 欄に対応する。床スラブ
+/// 検定・小梁検定・長期骨組解析・地震用重量の算定に用い、官庁営繕「建築構造設計基準」等は (い) 欄を「床版又は小梁計算用」と整理する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadPurpose {
     Floor,
+    Joist,
     Frame,
     Seismic,
 }
 
 /// 室の用途（積載荷重プリセット）。`live_load` で用途別の積載荷重 [N/mm²] を返す。
-/// `Custom` は 3 欄（床版・小梁計算用／大梁・柱・基礎計算用／地震力計算用）を
-/// 直接持つ（内部単位 N/mm²）。
+/// `Custom` は 4 区分（床用／小梁用／大梁・柱・基礎用／地震力用）を直接持つ（内部単位 N/mm²）。
 ///
 /// 出典: 建築基準法施行令 第85条第1項・令別表第1、および国土交通省官庁営繕部
 /// 「建築構造設計基準」令和3年度版（同資料は令85条を準用しつつ、官庁施設に特有の
@@ -549,9 +550,10 @@ pub enum SlabUsage {
     /// 屋上（鉄骨造体育館、武道場等）。短期荷重として扱い、床版・小梁計算用のみ
     /// 作業荷重を見込む。大梁・柱・基礎計算用および地震力計算用は 0。
     RoofSteelGym,
-    /// 任意入力（床版・小梁計算用／大梁・柱・基礎計算用／地震力計算用、いずれも N/mm²）。
+    /// 任意入力（床用／小梁用／大梁・柱・基礎用／地震力用、いずれも N/mm²）。
     Custom {
         floor: f64,
+        joist: f64,
         frame: f64,
         seismic: f64,
     },
@@ -585,18 +587,20 @@ impl SlabUsage {
             SlabUsage::RoofSteelGym => (980.0, 0.0, 0.0),
             SlabUsage::Custom {
                 floor,
+                joist,
                 frame,
                 seismic,
             } => {
                 return match purpose {
                     LoadPurpose::Floor => floor,
+                    LoadPurpose::Joist => joist,
                     LoadPurpose::Frame => frame,
                     LoadPurpose::Seismic => seismic,
                 };
             }
         };
         let v_n_per_m2 = match purpose {
-            LoadPurpose::Floor => floor,
+            LoadPurpose::Floor | LoadPurpose::Joist => floor,
             LoadPurpose::Frame => frame,
             LoadPurpose::Seismic => seismic,
         };
@@ -624,14 +628,23 @@ mod tests {
 
     #[test]
     fn test_usage_table_values_n_per_mm2() {
-        // 令別表第1: 事務室 = 床用 2900 / 骨組用 1800 / 地震用 800 [N/m²]。
+        // 令別表第1: 事務室 = 床用 2900 / 大梁用 1800 / 地震用 800 [N/m²]。
+        // 令85条1項の (い) 欄は「床の構造計算をする場合」で床版と小梁を分けないため、小梁用は床用と同じ値。
         let o = SlabUsage::Office;
         assert!((o.live_load(LoadPurpose::Floor) - 2900e-6).abs() < 1e-12);
+        assert_eq!(
+            o.live_load(LoadPurpose::Joist),
+            o.live_load(LoadPurpose::Floor)
+        );
         assert!((o.live_load(LoadPurpose::Frame) - 1800e-6).abs() < 1e-12);
         assert!((o.live_load(LoadPurpose::Seismic) - 800e-6).abs() < 1e-12);
         // 住宅 = 1800 / 1300 / 600。
         let r = SlabUsage::Residential;
         assert!((r.live_load(LoadPurpose::Floor) - 1800e-6).abs() < 1e-12);
+        assert_eq!(
+            r.live_load(LoadPurpose::Joist),
+            r.live_load(LoadPurpose::Floor)
+        );
         assert!((r.live_load(LoadPurpose::Frame) - 1300e-6).abs() < 1e-12);
         assert!((r.live_load(LoadPurpose::Seismic) - 600e-6).abs() < 1e-12);
         // 国交省営繕基準（令和3年度版）で追加した室用途の値（[N/m²]）。
@@ -651,11 +664,15 @@ mod tests {
         ];
         for &(u, floor, frame, seismic) in cases {
             assert!((u.live_load(LoadPurpose::Floor) - floor * 1e-6).abs() < 1e-12);
+            assert_eq!(
+                u.live_load(LoadPurpose::Joist),
+                u.live_load(LoadPurpose::Floor)
+            );
             assert!((u.live_load(LoadPurpose::Frame) - frame * 1e-6).abs() < 1e-12);
             assert!((u.live_load(LoadPurpose::Seismic) - seismic * 1e-6).abs() < 1e-12);
         }
 
-        // 積載は 床用 ≥ 骨組用 ≥ 地震用 の順（全用途で成り立つ）。
+        // 積載は 床用 = 小梁用 ≥ 大梁用 ≥ 地震用 の順（全用途で成り立つ）。
         for u in [
             SlabUsage::Residential,
             SlabUsage::Office,
@@ -681,9 +698,13 @@ mod tests {
             SlabUsage::RoofSteelGym,
         ] {
             let f = u.live_load(LoadPurpose::Floor);
+            let j = u.live_load(LoadPurpose::Joist);
             let g = u.live_load(LoadPurpose::Frame);
             let s = u.live_load(LoadPurpose::Seismic);
-            assert!(f >= g && g >= s, "床用≥骨組用≥地震用: {u:?}");
+            assert!(
+                f == j && f >= g && g >= s,
+                "床用=小梁用≥大梁用≥地震用: {u:?}"
+            );
         }
     }
 
@@ -692,12 +713,48 @@ mod tests {
         // Custom は内部単位 N/mm² をそのまま返す（換算しない）。
         let c = SlabUsage::Custom {
             floor: 3.0e-3,
+            joist: 2.5e-3,
             frame: 2.0e-3,
             seismic: 1.0e-3,
         };
         assert_eq!(c.live_load(LoadPurpose::Floor), 3.0e-3);
+        assert_eq!(c.live_load(LoadPurpose::Joist), 2.5e-3);
         assert_eq!(c.live_load(LoadPurpose::Frame), 2.0e-3);
         assert_eq!(c.live_load(LoadPurpose::Seismic), 1.0e-3);
+    }
+
+    /// 任意入力の 4 値が、合成面荷重（固定 DL ＋ 積載 LL）として用途別に使い分けられる。
+    /// 固定 DL は仕上げ荷重 5.0 kN/m² のみ（断面未割当なので自重は 0）。
+    #[test]
+    fn test_slab_intensity_uses_purpose_specific_live_load() {
+        let model = Model::default();
+        let slab = Slab {
+            id: crate::ids::SlabId(0),
+            shape: SlabShape::Enclosed,
+            plate: SlabPlate {
+                section: None,
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: 5.0e-3,
+                }],
+                usage: Some(SlabUsage::Custom {
+                    floor: 3.0e-3,
+                    joist: 2.5e-3,
+                    frame: 1.8e-3,
+                    seismic: 0.8e-3,
+                }),
+                method: DistributionMethod::default(),
+                one_way: None,
+            },
+        };
+        assert!((model.slab_intensity(&slab, LoadPurpose::Floor) - 8.0e-3).abs() < 1e-12);
+        assert!((model.slab_intensity(&slab, LoadPurpose::Joist) - 7.5e-3).abs() < 1e-12);
+        assert!((model.slab_intensity(&slab, LoadPurpose::Frame) - 6.8e-3).abs() < 1e-12);
+        assert!((model.slab_intensity(&slab, LoadPurpose::Seismic) - 5.8e-3).abs() < 1e-12);
+        assert!(
+            (model.slab_intensity(&slab, LoadPurpose::Joist) - 8.0e-3).abs() > 1e-12,
+            "小梁設計用は床用（8.0e-3）とは異なる"
+        );
     }
 
     /// `RegionAnchor::FloorRegion` は床板の取付き先には使わない

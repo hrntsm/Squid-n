@@ -183,8 +183,8 @@ impl App {
     /// （判定が 2 か所に分かれると解析と検定で荷重が食い違うため）。
     ///
     /// ただし**荷重の値そのものは一致しない**。共有するのは支持関係の判定と伝達の
-    /// 手順であって、面荷重強度は用途ごとに違う。検定は床用（`LoadPurpose::Floor`。
-    /// 固定＋床用積載）、荷重同期は固定荷重ケースと積載荷重ケースへ分けて解く。
+    /// 手順であって、面荷重強度は用途ごとに違う。小梁検定は小梁用（`LoadPurpose::Joist`。
+    /// 固定＋小梁用積載）、荷重同期は固定荷重ケースと積載荷重ケースへ分けて解く。
     ///
     /// 断面未割当・鋼以外の材料・分配が足りないものは表に「未」として残す。
     /// 所属先がない小梁のうち、片持ち小梁以外は検定の対象にしない（表に「未」として
@@ -206,7 +206,7 @@ impl App {
         use squid_n_load::floor::{cantilever_extremes, simple_beam_extremes};
 
         let w_of =
-            |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Floor);
+            |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Joist);
         let transfer = squid_n_load::cascade::solve(&self.core.model, w_of, true);
 
         for sm in self.core.model.posts() {
