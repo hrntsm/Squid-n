@@ -36,8 +36,9 @@ pub use wall_nonlinear::{
 
 pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_shear,
-    concrete_allowable_shear_class, concrete_young_modulus, main_rebar_grade, rebar_allowable_shear,
-    rebar_allowable_tension, rebar_sigma_y_of, shear_rebar_grade, young_ratio_n,
+    concrete_allowable_shear_class, concrete_young_modulus, main_rebar_grade,
+    rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of, shear_rebar_grade,
+    young_ratio_n,
 };
 
 pub(crate) use allowable::*;
