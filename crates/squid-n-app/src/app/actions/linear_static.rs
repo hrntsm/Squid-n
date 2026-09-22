@@ -5,7 +5,7 @@
 use super::*;
 
 impl App {
-    /// T3: 線形静的解析を実行し、結果を `self.core.scoped.results` に格納する。
+    /// 線形静的解析を実行し、結果を `self.core.scoped.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
     /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
@@ -119,7 +119,7 @@ impl App {
         }
     }
 
-    /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
+    /// 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
     /// 指定インデックスの荷重組合せが存在しない場合はエラーメッセージをセット。
     ///
     /// 求解は参照する荷重ケース単体で行い、組合せの結果はその線形和として
@@ -553,7 +553,7 @@ impl App {
         self.run_design_check();
     }
 
-    /// T3: 地震静的解析（Ai一気通貫）を実行し、結果を `self.core.scoped.results` に格納する。
+    /// 地震静的解析（Ai一気通貫）を実行し、結果を `self.core.scoped.results` に格納する。
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
     /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
     /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
