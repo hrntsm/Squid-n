@@ -6,4 +6,4 @@ Status: accepted
 
 Legacy source:
 - `dev_docs/handoff/材料を断面へ移す_申し送り.md`
-- `dev_docs/specs/構造計算一貫プログラム_実装設計書.md` §4.2
+- 初回設計書（#313 で廃止。git 履歴参照）§4.2

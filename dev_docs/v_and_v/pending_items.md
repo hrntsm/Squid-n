@@ -3,7 +3,7 @@
 > **集約一覧は [`未検証一覧.md`](未検証一覧.md) へ移行しました。**
 > 本ファイルは P9 仕様乖離の詳細記録と、過去の虚偽報告訂正履歴を保持します。
 
-本ドキュメントは、P9 仕様書（dev_docs/specs/P9_仕上げ.md）と現在の実装との乖離を記録する。
+本ドキュメントは、旧 P9 仕様書（dev_docs/specs/P9_仕上げ.md、#313 で廃止）と現在の実装との乖離を記録する。
 
 ## 凡例
 
@@ -123,7 +123,7 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 | RC 曲げの本格検定式（a_t·j 等） | 🔶 | `Section` に引張鉄筋断面積 a_t がないため暫定（σc=M/Z でコンクリート圧縮検定）。P4 で SectionShape 経路が整ってから本格実装 |
 | RC せん断検定 | 🔶 | τ=Q/(b·j), j=7d/8 の暫定式を実装。αs·fw 等の詳細式は P7/AIJ 外部データ |
 | 編集トランザクション（Undo/Redo） | ✅ | `squid-n-edit` クレートに統一。断面・荷重編集コマンド（SetSectionField/SetSectionName/SetElementSection/SetLoadCaseName/SetNodalLoad/DeleteNodalLoad）も追加 |
-| **UI 横断タスク（UI設計.md §9.2 UI-1〜UI-7）: 旧版では未達を過小申告** |
+| **UI 横断タスク（UI設計.md §9.2 UI-1〜UI-7。当該仕様書は #313 で廃止）: 旧版では未達を過小申告** |
 | UI-1: 工程タブ + 4ペイン | ✅ | `Tab{Model,Loads,Analysis,Results,Design,Report}` へ改訂、ナビ/中央/インスペクタ/ステータス4ペイン化 |
 | UI-2: Navigator + 双方向連動 | ✅ | `Navigator` 構造体新設、テーブル/ナビのクリックで `nav.focus_*` 同期→インスペクタ連動 |
 | UI-3: 断面作成UI | ✅ | `section_editor.rs` 新設、8タイプ（H/箱/L/C/T/丸・RC矩形/RC丸）のドラフト→`SectionShape::to_section`→追加、RC配筋プレビュー |

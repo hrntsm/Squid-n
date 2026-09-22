@@ -10,11 +10,15 @@ Squid-n の開発者向けドキュメントを集約したディレクトリ。
 | 置き場 | 書くもの |
 |--------|----------|
 | [CONTEXT.md](../CONTEXT.md) | 用語の意味・禁止語（会話と設計の語彙） |
-| [specs/](specs/README.md) | 現在の開発者向け仕様 |
 | [adr/](adr/) | 重要な設計判断と理由。現在有効かどうかは Status で管理する |
 | [handoff/](handoff/README.md) | 実装経緯・移行記録・申し送り・残課題 |
-| [v_and_v/](v_and_v/README.md) | 検証の証拠（V&V レポート） |
-| [docs/](../docs/) | 利用者向けの現在仕様・計算根拠。開発経緯・過去差分は書かず、既定値はすべて記載する |
+| [v_and_v/](v_and_v/README.md) | 検証の証拠（V&V レポート・原典照合リスト） |
+| [architecture.md](architecture.md) | 開発者向けアーキテクチャ（クレート階層・依存方向） |
+| [docs/](../docs/) | 現在の製品仕様・計算根拠。利用者向けサイトの正本。開発者も現在仕様はここを見る |
+
+**現在の製品仕様（利用者から見える挙動・既定値・制約・計算根拠）は `docs/` が唯一の正本であり、
+`dev_docs/` に同じ現在仕様を重複して書かない。** `dev_docs/` は、現在仕様そのものではなく、
+その背景にある設計判断（ADR）・検証（V&V）・経緯（handoff）・開発者向けアーキテクチャを扱う。
 
 ## パッと見る一覧
 
@@ -28,8 +32,8 @@ Squid-n の開発者向けドキュメントを集約したディレクトリ。
 | ディレクトリ / ファイル | 内容 |
 | --- | --- |
 | [`adr/`](adr/) | 設計判断（ADR）の正本 |
-| [`specs/`](specs/README.md) | 実装仕様書・設計書・原典（法令・規準）照合リスト |
-| [`v_and_v/`](v_and_v/README.md) | Verification & Validation（参照実装照合・監査・レビュー記録） |
+| [`architecture.md`](architecture.md) | 開発者向けアーキテクチャ（クレート階層・依存方向） |
+| [`v_and_v/`](v_and_v/README.md) | Verification & Validation（参照実装照合・監査・レビュー記録・原典照合リスト） |
 | [`handoff/`](handoff/README.md) | 申し送り・開発運用ドキュメント（実装内容と残課題） |
 
 ### handoff（申し送り）
@@ -43,4 +47,5 @@ Squid-n の開発者向けドキュメントを集約したディレクトリ。
 
 - [**README.md**](v_and_v/README.md) — レポート目録・要素→テスト索引
 - [**未検証一覧.md**](v_and_v/未検証一覧.md) — 未検証・一部項目の集約チェックリスト
+- [`原典照合リスト.md`](v_and_v/原典照合リスト.md) — 法令・規準の埋め込み値の専門家照合チェックリスト
 - [`pending_items.md`](v_and_v/pending_items.md) — P9 仕様乖離の歴史的記録

@@ -56,11 +56,11 @@ Squid-n は、国土交通大臣の認定を受けた構造計算プログラム
 
 ## 開発者向け資料
 
-設計仕様・検証記録・開発運用ドキュメントは開発者向けのため本サイトには含めていません。
+設計判断・検証記録・開発運用ドキュメントは開発者向けのため本サイトには含めていません。
 これらは [dev_docs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs) に集約しており、リポジトリの以下を参照してください。
 
-- [dev_docs/specs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/specs)：フェーズ単位の実装仕様書と原典（法令・規準）照合リスト
-- [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート（[未検証一覧](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/未検証一覧.md)）
+- [dev_docs/architecture.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/architecture.md)：クレート階層と依存方向
+- [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート（[未検証一覧](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/未検証一覧.md)）。法令・規準の埋め込み値の照合チェックリスト [原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/原典照合リスト.md) も同ディレクトリにあります
 - [dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：申し送り目録（[残課題一覧](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/残課題一覧.md)）。[ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/ROADMAP.md) は 2026-07 完了済みの歴史的記録
 
 ## リポジトリ

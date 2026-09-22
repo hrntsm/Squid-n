@@ -201,7 +201,7 @@ CI が使う stable は 1.98 以上のため、手元のツールチェインは
 
 ドキュメントサイトは**アプリケーション利用者向け**（計算根拠・理論・出典）です。
 [mdBook](https://rust-lang.github.io/mdBook/) で構築しています。
-開発者向けドキュメント（設計仕様・検証記録・申し送り・ロードマップ）は `dev_docs/` に集約しており、
+開発者向けドキュメント（設計判断（ADR）・アーキテクチャ・検証記録・申し送り・ロードマップ）は `dev_docs/` に集約しており、
 サイトには含めません。構成は [dev_docs/README.md](dev_docs/README.md) を参照してください。
 
 ```bash
@@ -249,6 +249,27 @@ mdbook build
 `main` への push で GitHub Pages に自動デプロイされます
 （`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
 `/api/` 以下に併設されます。
+
+## UI 実装の約束事
+
+配色・寸法・角丸・フォントサイズなどの値の単一情報源は
+[`crates/squid-n-app/src/theme.rs`](crates/squid-n-app/src/theme.rs) です。値を変えるときは
+`theme.rs` を直し、同じ値を文書やほかのコードへ写さないでください。
+
+- 文字サイズは `TextStyle`（Heading / Body / Button / Monospace / Small）で指定し、
+  ウィジェットへ `FontId::new(...)` のような生の pt を書かない。サイズの変更は
+  `theme::apply_theme` の 1 か所で行う。
+- テキストを内包する箱の寸法（テーブル行高・ヘッダ高・ステータスバー高など）を固定 px で
+  書かず、`ui.text_style_height()`（例: `theme::table_row_height`）から導出する。和文の
+  フォントフォールバックで行高が変わるため、固定値は文字が見切れる形で壊れる。固定 px は
+  文字が入らない非テキスト形状（アイコン半径・線幅・当たり判定など）に限る。
+- パネル内側余白は `theme.rs` の共通 frame helper（`toolbar_frame` /
+  `content_panel_frame` / `central_panel_frame` / `status_bar_frame` 等）を用い、
+  各 UI で独自値を持たせない。標準の項目間隔を基本にし、密集領域（リスト・
+  アイコン列）のみ明示的に縮める。
+- 表は `table_util::standard_table` を通し、列定義は `Col`、列幅は `ColWidth` トークンで
+  指定する。全列クリップ・列区切りの縦線・縦横スクロールの所在は `table_util` の doc を
+  参照。スプレッドシート様式のグリッド（`grid/`）は意図的に別様式とする。
 
 ## CI
 

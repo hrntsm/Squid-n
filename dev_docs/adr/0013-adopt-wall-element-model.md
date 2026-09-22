@@ -6,7 +6,7 @@ Status: accepted
 
 Legacy source:
 - `docs/calc_basis/04_要素剛性/05_壁エレメントモデル.md`
-- `dev_docs/specs/P5.5_壁とMS.md`
+- 旧 dev_docs/specs/P5.5_壁とMS.md（#313 で廃止）
 - `dev_docs/v_and_v/README.md` 索引 #16（TVLEM は対象外）・#29・#30
 - `dev_docs/v_and_v/未検証一覧.md` §3（耐震壁・壁エレメントの残る検証）
 - `dev_docs/handoff/DomainDocs基盤導入_申し送り.md` §4（撤回の記録）

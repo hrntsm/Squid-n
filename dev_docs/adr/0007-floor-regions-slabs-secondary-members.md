@@ -6,4 +6,4 @@ Status: accepted
 
 Legacy source:
 - `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §3 D1・D2・D13〜D22、§3.1
-- `dev_docs/specs/床領域と壁領域.md`
+- 旧仕様書 `床領域と壁領域.md`（#313 で廃止。現行仕様は[床荷重の分配](../../docs/calc_basis/01_荷重/03_床荷重の分配.md)）

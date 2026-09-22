@@ -10,7 +10,7 @@
 
 ## アーキテクチャ
 
-**14** のクレートから成る階層型アーキテクチャ（詳細は [dev_docs/specs/architecture.md](dev_docs/specs/architecture.md)）:
+**14** のクレートから成る階層型アーキテクチャ（詳細は [dev_docs/architecture.md](dev_docs/architecture.md)）:
 
 ```
 Layer 0: squid-n-core（基本データ構造・DOF 管理・荷重組合せ）、squid-n-math（疎行列・ソルバ）、
@@ -57,14 +57,13 @@ cargo run -p squid-n-mcp --features mcp
 
 ### 開発者向け（`dev_docs/`）
 
-設計仕様・V&V・申し送りは [dev_docs/](dev_docs/README.md) に集約（ドキュメントサイトには含めない）。
+設計判断（ADR）・アーキテクチャ・検証記録・申し送りは [dev_docs/](dev_docs/README.md) に集約（ドキュメントサイトには含めない）。
 
 | 一覧 | 内容 |
 |------|------|
 | [dev_docs/handoff/残課題一覧.md](dev_docs/handoff/残課題一覧.md) | 実装残りの集約チェックリスト |
 | [dev_docs/v_and_v/未検証一覧.md](dev_docs/v_and_v/未検証一覧.md) | V&V 未完了（❌/🔶）の集約チェックリスト |
-| [dev_docs/specs/architecture.md](dev_docs/specs/architecture.md) | クレート階層・依存方向 |
-| [dev_docs/specs/](dev_docs/specs/README.md) | 実装仕様書・原典照合 |
+| [dev_docs/architecture.md](dev_docs/architecture.md) | クレート階層・依存方向 |
 | [dev_docs/v_and_v/](dev_docs/v_and_v/README.md) | 検証レポート・要素→テスト索引 |
 | [dev_docs/handoff/](dev_docs/handoff/README.md) | 申し送り目録（時系列・カテゴリ別） |
 
