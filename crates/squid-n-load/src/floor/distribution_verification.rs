@@ -125,6 +125,57 @@ fn polygon_grid_sampled_area(coords: &[[f64; 3]]) -> f64 {
     sampled
 }
 
+/// 現行 polygon と同じ 200×200 固定格子・最近接辺で、最小距離に並ぶ辺（等距離）へ
+/// セル面積を均等に配る「等分版」の各辺負担面積 [mm²]。距離は [`polygon_edge_areas`] と
+/// 同じ 2 乗距離尺度で評価し、等距離の許容差はセル寸法に対する相対長さを換算して用いる。
+fn current_split_edge_areas(coords: &[[f64; 3]]) -> Vec<f64> {
+    let n = coords.len();
+    let mut areas = vec![0.0_f64; n];
+    if n < 3 {
+        return areas;
+    }
+    let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
+    let (lo, hi) = geom_polygon::bounding_box(&poly);
+    let width = hi[0] - lo[0];
+    let height = hi[1] - lo[1];
+    if width <= 0.0 || height <= 0.0 {
+        return areas;
+    }
+    const N_GRID: usize = 200;
+    let dx = width / N_GRID as f64;
+    let dy = height / N_GRID as f64;
+    let cell_area = dx * dy;
+    let tie_tol = dx.max(dy) * TIE_REL_TOL;
+    let mut dists_sq = vec![0.0_f64; n];
+    for iy in 0..N_GRID {
+        let y = lo[1] + (iy as f64 + 0.5) * dy;
+        for ix in 0..N_GRID {
+            let x = lo[0] + (ix as f64 + 0.5) * dx;
+            let p = [x, y];
+            if !geom_polygon::contains_by_ray_crossing(&poly, p) {
+                continue;
+            }
+            let mut d_min_sq = f64::INFINITY;
+            for (e, d2) in dists_sq.iter_mut().enumerate() {
+                *d2 = geom_polygon::point_segment_dist_sq(p, poly[e], poly[(e + 1) % n]);
+                d_min_sq = d_min_sq.min(*d2);
+            }
+            let tie_limit_sq = tie_tol * (2.0 * d_min_sq.sqrt() + tie_tol);
+            let ties: Vec<usize> = dists_sq
+                .iter()
+                .enumerate()
+                .filter(|(_, d2)| **d2 - d_min_sq <= tie_limit_sq)
+                .map(|(e, _)| e)
+                .collect();
+            let share = cell_area / ties.len() as f64;
+            for e in ties {
+                areas[e] += share;
+            }
+        }
+    }
+    areas
+}
+
 /// 荷重分配結果から、境界辺 `Edge(e)` ごとの総荷重 [N] を集計する。
 fn edge_totals(loads: &[BeamLoad], n: usize) -> Vec<f64> {
     let mut out = vec![0.0_f64; n];
@@ -623,4 +674,206 @@ fn case5_joist_floor_primary_reactions_current_vs_reference() {
 
     assert_total("現行カスケード合計", &[current_total], w * area);
     assert_total("基準方式合計", &[baseline_total], w * area);
+}
+
+/// 2 値の相対差 [%]。両者がほぼ零なら 0 とし、分母は絶対値の大きい方を採る。
+fn rel_diff_pct(a: f64, b: f64) -> f64 {
+    let denom = a.abs().max(b.abs());
+    if denom > 1e-12 {
+        100.0 * (a - b) / denom
+    } else {
+        0.0
+    }
+}
+
+/// `a` の `b` に対する相対誤差。
+fn rel_err(a: f64, b: f64) -> f64 {
+    (a - b).abs() / b.abs().max(1e-12)
+}
+
+/// 現行・等分版・基準方式の各辺負担荷重 [N] と辺ごとの差 [N]/[%]、最大相対差、総和を出力する。
+fn print_three_way(
+    label: &str,
+    w: f64,
+    true_area: f64,
+    current: &[f64],
+    split: &[f64],
+    baseline: &[f64],
+) {
+    println!("--- {label} ---");
+    println!(
+        "辺   現行[N]        等分[N]        基準[N]      現行-等分[N] 等分-基準[N] 現行-等分[%] 等分-基準[%]"
+    );
+    let mut max_current_split = 0.0_f64;
+    let mut max_split_base = 0.0_f64;
+    for (i, &c) in current.iter().enumerate() {
+        let s = split.get(i).copied().unwrap_or(0.0);
+        let b = baseline.get(i).copied().unwrap_or(0.0);
+        let d_cs = rel_diff_pct(c, s);
+        let d_sb = rel_diff_pct(s, b);
+        max_current_split = max_current_split.max(d_cs.abs());
+        max_split_base = max_split_base.max(d_sb.abs());
+        println!(
+            "{i:<3} {c:13.3} {s:13.3} {b:13.3} {:12.3} {:12.3} {d_cs:12.4} {d_sb:12.4}",
+            c - s,
+            s - b,
+        );
+    }
+    let cur_total: f64 = current.iter().sum();
+    let split_total: f64 = split.iter().sum();
+    let base_total: f64 = baseline.iter().sum();
+    let expected = w * true_area;
+    println!("最大相対差: 現行vs等分={max_current_split:.4}%  等分vs基準={max_split_base:.4}%");
+    println!(
+        "総和[N]: 現行={cur_total:.6} 等分={split_total:.6} 基準={base_total:.6} 真値={expected:.6}"
+    );
+    println!(
+        "総和誤差(真値比): 現行={:.3e} 等分={:.3e} 基準={:.3e}",
+        rel_err(cur_total, expected),
+        rel_err(split_total, expected),
+        rel_err(base_total, expected),
+    );
+}
+
+/// 3方式（現行 `polygon_edge_areas`・等分版 `current_split_edge_areas`・基準方式
+/// `reference_edge_areas(split_ties=true)`）を比較して出力する。総和保存と、`symmetry_pairs`
+/// で指定した対称辺の等分版の等値を厳格に検証する。
+fn run_split_case(label: &str, pts: &[(f64, f64)], w: f64, symmetry_pairs: &[(usize, usize)]) {
+    let n = pts.len();
+    let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
+    let true_area = area_xy(&coords);
+    let candidate: Vec<usize> = (0..n).collect();
+    let current_areas = polygon_edge_areas(&coords, &candidate);
+    let split_areas = current_split_edge_areas(&coords);
+    let (baseline_areas, baseline_sampled) = reference_edge_areas(&coords, true);
+    let sampled = polygon_grid_sampled_area(&coords);
+
+    let current: Vec<f64> = current_areas.iter().map(|a| w * a).collect();
+    let split: Vec<f64> = split_areas.iter().map(|a| w * a).collect();
+    let baseline: Vec<f64> = baseline_areas.iter().map(|a| w * a).collect();
+
+    print_three_way(label, w, true_area, &current, &split, &baseline);
+    println!(
+        "格子内面積: 現行/等分200x200={sampled:.1} 基準={baseline_sampled:.1} 真値={true_area:.1}"
+    );
+
+    assert_total("現行polygon200", &current_areas, sampled);
+    assert_total("等分版", &split_areas, sampled);
+    assert_reference_conserves(&coords, label);
+
+    if !symmetry_pairs.is_empty() {
+        assert_pairs_equal(&split, symmetry_pairs, &format!("{label} 等分版"));
+    }
+}
+
+/// ケース7: 現行に等距離の均等割りを足した「等分版」を、L形・T形・十字形・
+/// 凸五角形・正八角形・U字形状で現行・基準方式と比較する。
+#[test]
+fn case7_split_ties_shape_matrix() {
+    let w = 0.003_f64;
+
+    // L形: 12000×12000 のうち右上 6000×6000 を欠く。対角線 y=x について対称。
+    run_split_case(
+        "ケース7a: L形 12000x12000（右上6000x6000欠）",
+        &[
+            (0.0, 0.0),
+            (12000.0, 0.0),
+            (12000.0, 6000.0),
+            (6000.0, 6000.0),
+            (6000.0, 12000.0),
+            (0.0, 12000.0),
+        ],
+        w,
+        &[(0, 5), (1, 4), (2, 3)],
+    );
+
+    // T形（凹形状）: 下辺 12000×6000 の上に 6000×6000 が中央に乗る。x=6000 について対称。
+    run_split_case(
+        "ケース7b: T形（凹形状）12000x12000",
+        &[
+            (0.0, 0.0),
+            (12000.0, 0.0),
+            (12000.0, 6000.0),
+            (9000.0, 6000.0),
+            (9000.0, 12000.0),
+            (3000.0, 12000.0),
+            (3000.0, 6000.0),
+            (0.0, 6000.0),
+        ],
+        w,
+        &[(1, 7), (2, 6), (3, 5)],
+    );
+
+    // 十字形: 12000×12000 から四隅 3000×3000 を欠く。凹角を4つ持つ。
+    run_split_case(
+        "ケース7c: 十字形 12000x12000（四隅3000x3000欠）",
+        &[
+            (3000.0, 0.0),
+            (9000.0, 0.0),
+            (9000.0, 3000.0),
+            (12000.0, 3000.0),
+            (12000.0, 9000.0),
+            (9000.0, 9000.0),
+            (9000.0, 12000.0),
+            (3000.0, 12000.0),
+            (3000.0, 9000.0),
+            (0.0, 9000.0),
+            (0.0, 3000.0),
+            (3000.0, 3000.0),
+        ],
+        w,
+        &[(1, 11), (2, 10), (3, 9), (4, 8), (5, 7)],
+    );
+
+    // 凸五角形: 既存 test_polygon_pentagon_conservation と同じ形状。対称性なし。
+    run_split_case(
+        "ケース7d: 凸五角形",
+        &[
+            (0.0, 0.0),
+            (5000.0, 0.0),
+            (6000.0, 3000.0),
+            (2500.0, 5000.0),
+            (-1000.0, 3000.0),
+        ],
+        w,
+        &[],
+    );
+
+    // 正八角形: 半径 6000、頂点角 22.5°+45°k。45°回転対称は格子が保存しないため、
+    // 90°回転で移る辺（0-2-4-6、1-3-5-7）のみ対称辺として検証する。
+    let r = 6000.0_f64;
+    let (c, s) = (22.5_f64.to_radians().cos(), 22.5_f64.to_radians().sin());
+    let octagon = [
+        (r * c, r * s),
+        (r * s, r * c),
+        (-r * s, r * c),
+        (-r * c, r * s),
+        (-r * c, -r * s),
+        (-r * s, -r * c),
+        (r * s, -r * c),
+        (r * c, -r * s),
+    ];
+    run_split_case(
+        "ケース7e: 正八角形（半径6000）",
+        &octagon,
+        w,
+        &[(0, 2), (2, 4), (4, 6), (1, 3), (3, 5), (5, 7)],
+    );
+
+    // U字形状: 12000×12000 の上辺中央 6000×8000 を欠く。凹角を2つ持つ。
+    run_split_case(
+        "ケース7f: U字形状 12000x12000（上辺中央6000x8000欠）",
+        &[
+            (0.0, 0.0),
+            (12000.0, 0.0),
+            (12000.0, 12000.0),
+            (9000.0, 12000.0),
+            (9000.0, 4000.0),
+            (3000.0, 4000.0),
+            (3000.0, 12000.0),
+            (0.0, 12000.0),
+        ],
+        w,
+        &[(1, 7), (2, 6), (3, 5)],
+    );
 }
