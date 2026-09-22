@@ -92,7 +92,7 @@ pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
 ///
 /// 分岐ロジックは [`distribute_slab`] と同一で、荷重源だけを引数 `w` に差し替える。
 /// これにより DL（固定荷重）と LL（積載荷重）を別々の荷重ケースへ分配できる
-/// （令85条1項の床用/骨組用/地震用の使い分けや、荷重組合せでの DL/LL 係数分けに用いる）。
+/// （令85条1項の床用/小梁用/大梁・柱・基礎用/地震力用の使い分けや、荷重組合せでの DL/LL 係数分けに用いる）。
 /// `w == 0.0` の場合は空の分配結果を返す。
 pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
     let mut loads = Vec::new();
