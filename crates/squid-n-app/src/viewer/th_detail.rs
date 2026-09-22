@@ -989,33 +989,11 @@ mod tests {
     /// 手計算しやすくする）。`squid_n_element::frame::beam::tests::make_test_beam`
     /// と同じ諸元。
     fn cantilever_test_beam() -> squid_n_element::frame::beam::BeamElement {
-        use squid_n_core::ids::{ElemId as CoreElemId, NodeId};
-        use squid_n_core::model::{EndCondition, RigidZone};
-        squid_n_element::frame::beam::BeamElement {
-            id: CoreElemId(0),
-            e: 205000.0,
-            g: 78846.15,
-            a: 80000.0,
-            a_mass: 80000.0,
-            iy: 1.0666667e9,
-            iz: 1.0666667e9,
-            j: 0.0,
-            as_y: 66666.67,
-            as_z: 66666.67,
-            length: 1000.0,
-            density: 0.0,
-            nodes: [NodeId(0), NodeId(1)],
-            axis: LocalFrame::from_nodes([0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-            rigid: RigidZone::default(),
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            torsion_release: [false, false],
-            eval_sections: vec![0.0, 1.0],
-            section: None,
-            material: None,
-            committed_disp: [0.0; 12],
-            trial_disp: [0.0; 12],
-            local_stiffness_cache: std::sync::OnceLock::new(),
-        }
+        let mut model = crate::sample::portal_frame();
+        model.nodes[2].coord = [0.0, 0.0, 0.0];
+        model.nodes[3].coord = [1000.0, 0.0, 0.0];
+        model.elements[2].local_axis.ref_vector = [0.0, 1.0, 0.0];
+        squid_n_element::frame::beam::BeamElement::new(&model.elements[2], &model)
     }
 
     /// 高-1: `flexural_points` の i端 M-θ 勾配が正になること（節点端モーメント

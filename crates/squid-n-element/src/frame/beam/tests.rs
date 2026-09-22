@@ -3,7 +3,7 @@ use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, LocalAxis, Material, MaterialCategory, Model, Node,
-    RigidZone, Section,
+    RigidZone, Section, SectionMassProperties,
 };
 
 fn make_test_beam() -> BeamElement {
@@ -20,6 +20,8 @@ fn make_test_beam() -> BeamElement {
         as_z: 66666.67,
         length: 3000.0,
         density: 0.0,
+        mass_properties: SectionMassProperties::default(),
+        mass_properties_error: None,
         nodes: [NodeId(0), NodeId(1)],
         axis: LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -54,6 +56,16 @@ fn update_state_rejects_mismatched_du_length() {
         data: smallvec::SmallVec::from_elem(0.0, 6),
     };
     elem.update_state(&du, false, &ctx);
+}
+
+#[test]
+#[should_panic(expected = "質量特性を解決できません: 断面形状が不正です")]
+fn consistent_mass_does_not_replace_resolver_errors_with_zero_mass() {
+    use crate::behavior::{ElementBehavior, MassOption};
+
+    let mut beam = make_test_beam();
+    beam.mass_properties_error = Some("断面形状が不正です".into());
+    beam.mass_matrix(MassOption::Consistent);
 }
 
 /// SRC/CFT の複合換算が要素生成へ配線されていること。
@@ -118,6 +130,7 @@ fn test_beam_new_src_cft_composite_props() {
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
+                steel_material: Some(MaterialId(1)),
                 ..src_shape.to_section(SectionId(0), "SRC-600".into())
             },
             Section {
@@ -155,6 +168,7 @@ fn test_beam_new_src_cft_composite_props() {
         ],
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let make_elem = |sec: u32| ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -186,10 +200,41 @@ fn test_beam_new_src_cft_composite_props() {
     assert!((cft_beam.iz - pc.iy).abs() / pc.iy < 1e-12);
     assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
 
+    use crate::behavior::{ElementBehavior, MassOption};
+    for sec in [0, 1] {
+        let beam = BeamElement::new(&make_elem(sec), &model);
+        let mass = beam.mass_matrix(MassOption::Lumped);
+        let nodal_mass = mass.get(0, 0) + mass.get(6, 6);
+        assert!((nodal_mass - beam.density * beam.a_mass * beam.length).abs() < 1e-9);
+    }
+    let rc_rebar = match &src_shape {
+        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        _ => unreachable!(),
+    };
+    model.sections[0] = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rc_rebar,
+    }
+    .to_section(SectionId(0), "RC-600".into());
+    model.sections[0].material = Some(MaterialId(0));
+    let beam = BeamElement::new(&make_elem(0), &model);
+    let mass = beam.mass_matrix(MassOption::Lumped);
+    assert!(
+        (mass.get(0, 0) + mass.get(6, 6) - beam.density * beam.a_mass * beam.length).abs() < 1e-9
+    );
+
+    model.sections[0] = Section {
+        material: Some(MaterialId(0)),
+        steel_material: Some(MaterialId(1)),
+        ..src_shape.to_section(SectionId(0), "SRC-600".into())
+    };
     model.materials[0].fc = None;
-    let src_fallback = BeamElement::new(&make_elem(0), &model);
-    assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
-    assert!((src_fallback.iz - model.sections[0].iy).abs() < 1e-6);
+    let beam = BeamElement::try_new(&make_elem(0), &model).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        beam.mass_matrix(MassOption::Consistent)
+    }));
+    assert!(result.is_err());
 }
 
 /// スラブ協力幅による強軸剛性増大。
@@ -278,6 +323,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         slab_thickness: 150.0,
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -366,7 +412,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
             },
         },
     };
-    let model = Model {
+    let mut model = Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 3000.0]),
             make_node(1, [6000.0, 0.0, 3000.0]),
@@ -426,6 +472,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         slab_thickness: 150.0,
         ..Default::default()
     };
+    model.sections[0].material = Some(MaterialId(0));
     let elem = ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
@@ -2926,9 +2973,7 @@ fn test_beam_torsion_mode_keep_retains_torsion() {
 }
 
 /// ねじり剛性がない部材（J≤0）の rx は端条件がピンでも解放しない。解放しても
-/// 静縮約の `Kbb` が特異になり縮約の意味がないため（ファイバー梁
-/// `resolve_end_releases` と同じ規則。特異な `Kbb` は `invert_small` が `None` を
-/// 返し補正項が省略される）。
+/// 静縮約の `Kbb` が特異になり縮約の意味がないため、ねじり解放を行わない。
 #[test]
 fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
     let mut beam = make_test_beam();
@@ -2944,6 +2989,15 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
         }
     }
     assert_eq!(k.get(3, 3), 0.0);
+}
+
+#[test]
+fn beamはkbb特異時に剛性をkaaへフォールバックする() {
+    let mut beam = make_test_beam();
+    beam.e = 0.0;
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    let k = beam.local_stiffness();
+    assert!(k.data.iter().all(|v| v.is_finite()));
 }
 
 /// 剛域の適用条件・重なり処理のテスト用に、柱 2 本＋梁 1 本の門型を作る。

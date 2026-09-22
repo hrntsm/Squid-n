@@ -12,6 +12,7 @@
 //! ```
 
 use crate::behavior::LocalMat;
+use squid_n_core::model::SectionMassProperties;
 
 /// 剛域長が両端ともゼロ（変換が恒等）か。
 pub fn is_identity(li: f64, lj: f64) -> bool {
@@ -83,6 +84,97 @@ pub fn transform_stiffness(k_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
         }
     }
     kn
+}
+
+/// 可撓端の質量を節点自由度へ写す（`M_node = Trᵀ · M_flex · Tr`）。
+pub fn transform_mass(m_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
+    let mut mass = transform_stiffness(m_flex, li, lj);
+    for i in 0..12 {
+        for j in (i + 1)..12 {
+            let value = (mass.get(i, j) + mass.get(j, i)) / 2.0;
+            mass.set(i, j, value);
+            mass.set(j, i, value);
+        }
+    }
+    mass
+}
+
+/// 端部剛域を剛体運動として積分した局所質量。
+pub fn rigid_zone_mass(properties: SectionMassProperties, li: f64, lj: f64) -> LocalMat {
+    let mut mass = LocalMat::zeros(12);
+    add_rigid_end_mass(&mut mass, properties, li, true);
+    add_rigid_end_mass(&mut mass, properties, lj, false);
+    mass
+}
+
+fn add_rigid_end_mass(
+    mass: &mut LocalMat,
+    properties: SectionMassProperties,
+    length: f64,
+    at_i: bool,
+) {
+    if length <= 0.0 {
+        return;
+    }
+    let (base, sign_y, sign_z) = if at_i {
+        (0usize, 1.0, -1.0)
+    } else {
+        (6usize, -1.0, 1.0)
+    };
+    let mu = properties.mass_per_length.max(0.0);
+
+    mass.set(base, base, mass.get(base, base) + mu * length);
+    mass.set(
+        base + 1,
+        base + 1,
+        mass.get(base + 1, base + 1) + mu * length,
+    );
+    mass.set(
+        base + 2,
+        base + 2,
+        mass.get(base + 2, base + 2) + mu * length,
+    );
+    add_rigid_pair(mass, base + 1, base + 5, sign_y, mu, length);
+    add_rigid_pair(mass, base + 2, base + 4, sign_z, mu, length);
+
+    mass.set(
+        base + 3,
+        base + 3,
+        mass.get(base + 3, base + 3) + properties.polar_inertia_per_length().max(0.0) * length,
+    );
+    mass.set(
+        base + 4,
+        base + 4,
+        mass.get(base + 4, base + 4) + properties.rotary_inertia_y_per_length.max(0.0) * length,
+    );
+    mass.set(
+        base + 5,
+        base + 5,
+        mass.get(base + 5, base + 5) + properties.rotary_inertia_z_per_length.max(0.0) * length,
+    );
+}
+
+fn add_rigid_pair(
+    mass: &mut LocalMat,
+    translation: usize,
+    rotation: usize,
+    sign: f64,
+    mass_per_length: f64,
+    length: f64,
+) {
+    let cross = sign * mass_per_length * length * length / 2.0;
+    let rr = mass_per_length * length.powi(3) / 3.0;
+    mass.set(
+        translation,
+        rotation,
+        mass.get(translation, rotation) + cross,
+    );
+    mass.set(
+        rotation,
+        translation,
+        mass.get(rotation, translation) + cross,
+    );
+    mass.set(rotation, rotation, mass.get(rotation, rotation) + rr);
 }
 
 /// 節点自由度の材端力を可撓端（剛域フェイス）の材端力へ戻す。
@@ -168,5 +260,51 @@ mod tests {
                 assert!((kn.get(i, j) - kn.get(j, i)).abs() < 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn 質量変換と剛域質量は対称で質量を保存する() {
+        let properties = SectionMassProperties {
+            mass_per_length: 2.0,
+            rotary_inertia_y_per_length: 3.0,
+            rotary_inertia_z_per_length: 4.0,
+        };
+        let flex =
+            crate::frame::prismatic::consistent_mass_timoshenko(properties, 2500.0, 0.2, 0.3);
+        let (li, lj) = (300.0, 200.0);
+        let mut mass = transform_mass(&flex, li, lj);
+        let rigid = rigid_zone_mass(properties, li, lj);
+        for i in 0..12 {
+            for j in 0..12 {
+                mass.set(i, j, mass.get(i, j) + rigid.get(i, j));
+            }
+        }
+        for i in 0..12 {
+            for j in 0..12 {
+                assert!((mass.get(i, j) - mass.get(j, i)).abs() < 1e-9);
+            }
+        }
+        for translation_dof in [0usize, 1, 2] {
+            let mut displacement = [0.0; 12];
+            displacement[translation_dof] = 1.0;
+            displacement[translation_dof + 6] = 1.0;
+            let total_mass = (0..12)
+                .flat_map(|i| (0..12).map(move |j| (i, j)))
+                .map(|(i, j)| displacement[i] * mass.get(i, j) * displacement[j])
+                .sum::<f64>();
+            assert!((total_mass - properties.mass_per_length * 3000.0).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn 剛域の断面回転慣性は対応する回転へ加算される() {
+        let properties = SectionMassProperties {
+            mass_per_length: 0.0,
+            rotary_inertia_y_per_length: 3.0,
+            rotary_inertia_z_per_length: 4.0,
+        };
+        let mass = rigid_zone_mass(properties, 1000.0, 0.0);
+        assert!((mass.get(5, 5) - 4.0 * 1000.0).abs() < 1e-10);
+        assert!((mass.get(4, 4) - 3.0 * 1000.0).abs() < 1e-10);
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::behavior::Ctx;
+use crate::behavior::{Ctx, ElementBehavior};
 use crate::factory::StrengthBasis;
 use approx::assert_relative_eq;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -32,6 +32,8 @@ fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
         as_z: as_val,
         length: 3000.0,
         density: 0.0,
+        mass_properties: squid_n_core::model::SectionMassProperties::default(),
+        mass_properties_error: None,
         nodes: [NodeId(0), NodeId(1)],
         axis: crate::transform::LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -46,6 +48,524 @@ fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
         trial_disp: [0.0; 12],
         local_stiffness_cache: std::sync::OnceLock::new(),
     }
+}
+
+#[test]
+fn beamとfiberは同じ断面なら整合質量が一致する() {
+    let density = 2.4e-9;
+    let as_val = 15000.0;
+    let mut model = build_test_model(Some(78846.15));
+    model.materials[0].density = density;
+    model.sections[0].as_y = as_val;
+    model.sections[0].as_z = as_val;
+    let fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+
+    let mut beam = make_test_beam_element(as_val);
+    beam.density = density;
+    beam.iy = model.sections[0].iy;
+    beam.iz = model.sections[0].iz;
+    beam.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        density,
+        model.sections[0].area,
+        model.sections[0].iy,
+        model.sections[0].iz,
+    );
+    let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
+    let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    for i in 0..12 {
+        for j in 0..12 {
+            assert!(
+                (mass_beam.get(i, j) - mass_fiber.get(i, j)).abs() < 1e-10,
+                "M({i},{j}) が Beam/Fiber で不一致: beam={}, fiber={}",
+                mass_beam.get(i, j),
+                mass_fiber.get(i, j)
+            );
+        }
+    }
+}
+
+#[test]
+fn 有効断面性能を使うbeamとfiberのphiと整合質量が一致する() {
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = build_test_model(Some(78846.15));
+    model.sections[0].shape = Some(SectionShape::CftBox {
+        height: 260.0,
+        width: 180.0,
+        thick: 12.0,
+    });
+    model.materials[0].fc = Some(24.0);
+    let beam = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
+    let fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+
+    let flex_length = fiber.flex_length;
+    let expected_phi_y = 12.0 * beam.e * beam.iz / (beam.g * beam.as_y * flex_length.powi(2));
+    let expected_phi_z = 12.0 * beam.e * beam.iy / (beam.g * beam.as_z * flex_length.powi(2));
+    assert_relative_eq!(fiber.phi_y, expected_phi_y, epsilon = 1e-12);
+    assert_relative_eq!(fiber.phi_z, expected_phi_z, epsilon = 1e-12);
+
+    let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    assert!(mass_fiber.get(1, 1).is_finite());
+}
+
+#[test]
+fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let rebar = RcRebar {
+        main_x: BarSet {
+            count: 4,
+            dia: 19.0,
+            layers: 2,
+        },
+        main_y: BarSet {
+            count: 4,
+            dia: 19.0,
+            layers: 2,
+        },
+        cover: 40.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 150.0,
+            legs: 2,
+        },
+    };
+    for (shape, main_category, with_rebar, with_steel) in [
+        (
+            SectionShape::RcRect {
+                b: 500.0,
+                d: 600.0,
+                rebar: rebar.clone(),
+            },
+            MaterialCategory::Concrete,
+            true,
+            false,
+        ),
+        (
+            SectionShape::SrcRect {
+                b: 500.0,
+                d: 600.0,
+                rebar: rebar.clone(),
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 10.0,
+                steel_flange_thick: 16.0,
+            },
+            MaterialCategory::Concrete,
+            true,
+            true,
+        ),
+        (
+            SectionShape::CftBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+            },
+            MaterialCategory::Steel,
+            false,
+            false,
+        ),
+    ] {
+        let mut model = build_test_model(Some(78846.15));
+        model.sections[0].shape = Some(shape);
+        model.sections[0].material =
+            Some(MaterialId(if main_category == MaterialCategory::Steel {
+                0
+            } else {
+                1
+            }));
+        model.sections[0].rebar_material = with_rebar.then_some(MaterialId(2));
+        model.sections[0].shear_rebar_material = with_rebar.then_some(MaterialId(2));
+        model.sections[0].steel_material = with_steel.then_some(MaterialId(3));
+        model.materials[0].density = 2.4e-9;
+        model.materials[0].category = main_category;
+        model.materials[0].fc = (main_category == MaterialCategory::Steel).then_some(30.0);
+        model.materials[0].young = 205000.0;
+        model.materials.push(Material {
+            density: 2.4e-9,
+            category: MaterialCategory::Concrete,
+            young: 25000.0,
+            poisson: 0.2,
+            fc: Some(24.0),
+            ..model.materials[0].clone()
+        });
+        model.materials.push(Material {
+            density: 7.8e-9,
+            category: MaterialCategory::Rebar,
+            young: 200000.0,
+            poisson: 0.3,
+            fy: Some(400.0),
+            ..model.materials[0].clone()
+        });
+        model.materials.push(Material {
+            density: 7.8e-9,
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            fy: Some(325.0),
+            ..model.materials[0].clone()
+        });
+
+        let beam = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
+        let fiber = FiberBeam::new(
+            &model.elements[0],
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
+        let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
+        let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+        let lumped_fiber = fiber.mass_matrix(crate::behavior::MassOption::Lumped);
+        let expected_lumped_mass = fiber.density
+            * fiber.gauss_points[0]
+                .section
+                .fibers
+                .iter()
+                .map(|fiber| fiber.area)
+                .sum::<f64>()
+            * fiber.length;
+        assert_relative_eq!(
+            lumped_fiber.get(0, 0) * 2.0,
+            expected_lumped_mass,
+            epsilon = 1.0e-12
+        );
+        assert!(lumped_fiber.get(0, 0).is_finite() && lumped_fiber.get(3, 3) == 0.0);
+        let expected_mass = model
+            .element_mass_properties(&model.elements[0])
+            .expect("テスト断面の質量特性を解決できる");
+        assert_relative_eq!(
+            expected_mass.mass_per_length * beam.length,
+            beam.mass_properties.total_mass(beam.length),
+            epsilon = 1.0e-10
+        );
+        for i in 0..12 {
+            for j in 0..12 {
+                assert!(
+                    (mass_beam.get(i, j) - mass_fiber.get(i, j)).abs()
+                        <= 1.0e-3 * (1.0 + mass_beam.get(i, j).abs() + mass_fiber.get(i, j).abs()),
+                    "Beam/Fiber の全12x12質量が不一致: M({i},{j}) beam={} fiber={}",
+                    mass_beam.get(i, j),
+                    mass_fiber.get(i, j)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn 非対称断面のbeamとfiberは各曲げブロックが一致する() {
+    let density = 2.4e-9;
+    let mut model = build_test_model(Some(78846.15));
+    model.materials[0].density = density;
+    model.sections[0].as_y = 12000.0;
+    model.sections[0].as_z = 18000.0;
+    model.elements[0].rigid_zone.length_i = 300.0;
+    model.elements[0].rigid_zone.length_j = 200.0;
+
+    let fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    let mut beam = make_test_beam_element(model.sections[0].as_z);
+    beam.as_y = model.sections[0].as_y;
+    beam.as_z = model.sections[0].as_z;
+    beam.iy = model.sections[0].iy;
+    beam.iz = model.sections[0].iz;
+    beam.rigid = model.elements[0].rigid_zone;
+    beam.density = density;
+    beam.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        density,
+        model.sections[0].area,
+        model.sections[0].iy,
+        model.sections[0].iz,
+    );
+    let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
+    let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    for indices in [[1usize, 5, 7, 11], [2, 4, 8, 10]] {
+        for &i in &indices {
+            for &j in &indices {
+                assert!(
+                    (mass_beam.get(i, j) - mass_fiber.get(i, j)).abs() < 1e-10,
+                    "非対称断面の曲げブロック M({i},{j}) が Beam/Fiber で不一致: beam={}, fiber={}",
+                    mass_beam.get(i, j),
+                    mass_fiber.get(i, j)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn 端部解放質量はbeamとfiberで一致し剛体並進質量を保存する() {
+    for end_condition in [
+        EndCondition::Pinned,
+        EndCondition::SemiRigid { k_theta: 2.0e8 },
+    ] {
+        let density = 2.4e-9;
+        let mut model = build_test_model(Some(78846.15));
+        model.materials[0].density = density;
+        model.sections[0].j = 1.0e8;
+        model.sections[0].as_y = 15000.0;
+        model.sections[0].as_z = 15000.0;
+        model.elements[0].end_cond = [end_condition, EndCondition::Fixed];
+        model.elements[0].rigid_zone.length_i = 300.0;
+        model.elements[0].rigid_zone.length_j = 200.0;
+        let fiber = FiberBeam::new(
+            &model.elements[0],
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
+        let beam = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
+
+        let mass_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
+        let mass_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+        assert_mass_positive_semidefinite(&mass_beam, "Beam");
+        assert_mass_positive_semidefinite(&mass_fiber, "Fiber");
+        for i in 0..12 {
+            assert!(mass_beam.get(i, i) >= -1.0e-12);
+            assert!(mass_fiber.get(i, i) >= -1.0e-12);
+            for j in 0..12 {
+                assert!((mass_beam.get(i, j) - mass_beam.get(j, i)).abs() < 1.0e-9);
+                assert!((mass_fiber.get(i, j) - mass_fiber.get(j, i)).abs() < 1.0e-9);
+                assert!(mass_beam.get(i, j).is_finite());
+                assert!(mass_fiber.get(i, j).is_finite());
+            }
+        }
+        for translation in 0..3 {
+            let mut u = [0.0; 12];
+            u[translation] = 1.0;
+            u[translation + 6] = 1.0;
+            let total = (0..12)
+                .flat_map(|i| (0..12).map(move |j| (i, j)))
+                .map(|(i, j)| u[i] * mass_beam.get(i, j) * u[j])
+                .sum::<f64>();
+            assert!((total - beam.mass_properties.total_mass(beam.length)).abs() < 1.0e-8);
+            let fiber_total = (0..12)
+                .flat_map(|i| (0..12).map(move |j| (i, j)))
+                .map(|(i, j)| u[i] * mass_fiber.get(i, j) * u[j])
+                .sum::<f64>();
+            assert!((fiber_total - fiber.mass_properties.total_mass(fiber.length)).abs() < 1.0e-8);
+        }
+        for i in [4, 5, 10, 11] {
+            assert!(
+                mass_fiber.get(i, i) > 1.0e-6,
+                "Fiber の回転慣性対角 M({i},{i}) が期待値 1e-6 を下回る"
+            );
+        }
+        for (i, j) in [(1, 5), (5, 7), (7, 11), (2, 4), (4, 8), (8, 10)] {
+            assert!(
+                mass_fiber.get(i, j).abs() > 1.0e-6,
+                "Fiber の並進回転結合 M({i},{j}) が期待値 1e-6 を下回る"
+            );
+        }
+    }
+}
+
+fn assert_mass_positive_semidefinite(matrix: &crate::behavior::LocalMat, name: &str) {
+    let trace = (0..12).map(|i| matrix.get(i, i)).sum::<f64>();
+    let vectors = [
+        [1.0; 12],
+        [
+            1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0, 6.0, -6.0,
+        ],
+        [
+            2.0, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0, 23.0, 29.0, 31.0, 37.0,
+        ],
+        [
+            0.0, 1.0, 0.0, -2.0, 3.0, 0.0, -5.0, 7.0, 0.0, -11.0, 13.0, 0.0,
+        ],
+    ];
+    for (vector_index, u) in vectors.iter().enumerate() {
+        let quadratic = (0..12)
+            .flat_map(|i| (0..12).map(move |j| (i, j)))
+            .map(|(i, j)| u[i] * matrix.get(i, j) * u[j])
+            .sum::<f64>();
+        let norm_squared = u.iter().map(|value| value * value).sum::<f64>();
+        assert!(
+            quadratic >= -1.0e-10 * trace * norm_squared,
+            "{name} 端部解放質量のPSD検証に失敗: vector={vector_index}, uᵀMu={quadratic:e}, trace={trace:e}"
+        );
+    }
+}
+
+#[test]
+fn 端部解放質量は独立縮約結果の全成分と一致する() {
+    for end_condition in [
+        EndCondition::Fixed,
+        EndCondition::Pinned,
+        EndCondition::SemiRigid { k_theta: 2.0e8 },
+    ] {
+        let density = 2.4e-9;
+        let mut model = build_test_model(Some(78846.15));
+        model.materials[0].density = density;
+        model.sections[0].as_y = 15000.0;
+        model.sections[0].as_z = 15000.0;
+        model.elements[0].end_cond = [end_condition, EndCondition::Fixed];
+
+        let beam = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
+        let fiber = FiberBeam::new(
+            &model.elements[0],
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
+        let actual_beam = beam.mass_matrix(crate::behavior::MassOption::Consistent);
+        let actual_fiber = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+
+        let mut unreleased = model.elements[0].clone();
+        unreleased.end_cond = [EndCondition::Fixed, EndCondition::Fixed];
+        let base_beam = crate::frame::beam::BeamElement::new(&unreleased, &model);
+        let base_mass = base_beam.mass_matrix(crate::behavior::MassOption::Consistent);
+        let expected_beam =
+            independent_released_mass(&base_beam.local_stiffness_raw(), &base_mass, end_condition);
+        let base_fiber = FiberBeam::new(
+            &unreleased,
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
+        let base_fiber_mass = base_fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+        let expected_fiber = independent_released_mass(
+            &base_fiber.initial_elastic_stiffness,
+            &base_fiber_mass,
+            end_condition,
+        );
+
+        for i in 0..12 {
+            for j in 0..12 {
+                let expected_beam_ij = expected_beam[i][j];
+                let expected_fiber_ij = expected_fiber[i][j];
+                assert!(
+                    (actual_beam.get(i, j) - expected_beam_ij).abs()
+                        < 1e-8 * (1.0 + expected_beam_ij.abs()),
+                    "beam M({i},{j}) actual={} expected={expected_beam_ij}",
+                    actual_beam.get(i, j)
+                );
+                assert!(
+                    (actual_fiber.get(i, j) - expected_fiber_ij).abs()
+                        < 1e-8 * (1.0 + expected_fiber_ij.abs()),
+                    "fiber M({i},{j}) actual={} expected={expected_fiber_ij}",
+                    actual_fiber.get(i, j)
+                );
+            }
+        }
+    }
+}
+
+fn independent_released_mass(
+    k_elem: &crate::behavior::LocalMat,
+    m_elem: &crate::behavior::LocalMat,
+    end_condition: EndCondition,
+) -> [[f64; 12]; 12] {
+    let Some(k_spring) = (match end_condition {
+        EndCondition::Fixed => None,
+        EndCondition::Pinned => Some(0.0),
+        EndCondition::SemiRigid { k_theta } => Some(k_theta),
+    }) else {
+        return std::array::from_fn(|i| std::array::from_fn(|j| m_elem.get(i, j)));
+    };
+
+    let released = [4usize, 5usize];
+    let mut expanded_k = [[0.0; 14]; 14];
+    let mut expanded_m = [[0.0; 14]; 14];
+    let expanded_index = |dof: usize| match released.iter().position(|&r| r == dof) {
+        Some(index) => 12 + index,
+        None => dof,
+    };
+    for i in 0..12 {
+        for j in 0..12 {
+            let a = expanded_index(i);
+            let b = expanded_index(j);
+            expanded_k[a][b] += k_elem.get(i, j);
+            expanded_m[a][b] += m_elem.get(i, j);
+        }
+    }
+    for (index, &dof) in released.iter().enumerate() {
+        let internal = 12 + index;
+        expanded_k[dof][dof] += k_spring;
+        expanded_k[internal][internal] += k_spring;
+        expanded_k[dof][internal] -= k_spring;
+        expanded_k[internal][dof] -= k_spring;
+    }
+
+    let kbb = [
+        [expanded_k[12][12], expanded_k[12][13]],
+        [expanded_k[13][12], expanded_k[13][13]],
+    ];
+    let determinant = kbb[0][0] * kbb[1][1] - kbb[0][1] * kbb[1][0];
+    assert!(determinant.abs() > 1e-12, "独立参照の Kbb が特異");
+    let mut r = [[0.0; 12]; 14];
+    for i in 0..12 {
+        r[i][i] = 1.0;
+    }
+    for j in 0..12 {
+        let rhs = [-expanded_k[12][j], -expanded_k[13][j]];
+        r[12][j] = (rhs[0] * kbb[1][1] - kbb[0][1] * rhs[1]) / determinant;
+        r[13][j] = (kbb[0][0] * rhs[1] - rhs[0] * kbb[1][0]) / determinant;
+    }
+
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            (0..14)
+                .flat_map(|a| (0..14).map(move |b| (a, b)))
+                .map(|(a, b)| r[a][i] * expanded_m[a][b] * r[b][j])
+                .sum()
+        })
+    })
+}
+
+#[test]
+#[should_panic(expected = "BeamElement の端部解放質量を縮約できません")]
+fn beamはkbb特異時に端部解放質量を明示的に失敗させる() {
+    let mut beam = make_test_beam_element(15000.0);
+    beam.e = 0.0;
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    beam.mass_properties =
+        squid_n_core::model::SectionMassProperties::uniform(2.4e-9, 20000.0, beam.iz, beam.iy);
+    beam.mass_matrix(crate::behavior::MassOption::Consistent);
+}
+
+#[test]
+#[should_panic(expected = "FiberBeam の端部解放質量を縮約できません")]
+fn fiberはkbb特異時に端部解放質量を明示的に失敗させる() {
+    let mut model = build_test_model(Some(78846.15));
+    model.materials[0].young = 0.0;
+    model.elements[0].end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    let fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+}
+
+#[test]
+fn fiberはkbb特異時に剛性をkaaへフォールバックする() {
+    let mut model = build_test_model(Some(78846.15));
+    model.materials[0].young = 0.0;
+    model.elements[0].end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    let fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    let k = fiber.condense_releases(&LocalMat::zeros(12));
+    assert!(k.data.iter().all(|v| v.is_finite()));
 }
 
 fn build_test_model(shear_mod: Option<f64>) -> Model {
@@ -315,6 +835,106 @@ fn test_global_rotation_vertical_column() {
         kz.get(0, 0),
         kz.get(2, 2)
     );
+}
+
+#[test]
+fn 任意方向材の整合質量は独立な座標変換と一致する() {
+    let fiber = make_oriented_fiber([0.0, 0.0, 0.0], [3000.0, 1200.0, 2400.0], [0.0, 1.0, 0.0]);
+    let local = crate::frame::prismatic::consistent_mass_timoshenko(
+        fiber.mass_properties,
+        fiber.flex_length,
+        fiber.phi_z,
+        fiber.phi_y,
+    );
+    let expected = {
+        let mut result = LocalMat::zeros(12);
+        for i in 0..12 {
+            for j in 0..12 {
+                let mut value = 0.0;
+                for a in 0..12 {
+                    for b in 0..12 {
+                        let ra_i = fiber.axis.rot[a % 3][i % 3];
+                        let rb_j = fiber.axis.rot[b % 3][j % 3];
+                        if a / 3 == i / 3 && b / 3 == j / 3 {
+                            value += ra_i * local.get(a, b) * rb_j;
+                        }
+                    }
+                }
+                result.set(i, j, value);
+            }
+        }
+        result
+    };
+    let actual = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    for i in 0..12 {
+        for j in 0..12 {
+            assert_relative_eq!(actual.get(i, j), expected.get(i, j), epsilon = 1.0e-10);
+        }
+    }
+}
+
+#[test]
+fn test_elastic_stiffness_matches_beam() {
+    let mut fiber = make_test_fiber_beam(Some(0.0));
+    let beam = make_test_beam_element(1e30);
+
+    let ctx = Ctx {
+        model: &build_test_model(Some(0.0)),
+    };
+
+    let u = [
+        1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
+    ];
+    let du = LocalVec {
+        data: SmallVec::from_slice(&u),
+    };
+    fiber.update_state(&du, true, &ctx);
+
+    let k_fiber = fiber.tangent_stiffness(&ctx);
+    let k_beam = beam.local_stiffness_raw();
+
+    for i in 0..12 {
+        for j in 0..12 {
+            let expected = k_beam.get(i, j);
+            let actual = k_fiber.get(i, j);
+            if expected.abs() > 1e-6 {
+                assert_relative_eq!(actual, expected, max_relative = 0.01);
+            } else {
+                assert!(
+                    actual.abs() < 1e-3,
+                    "K[{i}][{j}] zero expected, got {actual}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_elastic_stiffness_symmetric() {
+    let mut fiber = make_test_fiber_beam(Some(0.0));
+    let ctx = Ctx {
+        model: &build_test_model(Some(0.0)),
+    };
+
+    let u = [
+        1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
+    ];
+    let du = LocalVec {
+        data: SmallVec::from_slice(&u),
+    };
+    fiber.update_state(&du, true, &ctx);
+
+    let k = fiber.tangent_stiffness(&ctx);
+    for i in 0..12 {
+        for j in 0..12 {
+            assert!(
+                (k.get(i, j) - k.get(j, i)).abs() < 1e-9,
+                "K[{i}][{j}] != K[{j}][{i}]: {} vs {}",
+                k.get(i, j),
+                k.get(j, i)
+            );
+        }
+    }
 }
 
 /// 弾性応答の手計算照合: 軸力は N=E·A_disc·ε、曲げは M=E·I_disc·κ となり、
@@ -708,6 +1328,81 @@ fn test_torsional_stiffness_and_internal_force() {
         -expected_mx_i,
         f.data[9]
     );
+}
+
+#[test]
+fn 不正な質量特性でもfiberはlumpedで生成できconsistentで失敗する() {
+    let mut model = build_test_model(Some(78846.15));
+    model.sections[0].shape = Some(squid_n_core::section_shape::SectionShape::RcRect {
+        b: 400.0,
+        d: 400.0,
+        rebar: squid_n_core::section_shape::RcRebar {
+            main_x: squid_n_core::section_shape::BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 0,
+            },
+            main_y: squid_n_core::section_shape::BarSet {
+                count: 0,
+                dia: 0.0,
+                layers: 0,
+            },
+            cover: 0.0,
+            shear: squid_n_core::section_shape::ShearBar {
+                dia: 0.0,
+                pitch: 0.0,
+                legs: 0,
+            },
+        },
+    });
+    model.materials[0].fc = Some(30.0);
+    let mut fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    fiber.mass_properties_error = Some("断面形状が不正です".into());
+    assert!(fiber
+        .mass_matrix(crate::behavior::MassOption::Lumped)
+        .data
+        .iter()
+        .all(|v| v.is_finite()));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fiber.mass_matrix(crate::behavior::MassOption::Consistent)
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn fiberの純ねじり行列は質量極二次モーメントを使う() {
+    let g = 78846.0;
+    let j = 1.0e6;
+    let iy = 2.0e8;
+    let iz = 5.0e7;
+    let density = 7.85e-9;
+    let length: f64 = 3000.0;
+    let mut model = build_test_model(Some(g));
+    model.sections[0].j = j;
+    model.sections[0].iy = iy;
+    model.sections[0].iz = iz;
+    model.materials[0].density = density;
+    let mut fiber = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    let ctx = Ctx { model: &model };
+    let zero_du = LocalVec {
+        data: SmallVec::from_elem(0.0, 12),
+    };
+    fiber.update_state(&zero_du, false, &ctx);
+    let stiffness = fiber.tangent_stiffness(&ctx);
+    let mass = fiber.mass_matrix(crate::behavior::MassOption::Consistent);
+    let expected = 3.0 * g * j / (density * (iy + iz) * length.powi(2));
+    let actual = stiffness.get(9, 9) / mass.get(9, 9);
+    assert_relative_eq!(actual, expected, max_relative = 1e-10);
 }
 
 /// 鉛直柱（Z整列）でねじり剛性 GJ 追加後、グローバル rz DOF (index 5, 11) が
@@ -1465,6 +2160,12 @@ fn test_all_fiber_materials_return_initial_tangent_at_zero_strain() {
     let (s, t) = steel.trial(0.0);
     assert_eq!(s, 0.0);
     assert_relative_eq!(t, 205000.0, max_relative = 1e-9);
+}
+
+#[test]
+#[should_panic(expected = "設計基準強度 Fc が未設定です")]
+fn concrete_fiber_material_rejects_missing_fc() {
+    concrete_fiber_material(None, HysteresisModel::Retrograde);
 }
 
 /// 塑性化域考慮ファイバー梁（RC 断面）は、**弾性域では接線剛性が正定値**である。

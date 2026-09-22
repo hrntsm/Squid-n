@@ -410,6 +410,59 @@ fn test_1dof_period() {
     );
 }
 
+/// 固定端−自由端の軸振動で、整合質量の自由端側質量 `m/3` と理論固有値を照合する。
+#[test]
+fn test_1dof_beam_consistent_axial_mass_matches_theory() {
+    let mut model = make_1dof_spring_model();
+    model.nodes[1].mass = None;
+    model.materials[0].density = 1.0e-3;
+
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = solve_eigen(&model, &dofmap, &reducer, 1).unwrap();
+    let total_mass = model.materials[0].density * model.sections[0].area * 1000.0;
+    let stiffness = model.materials[0].young * model.sections[0].area / 1000.0;
+    let expected_omega2 = 3.0 * stiffness / total_mass;
+
+    assert!((result.omega2[0] - expected_omega2).abs() / expected_omega2 < 1e-8);
+}
+
+/// H形鋼相当の開断面で、ねじり剛性 GJ と質量極二次モーメント ρ(Iy+Iz)
+/// を分離して固有値へ反映することを、Beam 要素から固有値解析まで確認する。
+#[test]
+fn test_eigen_pure_torsion_uses_mass_polar_inertia_not_j() {
+    let mut model = make_1dof_spring_model();
+    let mut free_rx = Dof6Mask::FIXED;
+    free_rx.set_free(Dof::Rx);
+    model.nodes[1].restraint = free_rx;
+    model.nodes[1].mass = None;
+    let length = 1000.0;
+    let j = 1.0e6;
+    let iy = 2.0e8;
+    let iz = 5.0e7;
+    let density = 7.85e-9;
+    model.nodes[1].coord = [length, 0.0, 0.0];
+    model.sections[0].area = 10000.0;
+    model.sections[0].iy = iy;
+    model.sections[0].iz = iz;
+    model.sections[0].j = j;
+    model.materials[0].young = 205000.0;
+    model.materials[0].poisson = 0.3;
+    model.materials[0].density = density;
+
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = solve_eigen(&model, &dofmap, &reducer, 1).unwrap();
+    let shear = model.materials[0].shear_modulus();
+    let expected_omega2 = 3.0 * shear * j / (density * (iy + iz) * length.powi(2));
+    assert!(
+        (result.omega2[0] - expected_omega2).abs() / expected_omega2 < 1e-8,
+        "ω²={} 理論値={}（J と Iy+Iz の取り違え）",
+        result.omega2[0],
+        expected_omega2
+    );
+}
+
 /// 2層せん断モデル: T1=0.32150、T2=0.12280 へ収束し、2モードで有効質量比合計が約100%になること。
 #[test]
 fn test_2dof_shear_period_and_mass() {

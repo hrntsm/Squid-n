@@ -18,6 +18,8 @@ fn make_test_beam() -> crate::frame::beam::BeamElement {
         as_z: 66666.67,
         length: 3000.0,
         density: 0.0,
+        mass_properties: squid_n_core::model::SectionMassProperties::default(),
+        mass_properties_error: None,
         nodes: [NodeId(0), NodeId(1)],
         axis: crate::transform::LocalFrame {
             rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -230,6 +232,96 @@ fn test_condense_springs_zero_stiffness() {
         k_pinned.get(5, 5) < k_fixed.get(5, 5) * 0.5,
         "pinned rz_i should be much softer than fixed"
     );
+}
+
+#[test]
+fn test_consistent_mass_uses_initial_end_spring_stiffness_after_yield() {
+    let mut elastic = make_test_beam();
+    elastic.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        elastic.a_mass,
+        elastic.iz,
+        elastic.iy,
+    );
+    let mut elem = ConcentratedSpringBeam::new_one_component(
+        elastic,
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+    );
+    let before = elem.mass_matrix(MassOption::Consistent);
+    let ctx = Ctx {
+        model: &squid_n_core::model::Model::default(),
+    };
+    elem.update_state(
+        &LocalVec {
+            data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        false,
+        &ctx,
+    );
+    assert!(elem.spring_i.probe(elem.trial_rot_i).1 < 1.0e12);
+    let after = elem.mass_matrix(MassOption::Consistent);
+    assert_eq!(before.data, after.data);
+
+    let lumped_after = elem.mass_matrix(MassOption::Lumped);
+    let mut beam_before = make_test_beam();
+    beam_before.mass_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        beam_before.a_mass,
+        beam_before.iz,
+        beam_before.iy,
+    );
+    let lumped_before = ConcentratedSpringBeam::new_one_component(
+        beam_before,
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+        Box::new(Bilinear::new(1.0e12, 1.0e7, 0.01)),
+    )
+    .mass_matrix(MassOption::Lumped);
+    assert_eq!(lumped_before.data, lumped_after.data);
+}
+
+#[test]
+fn rc_consistent_mass_resolver_matches_beam() {
+    let rc_properties = squid_n_core::model::SectionMassProperties::uniform(
+        2.4e-9,
+        80000.0,
+        1.0666667e9,
+        1.0666667e9,
+    );
+    let mut elastic = make_test_beam();
+    elastic.mass_properties = rc_properties;
+    let beam = elastic.clone();
+    let concentrated = ConcentratedSpringBeam::new_one_component(
+        elastic,
+        Box::new(Bilinear::new(1.0e20, 1.0e30, 0.01)),
+        Box::new(Bilinear::new(1.0e20, 1.0e30, 0.01)),
+    );
+    let concentrated_mass = concentrated.mass_matrix(MassOption::Consistent);
+    let beam_mass = beam.mass_matrix(MassOption::Consistent);
+
+    let concentrated_total = concentrated_mass.get(0, 0) + concentrated_mass.get(6, 6);
+    let beam_total = beam_mass.get(0, 0) + beam_mass.get(6, 6);
+    let concentrated_polar = concentrated_mass.get(3, 3) + concentrated_mass.get(9, 9);
+    let beam_polar = beam_mass.get(3, 3) + beam_mass.get(9, 9);
+    assert!(concentrated_total > 0.0);
+    assert!(concentrated_polar > 0.0);
+    assert_relative_eq!(concentrated_total, beam_total, max_relative = 1e-10);
+    assert_relative_eq!(concentrated_polar, beam_polar, max_relative = 1e-10);
+}
+
+#[test]
+fn test_condense_springs_singular_kbb_uses_kaa() {
+    let k = LocalMat::zeros(12);
+    let condensed = condense_springs(&k, 0.0, 5.0);
+    assert_eq!(condensed.get(5, 5), 0.0);
+    assert_eq!(condensed.get(11, 11), 5.0);
+    assert!(condensed.data.iter().enumerate().all(|(index, value)| {
+        let row = index / 12;
+        let col = index % 12;
+        (row, col) == (5, 5) && *value == 0.0
+            || (row, col) == (11, 11) && *value == 5.0
+            || *value == 0.0
+    }));
 }
 
 #[test]
