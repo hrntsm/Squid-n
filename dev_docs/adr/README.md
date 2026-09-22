@@ -34,6 +34,7 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0026](0026-current-spec-single-source-docs.md) | accepted | 現在仕様の正本は docs とし、フェーズ実装仕様書を置かない |
 | [0027](0027-calc-docs-use-code-units.md) | accepted | 計算根拠の単位表記は法令・規準の単位に従う |
 | [0028](0028-src-cft-ns-material-or-fallback.md) | accepted | SRC/CFT の等価断面剛性は材料由来 ns を通常とし、算定不能時は N_S_EQ=15 へフォールバックして通知する |
+| [0029](0029-live-load-four-purposes.md) | accepted | 積載荷重を床用・小梁用・大梁用・地震力用の 4 区分とする |
 
 ## 規約
 
