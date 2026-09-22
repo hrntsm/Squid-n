@@ -848,8 +848,10 @@ fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                     ),
                     (None, Some(CompositeFallbackKind::CftSteelOnly)) => (
                         format!("{}（鋼管のみ）", r.section_name),
-                        "充填コンクリートの Fc やヤング係数を算定できないため、\
-                         鋼管のみで剛性を評価しています。診断タブにも警告が出ます。"
+                        "材料由来の等価断面性能を算定できないため、充填コンクリートを\
+                         無視した鋼管のみで剛性を評価しています。主材料の Fc・ヤング係数、\
+                         CFT では鋼管の板厚・外径（充填部の内法が正の値か）を確認してください。\
+                         診断タブにも警告が出ます。"
                             .to_string(),
                     ),
                     (None, None) => (r.section_name.clone(), "等価換算なし".to_string()),

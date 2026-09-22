@@ -7167,6 +7167,44 @@ fn test_preparation_member_stiffness_reports_cft_fallback_without_fc() {
     );
 }
 
+/// CFT では Fc とヤング係数が揃っていても、鋼管の板厚が過大で充填部の内法が 0 に
+/// なる形状では等価断面性能を算定できず、準備表は鋼管のみの種別を表示する。
+#[test]
+fn test_preparation_member_stiffness_reports_cft_fallback_for_zero_core() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    // 板厚 200 で内法（400 − 2×200）が 0 になる CFT 角形断面。
+    let cft = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 200.0,
+    };
+    let mut model = crate::sample::portal_frame();
+    model.sections[0] = squid_n_core::model::Section {
+        material: Some(squid_n_core::ids::MaterialId(0)),
+        ..cft.to_section(SectionId(0), "CFT-□400x400x200".into())
+    };
+    model.materials[0].fc = Some(36.0);
+    model.materials[0].young = 205000.0;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
+    let row = prep
+        .member_stiffness
+        .iter()
+        .find(|r| r.elem == squid_n_core::ids::ElemId(0))
+        .expect("CFT フォールバックの行があるはず");
+    assert!(row.composite.is_none());
+    assert_eq!(
+        row.composite_fallback,
+        Some(CompositeFallbackKind::CftSteelOnly)
+    );
+}
+
 /// 解析結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
 /// 復元できた場合は再計算不要（stale でない）扱いになる。
 #[test]

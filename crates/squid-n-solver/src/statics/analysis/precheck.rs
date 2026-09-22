@@ -326,7 +326,8 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 composite_fallback,
                 "等価断面性能を算定できません",
                 "断面タブで主材料のコンクリート Fc とヤング係数を設定してください。\
-                 未設定の間は、SRC は N_S_EQ=15、CFT は鋼管のみで剛性を評価します。",
+                 CFT では鋼管の板厚・外径（充填部の内法が正の値か）も確認してください。\
+                 未設定・不成立の間は、SRC は N_S_EQ=15、CFT は鋼管のみで剛性を評価します。",
             )
             .warn(),
         );

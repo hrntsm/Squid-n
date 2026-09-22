@@ -304,6 +304,32 @@ fn test_model_issues_warns_cft_composite_fallback() {
     assert_eq!(issue.targets, IssueTargets::Members(vec![ElemId(0)]));
 }
 
+/// CFT では Fc とヤング係数が揃っていても、鋼管の板厚が過大で充填部の内法が 0 に
+/// なる形状では等価断面性能を算定できず、鋼管のみへフォールバックする。材料条件が
+/// 原因ではないため、警告の是正文が形状条件にも触れていることを確認する。
+#[test]
+fn test_model_issues_warns_cft_composite_fallback_for_zero_core() {
+    use super::precheck::{model_issues, IssueSeverity, IssueTargets};
+
+    let mut model = make_cantilever_model();
+    // 板厚 200 で内法（400 − 2×200）が 0 になる CFT 角形断面。
+    model.sections[0].shape = Some(squid_n_core::section_shape::SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 200.0,
+    });
+    model.materials[0].fc = Some(24.0);
+    model.materials[0].young = 205000.0;
+
+    let issue = model_issues(&model)
+        .into_iter()
+        .find(|i| i.message.contains("等価断面性能"))
+        .expect("CFT の形状起因のフォールバック警告が出るはず");
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+    assert!(issue.message.contains("内法"));
+    assert_eq!(issue.targets, IssueTargets::Members(vec![ElemId(0)]));
+}
+
 /// 材料由来の等価断面性能を算定できる（Fc がある）場合はフォールバック警告を出さない。
 #[test]
 fn test_model_issues_no_composite_fallback_warning_with_fc() {

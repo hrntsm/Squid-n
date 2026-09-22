@@ -33,8 +33,8 @@ docs は `N_S_EQ = 15` を ns の既定として説明していたが、実装�
 
 フォールバック時は解析を止めず、次を通知する。
 
-- 診断（解析前チェック）: 見出し「材料由来の等価断面性能を算定できない SRC/CFT 断面を使う部材があります」／短句「等価断面性能を算定できません」／是正「断面タブで主材料のコンクリート Fc とヤング係数を設定してください。未設定の間は、SRC は N_S_EQ=15、CFT は鋼管のみで剛性を評価します。」（`ModelIssue::warn`、`crates/squid-n-solver/src/statics/analysis/precheck.rs`）
-- 準備計算「部材剛性」表: フォールバック行を例外として載せ、断面名に SRC は「（既定値 15）」、CFT は「（鋼管のみ）」を付ける（`crates/squid-n-app/src/app/preparation.rs`、`crates/squid-n-app/src/prep_view.rs`）
+- 診断（解析前チェック）: 見出し「材料由来の等価断面性能を算定できない SRC/CFT 断面を使う部材があります」／短句「等価断面性能を算定できません」／是正「断面タブで主材料のコンクリート Fc とヤング係数を設定してください。CFT では鋼管の板厚・外径（充填部の内法が正の値か）も確認してください。未設定・不成立の間は、SRC は N_S_EQ=15、CFT は鋼管のみで剛性を評価します。」（`ModelIssue::warn`、`crates/squid-n-solver/src/statics/analysis/precheck.rs`）
+- 準備計算「部材剛性」表: フォールバック行を例外として載せ、断面名に SRC は「（既定値 15）」、CFT は「（鋼管のみ）」を付ける（`crates/squid-n-app/src/app/preparation.rs`、`crates/squid-n-app/src/prep_view.rs`）。CFT の hover は、材料条件だけでなく鋼管の板厚・外径（充填部の内法が正の値か）の確認も促す
 
 ## 検証
 
@@ -42,9 +42,11 @@ docs は `N_S_EQ = 15` を ns の既定として説明していたが、実装�
 |---|---|---|
 | `test_model_issues_warns_src_composite_fallback` | SRC で `fc` 未設定のとき、警告（`IssueSeverity::Warning`）が出て解析は止まらない | ✅ |
 | `test_model_issues_warns_cft_composite_fallback` | CFT で `fc` 未設定のとき、同じく警告が出る | ✅ |
+| `test_model_issues_warns_cft_composite_fallback_for_zero_core` | CFT で `fc`・ヤング係数は正常だが充填部の内法が 0 になる形状（板厚過大）のとき、形状原因でも警告が出る | ✅ |
 | `test_model_issues_no_composite_fallback_warning_with_fc` | `fc` があるときは警告が出ない | ✅ |
 | `test_preparation_member_stiffness_reports_src_fallback_without_fc` | SRC のフォールバック行が準備表に載り、種別が `SrcNsDefault` になる | ✅ |
 | `test_preparation_member_stiffness_reports_cft_fallback_without_fc` | CFT のフォールバック行が準備表に載り、種別が `CftSteelOnly` になる | ✅ |
+| `test_preparation_member_stiffness_reports_cft_fallback_for_zero_core` | CFT で内法が 0 になる形状でも準備表の種別が `CftSteelOnly` になる | ✅ |
 
 ## 実行結果（2026-09-22）
 
