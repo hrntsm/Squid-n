@@ -51,7 +51,7 @@ pub struct AnalysisSettings {
     /// 時刻歴を非線形で解析するか。
     pub th_nonlinear: bool,
     /// 非線形時刻歴: 長期系荷重ケースを時刻歴開始前に静的載荷し初期条件とするか
-    /// （`th_nonlinear` が true のときのみ意味を持つ）。
+    /// （既定 true。`th_nonlinear` が true のときのみ意味を持つ）。
     pub th_apply_long_term: bool,
     /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数（既定 50）。
     pub th_max_iter: usize,
@@ -188,7 +188,7 @@ impl Default for AnalysisSettings {
             th_damping_model: ThDampingModel::StiffnessProportional,
             th_h2: 0.02,
             th_nonlinear: false,
-            th_apply_long_term: false,
+            th_apply_long_term: true,
             th_max_iter: 50,
             th_tol: 1e-6,
             th_record_every: 0,
@@ -217,5 +217,17 @@ impl Default for AnalysisSettings {
             lumped_th_period: 0.5,
             lumped_th_amp: 1000.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AnalysisSettings;
+
+    /// docs の「長期荷重の初期化は既定で有効」と設定層の既定値が一致することを固定し、
+    /// 将来の乖離を検出する。
+    #[test]
+    fn default_enables_th_apply_long_term() {
+        assert!(AnalysisSettings::default().th_apply_long_term);
     }
 }

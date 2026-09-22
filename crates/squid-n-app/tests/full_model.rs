@@ -1078,11 +1078,16 @@ fn time_history_linear_runs() {
 /// 化ける。継続時間 120 秒では 202 ステップがこれに当たっていた。解析中に観測した
 /// 力のスケールの最大値に対する下限を設けて解消したことを、既定の 10 秒では
 /// 現れない長さで固定する（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md` 4.1）。
+///
+/// この不具合は長期荷重を載荷しない動的応答を対象に同定したもの。既定の長期荷重初期化を
+/// 有効にすると、この条件では強振動中に実非収束が生じ、本来の対象（減衰末尾の偽の非収束）に
+/// 別事象が混ざるため、本テストでは明示的に無効化する。
 #[test]
 fn time_history_nonlinear_long_duration_has_no_false_non_convergence() {
     let mut app = prepared();
     app.core.analysis_cfg.th_dir = ThDir::X;
     app.core.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_apply_long_term = false;
     app.core.analysis_cfg.th_duration = 120.0;
     // 刻みは既定より粗くする（この不具合は応答の減衰で決まり、刻みには依らない）。
     // 既定の 0.01 秒では 12000 ステップになり、テスト時間が 5 倍以上に伸びる。
