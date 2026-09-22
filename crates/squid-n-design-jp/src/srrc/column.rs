@@ -12,7 +12,7 @@ use super::{
 };
 use crate::material_strength::{main_rebar_grade, rebar_sigma_y_of};
 use crate::rc::{
-    concrete_allowable_compression_class, concrete_allowable_shear_class, interp_ma,
+    concrete_allowable_compression, concrete_allowable_shear_class, interp_ma,
     rebar_allowable_shear, rebar_allowable_tension, young_ratio_n,
 };
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
@@ -178,7 +178,7 @@ pub(crate) fn src_column_check(
     let long_term = ctx.term == LoadTerm::Long;
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
 
-    let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
+    let fc_allow = concrete_allowable_compression(fc_raw, long_term);
     let fs = concrete_allowable_shear_class(fc_raw, mat.concrete_class, long_term);
     let n_ratio = young_ratio_n(fc_raw);
     let w_ft = rebar_allowable_shear(
@@ -568,10 +568,10 @@ mod tests {
         assert!(crate::full_detail(&r_large).contains("rNc"));
     }
 
-    /// SRC 柱でも軽量コンクリートの 0.9 倍低減が rNc（RC 部分の許容圧縮）に
-    /// 反映される。
+    /// SRC 柱でも軽量コンクリートの 0.9 倍低減は許容せん断応力度のみに適用され、
+    /// rNc（RC 部分の許容圧縮）は普通コンクリートと一致する。
     #[test]
-    fn test_src_column_lightweight_reduces_capacity() {
+    fn test_src_column_lightweight_compression_matches_normal() {
         let shape = src_column_shape();
         let sec = make_section(shape);
         let mut mat_n = make_material(24.0, "SD345");
@@ -588,8 +588,8 @@ mod tests {
         let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
         let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
         assert!(
-            r_l.ratio() > r_n.ratio(),
-            "軽量1種は rNc 低減で検定比が大きいはず: normal={}, light={}",
+            (r_l.ratio() - r_n.ratio()).abs() < 1e-12,
+            "軽量1種でも rNc は普通と同じはず: normal={}, light={}",
             r_n.ratio(),
             r_l.ratio()
         );

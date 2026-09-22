@@ -1,7 +1,8 @@
 pub const GRAVITY_MM_S2: f64 = 9_806.65;
 
 /// コンクリートの種類（単位体積重量表の行。固定荷重の自重算定に用いる）。
-/// 許容応力度低減（軽量1種・2種は普通コンクリートの 0.9 倍）にも用いる。
+/// 軽量1種・2種の許容せん断応力度は普通コンクリートの 0.9 倍（長短期とも）。
+/// 許容圧縮応力度は種類によらず普通コンクリートと同じ。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConcreteClass {
     #[default]

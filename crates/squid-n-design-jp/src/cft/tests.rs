@@ -226,11 +226,11 @@ fn test_cft_pipe_biaxial_smoke() {
         .any(|c| c.kind == crate::CheckKind::Shear));
 }
 
-/// 軽量コンクリート1種の充填 CFT は cNc が 0.9 倍に低減され、
-/// 圧縮軸力超過時の検定比が普通コンクリートより大きくなる
-/// （`mat.concrete_class` が許容応力度算定に反映されている）。
+/// 軽量コンクリート1種でも充填 CFT の許容圧縮応力度は普通コンクリートと同じ
+/// ため、cNc は低減されず圧縮軸力超過時の検定比も一致する
+/// （基準資料 表2.1.1-2 では 0.9 低減は許容せん断応力度のみ）。
 #[test]
-fn test_cft_box_lightweight_reduces_cnc() {
+fn test_cft_box_lightweight_compression_matches_normal() {
     let sec = cft_box_section(400.0, 300.0, 9.0);
     let mut mat_n = make_material(24.0, "SN400B");
     mat_n.concrete_class = ConcreteClass::Normal;
@@ -247,8 +247,8 @@ fn test_cft_box_lightweight_reduces_cnc() {
     let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
     let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
     assert!(
-        r_l.ratio() > r_n.ratio(),
-        "軽量1種は cNc 低減で検定比が大きいはず: normal={}, light={}",
+        (r_l.ratio() - r_n.ratio()).abs() < 1e-12,
+        "軽量1種でも cNc は普通と同じはず: normal={}, light={}",
         r_n.ratio(),
         r_l.ratio()
     );

@@ -11,6 +11,7 @@
 
 use crate::rc::joint::JointShape;
 use crate::{CheckComponent, CheckKind, CheckResult};
+use squid_n_core::units::ConcreteClass;
 
 /// SRC 造柱梁接合部（パネルゾーン）のせん断検定の入力。
 pub struct SrcPanelInput {
@@ -19,6 +20,8 @@ pub struct SrcPanelInput {
     pub shape: JointShape,
     /// コンクリート設計基準強度 Fc [N/mm²]。
     pub fc: f64,
+    /// コンクリート種類（軽量1種・2種は許容せん断応力度を 0.9 倍）。
+    pub concrete_class: ConcreteClass,
     /// 長期荷重時の検定かどうか（`true`=長期、`false`=短期）。
     pub long_term: bool,
     /// 柱幅 Cb [mm]。
@@ -54,7 +57,7 @@ pub struct SrcPanelInput {
 ///
 /// 左辺が許容値 `Ma`、右辺が設計値 `Md`。検定比 = `Md/Ma`（1.0 以下で OK）。
 /// - `fs`: コンクリートの許容せん断応力度（長期/短期、
-///   [`crate::rc::concrete_allowable_shear`]）。
+///   [`crate::rc::concrete_allowable_shear_class`]）。
 /// - `jδ`: 接合部形状係数。十字形=3、T字形・ト字形=2、L字形=1。
 ///
 /// 左辺は全体積 `cV`（有効体積 `cVe` ではない）、右辺係数は `h′/h`（内法階高/階高）。
@@ -84,7 +87,7 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         0.0
     };
 
-    let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
+    let fs = crate::rc::concrete_allowable_shear_class(inp.fc, inp.concrete_class, inp.long_term);
 
     let ma = cv * j_delta * fs * (1.0 + beta);
     let md = inp.h_ratio * inp.sum_beam_moments;
@@ -127,6 +130,7 @@ mod tests {
         SrcPanelInput {
             shape: JointShape::Cross,
             fc: 24.0,
+            concrete_class: ConcreteClass::Normal,
             long_term: false,
             col_width: 600.0,
             beam_width: 300.0,
@@ -219,5 +223,24 @@ mod tests {
         let fs = crate::rc::concrete_allowable_shear(inp_rc.fc, false);
         let ma = cv * 3.0 * fs * (1.0 + beta);
         assert!((res_rc.ratio() - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
+    }
+
+    /// 軽量コンクリート1種ではパネルゾーンの許容せん断応力度が普通コンクリート
+    /// の 0.9 倍になり、許容値 `Ma = cV・jδ・fs・(1+β)` が fs に比例するため
+    /// 検定比は 1/0.9 倍になることを確認する。
+    #[test]
+    fn src_panel_lightweight_reduces_shear_capacity() {
+        let normal = base_src_panel_input();
+        let mut light = base_src_panel_input();
+        light.concrete_class = ConcreteClass::Lightweight1;
+
+        let fs_n =
+            crate::rc::concrete_allowable_shear_class(normal.fc, normal.concrete_class, false);
+        let fs_l = crate::rc::concrete_allowable_shear_class(light.fc, light.concrete_class, false);
+        assert!((fs_l - fs_n * 0.9).abs() < 1e-12);
+
+        let res_n = src_panel_zone_check(&normal);
+        let res_l = src_panel_zone_check(&light);
+        assert!((res_l.ratio() / res_n.ratio() - 1.0 / 0.9).abs() < 1e-9);
     }
 }

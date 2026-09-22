@@ -67,6 +67,7 @@ pub(super) fn check_src_panel(
             let inp = SrcPanelInput {
                 shape,
                 fc,
+                concrete_class: col.mat.concrete_class,
                 long_term: term == LoadTerm::Long,
                 col_width: col.sec.width,
                 beam_width: beam0.sec.width,
