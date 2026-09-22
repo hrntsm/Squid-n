@@ -257,13 +257,15 @@ mdbook build
 `theme.rs` を直し、同じ値を文書やほかのコードへ写さないでください。
 
 - 文字サイズは `TextStyle`（Heading / Body / Button / Monospace / Small）で指定し、
-  ウィジェットへ `FontId::new(13.0, …)` のような生の pt を書かない。サイズの変更は
+  ウィジェットへ `FontId::new(...)` のような生の pt を書かない。サイズの変更は
   `theme::apply_theme` の 1 か所で行う。
 - テキストを内包する箱の寸法（テーブル行高・ヘッダ高・ステータスバー高など）を固定 px で
   書かず、`ui.text_style_height()`（例: `theme::table_row_height`）から導出する。和文の
   フォントフォールバックで行高が変わるため、固定値は文字が見切れる形で壊れる。固定 px は
   文字が入らない非テキスト形状（アイコン半径・線幅・当たり判定など）に限る。
-- パネル内側余白は 8px を基準とし、標準の項目間隔を基本にする。密集領域（リスト・
+- パネル内側余白は `theme.rs` の共通 frame helper（`toolbar_frame` /
+  `content_panel_frame` / `central_panel_frame` / `status_bar_frame` 等）を用い、
+  各 UI で独自値を持たせない。標準の項目間隔を基本にし、密集領域（リスト・
   アイコン列）のみ明示的に縮める。
 - 表は `table_util::standard_table` を通し、列定義は `Col`、列幅は `ColWidth` トークンで
   指定する。全列クリップ・列区切りの縦線・縦横スクロールの所在は `table_util` の doc を
