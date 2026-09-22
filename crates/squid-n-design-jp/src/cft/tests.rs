@@ -284,7 +284,7 @@ fn test_cft_box_steel_fc_uses_fixed_e_steel() {
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
         .unwrap_or(235.0);
-    let fc_allow = concrete_allowable_compression_class(24.0, mat.concrete_class, true);
+    let fc_allow = concrete_allowable_compression(24.0, true);
     let cnc = (width - 2.0 * thick) * (height - 2.0 * thick) * fc_allow;
     let s_fc = steel_fc(f_value, E_STEEL, lambda, LoadTerm::Long);
     let s_nc = sa * s_fc;
