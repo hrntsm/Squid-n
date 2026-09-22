@@ -2,13 +2,8 @@
 
 [はじめに](./introduction.md)
 
-# 概要
+# 利用ガイド
 
-- [モデル入出力（ファイル形式）](./model_io/README.md)
-    - [Squid-n プロジェクト形式（.scz）](./model_io/01_プロジェクト形式_scz.md)
-    - [ST-Bridge 形式（.stb / .xml）](./model_io/02_ST-Bridge_形式.md)
-    - [ST-Bridge 要素別 変換状況一覧](./model_io/03_ST-Bridge_要素別変換状況.md)
-    - [波形ライブラリ](./model_io/04_波形ライブラリ.md)
 - [モデルの編集](./model_edit/README.md)
     - [通り芯](./model_edit/01_通り芯.md)
     - [断面の符号と階](./model_edit/02_断面の符号と階.md)
@@ -17,12 +12,6 @@
     - [階への複製](./model_edit/05_階への複製.md)
     - [画面構成と工程タブ](./model_edit/06_画面構成と工程タブ.md)
     - [テーブル編集とグリッド操作](./model_edit/07_テーブル編集とグリッド操作.md)
-- [MCP サーバ](./mcp_server/README.md)
-    - [ビルドと起動](./mcp_server/01_ビルドと起動.md)
-    - [クライアント設定例](./mcp_server/02_クライアント設定例.md)
-    - [ツール一覧](./mcp_server/03_ツール一覧.md)
-    - [解析ジョブのフローと結果ストア](./mcp_server/04_解析ジョブと結果取得.md)
-    - [制約・注意点](./mcp_server/05_制約・注意点.md)
 - [準備計算（解析前の確認）](./preparation/README.md)
     - [階の分布](./preparation/01_階の分布.md)
     - [地震力（Ai 分布）](./preparation/02_地震力_Ai分布.md)
@@ -51,7 +40,21 @@
     - [ナビゲータの解析結果ツリー](./result_view/14_ナビゲータの解析結果ツリー.md)
     - [床板・壁版の表示](./result_view/15_床板・壁版の表示.md)
 
-# 計算根拠（理論・出典）
+# 入出力・連携
+
+- [モデル入出力（ファイル形式）](./model_io/README.md)
+    - [Squid-n プロジェクト形式（.scz）](./model_io/01_プロジェクト形式_scz.md)
+    - [ST-Bridge 形式（.stb / .xml）](./model_io/02_ST-Bridge_形式.md)
+    - [ST-Bridge 要素別 変換状況一覧](./model_io/03_ST-Bridge_要素別変換状況.md)
+    - [波形ライブラリ](./model_io/04_波形ライブラリ.md)
+- [MCP サーバ](./mcp_server/README.md)
+    - [ビルドと起動](./mcp_server/01_ビルドと起動.md)
+    - [クライアント設定例](./mcp_server/02_クライアント設定例.md)
+    - [ツール一覧](./mcp_server/03_ツール一覧.md)
+    - [解析ジョブのフローと結果ストア](./mcp_server/04_解析ジョブと結果取得.md)
+    - [制約・注意点](./mcp_server/05_制約・注意点.md)
+
+# 計算根拠
 
 - [計算根拠について](./calc_basis/README.md)
 - [荷重・外力](./calc_basis/01_荷重/README.md)
@@ -100,13 +103,13 @@
     - [累積損傷度（鉄骨梁端部）](./calc_basis/05_構造解析/08_累積損傷度.md)
     - [並列計算](./calc_basis/05_構造解析/09_並列計算.md)
     - [質点系解析](./calc_basis/05_構造解析/10_質点系解析.md)
-- [一次設計（許容応力度計算）](./calc_basis/06_一次設計/README.md)
+- [許容応力度・断面検定（一次設計）](./calc_basis/06_一次設計/README.md)
     - [材料の許容応力度](./calc_basis/06_一次設計/01_材料の許容応力度.md)
     - [RC 断面検定](./calc_basis/06_一次設計/02_RC_断面検定.md)
     - [鋼構造 断面検定](./calc_basis/06_一次設計/03_鋼構造_断面検定.md)
     - [SRC / CFT 断面検定](./calc_basis/06_一次設計/04_SRC_CFT_断面検定.md)
     - [小梁・床の断面検定](./calc_basis/06_一次設計/05_小梁・床の断面検定.md)
-- [二次設計（保有水平耐力計算）](./calc_basis/07_二次設計/README.md)
+- [保有水平耐力計算（二次設計）](./calc_basis/07_二次設計/README.md)
     - [保有水平耐力の判定](./calc_basis/07_二次設計/01_保有水平耐力の判定.md)
     - [構造特性係数 Ds](./calc_basis/07_二次設計/02_構造特性係数_Ds.md)
     - [部材ランク（FA〜FD）](./calc_basis/07_二次設計/03_部材ランク.md)
