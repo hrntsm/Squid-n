@@ -250,6 +250,25 @@ mdbook build
 （`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
 `/api/` 以下に併設されます。
 
+## UI 実装の約束事
+
+配色・寸法・角丸・フォントサイズなどの値の単一情報源は
+[`crates/squid-n-app/src/theme.rs`](crates/squid-n-app/src/theme.rs) です。値を変えるときは
+`theme.rs` を直し、同じ値を文書やほかのコードへ写さないでください。
+
+- 文字サイズは `TextStyle`（Heading / Body / Button / Monospace / Small）で指定し、
+  ウィジェットへ `FontId::new(13.0, …)` のような生の pt を書かない。サイズの変更は
+  `theme::apply_theme` の 1 か所で行う。
+- テキストを内包する箱の寸法（テーブル行高・ヘッダ高・ステータスバー高など）を固定 px で
+  書かず、`ui.text_style_height()`（例: `theme::table_row_height`）から導出する。和文の
+  フォントフォールバックで行高が変わるため、固定値は文字が見切れる形で壊れる。固定 px は
+  文字が入らない非テキスト形状（アイコン半径・線幅・当たり判定など）に限る。
+- パネル内側余白は 8px を基準とし、標準の項目間隔を基本にする。密集領域（リスト・
+  アイコン列）のみ明示的に縮める。
+- 表は `table_util::standard_table` を通し、列定義は `Col`、列幅は `ColWidth` トークンで
+  指定する。全列クリップ・列区切りの縦線・縦横スクロールの所在は `table_util` の doc を
+  参照。スプレッドシート様式のグリッド（`grid/`）は意図的に別様式とする。
+
 ## CI
 
 PR を作成すると以下が自動実行されます（`.github/workflows/ci.yml`）。

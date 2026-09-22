@@ -3,7 +3,7 @@
 作成日: 2026-08-13
 対象コード: `crates/squid-n-app/src/app/panels/activity_bar.rs`、
 `status_bar.rs`、`analysis.rs`、`mod.rs`、`app/mod.rs`
-関連文書: [画面構成と工程タブ](../../docs/model_edit/06_画面構成と工程タブ.md)、`TONMANUAL.md`（アクティビティバー）
+関連文書: [画面構成と工程タブ](../../docs/model_edit/06_画面構成と工程タブ.md)
 
 ## 1. 目的
 
