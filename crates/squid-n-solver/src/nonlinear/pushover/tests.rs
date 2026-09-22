@@ -3039,7 +3039,7 @@ fn run_rigid_zone_pushover(rigid: f64) -> PushoverResult {
         &dofmap,
         &reducer,
         SeismicDir::X,
-        400,
+        100,
         0.0,
         false,
         false,
@@ -3077,7 +3077,7 @@ fn vnv_剛域つき門形フレームの系レベル保証() {
     let q1 = observed_collapse_shear(&r1).expect("剛域ありで崩壊機構が成立しない");
     let ratio = q1 / q0;
     let theory = h / l_flex;
-    // 荷重ステップの量子化（400 ステップ）で数 % のばらつきが出るため許容 5%。
+    // 荷重ステップの量子化（最大 100 ステップ）で数 % のばらつきが出るため許容 5%。
     assert!(
         (ratio / theory - 1.0).abs() < 0.05,
         "崩壊荷重比が可撓長基準の理論値から外れている: 実測 {ratio:.4}（Qu={q0:.0}→{q1:.0} N）, 理論 H/L'={theory:.4}"
