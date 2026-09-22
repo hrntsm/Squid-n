@@ -1140,6 +1140,10 @@ fn time_history_nonlinear_runs() {
         .expect("時刻歴の結果");
     assert!(th.nonlinear, "非線形として記録される");
     assert!(
+        th.applied_long_term,
+        "既定の長期荷重初期化が解析まで反映される"
+    );
+    assert!(
         th.peak_disp.iter().flatten().all(|v| v.is_finite()),
         "ピーク変位に非有限値がある（発散）"
     );

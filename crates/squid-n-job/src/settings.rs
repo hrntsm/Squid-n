@@ -219,15 +219,3 @@ impl Default for AnalysisSettings {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::AnalysisSettings;
-
-    /// docs の「長期荷重の初期化は既定で有効」と設定層の既定値が一致することを固定し、
-    /// 将来の乖離を検出する。
-    #[test]
-    fn default_enables_th_apply_long_term() {
-        assert!(AnalysisSettings::default().th_apply_long_term);
-    }
-}
