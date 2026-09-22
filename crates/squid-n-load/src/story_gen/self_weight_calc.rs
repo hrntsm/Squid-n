@@ -95,8 +95,17 @@ fn finish_perimeter(width: f64, depth: f64, is_vertical: bool) -> f64 {
 /// 中間表現。重量の算定規則（自重算定長・スラブ厚控除・仕上げ・ダンパー置換等）は
 /// [`enumerate_self_weight`] に一元化する。
 pub(crate) enum SelfWeightItem {
-    /// 線材（柱・梁・ブレース）の自重（総量 [N]）。`elem_idx` は `model.elements` の添字。
-    Line { elem_idx: usize, total: f64 },
+    /// 線材（柱・梁・ブレース）の自重。`elem_idx` は `model.elements` の添字。
+    ///
+    /// `total` は通常自重（上下節点へ 1/2 ずつ）[N]、`extra_bottom` は下端節点だけへ
+    /// 加算する追加自重 [N]（柱以外・S 柱・下階柱ありは 0）。`is_column` は 2 節点の
+    /// 鉛直 `ElementKind::Beam`（ブレースは false）。
+    Line {
+        elem_idx: usize,
+        total: f64,
+        extra_bottom: f64,
+        is_column: bool,
+    },
     /// ダンパー装置＋支持部の重量（総量 [N]）。両端節点（`model.nodes` 添字）へ 1/2 ずつ。
     Damper { ni: usize, nj: usize, total: f64 },
     /// 壁・シェルの自重の頂点配分（`model.nodes` 添字 → [N]）。
@@ -124,10 +133,10 @@ pub(crate) enum SelfWeightItem {
 ///   （w_c = γ·b(D−t)+…。スラブ重量は構造芯間の面積で別途計上されるため、
 ///   控除しないと梁幅×スラブ厚の体積が二重計上になる）。スラブが定義されて
 ///   いないモデル（純フレーム等）では控除しない。
-///   §柱の長さ: コンクリート柱（鉛直材）で下端節点に別の柱（鉛直 Beam/Brace）が
-///   下から接続していない場合、下端節点に取り付く梁（非鉛直 Beam）の最大せいを
-///   自重算定長へ加算する（下階に柱がない場合、柱脚に取付く梁の最大せいの
-///   長さを柱長さに付加する扱い）。
+///   §柱の長さ: コンクリート柱（2 節点の鉛直 `ElementKind::Beam`）で下端へ別の柱が
+///   接続しない場合、下端節点に取り付く非鉛直 Beam の最大せい [mm] に相当する重量を
+///   追加自重として下端節点だけへ加算する（通常自重は上下へ 1/2 ずつ。柱以外・S 柱・
+///   下階柱ありは 0。ブレースは柱とみなさない）。総重量は `w·(L+Dmax)` で保存する。
 ///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を乗じ、
 ///   `load_cfg.extra_line_weight`（耐火被覆等の付加線重量 [N/mm]）・
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
@@ -193,15 +202,18 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
                 let len = dist3(ci, cj);
                 let is_vertical = is_vertical_pair(ci, cj);
+                let is_column =
+                    elem.kind == ElementKind::Beam && elem.nodes.len() == 2 && is_vertical;
                 let is_concrete = mat.fc.is_some();
-                let mut eff_len = if is_concrete && !is_vertical {
+                let eff_len = if is_concrete && !is_vertical {
                     let [fi, fj] = faces[elem_idx];
                     (len - fi - fj).max(0.0)
                 } else {
                     len
                 };
 
-                if is_concrete && is_vertical {
+                let mut max_depth = 0.0;
+                if is_column && is_concrete {
                     let bottom_local = if ci[2] <= cj[2] { 0 } else { 1 };
                     let bottom_id = elem.nodes[bottom_local];
                     let bottom_z = model.nodes[bottom_id.index()].coord[2];
@@ -211,7 +223,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                         .unwrap_or(&[]);
                     let has_column_below = adj_at_bottom.iter().any(|&idx| {
                         let e2 = &model.elements[idx];
-                        e2.id != elem.id && {
+                        e2.id != elem.id && e2.kind == ElementKind::Beam && {
                             let (a, b) = (
                                 model.nodes[e2.nodes[0].index()].coord,
                                 model.nodes[e2.nodes[1].index()].coord,
@@ -223,7 +235,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                         }
                     });
                     if !has_column_below {
-                        let max_depth = adj_at_bottom
+                        max_depth = adj_at_bottom
                             .iter()
                             .filter_map(|&idx| {
                                 let e2 = &model.elements[idx];
@@ -243,7 +255,6 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                                 }
                             })
                             .fold(0.0_f64, f64::max);
-                        eff_len += max_depth;
                     }
                 }
 
@@ -261,13 +272,13 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 } else {
                     sec.area
                 };
-                let mut w = mat.density * self_weight_area * eff_len * GRAVITY_MM_S2 * factor;
+                let mut per_length = mat.density * self_weight_area * GRAVITY_MM_S2 * factor;
                 if let Some(&(_, lw)) = load_cfg
                     .extra_line_weight
                     .iter()
                     .find(|(id, _)| *id == elem.id)
                 {
-                    w += lw * eff_len;
+                    per_length += lw;
                 }
                 if let Some(&(_, wf)) = load_cfg
                     .finish_area_weight
@@ -275,10 +286,17 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     .find(|(id, _)| *id == elem.id)
                 {
                     let phi = finish_perimeter(sec.width, sec.depth, is_vertical);
-                    w += wf * phi * eff_len;
+                    per_length += wf * phi;
                 }
 
-                items.push(SelfWeightItem::Line { elem_idx, total: w });
+                let total = per_length * eff_len;
+                let extra_bottom = per_length * max_depth;
+                items.push(SelfWeightItem::Line {
+                    elem_idx,
+                    total,
+                    extra_bottom,
+                    is_column,
+                });
             }
             ElementKind::Wall | ElementKind::Shell if elem.nodes.len() >= 3 => {
                 let Some(t) = sec.thickness else {
