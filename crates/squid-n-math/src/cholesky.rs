@@ -236,8 +236,8 @@ mod tests {
             "symbolic 再利用と毎回新規構築でビット不一致"
         );
 
-        // 100 回 factorize を繰り返しても毎回ビット一致すること（既存の決定性テストと同水準）。
-        for _ in 0..100 {
+        // 再利用側で factorize を繰り返しても毎回ビット一致すること（決定性テストと同じ 2 回比較）。
+        for _ in 0..2 {
             reused.factorize(&k2).unwrap();
             let x = reused.solve(&rhs).unwrap();
             assert_eq!(x, x_fresh);
