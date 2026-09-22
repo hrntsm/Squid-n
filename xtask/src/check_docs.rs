@@ -30,6 +30,15 @@ pub fn check_at(root: &Path) -> anyhow::Result<Report> {
                     .push(format!("BROKEN SUMMARY LINK: {} -> {}", rel, target));
             }
         }
+
+        for token in impl_refs(&text) {
+            report.impl_refs += 1;
+            if !root.join(&token).is_file() {
+                report
+                    .errors
+                    .push(format!("BROKEN IMPL REF: {} -> {}", rel, token));
+            }
+        }
     }
 
     let mut files = Vec::new();
@@ -394,6 +403,44 @@ mod tests {
             .errors
             .iter()
             .any(|e| e == "BROKEN IMPL REF: docs/a.md -> crates/a/b.rs"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detects_missing_impl_ref_in_summary() {
+        let root = temp_root("summary_missing_impl");
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("SUMMARY.md"), "実装 `crates/a/b.rs`\n").unwrap();
+
+        let report = check_at(&root).unwrap();
+        assert_eq!(report.impl_refs, 1);
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e == "BROKEN IMPL REF: docs/SUMMARY.md -> crates/a/b.rs"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolves_existing_impl_ref_in_summary() {
+        let root = temp_root("summary_existing_impl");
+        let docs = root.join("docs");
+        let impl_dir = root.join("crates").join("a");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(&impl_dir).unwrap();
+        std::fs::write(docs.join("SUMMARY.md"), "実装 `crates/a/b.rs`\n").unwrap();
+        std::fs::write(impl_dir.join("b.rs"), "\n").unwrap();
+
+        let report = check_at(&root).unwrap();
+        assert_eq!(report.impl_refs, 1);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
