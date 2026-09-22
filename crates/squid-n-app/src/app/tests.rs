@@ -3462,6 +3462,138 @@ fn test_floor_design_checks_secondary_member_joist() {
     assert!(jr.m_max > 0.0);
 }
 
+/// 小梁検定は小梁用（`LoadPurpose::Joist`）、床スラブ検定は床用（`LoadPurpose::Floor`）を
+/// 使い分ける。任意入力（`Custom`）で床用≠小梁用にして、両者がそれぞれの値を使うことを見る。
+#[test]
+fn test_floor_design_checks_joist_uses_joist_live_load() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{
+        LoadPurpose, SecondaryMember, SecondaryMemberKind, Section, SlabUsage,
+    };
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_square_slab_test_model();
+    let slab_sid = SectionId(model.sections.len() as u32);
+    model
+        .sections
+        .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(slab_sid, "S15".into()));
+    let joist_sid = SectionId(model.sections.len() as u32);
+    model.sections.push(Section {
+        id: joist_sid,
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    model.nodes.push(mk_mid(4, 2000.0, 0.0));
+    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    let mut plate = model.slabs[0].plate.clone();
+    plate.section = Some(slab_sid);
+    // 固定 DL 5.0、床用 3.0、小梁用 2.5、大梁用 1.8、地震用 0.8 kN/m²。
+    plate.usage = Some(SlabUsage::Custom {
+        floor: 3.0e-3,
+        joist: 2.5e-3,
+        frame: 1.8e-3,
+        seismic: 0.8e-3,
+    });
+    model.slabs.clear();
+    model.floor_assignment_regions = Default::default();
+    model.floor_regions[0]
+        .secondary_joists
+        .push(SecondaryMember {
+            gravity_end_shares: None,
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            ends: squid_n_core::model::SecondaryMemberEnds::Supported([
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(0)),
+                    position: 0.5,
+                },
+                squid_n_core::model::SecondaryMemberAnchor {
+                    support: squid_n_core::model::SupportMemberId::Primary(ElemId(2)),
+                    position: 0.5,
+                },
+            ]),
+            section: Some(joist_sid),
+            name: "J1".into(),
+        });
+    model.rebuild_floor_assignment_regions();
+    let first = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            plate.clone(),
+        )
+        .expect("左半分");
+    let second = model
+        .assign_enclosed_slab_to_matching_region(
+            &[NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            plate,
+        )
+        .expect("右半分");
+    model.floor_regions[0].slab_ids = vec![first, second];
+    model.validate().expect("validate");
+    let app = App {
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
+        ..App::default()
+    };
+
+    let (joists, slabs) = app.floor_design_checks();
+
+    // 小梁検定: 固定 DL 5.0 + 小梁用 2.5 = 7.5e-3 N/mm²。45° 分配の共有辺（4000 スパン）は
+    // w_equiv = 1500 × 面荷重 なので 11.25。床用（8.0e-3 → 12.0）ではない。
+    let (_sid, _target, jr) = &joists[0];
+    assert!(
+        (jr.w - 11.25).abs() < 0.2,
+        "小梁検定は小梁用（7.5e-3）を使う: w={}",
+        jr.w
+    );
+    assert!(
+        (jr.w - 12.0).abs() > 0.4,
+        "床用（8.0e-3）を使ってはいない: w={}",
+        jr.w
+    );
+
+    // スラブ検定: 固定 DL 5.0 + 床用 3.0 = 8.0e-3 N/mm²、2000 mm スパン（囲まれ coef=8）。
+    let slab = slabs
+        .iter()
+        .find(|(id, _)| *id == first)
+        .expect("左半分のスラブ検定");
+    let w_floor = app
+        .core
+        .model
+        .slab_intensity(&app.core.model.slabs[first.index()], LoadPurpose::Floor);
+    assert!(
+        (slab.1.moment - w_floor * 2000.0 * 2000.0 / 8.0).abs() < 1.0,
+        "スラブ検定は床用を使う: M={} w={}",
+        slab.1.moment,
+        w_floor
+    );
+}
+
 /// 片持ちの未割当小梁（端部支持条件 Free）も片持ち梁として検定する。
 #[test]
 fn test_floor_design_checks_cantilever_joist() {

@@ -1,6 +1,6 @@
 use crate::app::App;
 use squid_n_core::ids::{FloorPlateAssignmentRegionId, FloorRegionId, NodeId, SlabId};
-use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, SlabUsage};
+use squid_n_core::model::{AreaLoad, DistributionMethod, LoadPurpose, OneWayDir, SlabUsage};
 use squid_n_core::model::{RegionAnchor, SlabShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
@@ -23,6 +23,8 @@ pub struct SlabDraft {
     pub method: DistributionMethod,
     /// スラブ用途（積載荷重プリセット。`None` は積載寄与なし）。
     pub usage: Option<SlabUsage>,
+    /// 任意入力の積載荷重 [kN/m²]（床用・小梁用・大梁用・地震用の順）。
+    pub custom_live_kn_m2: [String; 4],
     /// スラブ断面（板厚・コンクリート材料を持つ断面。`None` は未割当）。
     pub section: Option<squid_n_core::ids::SectionId>,
     /// 取り付き領域の取付き先の節点（線なら両端、点なら 1 つ目だけを使う）。
@@ -45,6 +47,7 @@ impl Default for SlabDraft {
             load_value: "0".to_string(),
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            custom_live_kn_m2: std::array::from_fn(|_| "0".to_string()),
             section: None,
             attached_nodes: [None; 2],
             attached_point: false,
@@ -56,8 +59,8 @@ impl Default for SlabDraft {
 }
 
 /// 用途選択で提示するプリセット（令別表第1／国交省営繕基準・令和3年度版）。
-/// `None` は「なし（積載寄与なし）」。`Custom` は UI からは扱わない
-/// （モデル/シリアライズでは利用可）。並びは国交省営繕基準の表に概ね沿う。
+/// `None` は「なし（積載寄与なし）」。任意入力（`Custom`）は値を保持するため
+/// ここには入れず、コンボ内の特別な項目から初期化する。並びは国交省営繕基準の表に概ね沿う。
 const USAGE_PRESETS: &[Option<SlabUsage>] = &[
     None,
     Some(SlabUsage::Residential),
@@ -111,6 +114,47 @@ fn usage_label(u: Option<SlabUsage>) -> &'static str {
         Some(SlabUsage::RoofSteelGym) => "屋上（鉄骨造体育館・武道場等／短期）",
         Some(SlabUsage::Custom { .. }) => "任意入力",
     }
+}
+
+/// 用途の実効 4 値 [N/mm²]（床用・小梁用・大梁用・地震用）。`None` はすべて 0。
+fn usage_custom_values(u: Option<SlabUsage>) -> [f64; 4] {
+    match u {
+        Some(SlabUsage::Custom {
+            floor,
+            joist,
+            frame,
+            seismic,
+        }) => [floor, joist, frame, seismic],
+        Some(u) => [
+            u.live_load(LoadPurpose::Floor),
+            u.live_load(LoadPurpose::Joist),
+            u.live_load(LoadPurpose::Frame),
+            u.live_load(LoadPurpose::Seismic),
+        ],
+        None => [0.0; 4],
+    }
+}
+
+/// 4 値 [N/mm²] を任意入力の積載荷重へまとめる。
+fn custom_usage(values: [f64; 4]) -> SlabUsage {
+    SlabUsage::Custom {
+        floor: values[0],
+        joist: values[1],
+        frame: values[2],
+        seismic: values[3],
+    }
+}
+
+/// 用途の 4 値を kN/m² で並べた 1 行。
+fn usage_values_text(u: SlabUsage) -> String {
+    let [floor, joist, frame, seismic] = usage_custom_values(Some(u));
+    format!(
+        "床 {:.2} / 小梁 {:.2} / 大梁 {:.2} / 地震 {:.2} kN/m²",
+        area_load_kn_per_m2(floor),
+        area_load_kn_per_m2(joist),
+        area_load_kn_per_m2(frame),
+        area_load_kn_per_m2(seismic),
+    )
 }
 
 fn method_label(m: DistributionMethod) -> &'static str {
@@ -326,22 +370,68 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             });
             row.col(|ui| {
-                table_util::cell_combo(
-                    ui,
-                    ("slab_usage", slab.id.0),
-                    usage_label(slab.usage()),
-                    |ui| {
-                        for &u in USAGE_PRESETS {
-                            if ui
-                                .selectable_label(slab.usage() == u, usage_label(u))
-                                .clicked()
-                                && slab.usage() != u
+                ui.vertical(|ui| {
+                    table_util::cell_combo(
+                        ui,
+                        ("slab_usage", slab.id.0),
+                        usage_label(slab.usage()),
+                        |ui| {
+                            for &u in USAGE_PRESETS {
+                                if ui
+                                    .selectable_label(slab.usage() == u, usage_label(u))
+                                    .clicked()
+                                    && slab.usage() != u
+                                {
+                                    pending_usage.push((slab.id, u));
+                                }
+                            }
+                            ui.separator();
+                            let is_custom = matches!(slab.usage(), Some(SlabUsage::Custom { .. }));
+                            if ui.selectable_label(is_custom, "任意入力").clicked() && !is_custom
                             {
-                                pending_usage.push((slab.id, u));
+                                let v = usage_custom_values(slab.usage());
+                                pending_usage.push((slab.id, Some(custom_usage(v))));
+                            }
+                        },
+                    );
+                    match slab.usage() {
+                        Some(SlabUsage::Custom {
+                            floor,
+                            joist,
+                            frame,
+                            seismic,
+                        }) => {
+                            let mut values = [floor, joist, frame, seismic];
+                            let mut changed = false;
+                            ui.horizontal_wrapped(|ui| {
+                                for (label, value) in
+                                    ["床", "小梁", "大梁", "地震"].iter().zip(values.iter_mut())
+                                {
+                                    ui.label(*label);
+                                    let mut kn = area_load_kn_per_m2(*value);
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut kn)
+                                                .speed(0.01)
+                                                .suffix(" kN/m²"),
+                                        )
+                                        .changed()
+                                    {
+                                        *value = to_internal::area_load_kn_per_m2(kn);
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            if changed {
+                                pending_usage.push((slab.id, Some(custom_usage(values))));
                             }
                         }
-                    },
-                );
+                        Some(u) => {
+                            table_util::text_cell(ui, &usage_values_text(u));
+                        }
+                        None => {}
+                    }
+                });
             });
             row.col(|ui| {
                 let label = app
@@ -566,22 +656,49 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             "床の板厚と自重は断面から決まります。断面が未割当の床は解析前チェックで止まります",
         );
         ui.label("用途（積載荷重）:")
-            .on_hover_text("令別表第1 の積載荷重（骨組用）を「LL(架構用)」ケースへ分配します");
+            .on_hover_text("令別表第1 の積載荷重（大梁用）を「LL(架構用)」ケースへ分配します");
         egui::ComboBox::from_id_salt("slab_draft_usage")
             .selected_text(usage_label(app.ui.scoped.slab_draft.usage))
             .show_ui(ui, |ui| {
                 for &u in USAGE_PRESETS {
                     ui.selectable_value(&mut app.ui.scoped.slab_draft.usage, u, usage_label(u));
                 }
+                ui.separator();
+                let is_custom = matches!(
+                    app.ui.scoped.slab_draft.usage,
+                    Some(SlabUsage::Custom { .. })
+                );
+                if ui.selectable_label(is_custom, "任意入力").clicked() && !is_custom {
+                    let v = usage_custom_values(app.ui.scoped.slab_draft.usage);
+                    for (slot, value) in
+                        app.ui.scoped.slab_draft.custom_live_kn_m2.iter_mut().zip(v)
+                    {
+                        *slot = format!("{:.2}", area_load_kn_per_m2(value));
+                    }
+                    app.ui.scoped.slab_draft.usage = Some(custom_usage(v));
+                }
             });
-        if let Some(u) = app.ui.scoped.slab_draft.usage {
-            use squid_n_core::model::LoadPurpose;
-            ui.label(format!(
-                "床用 {:.2} / 骨組用 {:.2} / 地震用 {:.2} kN/m²",
-                area_load_kn_per_m2(u.live_load(LoadPurpose::Floor)),
-                area_load_kn_per_m2(u.live_load(LoadPurpose::Frame)),
-                area_load_kn_per_m2(u.live_load(LoadPurpose::Seismic)),
-            ));
+        if let Some(SlabUsage::Custom { .. }) = app.ui.scoped.slab_draft.usage {
+            ui.horizontal(|ui| {
+                for (label, slot) in ["床用", "小梁用", "大梁用", "地震用"]
+                    .iter()
+                    .zip(app.ui.scoped.slab_draft.custom_live_kn_m2.iter_mut())
+                {
+                    ui.label(*label);
+                    ui.add(egui::TextEdit::singleline(slot).desired_width(55.0));
+                }
+            });
+            let v: [f64; 4] = std::array::from_fn(|i| {
+                to_internal::area_load_kn_per_m2(
+                    app.ui.scoped.slab_draft.custom_live_kn_m2[i]
+                        .trim()
+                        .parse::<f64>()
+                        .unwrap_or(0.0),
+                )
+            });
+            app.ui.scoped.slab_draft.usage = Some(custom_usage(v));
+        } else if let Some(u) = app.ui.scoped.slab_draft.usage {
+            ui.label(usage_values_text(u));
         }
     });
 
