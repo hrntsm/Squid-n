@@ -106,7 +106,7 @@ pub fn solve_eigen_with_solver(
     let k_free = assemble_global_k(model, dofmap);
     let k_red = reducer.reduce_k(&k_free);
 
-    let q = ((2 * n_modes).min(n_modes + 8)).max(n_modes + 4).min(n);
+    let q = subspace_size(n, n_modes);
 
     let k_diag: Vec<f64> = (0..n)
         .map(|i| k_red.get(i, i).copied().unwrap_or(0.0))
@@ -254,6 +254,17 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
 /// 剛床のスレーブ自由度にはマスターに従属した値が入る。fixed・非構造自由度は 0。
 fn scatter_node_shape(phi_free: &[f64], dofmap: &DofMap, n_nodes: usize) -> Vec<[f64; 6]> {
     dofmap.expand_to_nodes(phi_free, n_nodes)
+}
+
+/// 部分空間サイズ q = min(n, max(2p, p+8))。
+///
+/// p は要求モード数を縮約後自由度数 n で切り詰めた値（Bathe 2013 式(19)）。
+fn subspace_size(n: usize, requested_modes: usize) -> usize {
+    let p = requested_modes.min(n);
+    if p == 0 {
+        return 0;
+    }
+    p.saturating_mul(2).max(p.saturating_add(8)).min(n)
 }
 
 /// 部分空間反復の開始ベクトルを選ぶ。
