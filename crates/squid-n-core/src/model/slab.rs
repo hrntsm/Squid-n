@@ -291,7 +291,7 @@ impl Model {
             .filter(|t| *t > 0.0)
     }
 
-    /// 版の自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の単位体積重量）。
+    /// 版の自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の設計単位体積重量）。
     ///
     /// 断面または断面の主材料が未割当のときは `None`。自重を面荷重として焼き込まず
     /// 毎回算定するのは、板厚や材料を変えたときに自重が追随しないという食い違いを
@@ -302,7 +302,7 @@ impl Model {
             .slab_section(slab)
             .and_then(|s| s.material)
             .and_then(|mid| self.materials.get(mid.index()))?;
-        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
+        Some(t * mat.design_unit_weight_n_per_mm3())
     }
 
     /// 固定荷重（DL）の面荷重強度 [N/mm²]（版の自重 ＋ 仕上げ等）。

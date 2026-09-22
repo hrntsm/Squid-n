@@ -552,8 +552,8 @@ impl Model {
             .map(|e| e - z)
     }
 
-    /// 壁版の自重 [N]。躯体（開口控除後の正味面積 × 板厚 × 主材料の密度 ×
-    /// 重力加速度）＋ 仕上げ・増打ち（正味面積 × [`WallPlate::finish_intensity`]）
+    /// 壁版の自重 [N]。躯体（開口控除後の正味面積 × 板厚 × 主材料の設計単位体積重量）
+    /// ＋ 仕上げ・増打ち（正味面積 × [`WallPlate::finish_intensity`]）
     /// ＋ 開口部（サッシ等）の重量。
     ///
     /// 仕上げ・増打ちを躯体と同じ**正味面積**に乗じるのは、開口部にはコンクリートも
@@ -574,7 +574,7 @@ impl Model {
             self.wall_plate_thickness(plate),
             self.wall_plate_material(plate),
         ) {
-            (Some(t), Some(mat)) => mat.density * t * net_area * crate::units::GRAVITY_MM_S2,
+            (Some(t), Some(mat)) => mat.design_unit_weight_n_per_mm3() * t * net_area,
             _ => 0.0,
         };
         let finish = plate.finish_intensity() * net_area;

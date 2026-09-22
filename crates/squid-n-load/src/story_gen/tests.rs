@@ -204,10 +204,10 @@ fn test_generate_two_stories() {
     assert!((gen.rep_nodes[1].coord[0] - 3000.0).abs() < 1e-6);
     // 3FL は節点荷重(50kN)が NodeId(4)(x=0)側のみに掛かる非対称配置なので、
     // 慣性力重心は x=0 側へ偏る(単純な幾何重心 3000 とは一致しない)。
-    // 手計算(g=9806.65, §1.11): nw4=53656.6546..., nw5=3656.6546...,
-    // gx = nw5*6000/(nw4+nw5) = 382.806855936086
+    // 手計算(設計単位体積重量 78.5e-6 N/mm³): nw4=53728.75, nw5=3728.75,
+    // gx = nw5*6000/(nw4+nw5) = 389.3747552538833
     assert!(
-        (gen.rep_nodes[2].coord[0] - 382.806855936086).abs() < 1e-6,
+        (gen.rep_nodes[2].coord[0] - 389.3747552538833).abs() < 1e-6,
         "{}",
         gen.rep_nodes[2].coord[0]
     );
@@ -526,10 +526,9 @@ fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
             .unwrap();
     assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
-    // 柱の自重（1本あたり。両柱とも同一断面・材料・長さ）。柱は両端(基部+上端)へ
-    // 半分ずつ配分されるが、基部は階に含まれないため上端の質量にのみ効く。
-    let sw_per_column = 7.85e-9 * 10000.0 * 3000.0 * GRAVITY_MM_S2;
-    let sw_half = sw_per_column / 2.0;
+    // 慣性力重心は設計地震用重量（設計単位体積重量 78.5e-6 N/mm³）で決まる。
+    let sw_design: f64 = 78.5e-6 * 10000.0 * 3000.0;
+    let sw_half = sw_design / 2.0;
     let w2 = sw_half + 100000.0; // NodeId(2), x=0
     let w3 = sw_half + 300000.0; // NodeId(3), x=4000
     let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
@@ -537,8 +536,8 @@ fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
     let rep = &gen.rep_nodes[1];
     assert!((rep.coord[0] - gx).abs() < 1e-6, "Gx={}", rep.coord[0]);
 
-    // CorrectedLumped: 柱の自重は解析の質量行列に部材密度質量として計上されるため
-    // 控除され、net_i は DL 節点荷重分のみが残る（sw_half が各節点でちょうど相殺する）。
+    // CorrectedLumped: 柱の物理質量は解析の質量行列に部材密度質量として計上されるため
+    // 控除され、net_i は DL 節点荷重分のみが残る（物理質量が各節点でちょうど相殺する）。
     let mass = rep
         .mass
         .expect("CorrectedLumped: DL節点荷重分の質点質量が設定される");
@@ -702,14 +701,19 @@ fn test_master_mass_lumped_only_keeps_density_self_weight() {
         generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::LumpedOnly).unwrap();
     assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
+    // 慣性力重心は設計地震用重量（設計単位体積重量 78.5e-6 N/mm³）で決まる。
+    let sw_design: f64 = 78.5e-6 * 10000.0 * 3000.0;
+    let gx = (100000.0 * 0.0 + (sw_design / 2.0 + 300000.0) * 4000.0)
+        / (sw_design / 2.0 + 100000.0 + sw_design / 2.0 + 300000.0);
+
+    // LumpedOnly の質点質量は物理質量相当（物理密度×g）。DL 節点荷重と合算する。
     let sw_per_column = 7.85e-9 * 10000.0 * 3000.0 * GRAVITY_MM_S2;
     let sw_half = sw_per_column / 2.0;
     let w2 = sw_half + 100000.0;
     let w3 = sw_half + 300000.0;
-    let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
 
     let rep = &gen.rep_nodes[1];
-    // LumpedOnly: 控除せず、柱の自重を含む地震用重量の全量が質点質量になる。
+    // LumpedOnly: 控除せず、物理質量相当の全量が質点質量になる。
     let mass = rep
         .mass
         .expect("LumpedOnly: 地震用重量の全量が質点質量になる");
@@ -729,6 +733,167 @@ fn test_master_mass_lumped_only_keeps_density_self_weight() {
         mass[5],
         expected_j
     );
+}
+
+// ------------------------------------------------------------------
+// §設計重量（78.5）と物理質量（7.85）の分離
+// ------------------------------------------------------------------
+
+/// 鋼線材 1 本: 地震用重量（設計）は 78.5 kN/m³ ベース、動的質量は物理密度 7.85 t/m³ ベース。
+#[test]
+fn test_steel_line_design_weight_and_physical_mass_are_separated() {
+    let (len, area) = (4000.0, 90000.0);
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+
+    let corrected =
+        generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    // 地震用重量（設計）: 78.5e-6 N/mm³ × A × L の上端半分。
+    let design = 78.5e-6 * area * len / 2.0;
+    assert!(
+        (corrected.stories[1].seismic_weight.unwrap() - design).abs() < 1e-6,
+        "設計重量が 78.5 ベースでない: {}",
+        corrected.stories[1].seismic_weight.unwrap()
+    );
+    // CorrectedLumped は躯体分を質量行列が担うため、付加重量がなければ質点は 0。
+    assert!(corrected.rep_nodes[1].mass.is_none());
+
+    // LumpedOnly は物理質量（7.85 t/m³ × A × L × g）の上端半分を質点に持つ。
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let physical = 7.85e-9 * area * len * GRAVITY_MM_S2 / 2.0;
+    let m = lumped.rep_nodes[1].mass.expect("LumpedOnly は質点を持つ");
+    assert!(
+        (m[0] - physical / GRAVITY_MM_S2).abs() < 1e-9 * (physical / GRAVITY_MM_S2),
+        "動的質量が 7.85 ベースでない: {}",
+        m[0]
+    );
+    // 設計重量と物理質量は一致しない（地震用重量/g ≠ 動的質量）。
+    assert!((corrected.stories[1].seismic_weight.unwrap() / GRAVITY_MM_S2 - m[0]).abs() > 1e-6);
+}
+
+/// 両 MassMethod の公称並進総動的質量が一致する（鋼材を含むモデル）。
+/// CorrectedLumped は「質点＋質量行列の部材密度質量」、LumpedOnly は「質点のみ」で
+/// 総和が等しくなる。
+#[test]
+fn test_both_mass_methods_have_equal_total_dynamic_mass() {
+    let (len, area) = (4000.0, 90000.0);
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+    let corrected =
+        generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+
+    let sum_mass = |gen: &StoryGenResult| {
+        gen.rep_nodes
+            .iter()
+            .filter_map(|n| n.mass)
+            .map(|m| m[0])
+            .sum::<f64>()
+    };
+    // CorrectedLumped は質量行列の部材密度質量（物理躯体分）を足して総動的質量を評価する。
+    let body_physical = 7.85e-9 * area * len * GRAVITY_MM_S2;
+    let total_corrected = sum_mass(&corrected) + body_physical / GRAVITY_MM_S2;
+    let total_lumped = sum_mass(&lumped);
+    assert!(
+        (total_corrected - total_lumped).abs() < 1e-9 * total_lumped.max(1.0),
+        "両方式の総動的質量が一致しない: corrected={total_corrected} lumped={total_lumped}"
+    );
+}
+
+/// 仕上げ・付加線重量は質量行列に対応物がないため、CorrectedLumped でも質点に残る。
+#[test]
+fn test_line_finish_and_extra_weight_survive_corrected_lumped() {
+    let (len, area) = (4000.0, 90000.0);
+    let cfg = LoadCfg {
+        extra_line_weight: vec![(ElemId(0), 5.0)],
+        finish_area_weight: vec![(ElemId(0), 0.002)],
+        ..Default::default()
+    };
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), Some(cfg));
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let top = gen.rep_nodes[1].mass.expect("付加重量が質点に残る");
+    let phi = 2.0 * (300.0 + 300.0);
+    let extra = (5.0 * len + 0.002 * phi * len) / 2.0;
+    assert!(
+        (top[0] - extra / GRAVITY_MM_S2).abs() < 1e-9 * (extra / GRAVITY_MM_S2),
+        "付加重量が質点から消えた: {}",
+        top[0]
+    );
+}
+
+/// 鉄骨重量割増の増分（factor−1 相当）も質量行列に対応物がないため質点に残る。
+#[test]
+fn test_steel_weight_factor_increment_survives_corrected_lumped() {
+    let (len, area) = (4000.0, 90000.0);
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), Some(cfg));
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let top = gen.rep_nodes[1].mass.expect("割増増分が質点に残る");
+    let body_design = 78.5e-6 * area * len;
+    let increment = body_design * (1.3 - 1.0) / 2.0;
+    assert!(
+        (top[0] - increment / GRAVITY_MM_S2).abs() < 1e-9 * (increment / GRAVITY_MM_S2),
+        "割増増分が質点から消えた: {}",
+        top[0]
+    );
+}
+
+/// ダンパー: 装置重量は設計・物理で同値、支持部だけが 78.5/7.85 で分離する。
+#[test]
+fn test_damper_device_weight_is_common_and_support_is_separated() {
+    let len = 4000.0;
+    let damper = DamperSpec {
+        elem: ElemId(0),
+        device_weight: 20000.0,
+        device_length: 1000.0,
+        support_area: 5000.0,
+    };
+    let cfg = LoadCfg {
+        dampers: vec![damper],
+        ..Default::default()
+    };
+    let model = single_beam_model(len, 7.85e-9, 90000.0, None, RigidZone::default(), Some(cfg));
+    let support_len = (len - 1000.0).max(0.0);
+    let gen = generate_stories(&model, None).unwrap();
+    // 設計重量（地震用重量）: 装置＋支持部×78.5e-6。
+    let design = 20000.0 + 5000.0 * support_len * 78.5e-6;
+    assert!((gen.stories[1].seismic_weight.unwrap() - design / 2.0).abs() < 1e-6);
+    // 物理質量（LumpedOnly）: 装置＋支持部×物理密度×g。装置は同値、支持部のみ小さい。
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let mass_equiv = 20000.0 + 5000.0 * support_len * 7.85e-9 * GRAVITY_MM_S2;
+    let m = lumped.rep_nodes[1].mass.expect("ダンパー質量が質点に残る");
+    assert!(
+        (m[0] - mass_equiv / 2.0 / GRAVITY_MM_S2).abs() < 1e-9 * (mass_equiv / 2.0 / GRAVITY_MM_S2),
+        "ダンパー質量: {}",
+        m[0]
+    );
+}
+
+/// 自重同期ケース（false 経路）と密度直接算入（true 経路）で動的質量が一致する。
+#[test]
+fn test_self_weight_via_case_matches_density_for_mass() {
+    let mut model = two_story_model();
+    model.load_cases.clear();
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::default()).unwrap();
+    let by_case =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::default()).unwrap();
+    for (a, b) in by_density.rep_nodes.iter().zip(by_case.rep_nodes.iter()) {
+        let ma = a.mass.map(|m| m[0]).unwrap_or(0.0);
+        let mb = b.mass.map(|m| m[0]).unwrap_or(0.0);
+        assert!(
+            (ma - mb).abs() < 1e-9 * ma.max(1.0),
+            "true/false 経路で動的質量が一致しない: density={ma} case={mb}"
+        );
+    }
 }
 
 /// 二次部材（小梁）1 本のみを持つ 1 層モデル（主架構要素なし）。
@@ -965,7 +1130,7 @@ fn test_secondary_member_on_midspan_is_seismic_weight_in_density_path() {
     let with = secondary_joist_on_girder_midspan_model(true);
     let without = secondary_joist_on_girder_midspan_model(false);
 
-    let sw = 7.85e-9 * 5000.0 * 4000.0 * GRAVITY_MM_S2;
+    let sw = 78.5e-6 * 5000.0 * 4000.0;
     let gen_with = generate_stories_with_opts(&with, &[], true, MassMethod::default()).unwrap();
     let gen_without =
         generate_stories_with_opts(&without, &[], true, MassMethod::default()).unwrap();
@@ -1030,7 +1195,11 @@ fn single_beam_model(
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "M".into(),
-        category: MaterialCategory::Steel,
+        category: if fc.is_some() {
+            MaterialCategory::Concrete
+        } else {
+            MaterialCategory::Steel
+        },
         young: 205000.0,
         poisson: 0.3,
         density,
@@ -1195,7 +1364,7 @@ fn test_face_reduction_applies_only_to_concrete() {
 
     let s_model = single_beam_model(len, density, area, None, rz, None);
     let s = generate_stories(&s_model, None).unwrap();
-    let expected_s = density * area * len * GRAVITY_MM_S2 / 2.0;
+    let expected_s = 78.5e-6 * area * len / 2.0;
     assert!(
         (s.stories[0].seismic_weight.unwrap() - expected_s).abs() < 1e-6,
         "{}",
@@ -1355,7 +1524,7 @@ fn test_steel_weight_factor_applies_only_to_steel() {
         Some(cfg.clone()),
     );
     let steel = generate_stories(&steel_model, None).unwrap();
-    let expected_steel = density * area * len * GRAVITY_MM_S2 * 1.3 / 2.0;
+    let expected_steel = 78.5e-6 * area * len * 1.3 / 2.0;
     assert!(
         (steel.stories[0].seismic_weight.unwrap() - expected_steel).abs() < 1e-6,
         "{}",
@@ -1394,7 +1563,7 @@ fn test_extra_line_weight_adds_to_self_weight() {
     };
     let model = single_beam_model(len, density, area, None, RigidZone::default(), Some(cfg));
     let gen = generate_stories(&model, None).unwrap();
-    let expected = (density * area * len * GRAVITY_MM_S2 + 5.0 * len) / 2.0;
+    let expected = (78.5e-6 * area * len + 5.0 * len) / 2.0;
     assert!(
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
@@ -2049,7 +2218,7 @@ fn test_damper_weight_replaces_section_self_weight() {
     let model = single_beam_model(len, 7.85e-9, 90000.0, None, RigidZone::default(), Some(cfg));
     let gen = generate_stories(&model, None).unwrap();
     let support_len = (len - 1000.0_f64).max(0.0);
-    let w = 20000.0 + 5000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
+    let w = 20000.0 + 5000.0 * support_len * 78.5e-6;
     let expected = w / 2.0;
     assert!(
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
@@ -2075,7 +2244,7 @@ fn test_damper_zero_device_weight_counts_support_only() {
     let model = single_beam_model(len, 7.85e-9, 90000.0, None, RigidZone::default(), Some(cfg));
     let gen = generate_stories(&model, None).unwrap();
     let support_len = (len - 500.0_f64).max(0.0);
-    let w = 8000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
+    let w = 8000.0 * support_len * 78.5e-6;
     let expected = w / 2.0;
     assert!(
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
@@ -2105,7 +2274,7 @@ fn test_finish_area_weight_column_perimeter_four_side() {
     let model = single_beam_model(len, density, area, None, RigidZone::default(), Some(cfg));
     let gen = generate_stories(&model, None).unwrap();
     let phi = 2.0 * (300.0 + 300.0);
-    let expected = (density * area * len * GRAVITY_MM_S2 + wf * phi * len) / 2.0;
+    let expected = (78.5e-6 * area * len + wf * phi * len) / 2.0;
     assert!(
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
@@ -2197,7 +2366,7 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
     let len = 6000.0;
     let phi = 300.0 + 2.0 * 600.0;
     // 両端(node1, node2)とも z=3000 の同一階に属するため、全量がその階に現れる。
-    let expected = 7.85e-9 * 90000.0 * len * GRAVITY_MM_S2 + wf * phi * len;
+    let expected = 78.5e-6 * 90000.0 * len + wf * phi * len;
     assert!(
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",

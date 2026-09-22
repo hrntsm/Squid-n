@@ -46,9 +46,10 @@ pub fn self_weight_case_content(
         match item {
             SelfWeightItem::Line {
                 elem_idx,
-                total,
-                extra_bottom,
+                load,
+                extra_bottom_load,
                 is_column,
+                ..
             } => {
                 let elem = &model.elements[elem_idx];
                 let ni = elem.nodes[0].index();
@@ -56,15 +57,15 @@ pub fn self_weight_case_content(
                 let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
                 if is_column {
                     let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
-                    node_force[top] += total / 2.0;
-                    node_force[bottom] += total / 2.0 + extra_bottom;
-                } else if total > 0.0 {
+                    node_force[top] += load / 2.0;
+                    node_force[bottom] += load / 2.0 + extra_bottom_load;
+                } else if load > 0.0 {
                     let len = ((cj[0] - ci[0]).powi(2)
                         + (cj[1] - ci[1]).powi(2)
                         + (cj[2] - ci[2]).powi(2))
                     .sqrt();
                     if len > 0.0 {
-                        let w = total / len;
+                        let w = load / len;
                         member.push(MemberLoad::auto(
                             elem.id,
                             DIR_DOWN,
@@ -76,17 +77,17 @@ pub fn self_weight_case_content(
                             },
                         ));
                     } else {
-                        node_force[ni] += total / 2.0;
-                        node_force[nj] += total / 2.0;
+                        node_force[ni] += load / 2.0;
+                        node_force[nj] += load / 2.0;
                     }
                 }
             }
-            SelfWeightItem::Damper { ni, nj, total } => {
-                node_force[ni] += total / 2.0;
-                node_force[nj] += total / 2.0;
+            SelfWeightItem::Damper { ni, nj, load, .. } => {
+                node_force[ni] += load / 2.0;
+                node_force[nj] += load / 2.0;
             }
-            SelfWeightItem::Panel { shares, .. } => {
-                for (i, w) in shares {
+            SelfWeightItem::Panel { load_shares, .. } => {
+                for (i, w) in load_shares {
                     node_force[i] += w;
                 }
             }
@@ -293,13 +294,13 @@ mod tests {
             .iter()
             .map(|item| match item {
                 crate::story_gen::SelfWeightItem::Line {
-                    total,
-                    extra_bottom,
+                    load,
+                    extra_bottom_load,
                     ..
-                } => *total + *extra_bottom,
-                crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
-                crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
-                    shares.iter().map(|(_, w)| w).sum()
+                } => *load + *extra_bottom_load,
+                crate::story_gen::SelfWeightItem::Damper { load, .. } => *load,
+                crate::story_gen::SelfWeightItem::Panel { load_shares, .. } => {
+                    load_shares.iter().map(|(_, w)| w).sum()
                 }
             })
             .sum();

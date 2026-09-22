@@ -11,6 +11,7 @@
 use squid_n_core::material_grade::{parse_concrete_fc, rebar_f_value, steel_f_value_prefix};
 use squid_n_core::section_shape::{concrete_young_modulus, E_STEEL};
 use squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3;
+use squid_n_core::units::STEEL_MASS_DENSITY_TON_MM3;
 
 /// グレード名から解決した標準材料物性（内部単位系 N-mm-s。密度は ton/mm³）。
 pub(super) struct StdMat {
@@ -20,8 +21,6 @@ pub(super) struct StdMat {
     pub fc: Option<f64>,
     pub fy: Option<f64>,
 }
-
-use squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3;
 
 /// 鉄筋コンクリートの単位体積重量 γrc = 24 kN/m³（固定荷重）。
 const RC_UNIT_WEIGHT_KN_M3: f64 = 24.0;
@@ -53,7 +52,7 @@ pub(super) fn resolve_grade(name: &str) -> Option<StdMat> {
         return Some(StdMat {
             young: E_STEEL,
             poisson: 0.3,
-            density: mass_density_from_unit_weight_kn_m3(STEEL_UNIT_WEIGHT_KN_M3),
+            density: STEEL_MASS_DENSITY_TON_MM3,
             fc: None,
             fy: Some(fy),
         });
@@ -61,7 +60,7 @@ pub(super) fn resolve_grade(name: &str) -> Option<StdMat> {
     steel_f_value_prefix(n, 40.0).map(|fy| StdMat {
         young: E_STEEL,
         poisson: 0.3,
-        density: mass_density_from_unit_weight_kn_m3(STEEL_UNIT_WEIGHT_KN_M3),
+        density: STEEL_MASS_DENSITY_TON_MM3,
         fc: None,
         fy: Some(fy),
     })
@@ -96,5 +95,15 @@ mod tests {
         assert_eq!(resolve_grade("Fc24").unwrap().fc, Some(24.0));
         assert!(resolve_grade("UNKNOWN999").is_none());
         assert!(resolve_grade("").is_none());
+    }
+
+    /// 鋼材・鉄筋の質量密度は物理密度 7.85 t/m³（= 7.85e-9 t/mm³）。
+    /// 設計用単位体積重量 78.5 kN/m³ からは導出しない。
+    #[test]
+    fn test_resolve_grade_steel_mass_density() {
+        assert_eq!(resolve_grade("SN400B").unwrap().density, 7.85e-9);
+        assert_eq!(resolve_grade("SS400").unwrap().density, 7.85e-9);
+        assert_eq!(resolve_grade("SD345").unwrap().density, 7.85e-9);
+        assert_eq!(resolve_grade("SR235").unwrap().density, 7.85e-9);
     }
 }

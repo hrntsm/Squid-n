@@ -20,7 +20,7 @@ use crate::model::MaterialCategory;
 use crate::section_shape::{concrete_young_modulus_gamma, E_STEEL};
 use crate::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3, ConcreteClass,
-    ConcreteComposition, STEEL_UNIT_WEIGHT_KN_M3,
+    ConcreteComposition, STEEL_MASS_DENSITY_TON_MM3,
 };
 
 /// 板厚 2 区分（`t<=40` / `40<t<=100`）の F 値を返す。
@@ -348,14 +348,15 @@ const PRESET_CONCRETE_NAMES: &[&str] = &[
 
 /// 標準材料プリセット一覧を生成する。
 ///
-/// - 鋼材・鉄筋: E=205000、ν=0.3、γs=77 kN/m³（≒7.85 t/m³）。
+/// - 鋼材・鉄筋: E=205000、ν=0.3、質量密度 7.85 t/m³（物理質量。設計用単位体積重量
+///   78.5 kN/m³ とは別で、固定荷重側は材料区分から解決する）。
 ///   `fy` は基準強度 F（板厚 40mm 以下）。設計計算では名称から
 ///   [`steel_f_value_prefix`] で板厚区分込みの F を再解決する。
 /// - コンクリート: ν=0.2。E は Ec=3.35·10⁴·(γ/24)²·(Fc/60)^(1/3)
 ///   （γ は Fc 帯に応じた普通コンクリートの気乾単位体積重量）。
 ///   密度は単位体積重量表の γRC（鉄筋込み）から導出する。
 pub fn material_presets() -> Vec<MaterialPreset> {
-    let steel_density = mass_density_from_unit_weight_kn_m3(STEEL_UNIT_WEIGHT_KN_M3);
+    let steel_density = STEEL_MASS_DENSITY_TON_MM3;
     let mut out = Vec::new();
     for &name in PRESET_STEEL {
         out.push(MaterialPreset {
@@ -767,11 +768,10 @@ mod tests {
         let ec60 = 3.35e4 * (60.0f64 / 60.0).powf(1.0 / 3.0);
         assert!((fc60.young - ec60).abs() < 1e-9);
 
-        // 密度: 鋼は γs=77 kN/m³（≒7.85 t/m³ とは別値）、コンクリートは
-        // γRC（Fc≤36 の全プリセットで 24.0 kN/m³）。
-        let rho_steel = mass_density_from_unit_weight_kn_m3(77.0);
-        assert!((ss400.density - rho_steel).abs() < 1e-18);
-        assert_ne!(rho_steel, 7.85e-9);
+        // 密度: 鋼・鉄筋は物理質量密度 7.85 t/m³（= 7.85e-9 t/mm³）、
+        // コンクリートは γRC（Fc≤36 の全プリセットで 24.0 kN/m³）。
+        assert_eq!(ss400.density, 7.85e-9);
+        assert_eq!(sd345.density, 7.85e-9);
         let rho_rc = mass_density_from_unit_weight_kn_m3(24.0);
         for name in ["Fc18", "Fc21", "Fc24", "Fc27", "Fc30", "Fc33", "Fc36"] {
             let p = find(name);

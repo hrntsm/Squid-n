@@ -285,16 +285,42 @@ fn push_primary_share(model: &Model, loads: &mut Vec<BeamLoad>, share: &WallEdge
     });
 }
 
-/// 壁版と二次部材の自重を支持先へ伝え、地震用節点重量 [N] に加算する。
+/// 壁版と二次部材の自重を支持先へ伝え、地震用節点重量 [N] に加算する（設計重量）。
 /// 未指定・支持欠落・循環があれば加算前にエラーを返す。
 pub fn accumulate_wall_and_secondary_seismic_weight(
     model: &Model,
     node_weight: &mut [f64],
 ) -> Result<(), String> {
+    accumulate_wall_and_secondary_with_basis(
+        model,
+        node_weight,
+        crate::cascade::SelfWeightBasis::Design,
+    )
+}
+
+/// 壁版と二次部材の自重を支持先へ伝え、物理質量相当の節点重量 [N] に加算する。
+/// 支持経路・端部負担率は設計重量版と同じで、二次部材の自重だけを物理密度で扱う
+/// （壁版はコンクリートで設計＝物理のため値は変わらない）。
+pub fn accumulate_wall_and_secondary_mass_equiv(
+    model: &Model,
+    node_mass: &mut [f64],
+) -> Result<(), String> {
+    accumulate_wall_and_secondary_with_basis(
+        model,
+        node_mass,
+        crate::cascade::SelfWeightBasis::MassEquiv,
+    )
+}
+
+fn accumulate_wall_and_secondary_with_basis(
+    model: &Model,
+    node_weight: &mut [f64],
+    basis: crate::cascade::SelfWeightBasis,
+) -> Result<(), String> {
     if !wall_plates_without_load_path(model).is_empty() {
         return Err("壁版の自重支持辺が未指定・不正、または支持先へ荷重を伝えられません".into());
     }
-    let transfer = crate::cascade::solve(model, |_| 0.0, true);
+    let transfer = crate::cascade::solve_with_basis(model, |_| 0.0, true, basis);
     if !transfer.invalid_end_shares.is_empty()
         || !transfer.unresolved.is_empty()
         || !transfer.cyclic.is_empty()

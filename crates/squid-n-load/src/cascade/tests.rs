@@ -11,14 +11,16 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
     Node, Section,
 };
-use squid_n_core::units::GRAVITY_MM_S2;
 
-/// 自重の等分布荷重 [N/mm]（テストの期待値算定用）。密度 × 断面積 × g。
-const DENSITY: f64 = 7.85e-9; // t/mm³ 相当（N 系。鋼）
+/// 設計用単位体積重量 [N/mm³]（テストの期待値算定用。鋼材 78.5 kN/m³）。
+const DESIGN_UNIT_WEIGHT_N_PER_MM3: f64 = 78.5e-6;
+/// 物理質量密度 [t/mm³]（鋼）。
+const DENSITY: f64 = 7.85e-9;
 const AREA: f64 = 10_000.0; // mm²
 
+/// 設計重量の等分布荷重 [N/mm]（設計単位体積重量 × 断面積）。
 fn w_self() -> f64 {
-    DENSITY * AREA * GRAVITY_MM_S2
+    DESIGN_UNIT_WEIGHT_N_PER_MM3 * AREA
 }
 
 fn node(id: u32, x: f64, y: f64, z: f64) -> Node {

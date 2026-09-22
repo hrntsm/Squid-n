@@ -1861,7 +1861,7 @@ fn slab_floor_load_reaches_primary_frame() {
         let len =
             ((nb[0] - na[0]).powi(2) + (nb[1] - na[1]).powi(2) + (nb[2] - na[2]).powi(2)).sqrt();
         let factor = if mat.fc.is_some() { 1.0 } else { steel_factor };
-        expected += mat.density * sec.area * len * squid_n_core::units::GRAVITY_MM_S2 * factor;
+        expected += mat.design_unit_weight_n_per_mm3() * sec.area * len * factor;
     }
 
     // 実際に主架構へ届く鉛直荷重（非構造節点で捨てられるぶんを除く）。

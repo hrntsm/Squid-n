@@ -21,8 +21,8 @@ use squid_n_core::model::{
 use squid_n_core::ids::SlabId;
 
 use crate::floor::{
-    joist_distribution_is_ready, joist_self_weight_udl, secondary_joist_distribution_split,
-    simple_reactions, BeamLoad, Cmq, LoadShape, LoadTarget,
+    joist_distribution_is_ready, joist_mass_equiv_udl, joist_self_weight_udl,
+    secondary_joist_distribution_split, simple_reactions, BeamLoad, Cmq, LoadShape, LoadTarget,
 };
 use crate::secondary::project_on_segment;
 
@@ -362,16 +362,40 @@ fn reactions_of(load: &MemberLoadKind, span: f64, end_shares: Option<[f64; 2]>) 
     }
 }
 
-/// 二次部材の反力の逐次伝達を解く。
+/// 二次部材の自重を設計重量で扱うか物理質量相当で扱うか。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfWeightBasis {
+    /// 設計重量（DL・地震用重量）。鋼材は 78.5 kN/m³、鉄骨割増を掛ける。
+    Design,
+    /// 物理質量相当（質量行列・動的解析）。物理密度で算定し、割増を掛けない。
+    MassEquiv,
+}
+
+/// 二次部材の反力の逐次伝達を解く（設計重量基準）。
 ///
 /// `w_of` は床板ごとの面荷重強度 [N/mm²]（DL・LL を分けるため床板単位で渡す）。
-/// `include_self_weight` が真のとき、二次部材自身の自重（ρ·A·g·鉄骨割増）を等分布として
-/// 重ねる（積載荷重のケースでは偽にする）。
+/// `include_self_weight` が真のとき、二次部材自身の自重を等分布として重ねる
+/// （積載荷重のケースでは偽にする）。
 pub fn solve(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
     include_self_weight: bool,
 ) -> SecondaryTransfer {
+    solve_with_basis(model, w_of, include_self_weight, SelfWeightBasis::Design)
+}
+
+/// [`solve`] の自重基準（[`SelfWeightBasis`]）を選べる版。支持経路・端部負担率は
+/// 基準によらず同じで、重ねる自重の値だけが変わる。
+pub fn solve_with_basis(
+    model: &Model,
+    w_of: impl Fn(&Slab) -> f64,
+    include_self_weight: bool,
+    basis: SelfWeightBasis,
+) -> SecondaryTransfer {
+    let self_weight_udl = |sm: &SecondaryMember| match basis {
+        SelfWeightBasis::Design => joist_self_weight_udl(model, sm),
+        SelfWeightBasis::MassEquiv => joist_mass_equiv_udl(model, sm),
+    };
     let axes = axes(model);
     if axes.is_empty() {
         let (_, leftover) = secondary_joist_distribution_split(model, w_of);
@@ -461,7 +485,7 @@ pub fn solve(
         }
         if include_self_weight {
             if let Some(sm) = by_key.get(&ax.key) {
-                if let Some(w) = joist_self_weight_udl(model, sm) {
+                if let Some(w) = self_weight_udl(sm) {
                     loads.push(MemberLoadKind::Distributed {
                         a: 0.0,
                         b: ax.len,

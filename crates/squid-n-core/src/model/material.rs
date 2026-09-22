@@ -58,4 +58,17 @@ impl Material {
         self.shear
             .unwrap_or_else(|| self.young / (2.0 * (1.0 + self.poisson)))
     }
+
+    /// 固定荷重（DL・地震用重量）算定に用いる単位体積重量 [N/mm³]。
+    /// 鋼材は基準資料の 78.5 kN/m³、その他は質量密度×g（内部単位 N-mm-s）。
+    ///
+    /// 鉄筋は鋼材に含めない。RC/SRC の主材料はコンクリートであり、鉄筋の自重は
+    /// コンクリートの単位体積重量（γRC/γSRC）に内包されるため別加算しない。
+    pub fn design_unit_weight_n_per_mm3(&self) -> f64 {
+        if self.category == MaterialCategory::Steel {
+            crate::units::to_internal::unit_weight_kn_per_m3(crate::units::STEEL_UNIT_WEIGHT_KN_M3)
+        } else {
+            self.density * crate::units::GRAVITY_MM_S2
+        }
+    }
 }

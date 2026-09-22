@@ -37,8 +37,8 @@ use squid_n_core::section_shape::{RcRebar, SectionShape};
 use member::{BeamBarEnd, Haunch};
 
 /// 鉄骨・鉄筋の単位重量 [t/m³]（数量積算の慣用値 7.85 t/m³。各部位共通事項）。
-/// 固定荷重の γs=77 kN/m³ とは分野別の慣用値として使い分ける
-/// （`squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3` 参照）。
+/// 固定荷重の設計用単位体積重量 γs=78.5 kN/m³（`squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3`）
+/// とは用途が別の独立値である（`squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3` 参照）。
 const STEEL_UNIT_WEIGHT_T_PER_M3: f64 = squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3;
 
 /// 鉄骨単位重量 [t/mm³]（[`STEEL_UNIT_WEIGHT_T_PER_M3`] の内部単位系換算）。

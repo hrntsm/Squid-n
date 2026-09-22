@@ -193,75 +193,92 @@ pub fn generate_stories_with_opts(
 
     let self_weight_items = enumerate_self_weight(model, &load_cfg);
 
-    let distribute_line_panel =
-        |target: &mut Vec<f64>, item: &SelfWeightItem, panel_density_only: bool| match item {
-            SelfWeightItem::Line {
-                elem_idx, total, ..
-            } => {
-                let elem = &model.elements[*elem_idx];
-                let ni = elem.nodes[0].index();
-                let nj = elem.nodes[1].index();
-                if matches!(elem.kind, ElementKind::Brace { .. })
-                    && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
-                {
-                    k_brace_redistribute(target, ni, nj, *total / 2.0, *total / 2.0);
-                } else {
-                    target[ni] += *total / 2.0;
-                    target[nj] += *total / 2.0;
-                }
-            }
-            SelfWeightItem::Panel {
-                shares,
-                density_shares,
-            } => {
-                let src = if panel_density_only {
-                    density_shares
-                } else {
-                    shares
-                };
-                for &(i, w) in src {
-                    target[i] += w;
-                }
-            }
-            SelfWeightItem::Damper { .. } => {}
-        };
-
-    let mut node_self_weight = vec![0.0f64; model.nodes.len()];
-    for item in &self_weight_items {
-        distribute_line_panel(&mut node_self_weight, item, true);
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Basis {
+        Load,
+        MassEquiv,
+        Matrix,
     }
+
+    let distribute = |target: &mut Vec<f64>, item: &SelfWeightItem, basis: Basis| match item {
+        SelfWeightItem::Line {
+            elem_idx,
+            load,
+            mass_equiv,
+            matrix_mass_equiv,
+            extra_bottom_load,
+            extra_bottom_mass_equiv,
+            is_column,
+        } => {
+            let (total, extra) = match basis {
+                Basis::Load => (*load, *extra_bottom_load),
+                Basis::MassEquiv => (*mass_equiv, *extra_bottom_mass_equiv),
+                Basis::Matrix => (*matrix_mass_equiv, 0.0),
+            };
+            let elem = &model.elements[*elem_idx];
+            let ni = elem.nodes[0].index();
+            let nj = elem.nodes[1].index();
+            if *is_column {
+                let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
+                let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
+                target[top] += total / 2.0;
+                target[bottom] += total / 2.0 + extra;
+            } else if matches!(elem.kind, ElementKind::Brace { .. })
+                && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
+            {
+                k_brace_redistribute(target, ni, nj, total / 2.0, total / 2.0);
+            } else {
+                target[ni] += total / 2.0;
+                target[nj] += total / 2.0;
+            }
+        }
+        SelfWeightItem::Panel {
+            load_shares,
+            mass_shares,
+        } => {
+            let src = match basis {
+                Basis::Matrix => mass_shares,
+                Basis::Load | Basis::MassEquiv => load_shares,
+            };
+            for &(i, w) in src {
+                target[i] += w;
+            }
+        }
+        SelfWeightItem::Damper {
+            ni,
+            nj,
+            load,
+            mass_equiv,
+        } => {
+            let total = match basis {
+                Basis::Load => *load,
+                Basis::MassEquiv => *mass_equiv,
+                Basis::Matrix => 0.0,
+            };
+            target[*ni] += total / 2.0;
+            target[*nj] += total / 2.0;
+        }
+    };
+
+    let mut node_mass_equiv = vec![0.0f64; model.nodes.len()];
+    let mut node_matrix_mass_equiv = vec![0.0f64; model.nodes.len()];
 
     if include_density_self_weight {
         for item in &self_weight_items {
-            match item {
-                SelfWeightItem::Damper { ni, nj, total } => {
-                    node_weight[*ni] += total / 2.0;
-                    node_weight[*nj] += total / 2.0;
-                }
-                SelfWeightItem::Line {
-                    elem_idx,
-                    total,
-                    extra_bottom,
-                    is_column: true,
-                } => {
-                    let elem = &model.elements[*elem_idx];
-                    let ni = elem.nodes[0].index();
-                    let nj = elem.nodes[1].index();
-                    let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
-                    let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
-                    node_weight[top] += total / 2.0;
-                    node_weight[bottom] += total / 2.0 + extra_bottom;
-                }
-                SelfWeightItem::Line { .. } | SelfWeightItem::Panel { .. } => {
-                    distribute_line_panel(&mut node_weight, item, false);
-                }
-            }
+            distribute(&mut node_weight, item, Basis::Load);
+            distribute(&mut node_mass_equiv, item, Basis::MassEquiv);
+            distribute(&mut node_matrix_mass_equiv, item, Basis::Matrix);
         }
 
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);
         crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight(
             model,
             &mut node_weight,
+        )?;
+        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_mass_equiv);
+        crate::wall_plate_load::accumulate_wall_and_secondary_mass_equiv(
+            model,
+            &mut node_mass_equiv,
         )?;
     }
 
@@ -272,6 +289,7 @@ pub fn generate_stories_with_opts(
         .map(|(i, e)| (e.id, i))
         .collect();
     let mut seen_lcs: std::collections::HashSet<LoadCaseId> = std::collections::HashSet::new();
+    let mut gravity_weight = vec![0.0f64; model.nodes.len()];
     for &lc_id in gravity_lcs {
         if !seen_lcs.insert(lc_id) {
             continue;
@@ -281,7 +299,7 @@ pub fn generate_stories_with_opts(
         };
         for nl in &lc.nodal {
             if nl.values[2] < 0.0 {
-                node_weight[nl.node.index()] += -nl.values[2];
+                gravity_weight[nl.node.index()] += -nl.values[2];
             }
         }
         for ml in &lc.member {
@@ -306,11 +324,41 @@ pub fn generate_stories_with_opts(
             if matches!(elem.kind, ElementKind::Brace { .. })
                 && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
             {
-                k_brace_redistribute(&mut node_weight, ni, nj, ri * scale, rj * scale);
+                k_brace_redistribute(&mut gravity_weight, ni, nj, ri * scale, rj * scale);
             } else {
-                node_weight[ni] += ri * scale;
-                node_weight[nj] += rj * scale;
+                gravity_weight[ni] += ri * scale;
+                gravity_weight[nj] += rj * scale;
             }
+        }
+    }
+
+    for i in 0..model.nodes.len() {
+        node_weight[i] += gravity_weight[i];
+    }
+    if include_density_self_weight {
+        // 設計荷重ケースの鉛直荷重は物理質量としてもそのまま質点へ算入する。
+        for i in 0..model.nodes.len() {
+            node_mass_equiv[i] += gravity_weight[i];
+        }
+    } else {
+        // DL に含まれる設計自重を物理質量相当へ置換する。DL の設計自重と自重列挙が
+        // 返す設計自重が一致することを前提とする（`design_sw` がその置換量）。
+        let mut design_sw = vec![0.0f64; model.nodes.len()];
+        let mut physical_sw = vec![0.0f64; model.nodes.len()];
+        for item in &self_weight_items {
+            distribute(&mut design_sw, item, Basis::Load);
+            distribute(&mut physical_sw, item, Basis::MassEquiv);
+            distribute(&mut node_matrix_mass_equiv, item, Basis::Matrix);
+        }
+        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut design_sw);
+        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut physical_sw);
+        crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight(
+            model,
+            &mut design_sw,
+        )?;
+        crate::wall_plate_load::accumulate_wall_and_secondary_mass_equiv(model, &mut physical_sw)?;
+        for i in 0..model.nodes.len() {
+            node_mass_equiv[i] = node_weight[i] - design_sw[i] + physical_sw[i];
         }
     }
 
@@ -390,9 +438,9 @@ pub fn generate_stories_with_opts(
             let net_i = |idx: usize| -> f64 {
                 match mass_method {
                     MassMethod::CorrectedLumped => {
-                        (node_weight[idx] - node_self_weight[idx]).max(0.0)
+                        (node_mass_equiv[idx] - node_matrix_mass_equiv[idx]).max(0.0)
                     }
-                    MassMethod::LumpedOnly => node_weight[idx],
+                    MassMethod::LumpedOnly => node_mass_equiv[idx],
                 }
             };
             let mt_weight: f64 = node_ids.iter().map(|n| net_i(n.index())).sum();
