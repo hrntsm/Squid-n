@@ -81,21 +81,22 @@ pub fn steel_fs(f: f64, term: LoadTerm) -> f64 {
     }
 }
 
-/// 限界細長比 `Λ = 1500/√(F/1.5)`。
-pub fn big_lambda(f: f64) -> f64 {
-    1500.0 / (f / 1.5).sqrt()
+/// 限界細長比 `Λ = √(π²E/(0.6F))`。`e` はヤング係数 [N/mm²]、`f` は基準強度 F [N/mm²]。
+pub fn big_lambda(f: f64, e: f64) -> f64 {
+    (std::f64::consts::PI.powi(2) * e / (0.6 * f)).sqrt()
 }
 
 /// 長期・短期許容圧縮応力度 fc [N/mm²]（座屈考慮、鋼構造設計規準 1973）。
-/// `λ = lk/i`、`Λ` で 2 分岐（`λ ≤ Λ` と `λ > Λ`）。短期は長期の 1.5 倍。
-pub fn steel_fc(f: f64, lambda: f64, term: LoadTerm) -> f64 {
-    let big_l = big_lambda(f);
+/// `λ = lk/i`、`Λ = √(π²E/(0.6F))` で 2 分岐（`λ ≤ Λ` と `λ > Λ`）。短期は長期の 1.5 倍。
+/// `e` は材料のヤング係数 [N/mm²]。
+pub fn steel_fc(f: f64, e: f64, lambda: f64, term: LoadTerm) -> f64 {
+    let big_l = big_lambda(f, e);
     let r = if big_l > 1e-9 { lambda / big_l } else { 0.0 };
     let fc_long = if lambda <= big_l {
         let nu = 1.5 + (2.0 / 3.0) * r * r;
         f * (1.0 - 0.4 * r * r) / nu
     } else {
-        (18.0 / 65.0) * f / (r * r)
+        0.277 * f / (r * r)
     };
     match term {
         LoadTerm::Long => fc_long,
