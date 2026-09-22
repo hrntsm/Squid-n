@@ -22,7 +22,7 @@ squid-n-element = { path = "../squid-n-element" }
 squid-n-solver = { path = "../squid-n-solver" }
 squid-n-io = { path = "../squid-n-io", features = ["parquet"] }
 squid-n-edit = { path = "../squid-n-edit" }
-# DesignCheck ジョブ（鋼/RC 許容応力度検定）用。p7 は design-jp の default feature。
+# DesignCheck ジョブ（鋼/RC 許容応力度検定）用。
 squid-n-design-jp = { path = "../squid-n-design-jp" }
 squid-n-job = { path = "../squid-n-job" }
 squid-n-load = { path = "../squid-n-load" }

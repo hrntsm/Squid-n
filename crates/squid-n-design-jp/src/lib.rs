@@ -5,7 +5,7 @@
 //! （材種ごとに `rc`/`steel`/`cft`/`srrc`、材料強度・許容応力度は
 //! `material_strength`、節点単位の検定の入力組み立ては `joint_wiring`）。
 //!
-//! 二次設計（保有水平耐力計算）は `p7` フィーチャ配下の [`secondary`] モジュール
+//! 二次設計（保有水平耐力計算）は [`secondary`] モジュール
 //! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
 pub mod beam_group;
 pub mod brb;
@@ -32,7 +32,6 @@ pub mod steel;
 pub mod ultimate;
 pub mod wall_opening;
 
-#[cfg(feature = "p7")]
 pub mod secondary;
 
 pub use beam_group::beam_group_overrides;

@@ -8,7 +8,6 @@
 //! （[`squid_n_design_jp::secondary::member_rank::story_ds`]: 層崩壊・部分崩壊は
 //! 代表ランクを 1 段階不利側へ移す）。剛域は崩壊荷重・崩壊機構の成立時期を変える
 //! ため、この経路が破綻していないことを系レベルで担保する。
-#![cfg(feature = "p7")]
 
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};

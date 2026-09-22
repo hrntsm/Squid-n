@@ -30,7 +30,6 @@ cargo build --workspace --release
 | `gui` | squid-n-app | GUI（egui/eframe） |
 | `mcp` | squid-n-mcp | MCP サーバ |
 | `parquet` | squid-n-io | 結果 I/O（Arrow / Parquet）。squid-n-mcp は常に有効化して利用し、squid-n-app の通常開発では無効のまま軽量に保つ |
-| `p7` | squid-n-design-jp | 二次設計（Ds、偏心率、保有耐力、パネルせん断）。既定で有効 |
 
 非デフォルトの機能フラグは `--workspace` ビルドでは検証されないため、
 対象クレートを `-p` で指定して有効化する（ワークスペースルートで
