@@ -821,7 +821,7 @@ impl SecondaryJoistDistributionGaps {
 pub fn secondary_joist_distribution_gaps(model: &Model) -> SecondaryJoistDistributionGaps {
     use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
 
-    let w_of = |s: &Slab| model.slab_intensity(s, LoadPurpose::Floor);
+    let w_of = |s: &Slab| model.slab_intensity(s, LoadPurpose::Joist);
     let distribution = secondary_joist_distribution_loads(model, w_of);
 
     let mut gaps = SecondaryJoistDistributionGaps::default();

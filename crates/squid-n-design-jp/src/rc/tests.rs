@@ -177,7 +177,9 @@ fn test_rebar_allowable_shear_table() {
     assert!((rebar_allowable_shear("SD295A", false) - 295.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("SD345", false) - 345.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("SD390", false) - 390.0).abs() < 1e-9);
-    assert!((rebar_allowable_shear("SD490", false) - 390.0).abs() < 1e-9);
+    // SD490 の短期は基準強度 490。長期せん断補強筋は 195 の据え置き。
+    assert!((rebar_allowable_shear("SD490", true) - 195.0).abs() < 1e-9);
+    assert!((rebar_allowable_shear("SD490", false) - 490.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("UNKNOWN", false) - 295.0).abs() < 1e-9);
 }
 
@@ -272,6 +274,40 @@ fn test_beam_shear_damage_control_vs_safety() {
             "damage_control={damage_control}: QA={qa_via_dispatch}, expected={expected}"
         );
     }
+}
+
+#[test]
+fn test_beam_shear_damage_control_wft_cap_sd490() {
+    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+    let rebar = match &shape {
+        SectionShape::RcRect { rebar, .. } => rebar.clone(),
+        _ => unreachable!(),
+    };
+    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+    assert!(props.pw > 0.002, "テストの前提として pw > 0.002 が必要");
+
+    // 材料表の w_ft は SD490 短期 = 490 のまま（クランプは検定時のみ）。
+    let allow = rc_allow(24.0, ConcreteClass::Normal, "SD490", false);
+    assert!((allow.w_ft - 490.0).abs() < 1e-9);
+
+    let alpha = 1.4;
+    let qa_damage = shear_capacity(&props, &allow, alpha, LoadTerm::Short, true, false);
+    let qa_safety = shear_capacity(&props, &allow, alpha, LoadTerm::Short, false, false);
+
+    // 損傷制御の短期のみ w_ft を 390 にクランプして手計算と照合する。
+    let pw_term_damage = 0.5 * 390.0 * (props.pw.min(0.012) - 0.002);
+    let expected_damage = props.b * props.j * ((2.0 / 3.0) * alpha * allow.fs + pw_term_damage);
+    assert!((qa_damage - expected_damage).abs() / expected_damage < 1e-9);
+
+    // 安全確保の短期は材料表の 490 をそのまま用いる。
+    let pw_term_safety = 0.5 * 490.0 * (props.pw.min(0.012) - 0.002);
+    let expected_safety = props.b * props.j * (alpha * allow.fs + pw_term_safety);
+    assert!((qa_safety - expected_safety).abs() / expected_safety < 1e-9);
+
+    assert!(
+        qa_damage < qa_safety,
+        "損傷制御（w_ft=390）は安全確保（w_ft=490）より小さいはず"
+    );
 }
 
 #[test]

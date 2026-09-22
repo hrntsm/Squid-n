@@ -1008,16 +1008,11 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
     );
 }
 
-#[test]
-fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
-    // n_modes=1 で q(=5) < n(=8) となる直列質点鎖を作り、部分空間反復の結果
-    // solve_eigen(...,1) を、同じ K_red/M_red を dense 化して gevd_jacobi に
-    // 直接渡した「厳密解（反復なし）」と比較する回帰テスト。
-    // 質量を大小交互（1.0, 50.0, ...）にして質量分布を強く非一様にし、
-    // 部分空間が n を張れない条件でも最低次モードへ正しく収束することを確認する。
+/// 固定端＋直列質点 `n_masses` 個の1次元モデル。
+/// 質量を大小交互（奇数番目 1.0、偶数番目 50.0）にして質量分布を強く非一様にする。
+fn make_mass_chain_model(n_masses: usize) -> Model {
     let k = 1000.0_f64;
     let young = k * 1000.0;
-    let n_masses = 8usize;
     let mut nodes = vec![Node {
         id: NodeId(0),
         coord: [0.0, 0.0, 0.0],
@@ -1053,7 +1048,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             spring: None,
         })
         .collect();
-    let model = Model {
+    Model {
         nodes,
         elements,
         sections: vec![Section {
@@ -1090,7 +1085,44 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             fy: None,
         }],
         ..Default::default()
-    };
+    }
+}
+
+/// `subspace_size` が Bathe 2013 式(19) の q = min(n, max(2p, p+8)) を
+/// （p = min(p_req, n)）満たすこと。
+#[test]
+fn test_subspace_size_table() {
+    let cases: [(usize, usize, usize); 10] = [
+        (100, 1, 9),
+        (100, 2, 10),
+        (100, 3, 11),
+        (100, 6, 14),
+        (100, 8, 16),
+        (100, 9, 18),
+        (10, 6, 10),
+        (3, 10, 3),
+        (0, 1, 0),
+        (5, 0, 0),
+    ];
+    for (n, requested, expected) in cases {
+        assert_eq!(
+            subspace_size(n, requested),
+            expected,
+            "n={n} requested={requested}"
+        );
+    }
+}
+
+/// 部分空間サイズ q < n のとき、部分空間反復の結果が同じ K_red/M_red の
+/// dense 厳密解と一致することの回帰テスト。
+#[test]
+fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
+    // n_modes=1・n=12 で q=min(12, max(2, 9))=9 < n となる。質量分布を強く
+    // 非一様にしても、部分空間が n を張れない条件で最低次モードへ正しく
+    // 収束することを、同じ K_red/M_red を dense 化して gevd_jacobi に直接
+    // 渡した「厳密解（反復なし）」と比較して確認する。
+    let n_masses = 12usize;
+    let model = make_mass_chain_model(n_masses);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -1122,6 +1154,31 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
         result.omega2[0],
         exact_vals[0]
     );
+}
+
+/// 要求モード数が縮約後自由度数を超える場合は、自由度数まで切り詰めて正常終了すること。
+#[test]
+fn test_eigen_requested_modes_above_n_is_truncated() {
+    let n_masses = 12usize;
+    let model = make_mass_chain_model(n_masses);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = solve_eigen(&model, &dofmap, &reducer, n_masses + 8)
+        .expect("要求モード数が自由度数を超えても自由度数まで切り詰めて解けるべき");
+
+    assert_eq!(
+        result.omega2.len(),
+        n_masses,
+        "返るモード数は縮約後自由度数まで切り詰められるべき"
+    );
+    for (i, &w2) in result.omega2.iter().enumerate() {
+        assert!(
+            w2.is_finite() && w2 > 0.0,
+            "mode{}: omega2={} は有限な正値であるべき",
+            i,
+            w2
+        );
+    }
 }
 
 /// 同一断面・同一長さの片持ち梁をX方向とZ方向に置いたとき、固有周期が一致すること。
