@@ -1044,7 +1044,10 @@ pub fn story_level_kind_label(k: StoryLevelKind) -> String {
     match k {
         StoryLevelKind::Normal => "一般".to_string(),
         StoryLevelKind::Penthouse { k } => format!("PH(k={:.2})", k),
-        StoryLevelKind::Basement { depth_m } => format!("地下(H={:.1}m)", depth_m),
+        StoryLevelKind::Basement { depth_mm } => format!(
+            "地下(H={:.1}m)",
+            squid_n_core::units::to_display::length_m(depth_mm)
+        ),
     }
 }
 

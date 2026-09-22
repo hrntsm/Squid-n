@@ -885,6 +885,68 @@ fn test_steel_height_ratio() {
     assert_eq!(steel_height_ratio(&Model::default()), 0.0);
 }
 
+/// GL は地下階の「床レベル + 深さ depth_mm」から復元し、複数の地下階で
+/// 同一値になること。地下階がなければ最下構造節点レベルへフォールバックすること。
+#[test]
+fn test_ground_elevation_from_basement_and_fallback() {
+    let story = |id: u32, z: f64, kind: StoryLevelKind| Story {
+        id: StoryId(id),
+        name: format!("S{id}"),
+        elevation: z,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: StoryStructure::default(),
+        level_kind: kind,
+    };
+    // 地下2層。各層の「床レベル + 深さ」がともに 0（GL）になる。
+    // B2(-9000) B1(-5000, 深さ5000) B0(-1000, 深さ1000) 1F(3000)。
+    let model = Model {
+        nodes: vec![Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, -9000.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: Some(StoryId(0)),
+            support_spring: None,
+        }],
+        stories: vec![
+            story(0, -9000.0, StoryLevelKind::Normal),
+            story(1, -5000.0, StoryLevelKind::Basement { depth_mm: 5000.0 }),
+            story(2, -1000.0, StoryLevelKind::Basement { depth_mm: 1000.0 }),
+            story(3, 3000.0, StoryLevelKind::Normal),
+        ],
+        ..Default::default()
+    };
+    assert!(
+        (ground_elevation(&model) - 0.0).abs() < 1e-9,
+        "GL={}",
+        ground_elevation(&model)
+    );
+
+    // 地下階がなければ最下構造節点レベルを GL とみなす。
+    let no_basement = Model {
+        nodes: vec![Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, -2000.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: Some(StoryId(0)),
+            support_spring: None,
+        }],
+        stories: vec![
+            story(0, -2000.0, StoryLevelKind::Normal),
+            story(1, 1000.0, StoryLevelKind::Normal),
+        ],
+        ..Default::default()
+    };
+    assert!(
+        (ground_elevation(&no_basement) - (-2000.0)).abs() < 1e-9,
+        "GL={}",
+        ground_elevation(&no_basement)
+    );
+}
+
 /// 剛床の分配規則の検証用モデル。地震用重量 400 の階を 1 つ持ち、指定した
 /// `(マスター, 剛床重量, ci_override)` の剛床拘束を備える。剛床は階ではなく
 /// 拘束として保持されるため、分配関数はモデルごと受け取る。
