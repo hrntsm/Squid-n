@@ -231,7 +231,7 @@ mod tests {
 
     /// `rc_capacity_input_from_rect` が `RcRebar`/`Material` を `RcCapacityInput` へ
     /// 配線する処理を、独立に計算した代表値で確認する。main_x = 8-D22 の総断面積の
-    /// 半分が引張側 `at`、かぶり・带筋径・主筋径から決まる有効せいが `d_eff`。
+    /// 半分が引張側 `at`、かぶり・帯筋径・主筋径から決まる有効せいが `d_eff`。
     #[test]
     fn rc_capacity_input_from_rect_matches_handcalc_without_strength_factor() {
         let rebar = RcRebar {
