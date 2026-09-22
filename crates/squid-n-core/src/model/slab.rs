@@ -485,9 +485,9 @@ pub enum DistributionMethod {
     TributaryArea,
 }
 
-/// 積載荷重の用途（令85条1項・令別表第1）。`Floor`（床用）と `Joist`（小梁用）は別表第1の
-/// (い) 欄（床版又は小梁計算用）に対応し、`Frame`（大梁・柱・基礎用）は (ろ) 欄、`Seismic`（地震力用）は
-/// (は) 欄に対応する。床スラブ検定・小梁検定・長期骨組解析・地震用重量の算定に用いる。
+/// 積載荷重の用途（令85条1項・令別表第1）。`Floor`（床用）と `Joist`（小梁用）は (い) 欄「床の構造計算を
+/// する場合」に、`Frame`（大梁・柱・基礎用）は (ろ) 欄、`Seismic`（地震力用）は (は) 欄に対応する。床スラブ
+/// 検定・小梁検定・長期骨組解析・地震用重量の算定に用い、官庁営繕「建築構造設計基準」等は (い) 欄を「床版又は小梁計算用」と整理する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadPurpose {
     Floor,
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn test_usage_table_values_n_per_mm2() {
         // 令別表第1: 事務室 = 床用 2900 / 大梁用 1800 / 地震用 800 [N/m²]。
-        // 令85条1項の (い) 欄は床版又は小梁計算用のため、小梁用は床用と同じ値。
+        // 令85条1項の (い) 欄は「床の構造計算をする場合」で床版と小梁を分けないため、小梁用は床用と同じ値。
         let o = SlabUsage::Office;
         assert!((o.live_load(LoadPurpose::Floor) - 2900e-6).abs() < 1e-12);
         assert_eq!(
