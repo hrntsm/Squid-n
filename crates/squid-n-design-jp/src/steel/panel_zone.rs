@@ -200,39 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn s_panel_kappa_h_is_order_one() {
-        let bc = 300.0_f64;
-        let tf = 20.0_f64;
-        let dc = 400.0_f64;
-        let tp = 12.0_f64;
-        let kappa = 1.0 / (2.0 / 3.0 + (4.0 * bc * tf) / (dc * tp))
-            + 1.0 / (1.0 + (dc * tp) / (6.0 * bc * tf));
-        assert!(
-            (0.5..=1.5).contains(&kappa),
-            "kappa should be O(1), got {}",
-            kappa
-        );
-    }
-
-    #[test]
-    fn s_panel_kappa_box_is_order_one() {
-        let bc = 400.0_f64;
-        let dc = 400.0_f64;
-        let kappa = 1.0 / (2.0 / 3.0 + 2.0 * bc / dc) + 1.0 / (1.0 + dc / (3.0 * bc));
-        assert!(
-            (0.5..=1.5).contains(&kappa),
-            "kappa should be O(1), got {}",
-            kappa
-        );
-    }
-
-    #[test]
-    fn s_panel_kappa_pipe_is_order_one() {
-        let kappa = 4.0 / std::f64::consts::PI;
-        assert!((0.5..=1.5).contains(&kappa));
-    }
-
-    #[test]
     fn s_panel_axial_ratio_reduces_capacity() {
         let n0 = rc_or_s_pmy(&base_panel_h_input(0.0));
         let n08 = rc_or_s_pmy(&base_panel_h_input(0.8));

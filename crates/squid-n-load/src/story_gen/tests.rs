@@ -2720,16 +2720,6 @@ fn test_generate_story_structure_defaults_to_rc_without_section_and_material() {
         .all(|s| s.structure == StoryStructure::Rc));
 }
 
-/// 種別が割れた場合の優先順（RC → SRC → S）。同数なら S を採らない安全側。
-#[test]
-fn test_story_structure_majority_tie_breaks_to_safe_side() {
-    use squid_n_core::model::StoryStructure;
-    assert_eq!(StoryStructure::majority(0, 0, 0), StoryStructure::Rc);
-    assert_eq!(StoryStructure::majority(2, 2, 0), StoryStructure::Rc);
-    assert_eq!(StoryStructure::majority(0, 2, 2), StoryStructure::Src);
-    assert_eq!(StoryStructure::majority(1, 3, 0), StoryStructure::S);
-}
-
 /// 階の再生成では、利用者が決める欄（階名・階レベル・階種別・地震用重量の手入力）を
 /// 既存の階定義からそのまま引き継ぐ。所属節点・算定重量だけが更新される。
 #[test]

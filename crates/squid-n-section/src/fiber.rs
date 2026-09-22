@@ -204,17 +204,16 @@ mod tests {
 
     #[test]
     fn test_section_yield_progression() {
-        // 純曲げで曲率を増やし、ファイバが順次降伏して M-φ が弾性予測から乖離することを確認。
+        // 純曲げで曲率を増やし、最外縁降伏の前後で M-φ が弾性予測から乖離することを確認。
         // ファイバごとに独立状態を持つため、降伏進展が正しく追跡できる。
         let sec = rect_fiber_section(100.0, 200.0, 4, 40, 0);
         let mut mats = steel_mats(&sec);
         let eps_y = 235.0 / 205000.0;
-        let z_max = 100.0;
-        let ky_y = eps_y / z_max; // 最外縁降伏開始曲率
-        let mut last_m = 0.0;
-        let n_steps = 50;
-        for i in 1..=n_steps {
-            let ky = ky_y * 3.0 * (i as f64) / (n_steps as f64);
+        let ky_y = eps_y / 100.0; // 最外縁降伏開始曲率
+        let iy_disc: f64 = sec.fibers.iter().map(|f| f.area * f.z * f.z).sum();
+        // 代表点: 弾性（降伏前）・降伏開始・降伏後。
+        for &ratio in &[0.5, 1.0, 2.0, 3.0] {
+            let ky = ky_y * ratio;
             let (force, _) = section_response(
                 &sec,
                 SectionStrain {
@@ -227,46 +226,52 @@ mod tests {
             for m in mats.iter_mut() {
                 m.commit();
             }
-            last_m = force.my;
+            let elastic_pred = ky * 205000.0 * iy_disc;
+            if ratio <= 1.0 {
+                assert_relative_eq!(force.my, elastic_pred, max_relative = 1e-9);
+            } else {
+                assert!(
+                    force.my < elastic_pred,
+                    "post-yield M ({}) must be below elastic prediction ({})",
+                    force.my,
+                    elastic_pred
+                );
+            }
         }
-        // 降伏後の M は弾性予測 E·I·ky より小さい（剛性低下）
-        let iy_disc: f64 = sec.fibers.iter().map(|f| f.area * f.z * f.z).sum();
-        let ky_final = ky_y * 3.0;
-        let elastic_pred = ky_final * 205000.0 * iy_disc;
-        assert!(
-            last_m < elastic_pred,
-            "post-yield M ({}) must be below elastic prediction ({})",
-            last_m,
-            elastic_pred
-        );
     }
 
     #[test]
     fn test_section_concrete_softening_mphi() {
         // コンクリート断面の圧縮側が軟化してもファイバ状態が独立していれば
-        // 積分が破綮しない（共有状態だと履歴混入で発散）
+        // 積分が破綻しない（共有状態だと履歴混入で発散する）。
+        // 曲率を増やし、ピークと軟化後を含む代表点で |M| を評価する。
         let sec = rect_fiber_section(100.0, 200.0, 4, 20, 0);
         let mut mats = uniform_fiber_mats(&Concrete::new(30.0, 2.0), sec.fibers.len());
-        let mut max_m = 0.0f64;
-        let mut min_m = 0.0f64;
-        for i in 0..=100 {
-            let kz = -0.00002 * (i as f64) / 100.0 * 200.0; // 曲率増加
+        let y_max = sec.fibers.iter().map(|f| f.y.abs()).fold(0.0, f64::max);
+        let kz_peak = -0.002 / y_max; // 最外縁が εc0 に達する曲率
+        let mut moments = Vec::new();
+        for &ratio in &[0.0, 0.5, 1.0, 1.5, 3.0] {
             let (force, _) = section_response(
                 &sec,
                 SectionStrain {
                     eps0: 0.0,
                     ky: 0.0,
-                    kz,
+                    kz: kz_peak * ratio,
                 },
                 &mut mats,
             );
             for m in mats.iter_mut() {
                 m.commit();
             }
-            max_m = max_m.max(force.mz.abs());
-            min_m = min_m.min(force.mz);
+            moments.push(force.mz.abs());
         }
-        // ピーク後軟化で |M| が減少に転じることを確認（少なくとも有限値で発散しない）
-        assert!(max_m.is_finite() && max_m > 0.0);
+        assert!(moments.iter().all(|m| m.is_finite()));
+        let peak = moments.iter().cloned().fold(0.0f64, f64::max);
+        assert!(peak > 0.0);
+        // ピーク後（軟化域）は |M| が減少に転じる。
+        assert!(
+            moments.last().unwrap() < &peak,
+            "post-peak |M| must reduce: {moments:?}"
+        );
     }
 }

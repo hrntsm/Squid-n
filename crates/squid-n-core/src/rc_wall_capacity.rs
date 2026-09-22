@@ -171,6 +171,29 @@ mod tests {
         assert!((wall_opening_reduction_strength(None) - 1.0).abs() < 1e-12);
     }
 
+    /// 開口周比 r0 = √(h0·l0/(h·l)) と**剛性**用低減率 r1 = 1 − 1.25·r0。
+    /// 無開口・0 除算回避・負値の 0 クランプを固定する。
+    #[test]
+    fn test_opening_ratio_r0_and_stiffness_reduction() {
+        // r0 = √(200·200/(1000·1000)) = 0.2、r1 = 1 − 1.25·0.2 = 0.75
+        let r0 = wall_opening_ratio_r0(200.0, 200.0, 1000.0, 1000.0);
+        assert!((r0 - 0.2).abs() < 1e-9, "r0={r0}");
+        assert!((wall_opening_reduction_stiffness(r0) - 0.75).abs() < 1e-9);
+
+        // 無開口（h0=l0=0）は r0=0、r1=1。
+        assert_eq!(wall_opening_ratio_r0(0.0, 0.0, 3000.0, 6000.0), 0.0);
+        assert_eq!(wall_opening_reduction_stiffness(0.0), 1.0);
+
+        // 壁寸法が 0 以下の場合は 0 除算せず 0.0。
+        assert_eq!(wall_opening_ratio_r0(100.0, 100.0, 0.0, 1000.0), 0.0);
+        assert_eq!(wall_opening_ratio_r0(100.0, 100.0, 1000.0, 0.0), 0.0);
+
+        // 極端な開口は r1 が負にならず 0 にクランプされる。
+        let r0_big = wall_opening_ratio_r0(1000.0, 1000.0, 100.0, 100.0);
+        assert!(r0_big > 0.8, "r0={r0_big}");
+        assert_eq!(wall_opening_reduction_stiffness(r0_big), 0.0);
+    }
+
     /// 開口低減は Qu に線形に乗る。
     #[test]
     fn test_qu_scales_with_opening_reduction() {
@@ -228,5 +251,84 @@ mod tests {
             wall_shear_ultimate(&inp),
             expect
         );
+    }
+
+    /// 非零 Dc・非零 σ0 を含む手計算照合。
+    ///
+    /// `d_wall=4600, dc_compression=600, sigma_0=1.0, te=t=180, at=3097,`
+    /// `sigma_wh=295, pwh_ratio=0.004, M/(Q·D)=1.5, Fc=24`。
+    #[test]
+    fn test_qu_matches_handcalc_with_dc_and_axial() {
+        let inp = RcWallShearInput {
+            fc: 24.0,
+            te: 180.0,
+            t: 180.0,
+            d_wall: 4600.0,
+            dc_compression: 600.0,
+            tension_column_at: 3097.0,
+            sigma_wh: 295.0,
+            pwh_ratio: 0.004,
+            sigma_0: 1.0,
+            shear_span_ratio: 1.5,
+            high_strength_shear_rebar: false,
+            opening: None,
+        };
+        // 手計算:
+        let d = 4600.0 - 600.0 / 2.0;
+        let pte: f64 = 100.0 * 3097.0 / (180.0 * d);
+        let j = 7.0 / 8.0 * d;
+        let ssr: f64 = 1.5_f64.clamp(1.0, 3.0);
+        let pwh = (0.004_f64 * 180.0 / 180.0).min(0.012);
+        let concrete = 0.053 * pte.powf(0.23) * (24.0 + 18.0) / (ssr + 0.12);
+        let hoop = 0.85 * (pwh * 295.0_f64).sqrt();
+        let axial = 0.1 * 1.0_f64.clamp(0.0, 0.4 * 24.0);
+        let expect = (concrete + hoop + axial) * 180.0 * j;
+        assert!(
+            (wall_shear_ultimate(&inp) - expect).abs() < 1e-3,
+            "{} vs {}",
+            wall_shear_ultimate(&inp),
+            expect
+        );
+    }
+
+    /// 高強度せん断補強筋は係数 0.068・分母 √(M/(Q·D)+0.12) に切り替わり Qu が増える。
+    #[test]
+    fn test_qu_high_strength_branch_increases() {
+        let mut hi = sample();
+        hi.high_strength_shear_rebar = true;
+        let qu_hi = wall_shear_ultimate(&hi);
+        let qu_std = wall_shear_ultimate(&sample());
+        assert!(qu_hi > qu_std, "hi={qu_hi} std={qu_std}");
+
+        // 手計算（無開口・軸力なし・M/(QD)=1.0）:
+        let d: f64 = 4000.0;
+        let pte: f64 = 100.0 * 1000.0 / (200.0 * d);
+        let j = 7.0 / 8.0 * d;
+        let concrete = 0.068 * pte.powf(0.23) * (24.0 + 18.0) / (1.0_f64 + 0.12).sqrt();
+        let hoop = 0.85 * (0.0025_f64 * 295.0).sqrt();
+        let expect = (concrete + hoop) * 200.0 * j;
+        assert!((qu_hi - expect).abs() < 1e-6, "{qu_hi} vs {expect}");
+    }
+
+    /// M/(Q·D) は適用範囲 1.0〜3.0、pwh は 1.2% にクランプされる。
+    #[test]
+    fn test_qu_clamps_shear_span_ratio_and_pwh() {
+        let mut low = sample();
+        low.shear_span_ratio = 0.2;
+        let mut at_1 = sample();
+        at_1.shear_span_ratio = 1.0;
+        assert!((wall_shear_ultimate(&low) - wall_shear_ultimate(&at_1)).abs() < 1e-6);
+
+        let mut high = sample();
+        high.shear_span_ratio = 9.0;
+        let mut at_3 = sample();
+        at_3.shear_span_ratio = 3.0;
+        assert!((wall_shear_ultimate(&high) - wall_shear_ultimate(&at_3)).abs() < 1e-6);
+
+        let mut over = sample();
+        over.pwh_ratio = 0.05;
+        let mut capped = sample();
+        capped.pwh_ratio = 0.012;
+        assert!((wall_shear_ultimate(&over) - wall_shear_ultimate(&capped)).abs() < 1e-6);
     }
 }

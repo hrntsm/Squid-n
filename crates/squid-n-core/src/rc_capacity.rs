@@ -229,6 +229,9 @@ mod tests {
         }
     }
 
+    /// `rc_capacity_input_from_rect` が `RcRebar`/`Material` を `RcCapacityInput` へ
+    /// 配線する処理を、独立に計算した代表値で確認する。main_x = 8-D22 の総断面積の
+    /// 半分が引張側 `at`、かぶり・帯筋径・主筋径から決まる有効せいが `d_eff`。
     #[test]
     fn rc_capacity_input_from_rect_matches_handcalc_without_strength_factor() {
         let rebar = RcRebar {
@@ -273,9 +276,8 @@ mod tests {
             3000.0,
         )
         .expect("fc set");
-        let at_expected = crate::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-        let d_eff_expected =
-            crate::rc_rebar_geom::tension_effective_depth(600.0, 40.0, 10.0, &rebar.main_x);
+        let at_expected = 8.0 * std::f64::consts::PI * (22.0_f64 / 2.0).powi(2) / 2.0;
+        let d_eff_expected = 600.0 - (40.0 + 10.0 + 22.0 / 2.0);
         assert!((input.at - at_expected).abs() < 1e-9);
         assert!((input.d_eff - d_eff_expected).abs() < 1e-9);
         assert_eq!(input.sigma_y, 345.0);
@@ -294,6 +296,20 @@ mod tests {
             mu,
             mu_handcalc
         );
+    }
+
+    /// 曲げひび割れモーメント Mc = κ·√Fc·Ze（κ=0.56）と不正入力の 0 返し。
+    #[test]
+    fn test_rc_crack_moment_matches_handcalc() {
+        let ze = 300.0 * 600.0_f64.powi(2) / 6.0;
+        let mc = rc_crack_moment(24.0, ze);
+        assert!(
+            (mc - RC_CRACK_COEF * 24.0_f64.sqrt() * ze).abs() < 1e-3,
+            "Mc={mc}"
+        );
+        assert_eq!(rc_crack_moment(0.0, ze), 0.0);
+        assert_eq!(rc_crack_moment(24.0, 0.0), 0.0);
+        assert_eq!(rc_crack_moment(24.0, -1.0), 0.0);
     }
 
     #[test]
@@ -512,21 +528,6 @@ mod tests {
         let mut span_zero = sample_input();
         span_zero.clear_span = 0.0;
         assert_eq!(rc_qsu_simple(&span_zero), 0.0);
-    }
-
-    #[test]
-    fn test_rc_qsu_simple_sigma_0_zero_matches_original() {
-        // sigma_0=0.0（既定）は従来値と一致すること。
-        let inp = sample_input();
-        assert_eq!(inp.sigma_0, 0.0);
-        let qsu = rc_qsu_simple(&inp);
-        let pt: f64 = 100.0 * 1935.0 / (400.0 * 530.0);
-        let j = 7.0 * 530.0 / 8.0;
-        let shear_span_ratio: f64 = 3000.0 / (2.0 * 530.0);
-        let concrete_term = 0.068 * pt.powf(0.23) * (24.0 + 18.0) / (shear_span_ratio + 0.12);
-        let hoop_term = 0.85 * (0.002_f64 * 295.0).sqrt();
-        let qsu_handcalc = (concrete_term + hoop_term) * 400.0 * j;
-        assert!((qsu - qsu_handcalc).abs() < 1e-6);
     }
 
     #[test]

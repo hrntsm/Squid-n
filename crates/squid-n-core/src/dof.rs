@@ -308,11 +308,21 @@ mod tests {
         assert!(!p.is_fixed(Dof::Rx) && !p.is_fixed(Dof::Ry));
     }
 
+    /// 拘束マスクごとの独立自由度数。FREE=6/節点、FIXED=0、PINNED=並進 3 のみ。
     #[test]
-    fn test_all_free() {
-        let model = make_model_with_restraints(&[Dof6Mask::FREE; 3]);
-        let map = DofMap::build(&model);
-        assert_eq!(map.n_active(), 18);
+    fn test_active_dof_count_follows_restraints() {
+        let cases: &[(&[Dof6Mask], usize)] = &[
+            (&[Dof6Mask::FREE; 3], 18),
+            (&[Dof6Mask::FREE, Dof6Mask::FIXED, Dof6Mask::FREE], 12),
+            (&[Dof6Mask::FIXED], 0),
+            (&[Dof6Mask::PINNED], 3),
+            (&[Dof6Mask::FREE, Dof6Mask::PINNED], 6 + 3),
+        ];
+        for (restraints, expected) in cases {
+            let model = make_model_with_restraints(restraints);
+            let map = DofMap::build(&model);
+            assert_eq!(map.n_active(), *expected, "{restraints:?}");
+        }
     }
 
     /// 仕口パネルが 1 つもないモデルでは追加自由度が払い出されず、独立自由度数・
@@ -371,34 +381,6 @@ mod tests {
         assert!(!map.is_node_dof(map.global(gx)));
         assert_eq!(map.panel_dof_ref(map.global(gx)), Some((1, 0)));
         assert_eq!(map.panel_dof_ref(map.global(gy)), Some((1, 1)));
-    }
-
-    #[test]
-    fn test_one_fixed() {
-        let model = make_model_with_restraints(&[Dof6Mask::FREE, Dof6Mask::FIXED, Dof6Mask::FREE]);
-        let map = DofMap::build(&model);
-        assert_eq!(map.n_active(), 12);
-    }
-
-    #[test]
-    fn test_all_fixed() {
-        let model = make_model_with_restraints(&[Dof6Mask::FIXED]);
-        let map = DofMap::build(&model);
-        assert_eq!(map.n_active(), 0);
-    }
-
-    #[test]
-    fn test_pinned() {
-        let model = make_model_with_restraints(&[Dof6Mask::PINNED]);
-        let map = DofMap::build(&model);
-        assert_eq!(map.n_active(), 3);
-    }
-
-    #[test]
-    fn test_mixed() {
-        let model = make_model_with_restraints(&[Dof6Mask::FREE, Dof6Mask::PINNED]);
-        let map = DofMap::build(&model);
-        assert_eq!(map.n_active(), 6 + 3);
     }
 
     /// 要素が接続しない節点（二次部材の支持点など）は解析自由度から除外される。

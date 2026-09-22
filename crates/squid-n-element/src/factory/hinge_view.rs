@@ -254,6 +254,7 @@ fn to_plastic_fiber(f: &Fiber, strength: &StrengthParams) -> PlasticFiber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::ElementBehavior;
     use crate::frame::multi_spring::MultiSpringElement;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
@@ -712,10 +713,10 @@ mod tests {
         assert_eq!(plastic.len(), MS_NW * MS_ND);
 
         let element = MultiSpringElement::new(&ms, &model, basis, kind);
-        assert_eq!(
-            element.inner.gauss_points[0].section.fibers.len(),
-            MS_NW * MS_ND
-        );
+        let states = element
+            .fiber_section_states()
+            .expect("MS 要素はファイバー断面の状態を返す");
+        assert_eq!(states[0].fibers.len(), MS_NW * MS_ND);
 
         let view = build_hinge_view(&ms, &model, basis, kind, 0.0, 8, 24);
         assert_eq!(view.model, AnalysisHingeModel::MultiSpring);

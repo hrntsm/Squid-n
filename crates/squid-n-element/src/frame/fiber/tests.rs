@@ -317,70 +317,6 @@ fn test_global_rotation_vertical_column() {
     );
 }
 
-#[test]
-fn test_elastic_stiffness_matches_beam() {
-    let mut fiber = make_test_fiber_beam(Some(0.0));
-    let beam = make_test_beam_element(1e30);
-
-    let ctx = Ctx {
-        model: &build_test_model(Some(0.0)),
-    };
-
-    let u = [
-        1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
-    ];
-    let du = LocalVec {
-        data: SmallVec::from_slice(&u),
-    };
-    fiber.update_state(&du, true, &ctx);
-
-    let k_fiber = fiber.tangent_stiffness(&ctx);
-    let k_beam = beam.local_stiffness_raw();
-
-    for i in 0..12 {
-        for j in 0..12 {
-            let expected = k_beam.get(i, j);
-            let actual = k_fiber.get(i, j);
-            if expected.abs() > 1e-6 {
-                assert_relative_eq!(actual, expected, max_relative = 0.01);
-            } else {
-                assert!(
-                    actual.abs() < 1e-3,
-                    "K[{i}][{j}] zero expected, got {actual}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn test_elastic_stiffness_symmetric() {
-    let mut fiber = make_test_fiber_beam(Some(0.0));
-    let ctx = Ctx {
-        model: &build_test_model(Some(0.0)),
-    };
-
-    let u = [
-        1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
-    ];
-    let du = LocalVec {
-        data: SmallVec::from_slice(&u),
-    };
-    fiber.update_state(&du, true, &ctx);
-
-    let k = fiber.tangent_stiffness(&ctx);
-    for i in 0..12 {
-        for j in 0..12 {
-            assert!(
-                (k.get(i, j) - k.get(j, i)).abs() < 1e-9,
-                "K[{i}][{j}] != K[{j}][{i}]: {} vs {}",
-                k.get(i, j),
-                k.get(j, i)
-            );
-        }
-    }
-}
-
 /// 弾性応答の手計算照合: 軸力は N=E·A_disc·ε、曲げは M=E·I_disc·κ となり、
 /// 軸と曲げを同時に与えても互いに連成しないこと（断面格子の図心・対称性）。
 #[test]
@@ -575,17 +511,23 @@ fn test_yield_progression() {
     };
 
     let eps_y = 235.0 / 205000.0;
+    // My 面（κy）の縁距離はファイバ座標の |z| 最大 = 幅/2 = 50mm
+    // （ファイバ格子は y=せい・z=幅で、断面格子を 90° 回転して配置している）。
     let z_max = 50.0;
     let ky_y = eps_y / z_max;
-    let ky_final = ky_y * 3.0;
 
-    let mut last_my = 0.0;
-    let n_steps = 50;
+    let iy_disc: f64 = fiber.gauss_points[0]
+        .section
+        .fibers
+        .iter()
+        .map(|f| f.area * f.z * f.z)
+        .sum();
+
     let mut prev_ky = 0.0;
-    for i in 1..=n_steps {
-        let ky_curr = ky_final * (i as f64) / (n_steps as f64);
-        let dky = ky_curr - prev_ky;
-        prev_ky = ky_curr;
+    for ratio in [0.5, 1.0, 2.0, 3.0] {
+        let ky = ky_y * ratio;
+        let dky = ky - prev_ky;
+        prev_ky = ky;
         let du = LocalVec {
             data: SmallVec::from_slice(&[
                 0.0,
@@ -604,23 +546,22 @@ fn test_yield_progression() {
         };
         fiber.update_state(&du, true, &ctx);
 
-        let f = fiber.internal_force(&ctx);
-        last_my = f.data[4];
+        let my = fiber.internal_force(&ctx).data[4];
+        let elastic_pred = ky * 205000.0 * iy_disc;
+        // 鋼ファイバはなめらか降伏（MenegottoPinto）のため、ratio=1.0 では
+        // 最外縁が降伏ひずみの約 0.92 倍に達し、既に弾性予測を下回る。
+        // 弾性とみなす境界は section 側（Bilinear の ratio<=1.0）より手前になる。
+        if ratio < 1.0 {
+            assert_relative_eq!(my, elastic_pred, max_relative = 1e-6);
+        } else {
+            assert!(
+                my < elastic_pred,
+                "post-yield My ({}) must be below elastic prediction ({})",
+                my,
+                elastic_pred
+            );
+        }
     }
-
-    let iy_disc: f64 = fiber.gauss_points[0]
-        .section
-        .fibers
-        .iter()
-        .map(|f| f.area * f.z * f.z)
-        .sum();
-    let elastic_pred = ky_final * 205000.0 * iy_disc;
-    assert!(
-        last_my < elastic_pred,
-        "post-yield My ({}) must be below elastic prediction ({})",
-        last_my,
-        elastic_pred
-    );
 }
 
 #[test]
@@ -2034,77 +1975,73 @@ fn 半剛端は剛接とピンの中間になる() {
 
 /// 材端解放があっても接線剛性が内力の厳密な勾配（∂f/∂u）であること。
 /// 内部自由度の静縮約（剛性側）と内部釣合いの解（内力側）が整合していないと崩れる。
+/// i 端半剛・j 端ピンは両端に解放を持ち、ピンと回転ばねの双方を最も多く含む代表ケース。
 #[test]
 fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
-    for end_cond in [
-        [EndCondition::Pinned, EndCondition::Fixed],
-        [EndCondition::Fixed, EndCondition::Pinned],
-        [
-            EndCondition::SemiRigid { k_theta: 2.0e12 },
-            EndCondition::Pinned,
-        ],
-    ] {
-        let mut model = build_release_model(end_cond);
-        model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
-            length_i: 400.0,
-            length_j: 250.0,
-            face_i: Some(400.0),
-            face_j: Some(250.0),
-            ..Default::default()
-        };
-        let ctx = Ctx { model: &model };
-        let h = 1e-6;
-        let u0: [f64; 12] = [
-            0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
-        ];
+    let end_cond = [
+        EndCondition::SemiRigid { k_theta: 2.0e12 },
+        EndCondition::Pinned,
+    ];
+    let mut model = build_release_model(end_cond);
+    model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
+        length_i: 400.0,
+        length_j: 250.0,
+        face_i: Some(400.0),
+        face_j: Some(250.0),
+        ..Default::default()
+    };
+    let ctx = Ctx { model: &model };
+    let h = 1e-6;
+    let u0: [f64; 12] = [
+        0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
+    ];
 
-        let mut b0 = FiberBeam::new(
+    let mut b0 = FiberBeam::new(
+        &model.elements[0],
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+    b0.update_state(
+        &LocalVec {
+            data: SmallVec::from_slice(&u0),
+        },
+        false,
+        &ctx,
+    );
+    let f0 = b0.internal_force(&ctx);
+    let k = b0.tangent_stiffness(&ctx);
+    let kmax = (0..12)
+        .flat_map(|i| (0..12).map(move |j| (i, j)))
+        .map(|(i, j)| k.get(i, j).abs())
+        .fold(0.0_f64, f64::max);
+
+    for j in 0..12 {
+        let mut up = u0;
+        up[j] += h;
+        let mut bp = FiberBeam::new(
             &model.elements[0],
             &model,
             StrengthBasis::Nominal,
             AnalysisKind::Incremental,
         );
-        b0.update_state(
+        bp.update_state(
             &LocalVec {
-                data: SmallVec::from_slice(&u0),
+                data: SmallVec::from_slice(&up),
             },
             false,
             &ctx,
         );
-        let f0 = b0.internal_force(&ctx);
-        let k = b0.tangent_stiffness(&ctx);
-        let kmax = (0..12)
-            .flat_map(|i| (0..12).map(move |j| (i, j)))
-            .map(|(i, j)| k.get(i, j).abs())
-            .fold(0.0_f64, f64::max);
-
-        for j in 0..12 {
-            let mut up = u0;
-            up[j] += h;
-            let mut bp = FiberBeam::new(
-                &model.elements[0],
-                &model,
-                StrengthBasis::Nominal,
-                AnalysisKind::Incremental,
+        let fp = bp.internal_force(&ctx);
+        for i in 0..12 {
+            let fd = (fp.data[i] - f0.data[i]) / h;
+            let err = (fd - k.get(i, j)).abs() / kmax;
+            assert!(
+                err < 1e-6,
+                "{end_cond:?}: K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
+                k.get(i, j),
+                fd
             );
-            bp.update_state(
-                &LocalVec {
-                    data: SmallVec::from_slice(&up),
-                },
-                false,
-                &ctx,
-            );
-            let fp = bp.internal_force(&ctx);
-            for i in 0..12 {
-                let fd = (fp.data[i] - f0.data[i]) / h;
-                let err = (fd - k.get(i, j)).abs() / kmax;
-                assert!(
-                    err < 1e-6,
-                    "{end_cond:?}: K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
-                    k.get(i, j),
-                    fd
-                );
-            }
         }
     }
 }

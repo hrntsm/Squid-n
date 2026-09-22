@@ -257,12 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn test_entries_in_h_const_contains_known_section() {
-        let list = entries_in(CatalogShape::H, "H(const)");
-        assert!(list.iter().any(|e| e.name == "H-400x200x9x12x13"));
-    }
-
-    #[test]
     fn test_h_400x200x9x12x13_matches_known_properties() {
         let list = entries_in(CatalogShape::H, "H(const)");
         let e = list
@@ -316,65 +310,51 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_shape_h_ignores_fillet_radius() {
-        // "H-400x200x9x12x13" の末尾 13 はフィレット半径 r であり SteelH には含めない。
-        let shape = parse_shape_from_name(CatalogShape::H, "H-400x200x9x12x13").unwrap();
-        assert_eq!(
-            shape,
-            SectionShape::SteelH {
-                height: 400.0,
-                width: 200.0,
-                web_thick: 9.0,
-                flange_thick: 12.0,
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_shape_box_without_corner_radius() {
-        // SHS/RHS 系は "Box-{h}x{w}x{t}" の3値のみ。
-        let shape = parse_shape_from_name(CatalogShape::Box, "Box-100x100x12").unwrap();
-        assert_eq!(
-            shape,
-            SectionShape::SteelBox {
-                height: 100.0,
-                width: 100.0,
-                thick: 12.0,
-                corner_r: 0.0,
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_shape_box_ignores_corner_radius() {
-        // BCP/BCR/STKR/JIS_* 系は末尾に角R "Box-{h}x{w}x{t}x{r}" が付く。
-        let shape = parse_shape_from_name(CatalogShape::Box, "Box-1000x1000x22x77").unwrap();
-        assert_eq!(
-            shape,
-            SectionShape::SteelBox {
-                height: 1000.0,
-                width: 1000.0,
-                thick: 22.0,
-                corner_r: 0.0,
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_shape_pipe() {
-        let shape = parse_shape_from_name(CatalogShape::Pipe, "O-400x19").unwrap();
-        assert_eq!(
-            shape,
-            SectionShape::SteelPipe {
-                outer_dia: 400.0,
-                thick: 19.0,
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_shape_flat_is_none() {
-        // フラットバーに対応する SectionShape 派生はないため常に None。
-        assert_eq!(parse_shape_from_name(CatalogShape::Flat, "FL 12x100"), None);
+    fn test_parse_shape_from_name_cases() {
+        // 末尾の角R・フィレット半径は無視し、フラットバーは形状復元しない。
+        let cases: [(CatalogShape, &str, Option<SectionShape>); 5] = [
+            (
+                CatalogShape::H,
+                "H-400x200x9x12x13",
+                Some(SectionShape::SteelH {
+                    height: 400.0,
+                    width: 200.0,
+                    web_thick: 9.0,
+                    flange_thick: 12.0,
+                }),
+            ),
+            (
+                CatalogShape::Box,
+                "Box-100x100x12",
+                Some(SectionShape::SteelBox {
+                    height: 100.0,
+                    width: 100.0,
+                    thick: 12.0,
+                    corner_r: 0.0,
+                }),
+            ),
+            (
+                CatalogShape::Box,
+                "Box-1000x1000x22x77",
+                Some(SectionShape::SteelBox {
+                    height: 1000.0,
+                    width: 1000.0,
+                    thick: 22.0,
+                    corner_r: 0.0,
+                }),
+            ),
+            (
+                CatalogShape::Pipe,
+                "O-400x19",
+                Some(SectionShape::SteelPipe {
+                    outer_dia: 400.0,
+                    thick: 19.0,
+                }),
+            ),
+            (CatalogShape::Flat, "FL 12x100", None),
+        ];
+        for (shape, name, expected) in cases {
+            assert_eq!(parse_shape_from_name(shape, name), expected, "{name}");
+        }
     }
 }

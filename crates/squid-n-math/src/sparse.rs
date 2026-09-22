@@ -333,7 +333,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_assemble_csc_deterministic() {
+    fn test_assemble_csc_order_independent_and_merges_duplicates() {
         let n = 2;
         let triplets_a = vec![
             Triplet {
@@ -356,29 +356,13 @@ mod tests {
                 col: 1,
                 val: 200.0,
             },
-        ];
-        let triplets_b = vec![
-            Triplet {
-                row: 1,
-                col: 1,
-                val: 200.0,
-            },
-            Triplet {
-                row: 0,
-                col: 1,
-                val: -200.0,
-            },
-            Triplet {
-                row: 1,
-                col: 0,
-                val: -200.0,
-            },
             Triplet {
                 row: 0,
                 col: 0,
-                val: 100.0,
+                val: 30.0,
             },
         ];
+        let triplets_b: Vec<Triplet> = triplets_a.iter().rev().copied().collect();
         let mat_a = assemble_csc(n, triplets_a);
         let mat_b = assemble_csc(n, triplets_b);
         for i in 0..n {
@@ -389,25 +373,7 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_assemble_csc_merge() {
-        let n = 1;
-        let triplets = vec![
-            Triplet {
-                row: 0,
-                col: 0,
-                val: 10.0,
-            },
-            Triplet {
-                row: 0,
-                col: 0,
-                val: 20.0,
-            },
-        ];
-        let mat = assemble_csc(n, triplets);
-        assert_eq!(*mat.get(0, 0).unwrap_or(&0.0), 30.0);
+        assert_eq!(*mat_a.get(0, 0).unwrap_or(&0.0), 130.0);
     }
 
     #[test]
@@ -778,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sparse_matvec_into_matches_sparse_matvec() {
+    fn test_sparse_matvec_matches_explicit_product() {
         let n = 2;
         let k = assemble_csc(
             n,
@@ -806,9 +772,11 @@ mod tests {
             ],
         );
         let x = [1.5, -2.25];
-        let expected = sparse_matvec(&k, &x);
+        // [[300,-200],[-200,200]]·[1.5,-2.25] = [900,-750]
+        assert_eq!(sparse_matvec(&k, &x), vec![900.0, -750.0]);
+
         let mut out = vec![f64::NAN; n];
         sparse_matvec_into(&k, &x, &mut out);
-        assert_eq!(expected, out);
+        assert_eq!(out, vec![900.0, -750.0]);
     }
 }
