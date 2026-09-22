@@ -11,6 +11,10 @@ use super::section_props::*;
 use crate::material_strength::high_strength_pw_cap;
 pub(crate) use crate::LoadTerm;
 
+/// 損傷制御の短期せん断検定におけるせん断補強筋の許容引張応力度 w_ft の
+/// 上限 [N/mm²]。RC 梁・柱の短期許容せん断力の定義（RC規準）による。
+const DAMAGE_CONTROL_W_FT_CAP_N_MM2: f64 = 390.0;
+
 /// せん断スパン比による割増係数 α = 4/(M/(Q・d)+1)。`max_alpha` でクランプ
 /// （梁 2.0、柱 1.5）。下限は共通で 1.0。
 ///
@@ -26,6 +30,9 @@ pub(crate) fn shear_alpha(m: f64, q: f64, d: f64, max_alpha: f64) -> f64 {
 }
 
 /// 許容せん断力 QA [N]。
+///
+/// 短期・損傷制御では w_ft を 390 N/mm² 以下に制限する（RC 梁・柱の短期許容
+/// せん断力の定義による。長期・安全確保は制限しない）。
 ///
 /// 梁（`is_column=false`）:
 /// - 長期  `QAL = b・j・(α・fs + 0.5・w_ft・(pw-0.002))`（pw は 0.6% 上限）
@@ -47,9 +54,15 @@ pub(crate) fn shear_capacity(
     is_column: bool,
 ) -> f64 {
     let pw_cap = if term == LoadTerm::Long { 0.006 } else { 0.012 };
+    let w_ft = if term == LoadTerm::Short && damage_control {
+        allow.w_ft.min(DAMAGE_CONTROL_W_FT_CAP_N_MM2)
+    } else {
+        allow.w_ft
+    };
     shear_capacity_generic(
         props,
         allow,
+        w_ft,
         alpha,
         term,
         damage_control,
@@ -61,6 +74,7 @@ pub(crate) fn shear_capacity(
 
 /// 許容せん断力 QA の汎用式。`pw_cap`（pw の上限値）・`pw_offset`
 /// （せん断補強筋項のオフセット、通常は 0.002）を外部から指定できる。
+/// `w_ft`（せん断補強筋の許容引張応力度）は呼び出し側が与える。
 /// `shear_capacity`（普通強度）はこの関数をオフセット 0.002 固定で呼び出す
 /// ラッパーであり、高強度せん断補強筋用の
 /// `shear_capacity_high_strength` はオフセット・pw 上限を製品ごとに変えて
@@ -69,6 +83,7 @@ pub(crate) fn shear_capacity(
 pub(crate) fn shear_capacity_generic(
     props: &AxisProps,
     allow: &RcAllow,
+    w_ft: f64,
     alpha: f64,
     term: LoadTerm,
     damage_control: bool,
@@ -80,7 +95,7 @@ pub(crate) fn shear_capacity_generic(
     let pw_term = if props.pw < pw_offset {
         0.0
     } else {
-        0.5 * allow.w_ft * (pw - pw_offset)
+        0.5 * w_ft * (pw - pw_offset)
     };
 
     match term {
@@ -129,6 +144,7 @@ pub(crate) fn shear_capacity_high_strength(
     shear_capacity_generic(
         props,
         allow,
+        allow.w_ft,
         alpha,
         term,
         damage_control,

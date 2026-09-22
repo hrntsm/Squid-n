@@ -473,7 +473,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         {
             use squid_n_core::model::LoadPurpose;
             let w_of =
-                |sl: &squid_n_core::model::Slab| model.slab_intensity(sl, LoadPurpose::Floor);
+                |sl: &squid_n_core::model::Slab| model.slab_intensity(sl, LoadPurpose::Joist);
             let transfer = squid_n_load::cascade::solve(model, w_of, true);
             if !transfer.invalid_end_shares.is_empty() {
                 issues.push(ModelIssue::model(format!(
