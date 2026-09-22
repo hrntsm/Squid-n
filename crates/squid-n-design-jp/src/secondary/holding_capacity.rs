@@ -274,38 +274,32 @@ mod tests {
         assert!((fes(0.3, 0.30) - 2.25).abs() < 1e-9);
     }
 
-    #[test]
-    fn test_ds_value_rc_frame() {
-        assert!((ds_value(FrameType::RcFrame, MemberRank::FA) - 0.30).abs() < 1e-9);
-        assert!((ds_value(FrameType::RcFrame, MemberRank::FD) - 0.45).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_ds_value_steel_frame() {
-        assert!((ds_value(FrameType::SteelFrame, MemberRank::FA) - 0.25).abs() < 1e-9);
-        assert!((ds_value(FrameType::SteelFrame, MemberRank::FD) - 0.40).abs() < 1e-9);
-    }
-
+    /// 告示1792 の Ds 値: 架構種別 × 部材ランクの全組合せ。
     #[test]
     fn test_ds_value_all_combinations() {
+        use FrameType::*;
+        use MemberRank::*;
         for (f, r, expected) in [
-            (FrameType::RcFrame, MemberRank::FA, 0.30),
-            (FrameType::RcFrame, MemberRank::FB, 0.35),
-            (FrameType::RcFrame, MemberRank::FC, 0.40),
-            (FrameType::RcFrame, MemberRank::FD, 0.45),
-            (FrameType::RcWall, MemberRank::FA, 0.35),
-            (FrameType::RcWall, MemberRank::FD, 0.55),
-            (FrameType::SteelFrame, MemberRank::FA, 0.25),
-            (FrameType::SteelFrame, MemberRank::FD, 0.40),
-            (FrameType::SteelBrace, MemberRank::FA, 0.30),
-            (FrameType::SteelBrace, MemberRank::FD, 0.50),
+            (RcFrame, FA, 0.30),
+            (RcFrame, FB, 0.35),
+            (RcFrame, FC, 0.40),
+            (RcFrame, FD, 0.45),
+            (RcWall, FA, 0.35),
+            (RcWall, FB, 0.40),
+            (RcWall, FC, 0.45),
+            (RcWall, FD, 0.55),
+            (SteelFrame, FA, 0.25),
+            (SteelFrame, FB, 0.30),
+            (SteelFrame, FC, 0.35),
+            (SteelFrame, FD, 0.40),
+            (SteelBrace, FA, 0.30),
+            (SteelBrace, FB, 0.35),
+            (SteelBrace, FC, 0.40),
+            (SteelBrace, FD, 0.50),
         ] {
             assert!(
                 (ds_value(f, r) - expected).abs() < 1e-9,
-                "ds_value({:?}, {:?}) should be {}, got {}",
-                f,
-                r,
-                expected,
+                "ds_value({f:?}, {r:?}) should be {expected}, got {}",
                 ds_value(f, r)
             );
         }

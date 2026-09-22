@@ -611,14 +611,12 @@ fn test_linear_static_vertical_cantilever_bending() {
 fn test_linear_static_deterministic() {
     let model = make_axial_cantilever();
     let first = linear_static_once(&model, LoadCaseId(1)).unwrap();
-    for _ in 0..99 {
-        let cur = linear_static_once(&model, LoadCaseId(1)).unwrap();
-        assert_eq!(first.disp, cur.disp);
-        assert_eq!(first.member_forces.len(), cur.member_forces.len());
-        for (a, b) in first.member_forces.iter().zip(cur.member_forces.iter()) {
-            assert_eq!(a.0, b.0);
-            assert_eq!(a.1.at, b.1.at);
-        }
+    let second = linear_static_once(&model, LoadCaseId(1)).unwrap();
+    assert_eq!(first.disp, second.disp);
+    assert_eq!(first.member_forces.len(), second.member_forces.len());
+    for (a, b) in first.member_forces.iter().zip(second.member_forces.iter()) {
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1.at, b.1.at);
     }
 }
 

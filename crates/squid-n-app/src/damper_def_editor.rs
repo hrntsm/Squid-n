@@ -380,41 +380,42 @@ fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
 mod tests {
     use super::*;
 
+    /// 削除に伴う編集中インデックスの補正: 削除位置そのものは None（新規扱い）、
+    /// 削除位置より後ろは 1 減算、前方はそのまま、未編集は None のまま。
+    /// ケースは (編集中インデックス, 削除位置, 期待値)。
     #[test]
-    fn test_remap_edit_index_after_delete_clears_when_target_deleted() {
-        assert_eq!(remap_edit_index_after_delete(Some(2), 2), None);
+    fn test_remap_edit_index_after_delete() {
+        let cases = [
+            (Some(2), 2, None),
+            (Some(3), 1, Some(2)),
+            (Some(0), 1, Some(0)),
+            (None, 0, None),
+        ];
+        for (edit_index, deleted, expected) in cases {
+            assert_eq!(
+                remap_edit_index_after_delete(edit_index, deleted),
+                expected,
+                "edit_index={edit_index:?} deleted={deleted}"
+            );
+        }
     }
 
+    /// 編集元の定義の同一性確認: 名前が一致すれば true、undo/redo 等で別の定義を
+    /// 指している・現在の定義がない場合は false。ケースは (現在の名前, 記録した名前, 期待値)。
     #[test]
-    fn test_remap_edit_index_after_delete_shifts_when_after_deleted() {
-        assert_eq!(remap_edit_index_after_delete(Some(3), 1), Some(2));
-    }
-
-    #[test]
-    fn test_remap_edit_index_after_delete_unaffected_when_before_deleted() {
-        assert_eq!(remap_edit_index_after_delete(Some(0), 1), Some(0));
-    }
-
-    #[test]
-    fn test_remap_edit_index_after_delete_none_stays_none() {
-        assert_eq!(remap_edit_index_after_delete(None, 0), None);
-    }
-
-    #[test]
-    fn test_edit_target_still_matches_true_when_names_equal() {
-        assert!(edit_target_still_matches(Some("A"), Some("A")));
-    }
-
-    #[test]
-    fn test_edit_target_still_matches_false_when_names_differ() {
-        // undo/redo 等で並びが変わり、index は有効範囲内でも別の定義を
-        // 指してしまっているケース。
-        assert!(!edit_target_still_matches(Some("B"), Some("A")));
-    }
-
-    #[test]
-    fn test_edit_target_still_matches_false_when_current_missing() {
-        assert!(!edit_target_still_matches(None, Some("A")));
+    fn test_edit_target_still_matches() {
+        let cases = [
+            (Some("A"), Some("A"), true),
+            (Some("B"), Some("A"), false),
+            (None, Some("A"), false),
+        ];
+        for (current, target, expected) in cases {
+            assert_eq!(
+                edit_target_still_matches(current, target),
+                expected,
+                "current={current:?} target={target:?}"
+            );
+        }
     }
 
     #[test]

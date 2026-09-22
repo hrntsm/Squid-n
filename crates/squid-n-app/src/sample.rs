@@ -131,17 +131,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_portal_frame_is_valid() {
-        let model = portal_frame();
-        assert!(model.validate().is_ok());
-        assert_eq!(model.nodes.len(), 4);
-        assert_eq!(model.elements.len(), 3);
-        assert_eq!(model.load_cases.len(), 2);
-    }
-
-    #[test]
     fn test_portal_frame_solves() {
         let model = portal_frame();
+        assert!(model.validate().is_ok());
         let analysis = squid_n_solver::statics::analysis::Analysis::prepare(&model).unwrap();
         // 長期（等分布）: 梁中央がたわむ → 柱頭に鉛直変位が生じる
         let r0 = analysis

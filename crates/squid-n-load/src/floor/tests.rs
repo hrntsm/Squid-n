@@ -50,7 +50,9 @@ fn test_fem_trapezoid_numeric() {
     let l = 5000.0_f64;
     let a = 1500.0_f64;
     let cmq = fem_trapezoid(w0, a, l - 2.0 * a, l);
-    let n = 2_000_000;
+    // 被積分関数は a・l−a を折点とする区分四次式。分割幅を折点に合わせた
+    // 中点則は区分ごとに O(h²) で収束し、相対 1e-4 を十分に満たす。
+    let n = 1_000;
     let dx = l / n as f64;
     let mut integral = 0.0;
     let mut total = 0.0;

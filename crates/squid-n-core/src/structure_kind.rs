@@ -368,9 +368,14 @@ mod tests {
     /// 剛域式・仕口パネルの判定に使う畳み込みは S と CFT を同じ側へ置く。
     #[test]
     fn test_steel_like_folds_s_and_cft() {
-        assert!(StructureKind::S.is_steel_like());
-        assert!(StructureKind::Cft.is_steel_like());
-        assert!(!StructureKind::Rc.is_steel_like());
-        assert!(!StructureKind::Src.is_steel_like());
+        let cases = [
+            (StructureKind::Rc, false),
+            (StructureKind::S, true),
+            (StructureKind::Src, false),
+            (StructureKind::Cft, true),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(kind.is_steel_like(), expected, "{kind:?}");
+        }
     }
 }

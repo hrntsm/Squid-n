@@ -174,6 +174,22 @@ mod tests {
         let x = solver.solve(&[0.0, 1000.0]).unwrap();
         approx::assert_relative_eq!(x[0], 10.0, max_relative = 1e-9);
         approx::assert_relative_eq!(x[1], 15.0, max_relative = 1e-9);
+
+        // 直接法分岐の solve_into が Cholesky の solve_into に委譲し、solve と一致すること。
+        let mut out = Vec::new();
+        solver.solve_into(&[0.0, 1000.0], &mut out).unwrap();
+        assert_eq!(x, out);
+    }
+
+    /// `make_solver(SolverBackend::Auto)` が AutoSolver を返し、小規模系を解けること。
+    #[test]
+    fn test_make_solver_auto() {
+        faer::set_global_parallelism(faer::Par::Seq);
+        let mut solver = make_solver(SolverBackend::Auto);
+        solver.factorize(&k_2dof()).unwrap();
+        let x = solver.solve(&[0.0, 1000.0]).unwrap();
+        approx::assert_relative_eq!(x[0], 10.0, max_relative = 1e-9);
+        approx::assert_relative_eq!(x[1], 15.0, max_relative = 1e-9);
     }
 
     /// しきい値を 0 にして PCG 経路を強制し、収束解が得られる。
@@ -291,28 +307,5 @@ mod tests {
         let x_fresh = fresh.solve(&rhs).unwrap();
 
         assert_eq!(x_reused, x_fresh, "インスタンス再利用でビット不一致");
-    }
-
-    /// `solve_into` が `solve` とビット一致すること（直接法分岐）。
-    #[test]
-    fn test_auto_solve_into_matches_solve() {
-        faer::set_global_parallelism(faer::Par::Seq);
-        let mut solver = AutoSolver::default();
-        solver.factorize(&k_2dof()).unwrap();
-        let rhs = [0.0, 1000.0];
-        let expected = solver.solve(&rhs).unwrap();
-        let mut out = Vec::new();
-        solver.solve_into(&rhs, &mut out).unwrap();
-        assert_eq!(expected, out);
-    }
-
-    #[test]
-    fn test_make_solver_auto() {
-        faer::set_global_parallelism(faer::Par::Seq);
-        let mut solver = make_solver(SolverBackend::Auto);
-        solver.factorize(&k_2dof()).unwrap();
-        let x = solver.solve(&[0.0, 1000.0]).unwrap();
-        approx::assert_relative_eq!(x[0], 10.0, max_relative = 1e-9);
-        approx::assert_relative_eq!(x[1], 15.0, max_relative = 1e-9);
     }
 }

@@ -254,31 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_combos_no_snow_matches_legacy_shape() {
-        // 多雪区域=false・風=None の従来相当構成では、長期1 + 短期積雪0
-        // + 地震(±EX,±EY)=4 の計 5 ケース。
-        let combos = auto_combinations(
-            LoadCaseId(1),
-            LoadCaseId(2),
-            Some(LoadCaseId(3)),
-            Some(LoadCaseId(4)),
-            None,
-        );
-        assert_eq!(combos.len(), 5);
-        let names: Vec<&str> = combos.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "DL + LL",
-                "DL + LL + EX",
-                "DL + LL - EX",
-                "DL + LL + EY",
-                "DL + LL - EY"
-            ]
-        );
-    }
-
-    #[test]
     fn test_standard_combinations_all_cases_heavy_snow() {
         let input = ComboInput {
             dl: LoadCaseId(1),

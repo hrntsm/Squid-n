@@ -79,39 +79,11 @@ mod tests {
         assert_eq!(m.fy, Some(325.0));
     }
 
-    /// 旧実装で解決できていた代表的なグレード名が、core 委譲後も解決できることを確認する。
+    /// グレード名→強度の網羅表は `squid_n_core::material_grade` を正とする。
+    /// 本クレートは core の解決表へ委譲している配線を代表ケースで確認する。
     #[test]
-    fn test_resolve_grade_known_names() {
-        for (name, fy) in [
-            ("SS400", 235.0),
-            ("SN400A", 235.0),
-            ("SN400B", 235.0),
-            ("SN400C", 235.0),
-            ("SM400A", 235.0),
-            ("SM400", 235.0),
-            ("STK400", 235.0),
-            ("STKR400", 235.0),
-            ("STKN400W", 235.0),
-            ("STKN400B", 235.0),
-            ("SSC400", 235.0),
-            ("SWH400", 235.0),
-            ("BCP235", 235.0),
-            ("BCR235", 235.0),
-            ("SS490", 275.0),
-            ("BCR295", 295.0),
-            ("SM490A", 325.0),
-            ("SM490", 325.0),
-            ("SM490YA", 325.0),
-            ("SM490YB", 325.0),
-            ("SN490B", 325.0),
-            ("SN490C", 325.0),
-            ("STK490", 325.0),
-            ("STKR490", 325.0),
-            ("STKN490B", 325.0),
-            ("BCP325", 325.0),
-            ("SM520B", 355.0),
-            ("SM520", 355.0),
-        ] {
+    fn test_resolve_grade_wires_to_core() {
+        for (name, fy) in [("SS400", 235.0), ("SN490B", 325.0), ("SM520", 355.0)] {
             let m = resolve_grade(name).unwrap_or_else(|| panic!("{name} が解決できませんでした"));
             assert_eq!(m.fy, Some(fy), "{name}");
         }

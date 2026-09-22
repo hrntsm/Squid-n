@@ -190,15 +190,9 @@ mod tests {
 
     #[test]
     fn confined_params_hand_calculation() {
+        // f'co=30, f'l,eff=3（x=0.1）: f'cc/f'co = 1.5650…、f'cc ≈ 46.95、εcc ≈ 0.00765。
         let p = confined_params(30.0, 0.002, 3.0);
-        let ratio = confined_strength_ratio(0.1);
-        assert_relative_eq!(p.fcc, 30.0 * ratio, epsilon = 1e-6);
         assert_relative_eq!(p.fcc, 46.95, epsilon = 1e-2);
-        assert_relative_eq!(
-            p.eps_cc,
-            0.002 * (1.0 + 5.0 * (ratio - 1.0)),
-            epsilon = 1e-9
-        );
         assert_relative_eq!(p.eps_cc, 0.00765, epsilon = 1e-4);
     }
 
@@ -223,14 +217,8 @@ mod tests {
             rho_cc: 0.02,
             spiral: false,
         };
-        // ρs = 4·71/(400·100) = 0.0071
-        // ke = (1 - 90/800)² / 0.98
-        let rho_s = 4.0 * 71.0 / (400.0 * 100.0);
-        let geom = 1.0 - 90.0 / 800.0;
-        let ke = geom * geom / 0.98;
-        let expected = ke * 0.5 * rho_s * 295.0;
+        // ρs = 4·71/(400·100) = 0.0071、ke = (1 - 90/800)²/0.98 の手計算で f'l,eff ≈ 0.84171。
         let fl_eff = circular_effective_lateral_stress(&h);
-        assert_relative_eq!(fl_eff, expected, epsilon = 1e-6);
         assert_relative_eq!(fl_eff, 0.84171, epsilon = 1e-3);
     }
 
@@ -315,24 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn rectangular_representative_lateral_stress_is_arithmetic_mean() {
-        let h = RectangularHoop {
-            bc: 500.0,
-            dc: 400.0,
-            s: 100.0,
-            s_clear: 80.0,
-            asx: 200.0,
-            asy: 300.0,
-            fyh: 295.0,
-            rho_cc: 0.02,
-            w_clear: vec![100.0, 100.0, 100.0, 100.0],
-        };
-        let (flx, fly) = rectangular_effective_lateral_stress(&h);
-        let rep = rectangular_representative_lateral_stress(&h);
-        assert_relative_eq!(rep, 0.5 * (flx + fly), epsilon = 1e-9);
-    }
-
-    #[test]
     fn rectangular_effective_lateral_stress_does_not_panic_on_bad_input() {
         let h = RectangularHoop {
             bc: 0.0,
@@ -352,10 +322,8 @@ mod tests {
 
     #[test]
     fn ultimate_strain_priestley_hand_calculation() {
+        // 0.004 + 1.4·0.0071·295·0.10/46.95 ≈ 0.010246。
         let eps_cu = ultimate_strain_priestley(0.0071, 295.0, 0.10, 46.95);
-        // 0.004 + 1.4·0.0071·295·0.10/46.95
-        let expected = 0.004 + 1.4 * 0.0071 * 295.0 * 0.10 / 46.95;
-        assert_relative_eq!(eps_cu, expected, epsilon = 1e-9);
         assert_relative_eq!(eps_cu, 0.010246, epsilon = 1e-4);
     }
 

@@ -388,34 +388,42 @@ mod tests {
         assert_eq!(groups[0].1, vec![SectionId(0)]);
     }
 
+    /// 二次部材（Joist/Post）・床板が参照する階なし断面は、参照元の種別によらず
+    /// 同一の「Secondary」グループへまとまる。
     #[test]
-    fn secondary_member_sections_go_to_secondary_group() {
+    fn secondary_referenced_sections_go_to_secondary_group() {
         let stories = vec![];
-        let sections = vec![section(0, "A", None), section(1, "B", None)];
-        let secondary_members = vec![secondary_member(0, Some(SectionId(0)))];
+        let sections = vec![
+            section(0, "A", None),
+            section(1, "B", None),
+            section(2, "C", None),
+            section(3, "D", None),
+        ];
+        let secondary_members = vec![
+            secondary_member(0, Some(SectionId(0))),
+            SecondaryMember {
+                id: squid_n_core::ids::SecondaryMemberId(1),
+                gravity_end_shares: None,
+                kind: SecondaryMemberKind::Post,
+                ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 3000.0],
+                ]),
+                section: Some(SectionId(1)),
+                name: "post-1".to_string(),
+            },
+        ];
+        let slabs = vec![slab(0, Some(SectionId(2)))];
 
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
+        let groups = section_floor_groups(&stories, &sections, &secondary_members, &slabs);
         assert_eq!(
             groups,
             vec![
-                (SectionGroupKey::Secondary, vec![SectionId(0)]),
-                (SectionGroupKey::NoFloor, vec![SectionId(1)]),
-            ]
-        );
-    }
-
-    #[test]
-    fn slab_sections_go_to_secondary_group() {
-        let stories = vec![];
-        let sections = vec![section(0, "A", None), section(1, "B", None)];
-        let slabs = vec![slab(0, Some(SectionId(0)))];
-
-        let groups = section_floor_groups(&stories, &sections, &[], &slabs);
-        assert_eq!(
-            groups,
-            vec![
-                (SectionGroupKey::Secondary, vec![SectionId(0)]),
-                (SectionGroupKey::NoFloor, vec![SectionId(1)]),
+                (
+                    SectionGroupKey::Secondary,
+                    vec![SectionId(0), SectionId(1), SectionId(2)]
+                ),
+                (SectionGroupKey::NoFloor, vec![SectionId(3)]),
             ]
         );
     }
@@ -458,58 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn joist_sections_go_to_secondary_group() {
-        let stories = vec![];
-        let sections = vec![section(0, "A", None), section(1, "B", None)];
-        let joists = vec![squid_n_core::model::SecondaryMember {
-            id: squid_n_core::ids::SecondaryMemberId(0),
-            gravity_end_shares: None,
-            kind: squid_n_core::model::SecondaryMemberKind::Joist,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [0.0, 0.0, 0.0],
-                [1000.0, 0.0, 0.0],
-            ]),
-            section: Some(SectionId(0)),
-            name: "SB1".to_string(),
-        }];
-
-        let groups = section_floor_groups(&stories, &sections, &joists, &[]);
-        assert_eq!(
-            groups,
-            vec![
-                (SectionGroupKey::Secondary, vec![SectionId(0)]),
-                (SectionGroupKey::NoFloor, vec![SectionId(1)]),
-            ]
-        );
-    }
-
-    #[test]
-    fn post_sections_go_to_secondary_group() {
-        let stories = vec![];
-        let sections = vec![section(0, "A", None), section(1, "B", None)];
-        let secondary_members = vec![SecondaryMember {
-            id: squid_n_core::ids::SecondaryMemberId(0),
-            gravity_end_shares: None,
-            kind: SecondaryMemberKind::Post,
-            ends: squid_n_core::model::SecondaryMemberEnds::Detached([
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 3000.0],
-            ]),
-            section: Some(SectionId(0)),
-            name: "post-0".to_string(),
-        }];
-
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
-        assert_eq!(
-            groups,
-            vec![
-                (SectionGroupKey::Secondary, vec![SectionId(0)]),
-                (SectionGroupKey::NoFloor, vec![SectionId(1)]),
-            ]
-        );
-    }
-
-    #[test]
     fn material_category_groups_uses_fixed_ui_order() {
         // 入力順は列挙順（鋼材→鉄筋→コンクリート）と食い違わせ、UI 順を固定する。
         let materials = vec![
@@ -528,13 +484,5 @@ mod tests {
                 (MaterialCategory::Rebar, vec![MaterialId(0)]),
             ]
         );
-    }
-
-    #[test]
-    fn material_category_ui_rank_covers_all_variants() {
-        // 新しい区分を足したら `material_category_ui_rank` の match がコンパイルエラーになる。
-        assert_eq!(material_category_ui_rank(MaterialCategory::Steel), 0);
-        assert_eq!(material_category_ui_rank(MaterialCategory::Concrete), 1);
-        assert_eq!(material_category_ui_rank(MaterialCategory::Rebar), 2);
     }
 }

@@ -58,6 +58,20 @@ mod tests {
         assert!((wt - 26.8).abs() < 1e-9, "expected 26.8, got {}", wt);
     }
 
+    /// H-300x300x10x15（ポータルフレーム柱）: flange=300/(2*15)=10,
+    /// web=(300-30)/10=27 → max=27
+    #[test]
+    fn test_max_width_thickness_steel_h_portal_frame_column() {
+        let shape = SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let wt = max_width_thickness(&shape).unwrap();
+        assert!((wt - 27.0).abs() < 1e-9, "expected 27.0, got {}", wt);
+    }
+
     /// BOX-200x150x9: hi=(200-18)/9=20.2222, wi=(150-18)/9=14.6667 → max=20.2222
     #[test]
     fn test_max_width_thickness_steel_box() {
@@ -178,40 +192,20 @@ mod tests {
         }
     }
 
-    /// 柱 H形 400級 フランジ: b/t=9.5（境界） → FA。
+    /// 柱 H形 400級 フランジ: b/t の FA/FB/FC/FD 境界（9.5・15.5 が各区分上限）。
     #[test]
-    fn test_s_member_rank_by_kihon_column_h_flange_fa_boundary() {
-        // width/(2*10)=9.5 -> width=190
-        let shape = steel_h_flange_only(190.0);
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SN400B").expect("Some");
-        assert_eq!(rank, MemberRank::FA);
-    }
-
-    /// 柱 H形 400級 フランジ: b/t=9.6（FA境界超え） → FB。
-    #[test]
-    fn test_s_member_rank_by_kihon_column_h_flange_fb() {
-        // width/(2*10)=9.6 -> width=192
-        let shape = steel_h_flange_only(192.0);
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SN400B").expect("Some");
-        assert_eq!(rank, MemberRank::FB);
-    }
-
-    /// 柱 H形 400級 フランジ: b/t=15.5（FC境界） → FC。
-    #[test]
-    fn test_s_member_rank_by_kihon_column_h_flange_fc_boundary() {
-        // width/(2*10)=15.5 -> width=310
-        let shape = steel_h_flange_only(310.0);
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SN400B").expect("Some");
-        assert_eq!(rank, MemberRank::FC);
-    }
-
-    /// 柱 H形 400級 フランジ: b/t=15.6（FC境界超え） → FD。
-    #[test]
-    fn test_s_member_rank_by_kihon_column_h_flange_fd() {
-        // width/(2*10)=15.6 -> width=312
-        let shape = steel_h_flange_only(312.0);
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SN400B").expect("Some");
-        assert_eq!(rank, MemberRank::FD);
+    fn test_s_member_rank_by_kihon_column_h_flange_boundaries() {
+        for (width, expected) in [
+            (190.0, MemberRank::FA), // b/t=9.5（境界）
+            (192.0, MemberRank::FB), // 9.6
+            (310.0, MemberRank::FC), // 15.5（境界）
+            (312.0, MemberRank::FD), // 15.6
+        ] {
+            let shape = steel_h_flange_only(width);
+            let rank =
+                s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SN400B").expect("Some");
+            assert_eq!(rank, expected, "width={width}");
+        }
     }
 
     /// フランジは FA だがウェブが FC → 悪い方の FC が採用される（worst 合成）。
@@ -234,46 +228,24 @@ mod tests {
         assert_eq!(rank, MemberRank::FC);
     }
 
-    /// BCR295 角形鋼管（d=H, 全せい）: 幅厚比 30（境界） → FA。
+    /// BCR295 角形鋼管（d=H, 全せい）: 幅厚比 30（FA境界）/43（FC境界）/43.1（FD）。
     #[test]
-    fn test_s_member_rank_by_kihon_bcr295_box_fa_boundary() {
-        // height/thick = 300/10 = 30
-        let shape = SectionShape::SteelBox {
-            height: 300.0,
-            width: 300.0,
-            thick: 10.0,
-            corner_r: 0.0,
-        };
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "BCR295").expect("Some");
-        assert_eq!(rank, MemberRank::FA);
-    }
-
-    /// BCR295 角形鋼管: 幅厚比 43（FC境界） → FC。
-    #[test]
-    fn test_s_member_rank_by_kihon_bcr295_box_fc_boundary() {
-        // height/thick = 430/10 = 43
-        let shape = SectionShape::SteelBox {
-            height: 430.0,
-            width: 430.0,
-            thick: 10.0,
-            corner_r: 0.0,
-        };
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "BCR295").expect("Some");
-        assert_eq!(rank, MemberRank::FC);
-    }
-
-    /// BCR295 角形鋼管: 幅厚比 43.1（FC境界超え） → FD。
-    #[test]
-    fn test_s_member_rank_by_kihon_bcr295_box_fd() {
-        // height/thick = 431/10 = 43.1
-        let shape = SectionShape::SteelBox {
-            height: 431.0,
-            width: 431.0,
-            thick: 10.0,
-            corner_r: 0.0,
-        };
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "BCR295").expect("Some");
-        assert_eq!(rank, MemberRank::FD);
+    fn test_s_member_rank_by_kihon_bcr295_box_boundaries() {
+        for (height, expected) in [
+            (300.0, MemberRank::FA), // height/thick = 30
+            (430.0, MemberRank::FC), // 43
+            (431.0, MemberRank::FD), // 43.1
+        ] {
+            let shape = SectionShape::SteelBox {
+                height,
+                width: height,
+                thick: 10.0,
+                corner_r: 0.0,
+            };
+            let rank =
+                s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "BCR295").expect("Some");
+            assert_eq!(rank, expected, "height={height}");
+        }
     }
 
     /// 角形鋼管は d=H（全せい）を使う。内法（H-2t）ではないことを確認する。
@@ -292,29 +264,18 @@ mod tests {
         assert_eq!(rank, MemberRank::FB);
     }
 
-    /// 円形鋼管 490級: 径厚比 36（境界） → FA。
+    /// 円形鋼管 490級（SM490A: F=325）: 径厚比 36（FA境界）/73（FC境界）。
     #[test]
-    fn test_s_member_rank_by_kihon_pipe_490_fa_boundary() {
-        // outer_dia/thick = 360/10 = 36
-        let shape = SectionShape::SteelPipe {
-            outer_dia: 360.0,
-            thick: 10.0,
-        };
-        // SM490A: F=325 (>=295) -> 490級
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SM490A").expect("Some");
-        assert_eq!(rank, MemberRank::FA);
-    }
-
-    /// 円形鋼管 490級: 径厚比 73（FC境界） → FC。
-    #[test]
-    fn test_s_member_rank_by_kihon_pipe_490_fc_boundary() {
-        // outer_dia/thick = 730/10 = 73
-        let shape = SectionShape::SteelPipe {
-            outer_dia: 730.0,
-            thick: 10.0,
-        };
-        let rank = s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SM490A").expect("Some");
-        assert_eq!(rank, MemberRank::FC);
+    fn test_s_member_rank_by_kihon_pipe_490_boundaries() {
+        for (outer_dia, expected) in [(360.0, MemberRank::FA), (730.0, MemberRank::FC)] {
+            let shape = SectionShape::SteelPipe {
+                outer_dia,
+                thick: 10.0,
+            };
+            let rank =
+                s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SM490A").expect("Some");
+            assert_eq!(rank, expected, "D={outer_dia}");
+        }
     }
 
     /// 梁の円形鋼管・角形鋼管は柱の行を準用する（構造規定表に梁の行がないため）。

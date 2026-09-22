@@ -199,4 +199,83 @@ mod tests {
         assert_eq!(sum[0].1.at.len(), 1);
         assert!((sum[0].1.at[0].1[0] - 3.0).abs() < 1e-12);
     }
+
+    /// 地震用重量・QD 用 Q0 に使う重力ケースの選択が、並び順ではなく
+    /// `LoadCaseKind` に基づくこと。Dead+LiveSeismic 優先、LiveSeismic がなければ
+    /// Dead+Live、種別が一つも設定されていなければ後方互換で先頭ケースのみ。
+    /// 自動生成の自重ケースと骨組用積載ケースは除外する。
+    #[test]
+    fn test_gravity_case_ids_for_seismic_weight_selection() {
+        use squid_n_core::model::LoadCase;
+
+        let mk_lc = |i: u32, name: &str, kind: LoadCaseKind| LoadCase {
+            id: LoadCaseId(i),
+            name: name.to_string(),
+            nodal: Vec::new(),
+            member: Vec::new(),
+            kind,
+        };
+
+        // 種別が一つも設定されていない（全て既定値 Other） → 先頭ケースのみ
+        let model_no_kind = Model {
+            load_cases: vec![
+                mk_lc(0, "LC0", LoadCaseKind::Other),
+                mk_lc(1, "LC1", LoadCaseKind::Other),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            gravity_case_ids_for_seismic_weight(&model_no_kind),
+            vec![LoadCaseId(0)],
+            "種別未設定モデルは従来互換で先頭ケースのみ"
+        );
+
+        // LiveSeismic がない → Dead + Live。
+        // ただし自重(自動)ケースと骨組用積載ケースは地震用重量から除外する。
+        let model_dead_live = Model {
+            load_cases: vec![
+                mk_lc(0, "固定", LoadCaseKind::Dead),
+                mk_lc(1, LL_FRAME_CASE_NAME, LoadCaseKind::Live),
+                mk_lc(2, SELF_WEIGHT_AUTO_LOAD_CASE_NAME, LoadCaseKind::Dead),
+                mk_lc(3, "積載(長期)", LoadCaseKind::Live),
+                mk_lc(4, "積雪", LoadCaseKind::Snow),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            gravity_case_ids_for_seismic_weight(&model_dead_live),
+            vec![LoadCaseId(0), LoadCaseId(3)],
+            "LiveSeismic がなければ Dead+Live（自重(自動)・骨組用積載・積雪は除外）"
+        );
+
+        // LiveSeismic があれば Live ではなく LiveSeismic を優先
+        let model_dead_live_seismic = Model {
+            load_cases: vec![
+                mk_lc(0, "固定", LoadCaseKind::Dead),
+                mk_lc(1, "積載(長期)", LoadCaseKind::Live),
+                mk_lc(2, "積載(地震用)", LoadCaseKind::LiveSeismic),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            gravity_case_ids_for_seismic_weight(&model_dead_live_seismic),
+            vec![LoadCaseId(0), LoadCaseId(2)],
+            "LiveSeismic があれば Live ではなく LiveSeismic を採用"
+        );
+
+        // 複数 Dead ケースも全て対象
+        let model_multi_dead = Model {
+            load_cases: vec![
+                mk_lc(0, "固定1", LoadCaseKind::Dead),
+                mk_lc(1, "固定2", LoadCaseKind::Dead),
+                mk_lc(2, "地震荷重", LoadCaseKind::Seismic),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            gravity_case_ids_for_seismic_weight(&model_multi_dead),
+            vec![LoadCaseId(0), LoadCaseId(1)],
+            "複数の Dead ケースは全て対象、Seismic は対象外"
+        );
+    }
 }

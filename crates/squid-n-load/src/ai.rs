@@ -284,18 +284,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_distribution_3story() {
-        let weights = vec![1000.0, 1000.0, 1000.0];
-        let result = ai_distribution(&weights, 1.0, 1.0, 0.2, 0.24);
-        assert_eq!(result.alpha.len(), 3);
-        assert!((result.alpha[0] - 1.0).abs() < 1e-3);
-        assert!((result.alpha[1] - 2.0 / 3.0).abs() < 1e-3);
-        assert!((result.alpha[2] - 1.0 / 3.0).abs() < 1e-3);
-        assert!((result.ai[2] - result.ai[1]) > 0.0);
-        assert!(result.pi.iter().all(|&p| p >= 0.0));
-    }
-
-    #[test]
     fn test_ai_spec_values() {
         let weights = vec![1.0, 1.0, 1.0];
         let result = ai_distribution(&weights, 1.0, 1.0, 0.2, 0.24);

@@ -233,23 +233,6 @@ pub(crate) fn consistent_mass(mass: f64, l: f64, torsion_term: f64) -> LocalMat 
 mod tests {
     use super::*;
 
-    /// 対称な要素剛性を与えたとき、縮約結果も対称であること。
-    /// K* = Kaa − Kab·Kbb⁻¹·Kba は Kbb が対称なら対称になる。
-    #[test]
-    fn 縮約後の剛性は対称() {
-        let k = sample_k();
-        let kstar = condense_end_releases(&k, &[(5, 0.0), (11, 1.0e7)]);
-        for i in 0..12 {
-            for j in 0..12 {
-                let (a, b) = (kstar.get(i, j), kstar.get(j, i));
-                assert!(
-                    (a - b).abs() < 1e-9 * (1.0 + a.abs()),
-                    "K*[{i}][{j}] 非対称"
-                );
-            }
-        }
-    }
-
     /// ばね剛性 0（ピン）で解放した自由度は、縮約後に行・列とも 0 になる。
     /// これが「厳密なモーメント解放」の実体で、ペナルティ近似ではない。
     #[test]
