@@ -30,6 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check docs
+        run: cargo run -p xtask -- check-docs
+
       # rustdoc 用の依存ビルドをキャッシュ（ci.yml と同じアクション）。
       - uses: Swatinem/rust-cache@v2
 

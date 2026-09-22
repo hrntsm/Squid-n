@@ -1,13 +1,41 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+mod check_docs;
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 || args[1] != "check-deps" {
-        eprintln!("Usage: cargo run -p xtask -- check-deps");
-        std::process::exit(1);
+    match args.get(1).map(String::as_str) {
+        Some("check-deps") => run_check_deps(),
+        Some("check-docs") => run_check_docs(),
+        _ => {
+            eprintln!("Usage: cargo run -p xtask -- check-deps");
+            eprintln!("       cargo run -p xtask -- check-docs");
+            std::process::exit(1);
+        }
     }
+}
 
+fn run_check_docs() -> anyhow::Result<()> {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let report = check_docs::check_at(workspace_root)?;
+    if !report.errors.is_empty() {
+        for error in &report.errors {
+            eprintln!("{}", error);
+        }
+        anyhow::bail!(
+            "Document check failed with {} problem(s)",
+            report.errors.len()
+        );
+    }
+    println!(
+        "All doc links OK (summary: {}, links: {}, impl refs: {})",
+        report.summary_links, report.doc_links, report.impl_refs
+    );
+    Ok(())
+}
+
+fn run_check_deps() -> anyhow::Result<()> {
     let layers: &[&[&str]] = &[
         &["squid-n-core", "squid-n-math", "squid-n-material"],
         &["squid-n-section", "squid-n-load"],

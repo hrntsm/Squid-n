@@ -214,6 +214,13 @@ mdbook serve --open
 mdbook build
 ```
 
+PR 前には、リンク切れと実装参照パスの実在を検証してください。
+
+```bash
+cargo run -p xtask -- check-docs
+mdbook build
+```
+
 - ソース: `docs/`（利用者向けコンテンツのみを置く）
 - 目次: `docs/SUMMARY.md`（ページを追加・削除したらここも更新する）
 - 章・節の番号は mdBook が `docs/SUMMARY.md` の並びから自動採番します。`SUMMARY.md` のタイトルと
