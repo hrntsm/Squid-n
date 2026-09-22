@@ -221,6 +221,141 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
+/// 診断用の SRC 断面（内蔵 H 形鉄骨付き）。
+fn src_shape() -> squid_n_core::section_shape::SectionShape {
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    let bars = BarSet {
+        dia: 22.0,
+        count: 8,
+        layers: 1,
+    };
+    SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: bars.clone(),
+            main_y: bars,
+            cover: 50.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    }
+}
+
+/// 診断用の CFT 角形断面。
+fn cft_shape() -> squid_n_core::section_shape::SectionShape {
+    squid_n_core::section_shape::SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    }
+}
+
+/// SRC 断面は主材料の Fc から等価断面性能を算定できるが、材料由来の値を使えない
+/// ときは既定値 N_S_EQ=15 へフォールバックする。このとき診断は解析を止めず、
+/// 警告として利用者へ照合を促す。
+#[test]
+fn test_model_issues_warns_src_composite_fallback() {
+    use super::precheck::{model_issues, IssueSeverity, IssueTargets};
+
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(src_shape());
+    model.materials[0].fc = None;
+
+    let issue = model_issues(&model)
+        .into_iter()
+        .find(|i| i.short == "等価断面性能を算定できません")
+        .expect("SRC のフォールバック警告が出るはず");
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+    assert!(issue
+        .message
+        .contains("材料由来の等価断面性能を算定できない"));
+    assert!(issue.message.contains("N_S_EQ=15"));
+    assert_eq!(issue.targets, IssueTargets::Members(vec![ElemId(0)]));
+}
+
+/// CFT 断面は主材料の Fc から等価断面性能を算定できるが、材料由来の値を使えない
+/// ときは鋼管のみへフォールバックする。このとき診断は解析を止めず、警告として
+/// 利用者へ照合を促す。
+#[test]
+fn test_model_issues_warns_cft_composite_fallback() {
+    use super::precheck::{model_issues, IssueSeverity, IssueTargets};
+
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(cft_shape());
+    model.materials[0].fc = None;
+
+    let issue = model_issues(&model)
+        .into_iter()
+        .find(|i| i.short == "等価断面性能を算定できません")
+        .expect("CFT のフォールバック警告が出るはず");
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+    assert!(issue
+        .message
+        .contains("材料由来の等価断面性能を算定できない"));
+    assert!(issue.message.contains("鋼管のみ"));
+    assert_eq!(issue.targets, IssueTargets::Members(vec![ElemId(0)]));
+}
+
+/// CFT では Fc とヤング係数が揃っていても、鋼管の板厚が過大で充填部の内法が 0 に
+/// なる形状では等価断面性能を算定できず、鋼管のみへフォールバックする。材料条件が
+/// 原因ではないため、警告の是正文が形状条件にも触れていることを確認する。
+#[test]
+fn test_model_issues_warns_cft_composite_fallback_for_zero_core() {
+    use super::precheck::{model_issues, IssueSeverity, IssueTargets};
+
+    let mut model = make_cantilever_model();
+    // 板厚 200 で内法（400 − 2×200）が 0 になる CFT 角形断面。
+    model.sections[0].shape = Some(squid_n_core::section_shape::SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 200.0,
+    });
+    model.materials[0].fc = Some(24.0);
+    model.materials[0].young = 205000.0;
+
+    let issue = model_issues(&model)
+        .into_iter()
+        .find(|i| i.message.contains("等価断面性能"))
+        .expect("CFT の形状起因のフォールバック警告が出るはず");
+    assert_eq!(issue.severity, IssueSeverity::Warning);
+    assert!(issue.message.contains("内法"));
+    assert_eq!(issue.targets, IssueTargets::Members(vec![ElemId(0)]));
+}
+
+/// 材料由来の等価断面性能を算定できる（Fc がある）場合はフォールバック警告を出さない。
+#[test]
+fn test_model_issues_no_composite_fallback_warning_with_fc() {
+    use super::precheck::model_issues;
+
+    let mut src = make_cantilever_model();
+    src.sections[0].shape = Some(src_shape());
+    src.materials[0].fc = Some(24.0);
+    assert!(
+        !model_issues(&src)
+            .iter()
+            .any(|i| i.short == "等価断面性能を算定できません"),
+        "Fc があれば SRC のフォールバック警告は出ない"
+    );
+
+    let mut cft = make_cantilever_model();
+    cft.sections[0].shape = Some(cft_shape());
+    cft.materials[0].fc = Some(24.0);
+    assert!(
+        !model_issues(&cft)
+            .iter()
+            .any(|i| i.short == "等価断面性能を算定できません"),
+        "Fc があれば CFT のフォールバック警告は出ない"
+    );
+}
+
 /// 断面が未割当のスラブ・断面の材料が未割当のスラブは解析前チェックで止まる。
 ///
 /// スラブの板厚と自重は断面から解決するため、断面が無いと床の固定荷重が

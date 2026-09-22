@@ -55,7 +55,8 @@ pub struct PreparationResult {
     /// 鋼断面の幅厚比・部材ランク（断面 × 部材用途 × 材料でまとめる）。
     pub width_thickness: Vec<PrepWidthThicknessRow>,
     /// 部材単位の剛性割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）と
-    /// SRC/CFT 等価断面。割増しも等価換算もない部材は含まない。
+    /// SRC/CFT 等価断面。割増し・等価換算・既定値フォールバックのいずれもない
+    /// 部材は含まない。
     pub member_stiffness: Vec<PrepMemberStiffnessRow>,
     /// 剛性割増し・等価換算の算定対象となった梁要素の総数。
     pub member_stiffness_candidates: usize,
@@ -306,12 +307,22 @@ pub struct PrepWidthThicknessRow {
     pub rank: Option<squid_n_design_jp::secondary::holding_capacity::MemberRank>,
 }
 
+/// 材料由来の等価断面性能を算定できず、既定値で剛性を評価した SRC/CFT 部材の種別。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CompositeFallbackKind {
+    /// SRC: N_S_EQ=15 固定で鉄骨を等価換算した。
+    SrcNsDefault,
+    /// CFT: 充填コンクリートを無視し、鋼管のみで評価した。
+    CftSteelOnly,
+}
+
 /// 部材単位の剛性割増し・SRC/CFT 等価断面 1 行。
 ///
 /// 断面性能の表（断面単位）では表せない、**部材ごとに決まる**剛性の割増しを示す。
 /// 値は [`squid_n_element::frame::beam::stiffness_breakdown`] ・
 /// [`squid_n_element::frame::beam::composite_props_of`] を通した、要素構築が実際に
-/// 適用するものと同じ算定結果。
+/// 適用するものと同じ算定結果。材料由来の等価断面性能を算定できない SRC/CFT は、
+/// 既定値へフォールバックした種別を `composite_fallback` に持つ。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepMemberStiffnessRow {
     pub elem: ElemId,
@@ -325,6 +336,9 @@ pub struct PrepMemberStiffnessRow {
     pub wall_girder_factor: f64,
     /// SRC/CFT 等価断面性能（対象外・算定不能なら `None`）。
     pub composite: Option<PrepCompositeProps>,
+    /// 材料由来の等価断面性能を算定できず、既定値で剛性を評価した種別。
+    /// 等価断面性能を算定できた場合・対象外形状は `None`。
+    pub composite_fallback: Option<CompositeFallbackKind>,
     /// 元断面の A・Iy（強軸）[mm²・mm⁴]。等価換算・割増しとの比較用。
     pub section_area: f64,
     pub section_iy: f64,
@@ -872,6 +886,23 @@ impl App {
             };
             let factors = squid_n_element::frame::beam::stiffness_breakdown(model, e);
             let composite = squid_n_element::frame::beam::composite_props_of(model, e);
+            let fallback = if composite.is_none() {
+                match sec
+                    .shape
+                    .as_ref()
+                    .and_then(squid_n_core::structure_kind::shape_composite_kind)
+                {
+                    Some(squid_n_core::structure_kind::StructureKind::Src) => {
+                        Some(CompositeFallbackKind::SrcNsDefault)
+                    }
+                    Some(squid_n_core::structure_kind::StructureKind::Cft) => {
+                        Some(CompositeFallbackKind::CftSteelOnly)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let base_iy = composite.map(|p| p.iy).unwrap_or(sec.iy);
             let base_area = match (composite, sec.shape.as_ref()) {
                 (Some(p), _) => p.area_ax,
@@ -883,6 +914,7 @@ impl App {
             if factors.slab == 1.0
                 && factors.wall_girder == 1.0
                 && composite.is_none()
+                && fallback.is_none()
                 && base_area == sec.area
             {
                 continue;
@@ -902,6 +934,7 @@ impl App {
                     as_y: p.as_y,
                     as_z: p.as_z,
                 }),
+                composite_fallback: fallback,
                 section_area: sec.area,
                 section_iy: sec.iy,
                 effective_iy: base_iy * factors.slab * factors.wall_girder,
