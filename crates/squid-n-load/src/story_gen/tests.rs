@@ -564,6 +564,137 @@ fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
     );
 }
 
+/// RC 柱 1 本（基部 z=0 固定・上端 z=3000 自由）と、柱脚節点に取り付く水平 RC 梁 1 本
+/// （面積 0・せい 800）を持つ 1 層モデル。柱脚梁せい相当の追加自重だけが基部節点の質点
+/// 質量に残ることの検証に使う。
+fn rc_base_column_with_base_beam_model() -> Model {
+    let mut model = Model::default();
+    let coords = [[0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], [0.0, 0.0, 3000.0]];
+    for (i, c) in coords.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i < 2 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "Col".into(),
+        area: 90000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "Beam".into(),
+        area: 0.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 800.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(2)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(1),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+        section: Some(SectionId(1)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model
+}
+
+/// 補正質点方式の質量控除は通常分 `W_column` の上下 1/2 のみを控除し、柱脚梁せい相当の
+/// 追加分 `W_extra`（下端節点の質点質量）は控除しないこと。基部階の `rep_nodes.mass` に
+/// `W_extra / g` が残ることで確認する。
+#[test]
+fn test_master_mass_corrected_lumped_keeps_base_column_extra_bottom() {
+    let model = rc_base_column_with_base_beam_model();
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
+
+    // 柱の単位長さ自重（RC・断面積 90000）と、柱脚梁の最大せい 800 分の追加自重。
+    let per_mm = 2.4e-9 * 90000.0 * GRAVITY_MM_S2;
+    let wextra = per_mm * 800.0;
+
+    let rep = &gen.rep_nodes[0];
+    let mass = rep
+        .mass
+        .expect("柱脚梁せい相当の追加自重が基部階の質点質量に残る");
+    let expected_mt = wextra / GRAVITY_MM_S2;
+    assert!(
+        (mass[0] - expected_mt).abs() < 1e-9 * expected_mt,
+        "mt={} expected={}",
+        mass[0],
+        expected_mt
+    );
+    assert_eq!(mass[0], mass[1], "並進質量 Ux=Uy");
+}
+
 #[test]
 fn test_master_mass_lumped_only_keeps_density_self_weight() {
     let model = two_columns_with_dl_model();
@@ -2187,11 +2318,387 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         spring: None,
     });
     let gen = generate_stories(&model, None).unwrap();
-    let eff_len = 3000.0 + 600.0; // 柱長さ + 柱脚に取付く梁の最大せい
-    let expected = 2.4e-9 * 90000.0 * eff_len * GRAVITY_MM_S2 / 2.0;
+    // 柱自重は節点伝達: 上端 = W_column/2、基部 = W_column/2 + Wextra
+    // （Wextra は柱脚に取付く梁の最大せい 600 分の柱重量）。
+    let w_col = 2.4e-9 * 90000.0 * 3000.0 * GRAVITY_MM_S2;
+    let w_extra = 2.4e-9 * 90000.0 * 600.0 * GRAVITY_MM_S2;
     assert!(
-        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
-        "{}",
+        (gen.stories[1].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-6,
+        "上端階 {}",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+    assert!(
+        (gen.stories[0].seismic_weight.unwrap() - (w_col / 2.0 + w_extra)).abs() < 1e-6,
+        "基部階 {}",
+        gen.stories[0].seismic_weight.unwrap()
+    );
+}
+
+/// 基部に**鉛直なブレース**が下階へ接続していても、ブレースは「下階の柱」とみなさない。
+///
+/// `is_column` は 2 節点の鉛直 `ElementKind::Beam` のみを柱とし、`has_column_below` も
+/// `ElementKind::Beam` だけを下階柱として数える（`ElementKind::Brace` は除外）。したがって
+/// 基部節点に下階へ伸びる鉛直ブレースが接続していても、その上の RC 柱には柱脚梁せい相当の
+/// 追加自重 `W_extra` が加算される。ブレースが誤って下階柱とみなされれば期待値は
+/// `W_column/2` となり、このテストが失敗する。
+#[test]
+fn test_base_column_with_lower_brace_still_adds_max_beam_depth() {
+    let mut model = Model::default();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0, 0.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱脚(下階はブレースのみ) & 梁の一端 & ブレース上端
+    model.nodes.push(Node {
+        id: NodeId(1),
+        coord: [0.0, 0.0, 3000.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱頭
+    model.nodes.push(Node {
+        id: NodeId(2),
+        coord: [4000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱脚梁の他端(せい 600)
+    model.nodes.push(Node {
+        id: NodeId(3),
+        coord: [0.0, 0.0, -3000.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 下階のブレース下端
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "Col".into(),
+        area: 90000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "Beam".into(),
+        area: 0.0, // 自重寄与ゼロにして柱脚梁せい付加のみを検証する
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 600.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(2),
+        name: "Brace".into(),
+        area: 0.0, // 自重は寄与させず、下階柱判定だけに効かせる
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 200.0,
+        width: 200.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    // 検証対象の RC 柱(鉛直 Beam, node0-node1)。
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    // 柱脚に取付く水平梁(area=0、せい 600 が Wextra に効く)。
+    model.elements.push(ElementData {
+        id: ElemId(1),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(2)].into_iter().collect(),
+        section: Some(SectionId(1)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    // 下階へ伸びる鉛直ブレース。柱と同様に鉛直だが `ElementKind::Brace` なので
+    // `has_column_below` の下階柱には数えない。
+    model.elements.push(ElementData {
+        id: ElemId(2),
+        kind: ElementKind::Brace {
+            tension_only: false,
+        },
+        nodes: [NodeId(0), NodeId(3)].into_iter().collect(),
+        section: Some(SectionId(2)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let gen = generate_stories(&model, None).unwrap();
+    // 階は標高 -3000 / 0 / 3000 の 3 つ。柱脚の基部は index 1、柱頭は index 2。
+    // 柱自重は節点伝達: 上端 = W_column/2、基部 = W_column/2 + Wextra。
+    // Wextra は柱脚に取付く梁の最大せい 600 分の柱重量。ブレースは下階の柱ではない。
+    let w_col = 2.4e-9 * 90000.0 * 3000.0 * GRAVITY_MM_S2;
+    let w_extra = 2.4e-9 * 90000.0 * 600.0 * GRAVITY_MM_S2;
+    assert!(
+        (gen.stories[2].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-6,
+        "上端階 {}",
+        gen.stories[2].seismic_weight.unwrap()
+    );
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - (w_col / 2.0 + w_extra)).abs() < 1e-6,
+        "基部階 {} (ブレースを下階柱とみなして追加が抑制されていないこと)",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+}
+
+/// 基部に**3 節点以上の鉛直な `ElementKind::Beam`**が下階へ接続していても、それを
+/// 「下階の柱」とみなさない（下階柱は 2 節点の鉛直 `ElementKind::Beam` のみ）。
+///
+/// `is_column` は 2 節点の鉛直 `ElementKind::Beam` のみを柱とするため、`has_column_below`
+/// も `e2.nodes.len() == 2` を要求する。したがって基部節点に下階へ伸びる 3 節点の鉛直
+/// Beam が接続していても、その上の RC 柱には柱脚梁せい相当の追加自重 `W_extra` が加算される
+/// （上端 = `W_column/2`、基部 = `W_column/2 + W_extra`）。この `nodes.len() == 2` を欠く
+/// 実装では 3 節点 Beam の先頭 2 節点が下階柱と誤判定され `W_extra` が 0 になる。
+#[test]
+fn test_base_column_with_lower_three_node_vertical_beam_still_adds_max_beam_depth() {
+    let mut model = Model::default();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0, 0.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱脚(下階柱なし) & 梁の一端 & 3節点鉛直Beamの始点
+    model.nodes.push(Node {
+        id: NodeId(1),
+        coord: [0.0, 0.0, 3000.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱頭
+    model.nodes.push(Node {
+        id: NodeId(2),
+        coord: [4000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 柱脚梁の他端(せい 600)
+    model.nodes.push(Node {
+        id: NodeId(3),
+        coord: [0.0, 0.0, -3000.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 3節点鉛直Beamの2番目(基部より下)
+    model.nodes.push(Node {
+        id: NodeId(4),
+        coord: [3000.0, 0.0, -3000.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    }); // 3節点鉛直Beamの3番目(下階の階を増やさない標高)
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "Col".into(),
+        area: 90000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "Beam".into(),
+        area: 0.0, // 自重寄与ゼロにして柱脚梁せい付加のみを検証する
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 600.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.sections.push(Section {
+        id: SectionId(2),
+        name: "VBeam3".into(),
+        area: 0.0, // 自重は寄与させず、下階柱判定だけに効かせる
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 8000.0,
+        as_z: 8000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    // 検証対象の RC 柱(鉛直 Beam, node0-node1)。
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    // 柱脚に取付く水平梁(area=0、せい 600 が Wextra に効く)。
+    model.elements.push(ElementData {
+        id: ElemId(1),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(2)].into_iter().collect(),
+        section: Some(SectionId(1)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    // 基部から下階へ伸びる 3 節点の鉛直 Beam。先頭 2 節点(node0-node3)が鉛直で
+    // node3 が基部より下にあるが、2 節点でないため下階柱には数えない。
+    model.elements.push(ElementData {
+        id: ElemId(2),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(3), NodeId(4)].into_iter().collect(),
+        section: Some(SectionId(2)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let gen = generate_stories(&model, None).unwrap();
+    // 階は標高 -3000 / 0 / 3000 の 3 つ。柱脚の基部は index 1、柱頭は index 2。
+    // 柱自重は節点伝達: 上端 = W_column/2、基部 = W_column/2 + Wextra。
+    // Wextra は柱脚に取付く梁の最大せい 600 分の柱重量。3 節点の鉛直 Beam は下階柱ではない。
+    let w_col = 2.4e-9 * 90000.0 * 3000.0 * GRAVITY_MM_S2;
+    let w_extra = 2.4e-9 * 90000.0 * 600.0 * GRAVITY_MM_S2;
+    assert!(
+        (gen.stories[2].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-6,
+        "上端階 {}",
+        gen.stories[2].seismic_weight.unwrap()
+    );
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - (w_col / 2.0 + w_extra)).abs() < 1e-6,
+        "基部階 {} (3節点鉛直Beamを下階柱とみなして追加が抑制されていないこと)",
         gen.stories[1].seismic_weight.unwrap()
     );
 }
