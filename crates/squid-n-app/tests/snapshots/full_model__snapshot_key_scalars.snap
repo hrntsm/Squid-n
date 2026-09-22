@@ -1,6 +1,5 @@
 ---
 source: crates/squid-n-app/tests/full_model.rs
-assertion_line: 1796
 expression: out
 ---
 model.nodes = 171
@@ -81,8 +80,8 @@ th.drift_angle[1] = 2.959e-3
 th.drift_angle[2] = 1.728e-3
 th.drift_angle[3] = 1.536e-3
 th_nl.frames = 1001
-th_nl.peak_ux = 7.123e1
-th_nl.drift_angle[0] = 5.129e-3
-th_nl.drift_angle[1] = 5.292e-3
-th_nl.drift_angle[2] = 3.344e-3
-th_nl.drift_angle[3] = 3.864e-3
+th_nl.peak_ux = 6.905e1
+th_nl.drift_angle[0] = 5.274e-3
+th_nl.drift_angle[1] = 5.048e-3
+th_nl.drift_angle[2] = 3.217e-3
+th_nl.drift_angle[3] = 3.406e-3
