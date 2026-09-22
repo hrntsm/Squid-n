@@ -151,8 +151,9 @@ pub struct StorySeismicSpec {
 /// - **PH階**: Qi = k・ΣWj（j はその階以上の重量和、k は 0.5〜1.0 の指定震度）。
 ///   `ci` 欄には k をそのまま格納する（等価係数）。
 /// - **地下階**: Qi = Q(i+1) + Ki・Wi、Ki = 0.1・(1 − min(Hi,20)/40)・Z
-///   （令88条4項。Hi は地盤面からの深さ[m]、20m 超は 20m。Q(i+1) は直上の層の
-///   せん断力）。`ci` 欄には Ki を格納する（等価係数）。
+///   （令88条4項。Hi は地盤面からの深さで、内部 mm の `depth_mm` を m 換算する。
+///   20m 超は 20m。Q(i+1) は直上の層のせん断力）。`ci` 欄には Ki を格納する
+///   （等価係数）。
 ///
 /// Pi = Qi − Q(i+1)（最上層は Pi=Qi）は階種別によらず全層を通して算定する。
 /// 返り値の `alpha`・`ai` は一般階以外では意味を持たない（0.0 のまま）。
@@ -248,8 +249,9 @@ pub fn seismic_shear_distribution(
     }
 
     for i in (0..n).rev() {
-        if let StoryLevelKind::Basement { depth_m } = stories_bottom_to_top[i].level_kind {
+        if let StoryLevelKind::Basement { depth_mm } = stories_bottom_to_top[i].level_kind {
             let q_above = if i + 1 < n { qi[i + 1] } else { 0.0 };
+            let depth_m = depth_mm / 1000.0;
             let h = depth_m.min(20.0);
             let k_i = 0.1 * (1.0 - h / 40.0) * z;
             ci[i] = k_i;
@@ -430,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_seismic_shear_with_basement() {
-        // 地下1階(H=5m) + 一般階1層。Z=1.0 → K=0.1・(1-5/40)=0.0875。
+        // 地下1階(H=5m＝depth_mm 5000mm) + 一般階1層。Z=1.0 → K=0.1・(1-5/40)=0.0875。
         // Q_B1 = Q1(一般階の層せん断力) + K・W_B1。
         let w_normal = 1000.0;
         let w_basement = 500.0;
@@ -438,7 +440,7 @@ mod tests {
             StorySeismicSpec {
                 weight: w_basement,
                 ci_weight: w_basement,
-                level_kind: StoryLevelKind::Basement { depth_m: 5.0 },
+                level_kind: StoryLevelKind::Basement { depth_mm: 5000.0 },
             },
             StorySeismicSpec {
                 weight: w_normal,
@@ -488,12 +490,13 @@ mod tests {
 
     #[test]
     fn test_seismic_shear_basement_normal_penthouse_sum_pi() {
-        // 地下1 + 一般2 + PH1 のフル構成で ΣPi = Q最下層 を検証。
+        // 地下1（深さ3m＝depth_mm 3000mm）+ 一般2 + PH1 のフル構成で
+        // ΣPi = Q最下層 を検証。
         let stories = vec![
             StorySeismicSpec {
                 weight: 400.0,
                 ci_weight: 400.0,
-                level_kind: StoryLevelKind::Basement { depth_m: 3.0 },
+                level_kind: StoryLevelKind::Basement { depth_mm: 3000.0 },
             },
             StorySeismicSpec {
                 weight: 1000.0,
@@ -520,6 +523,45 @@ mod tests {
             r.qi[0]
         );
         assert!(!r.clamped_negative_pi);
+    }
+
+    /// 地盤面からの深さが上限 20m を超える地下階は 20m で頭打ちにすること
+    /// （令88条4項）。
+    #[test]
+    fn test_seismic_shear_basement_depth_clamped_to_20m() {
+        // 地下1階(H=25m > 上限20m) + 一般階1層。Z=1.0 → K=0.1・(1-20/40)=0.05。
+        let w_normal = 1000.0;
+        let w_basement = 500.0;
+        let stories = vec![
+            StorySeismicSpec {
+                weight: w_basement,
+                ci_weight: w_basement,
+                level_kind: StoryLevelKind::Basement { depth_mm: 25000.0 },
+            },
+            StorySeismicSpec {
+                weight: w_normal,
+                ci_weight: w_normal,
+                level_kind: StoryLevelKind::Normal,
+            },
+        ];
+        let r = seismic_shear_distribution(&stories, 1.0, 1.0, 0.2, 0.24);
+
+        let k_expected = 0.1 * (1.0 - 20.0_f64 / 40.0);
+        assert!((k_expected - 0.05).abs() < 1e-12);
+        assert!((r.ci[0] - k_expected).abs() < 1e-12, "ci={}", r.ci[0]);
+        let q_b1_expected = r.qi[1] + k_expected * w_basement;
+        assert!(
+            (r.qi[0] - q_b1_expected).abs() < 1e-9,
+            "Q_B1={} expected={}",
+            r.qi[0],
+            q_b1_expected
+        );
+        assert!(
+            r.qi.iter().all(|v| v.is_finite()) && r.pi.iter().all(|v| v.is_finite()),
+            "非有限値がある: qi={:?} pi={:?}",
+            r.qi,
+            r.pi
+        );
     }
 
     /// 重量 0 の最上階（利用者が定義しただけでまだ部材のない階）があっても、

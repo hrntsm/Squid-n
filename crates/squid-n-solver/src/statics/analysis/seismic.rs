@@ -18,7 +18,7 @@ pub fn base_elevation(model: &Model) -> f64 {
 
 /// 地盤面（GL）レベル [mm] を求める。
 /// 地下階（`StoryLevelKind::Basement`）が定義されているモデルでは、
-/// 各地下階の「床レベル + 地盤面からの深さ depth_m」から GL を復元する
+/// 各地下階の「床レベル + 地盤面からの深さ depth_mm」から GL を復元する
 /// （深さの定義より各地下階で同一値になる想定。数値ずれに備え最大値を採る）。
 /// 地下階がなければ [`base_elevation`]（最下構造節点レベル）を GL とみなす。
 pub fn ground_elevation(model: &Model) -> f64 {
@@ -26,7 +26,7 @@ pub fn ground_elevation(model: &Model) -> f64 {
         .layers()
         .iter()
         .filter_map(|l| match l.level_kind {
-            StoryLevelKind::Basement { depth_m } => Some(l.top_elevation + depth_m * 1000.0),
+            StoryLevelKind::Basement { depth_mm } => Some(l.top_elevation + depth_mm),
             _ => None,
         })
         .fold(f64::NEG_INFINITY, f64::max);
