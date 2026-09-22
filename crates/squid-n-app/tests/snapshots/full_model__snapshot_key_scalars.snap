@@ -1,6 +1,6 @@
 ---
 source: crates/squid-n-app/tests/full_model.rs
-assertion_line: 1728
+assertion_line: 1796
 expression: out
 ---
 model.nodes = 171
@@ -25,9 +25,9 @@ prep.seismic[3FL].Ai = 1.528e0
 prep.seismic[3FL].Qi = 3.433e5
 prep.seismic[RFL].Ai = 3.429e0
 prep.seismic[RFL].Qi = 5.772e4
-eigen.T[0] = 4.851e-1
+eigen.T[0] = 4.852e-1
 eigen.T[1] = 4.517e-1
-eigen.T[2] = 4.096e-1
+eigen.T[2] = 4.097e-1
 static.DL.min_uz = -9.427e-1
 static.DL.sum_base_axial = -3.231e6
 static.EX.story[1FL].max_ux = 0.000e0
@@ -75,14 +75,14 @@ holding[3].Ds = 2.500e-1
 holding[3].Fes = 1.000e0
 ultimate.checks = 17
 th.frames = 1001
-th.peak_ux = 4.054e1
-th.drift_angle[0] = 3.375e-3
-th.drift_angle[1] = 2.955e-3
-th.drift_angle[2] = 1.726e-3
-th.drift_angle[3] = 1.535e-3
+th.peak_ux = 4.060e1
+th.drift_angle[0] = 3.380e-3
+th.drift_angle[1] = 2.959e-3
+th.drift_angle[2] = 1.728e-3
+th.drift_angle[3] = 1.536e-3
 th_nl.frames = 1001
-th_nl.peak_ux = 7.129e1
-th_nl.drift_angle[0] = 5.130e-3
-th_nl.drift_angle[1] = 5.291e-3
+th_nl.peak_ux = 7.123e1
+th_nl.drift_angle[0] = 5.129e-3
+th_nl.drift_angle[1] = 5.292e-3
 th_nl.drift_angle[2] = 3.344e-3
-th_nl.drift_angle[3] = 3.862e-3
+th_nl.drift_angle[3] = 3.864e-3

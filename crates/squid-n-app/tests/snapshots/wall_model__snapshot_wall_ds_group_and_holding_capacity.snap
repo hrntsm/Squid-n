@@ -1,6 +1,5 @@
 ---
 source: crates/squid-n-app/tests/wall_model.rs
-assertion_line: 954
 expression: out
 ---
 holding.qu = 1.065e6

@@ -3,7 +3,7 @@
 use crate::behavior::LocalMat;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{EndCondition, RigidZone};
+use squid_n_core::model::{EndCondition, RigidZone, SectionMassProperties};
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -31,6 +31,8 @@ pub struct BeamElement {
     pub as_z: f64,
     pub length: f64,
     pub density: f64,
+    pub mass_properties: SectionMassProperties,
+    pub mass_properties_error: Option<String>,
     pub nodes: [NodeId; 2],
     pub axis: LocalFrame,
     pub rigid: RigidZone,

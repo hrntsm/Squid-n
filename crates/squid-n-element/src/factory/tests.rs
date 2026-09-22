@@ -216,7 +216,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
     let model = make_diaphragm_model();
     let col = ElementData {
         id: ElemId(1),
-        kind: ElementKind::Beam,
+        kind: ElementKind::Fiber,
         nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
         local_axis: LocalAxis {

@@ -41,6 +41,8 @@ pub struct ConcentratedSpringBeam {
     pub elastic: crate::frame::beam::BeamElement,
     pub spring_i: Box<dyn UniaxialMaterial>,
     pub spring_j: Box<dyn UniaxialMaterial>,
+    initial_spring_stiffness_i: f64,
+    initial_spring_stiffness_j: f64,
     pub model: SpringModel,
     /// N-M 相関。
     pub mn: Option<MnInteraction>,
@@ -67,6 +69,8 @@ impl ConcentratedSpringBeam {
         model: SpringModel,
     ) -> Self {
         Self {
+            initial_spring_stiffness_i: spring_i.probe(0.0).1,
+            initial_spring_stiffness_j: spring_j.probe(0.0).1,
             elastic,
             spring_i,
             spring_j,
@@ -186,7 +190,16 @@ const SPRING_ROT_DOFS: [usize; 2] = [5, 11];
 
 fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
     let releases = [(SPRING_ROT_DOFS[0], k_i), (SPRING_ROT_DOFS[1], k_j)];
-    crate::frame::prismatic::condense_end_releases(k_elem, &releases)
+    crate::frame::prismatic::condense_end_releases(k_elem, &releases).unwrap_or_else(|| {
+        let mut kaa = LocalMat {
+            n: k_elem.n,
+            data: k_elem.data.clone(),
+        };
+        for &(dof, stiffness) in &releases {
+            kaa.set(dof, dof, kaa.get(dof, dof) + stiffness);
+        }
+        kaa
+    })
 }
 
 fn compute_kstar(
@@ -283,7 +296,58 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        self.elastic.mass_matrix(opt)
+        match opt {
+            MassOption::Lumped => self.elastic.mass_matrix(opt),
+            MassOption::Consistent => {
+                let mass_properties = self
+                    .elastic
+                    .mass_properties_error
+                    .as_ref()
+                    .map_or(self.elastic.mass_properties, |error| {
+                        panic!("質量特性を解決できません: {error}")
+                    });
+                let (li, lj) = self.elastic.rigid_lengths();
+                let flex_length = self.elastic.length - li - lj;
+                let phi_y = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_z > 0.0
+                {
+                    12.0 * self.elastic.e * self.elastic.iy
+                        / (self.elastic.g * self.elastic.as_z * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let phi_z = if flex_length > 0.0 && self.elastic.g > 0.0 && self.elastic.as_y > 0.0
+                {
+                    12.0 * self.elastic.e * self.elastic.iz
+                        / (self.elastic.g * self.elastic.as_y * flex_length.powi(2))
+                } else {
+                    0.0
+                };
+                let flex = crate::frame::prismatic::consistent_mass_timoshenko(
+                    mass_properties,
+                    flex_length,
+                    phi_z,
+                    phi_y,
+                );
+                let releases = [
+                    (SPRING_ROT_DOFS[0], self.initial_spring_stiffness_i),
+                    (SPRING_ROT_DOFS[1], self.initial_spring_stiffness_j),
+                ];
+                let mm = crate::frame::prismatic::condense_end_releases_with_mass(
+                    self.k_flex(),
+                    &flex,
+                    mass_properties,
+                    li,
+                    lj,
+                    &releases,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ConcentratedSpringBeam の端部解放質量を縮約できません: Kbb が特異です（解放条件を確認してください）"
+                    )
+                });
+                self.elastic.axis.to_global(&mm)
+            }
+        }
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {

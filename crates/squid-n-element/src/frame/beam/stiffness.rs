@@ -83,6 +83,15 @@ impl BeamElement {
     /// 内部並びは [外部 0..11（節点 ux,uy,uz,rx,ry,rz ×2）, 内部 12..（解放した
     /// 要素端回転を出現順に並べる）]。
     fn condense_end_springs(&self, k_elem: &LocalMat) -> LocalMat {
+        let released = self.end_releases();
+        crate::frame::prismatic::condense_end_releases(k_elem, &released).unwrap_or_else(|| {
+            panic!(
+                "BeamElement の端部解放剛性を縮約できません: Kbb が特異です（解放条件を確認してください）"
+            )
+        })
+    }
+
+    pub(crate) fn end_releases(&self) -> SmallVec<[(usize, f64); 6]> {
         const ROT_DOFS: [(usize, usize); 6] = [(3, 0), (4, 0), (5, 0), (9, 1), (10, 1), (11, 1)];
 
         let released_spring = |cond: &EndCondition| -> Option<f64> {
@@ -110,7 +119,7 @@ impl BeamElement {
             released.push((r, ks));
         }
 
-        crate::frame::prismatic::condense_end_releases(k_elem, &released)
+        released
     }
 
     /// 剛域長を可撓長が正に残る範囲へ解決した値 (λi, λj)。
@@ -125,9 +134,14 @@ impl BeamElement {
     }
 
     pub(crate) fn local_stiffness_flex(&self) -> LocalMat {
+        let k_raw = self.local_stiffness_flex_raw();
+        self.condense_end_springs(&k_raw)
+    }
+
+    pub(crate) fn local_stiffness_flex_raw(&self) -> LocalMat {
         let (li, lj) = self.rigid_lengths();
         let l_flex = self.length - li - lj;
-        let k_raw = if l_flex > 1e-12 {
+        if l_flex > 1e-12 {
             let mut beam = self.clone();
             beam.length = l_flex;
             beam.end_cond = [EndCondition::Fixed, EndCondition::Fixed];
@@ -136,9 +150,7 @@ impl BeamElement {
             beam.local_stiffness_raw()
         } else {
             LocalMat::zeros(12)
-        };
-
-        self.condense_end_springs(&k_raw)
+        }
     }
 
     /// 節点自由度ベースの局所剛性 12×12（剛域変換・端部条件を適用済み）。

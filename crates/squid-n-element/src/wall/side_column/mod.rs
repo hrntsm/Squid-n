@@ -12,7 +12,7 @@ pub use detect::{
 };
 
 #[cfg(test)]
-use crate::behavior::{Ctx, ElementBehavior, LocalMat};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 #[cfg(test)]
 use crate::frame::beam::BeamElement;
 #[cfg(test)]
@@ -45,6 +45,10 @@ mod tests {
             as_z: 200_000.0,
             length: 3000.0,
             density: 2.4e-9,
+            mass_properties: squid_n_core::model::SectionMassProperties::uniform(
+                2.4e-9, 250_000.0, 3.0e9, 5.0e9,
+            ),
+            mass_properties_error: None,
             nodes: [NodeId(0), NodeId(1)],
             axis: LocalFrame {
                 rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -125,6 +129,19 @@ mod tests {
             (e_uy - expected_uy).abs() / expected_uy < 1e-6,
             "面外剛性が変化した: e_uy={e_uy} expected={expected_uy}"
         );
+    }
+
+    #[test]
+    fn test_consistent_mass_has_the_same_released_rotation_mapping() {
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+        let column = make_test_column(ReleaseAxis::LocalY);
+        let mass = column.mass_matrix(MassOption::Consistent);
+        assert!(mass.get(4, 4).abs() < 1e-12);
+        assert!(mass.get(10, 10).abs() < 1e-12);
+        let lumped = column.mass_matrix(MassOption::Lumped);
+        assert!(lumped.get(4, 4).abs() < 1e-12);
+        let _ = ctx;
     }
 
     #[test]
