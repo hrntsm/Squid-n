@@ -183,7 +183,9 @@ fn test_rebar_allowable_shear_table() {
     assert!((rebar_allowable_shear("SD295A", false) - 295.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("SD345", false) - 345.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("SD390", false) - 390.0).abs() < 1e-9);
-    assert!((rebar_allowable_shear("SD490", false) - 390.0).abs() < 1e-9);
+    // SD490 の短期は基準強度 490。長期せん断補強筋は 195 の据え置き。
+    assert!((rebar_allowable_shear("SD490", true) - 195.0).abs() < 1e-9);
+    assert!((rebar_allowable_shear("SD490", false) - 490.0).abs() < 1e-9);
     assert!((rebar_allowable_shear("UNKNOWN", false) - 295.0).abs() < 1e-9);
 }
 

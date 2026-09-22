@@ -41,7 +41,7 @@ pub fn rebar_allowable_tension(grade: &str, dia: f64, long_term: bool) -> f64 {
 
 /// せん断補強筋の許容引張応力度 w_ft [N/mm²]。
 ///
-/// USD685 は長期 195・短期 590、SD490 短期は 390 に頭打ち。
+/// USD685 は長期 195・短期 590。
 pub fn rebar_allowable_shear(grade: &str, long_term: bool) -> f64 {
     let g = grade.trim();
     if g == "USD685" {
@@ -59,8 +59,10 @@ pub fn rebar_allowable_shear(grade: &str, long_term: bool) -> f64 {
         295.0
     } else if g == "SD345" {
         345.0
-    } else if g == "SD390" || g == "SD490" {
+    } else if g == "SD390" {
         390.0
+    } else if g == "SD490" {
+        490.0
     } else {
         295.0
     }
