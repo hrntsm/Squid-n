@@ -17,10 +17,13 @@ const DIR_DOWN: [f64; 3] = [0.0, 0.0, -1.0];
 
 /// 自重(自動)ケースの内容（節点荷重・部材荷重）を生成する。
 ///
-/// - **線材（柱・梁・ブレース）**: 総重量（自重算定長・スラブ厚控除・仕上げ・
+/// - **柱（2 節点の鉛直 `ElementKind::Beam`）**: 上端節点へ `total/2`、下端節点へ
+///   `total/2 + extra_bottom` の節点荷重（下端は z 座標が低い側）。`extra_bottom` は
+///   下階柱なしの RC/SRC 柱で梁最大せい相当を下端のみへ加える追加自重 [N]。
+/// - **梁・ブレース（非柱の線材）**: 総重量（自重算定長・スラブ厚控除・仕上げ・
 ///   付加線重量を反映済み）を節点間全長で均した等分布荷重
 ///   `w = total/len [N/mm]`（dir = −Z）として与える。梁は自重による曲げ
-///   （③梁自重による CMoQ 相当）、柱は軸力を生じる。自重算定長の規則は
+///   （③梁自重による CMoQ 相当）を生じる。自重算定長の規則は
 ///   総量に反映済みであり、分布は全長均しとする（総量保存）。
 ///   K型ブレースの基準節点配分規則（地震用重量の集計規約）は応力解析には
 ///   適用せず、物理的な等分布のままとする。
@@ -41,32 +44,41 @@ pub fn self_weight_case_content(
 
     for item in enumerate_self_weight(model, load_cfg) {
         match item {
-            SelfWeightItem::Line { elem_idx, total } => {
+            SelfWeightItem::Line {
+                elem_idx,
+                total,
+                extra_bottom,
+                is_column,
+            } => {
                 let elem = &model.elements[elem_idx];
                 let ni = elem.nodes[0].index();
                 let nj = elem.nodes[1].index();
                 let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
-                let len =
-                    ((cj[0] - ci[0]).powi(2) + (cj[1] - ci[1]).powi(2) + (cj[2] - ci[2]).powi(2))
-                        .sqrt();
-                if total <= 0.0 {
-                    continue;
-                }
-                if len > 0.0 {
-                    let w = total / len;
-                    member.push(MemberLoad::auto(
-                        elem.id,
-                        DIR_DOWN,
-                        MemberLoadKind::Distributed {
-                            a: 0.0,
-                            b: len,
-                            w1: w,
-                            w2: w,
-                        },
-                    ));
-                } else {
-                    node_force[ni] += total / 2.0;
-                    node_force[nj] += total / 2.0;
+                if is_column {
+                    let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
+                    node_force[top] += total / 2.0;
+                    node_force[bottom] += total / 2.0 + extra_bottom;
+                } else if total > 0.0 {
+                    let len = ((cj[0] - ci[0]).powi(2)
+                        + (cj[1] - ci[1]).powi(2)
+                        + (cj[2] - ci[2]).powi(2))
+                    .sqrt();
+                    if len > 0.0 {
+                        let w = total / len;
+                        member.push(MemberLoad::auto(
+                            elem.id,
+                            DIR_DOWN,
+                            MemberLoadKind::Distributed {
+                                a: 0.0,
+                                b: len,
+                                w1: w,
+                                w2: w,
+                            },
+                        ));
+                    } else {
+                        node_force[ni] += total / 2.0;
+                        node_force[nj] += total / 2.0;
+                    }
                 }
             }
             SelfWeightItem::Damper { ni, nj, total } => {
@@ -174,8 +186,8 @@ mod tests {
         }
     }
 
-    /// 柱1本＋梁1本のモデルで、自重(自動)の総荷重が ρ·A·L·g と一致し、
-    /// すべて等分布部材荷重（重力方向）として生成されること。
+    /// 柱1本＋梁1本のモデルで、柱は上端・下端の節点荷重（各 W/2、追加なし）、
+    /// 梁は等分布部材荷重として生成され、合計が ρ·A·L·g と一致すること。
     #[test]
     fn test_self_weight_case_totals() {
         let model = Model {
@@ -192,15 +204,38 @@ mod tests {
         };
 
         let (nodal, member) = self_weight_case_content(&model, &LoadCfg::default());
-        assert!(nodal.is_empty(), "線材のみのモデルでは節点荷重は生じない");
-        assert_eq!(member.len(), 2);
 
-        // 総荷重 = ρ·A·(L柱 + L梁の内法長)·g（スラブ無し→スラブ厚の控除なし）。
-        // RC 柱は床上面から床上面（＝節点間距離 3000。フェイス控除なし）。
+        // 柱は節点荷重（上下 1/2 ずつ、追加なし）。梁は等分布部材荷重。
+        assert_eq!(nodal.len(), 2, "柱の上下端に節点荷重が生じる");
+        assert_eq!(member.len(), 1, "梁だけが部材荷重になる");
+        let nodal_force = |node: u32| {
+            nodal
+                .iter()
+                .find(|nl| nl.node == NodeId(node))
+                .map(|nl| -nl.values[2])
+                .unwrap_or(0.0)
+        };
+
+        // RC 柱は床上面から床上面（＝節点間距離 3000、フェイス控除なし）。
+        let w_col = 2.4e-9 * 400.0 * 600.0 * 3000.0 * GRAVITY_MM_S2;
         // RC 梁は柱面間距離で、i 端に柱（せい 600）が取り付くので 600/2=300 を控除する。
         // j 端は取り付く直交材がないため控除は 0。
-        let expected = 2.4e-9 * 400.0 * 600.0 * (3000.0 + (6000.0 - 300.0)) * GRAVITY_MM_S2;
-        let total: f64 = member
+        let w_beam = 2.4e-9 * 400.0 * 600.0 * (6000.0 - 300.0) * GRAVITY_MM_S2;
+
+        assert!(
+            (nodal_force(1) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "上端={} W/2={}",
+            nodal_force(1),
+            w_col / 2.0
+        );
+        assert!(
+            (nodal_force(0) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "下端={} W/2={}",
+            nodal_force(0),
+            w_col / 2.0
+        );
+
+        let member_total: f64 = member
             .iter()
             .map(|ml| match ml.kind {
                 MemberLoadKind::Distributed { a, b, w1, w2 } => (b - a) * (w1 + w2) / 2.0,
@@ -208,12 +243,21 @@ mod tests {
             })
             .sum();
         assert!(
+            (member_total - w_beam).abs() < 1e-9 * w_beam,
+            "member={} w_beam={}",
+            member_total,
+            w_beam
+        );
+
+        let expected = w_col + w_beam;
+        let total = nodal_force(0) + nodal_force(1) + member_total;
+        assert!(
             (total - expected).abs() < 1e-6 * expected,
             "total={} expected={}",
             total,
             expected
         );
-        // 全て重力方向
+        // 梁荷重は重力方向
         assert!(member.iter().all(|ml| ml.dir == [0.0, 0.0, -1.0]));
     }
 
@@ -248,7 +292,11 @@ mod tests {
         let weight_total: f64 = crate::story_gen::enumerate_self_weight(&model, &cfg)
             .iter()
             .map(|item| match item {
-                crate::story_gen::SelfWeightItem::Line { total, .. } => *total,
+                crate::story_gen::SelfWeightItem::Line {
+                    total,
+                    extra_bottom,
+                    ..
+                } => *total + *extra_bottom,
                 crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
                     shares.iter().map(|(_, w)| w).sum()
@@ -261,6 +309,187 @@ mod tests {
             "load_total={} weight_total={}",
             load_total,
             weight_total
+        );
+    }
+
+    /// 基部節点 0 に柱(0-1, 鉛直)と水平梁(0-2, 0-3)が取り付くモデルを組み立てる。
+    /// 梁は `depths` のせいを持ち area=0（自重寄与なし）で、柱脚の最大せいだけを
+    /// 検証できる。`is_concrete` が false なら柱・梁とも S 材とする。
+    fn base_column_with_base_beams(is_concrete: bool, depths: &[f64]) -> Model {
+        let mat = if is_concrete {
+            rc_material()
+        } else {
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "SN400B".into(),
+                category: MaterialCategory::Steel,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: None,
+            }
+        };
+        let mut sections = vec![rc_section(90000.0, 300.0, 300.0)];
+        let beam_nodes = [NodeId(2), NodeId(3)];
+        for (k, &depth) in depths.iter().enumerate() {
+            sections.push(Section {
+                id: SectionId((k + 1) as u32),
+                name: format!("Beam{depth}"),
+                area: 0.0,
+                iy: 1.0e8,
+                iz: 1.0e8,
+                j: 1.0e8,
+                depth,
+                width: 300.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                floor: None,
+                panel_thickness: None,
+                thickness: None,
+                shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
+            });
+        }
+        let mut elements = vec![beam_elem(0, 0, 1)];
+        for (k, node) in beam_nodes.iter().enumerate().take(depths.len()) {
+            let mut e = beam_elem((k + 1) as u32, 0, node.0);
+            e.section = Some(SectionId((k + 1) as u32));
+            e.local_axis = LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            };
+            elements.push(e);
+        }
+        Model {
+            nodes: vec![
+                simple_node(0, [0.0, 0.0, 0.0]),
+                simple_node(1, [0.0, 0.0, 3000.0]),
+                simple_node(2, [4000.0, 0.0, 0.0]),
+                simple_node(3, [0.0, 4000.0, 0.0]),
+            ],
+            sections,
+            materials: vec![mat],
+            elements,
+            ..Default::default()
+        }
+    }
+
+    fn node_force(nodal: &[NodalLoad], node: u32) -> f64 {
+        nodal
+            .iter()
+            .find(|nl| nl.node == NodeId(node))
+            .map(|nl| -nl.values[2])
+            .unwrap_or(0.0)
+    }
+
+    /// 通常の RC 柱（下階柱なし・基部に水平梁なし）: DL・地震用重量とも上端 W/2、下端 W/2。
+    #[test]
+    fn test_rc_column_self_weight_is_nodal_half_half() {
+        let model = base_column_with_base_beams(true, &[]);
+        let (nodal, member) = self_weight_case_content(&model, &LoadCfg::default());
+        assert!(member.is_empty(), "梁が無いので部材荷重は出ない");
+        let per_mm = 2.4e-9 * 90000.0 * GRAVITY_MM_S2;
+        let w_col = per_mm * 3000.0;
+        assert!(
+            (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "DL 上端={}",
+            node_force(&nodal, 1)
+        );
+        assert!(
+            (node_force(&nodal, 0) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "DL 下端={}",
+            node_force(&nodal, 0)
+        );
+
+        let gen = crate::story_gen::generate_stories(&model, None).unwrap();
+        assert!(
+            (gen.stories[1].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 上端階={}",
+            gen.stories[1].seismic_weight.unwrap()
+        );
+        assert!(
+            (gen.stories[0].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 基部階={}",
+            gen.stories[0].seismic_weight.unwrap()
+        );
+    }
+
+    /// 下階柱なし RC 柱: 下端に梁せい 600 と 800 が接続するとき、付加は最大せい 800 分を
+    /// 下端節点のみへ加算し、上端へは配分しない。総量は w×(L+Dmax) を保存する。
+    #[test]
+    fn test_rc_base_column_extra_bottom_uses_max_beam_depth() {
+        let model = base_column_with_base_beams(true, &[600.0, 800.0]);
+        let (nodal, member) = self_weight_case_content(&model, &LoadCfg::default());
+        assert!(member.is_empty(), "梁は area=0 なので部材荷重は出ない");
+        let per_mm = 2.4e-9 * 90000.0 * GRAVITY_MM_S2;
+        let w_col = per_mm * 3000.0;
+        let wextra = per_mm * 800.0;
+        assert!(
+            (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "上端へ追加を配分しない: {}",
+            node_force(&nodal, 1)
+        );
+        assert!(
+            (node_force(&nodal, 0) - (w_col / 2.0 + wextra)).abs() < 1e-9 * w_col,
+            "下端={} 期待={}",
+            node_force(&nodal, 0),
+            w_col / 2.0 + wextra
+        );
+        // 総量保存: 節点合計 = w×(L+Dmax)。
+        let total = node_force(&nodal, 0) + node_force(&nodal, 1);
+        let expected = per_mm * (3000.0 + 800.0);
+        assert!(
+            (total - expected).abs() < 1e-9 * expected,
+            "total={total} expected={expected}"
+        );
+
+        let gen = crate::story_gen::generate_stories(&model, None).unwrap();
+        assert!(
+            (gen.stories[1].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 上端階={}",
+            gen.stories[1].seismic_weight.unwrap()
+        );
+        assert!(
+            (gen.stories[0].seismic_weight.unwrap() - (w_col / 2.0 + wextra)).abs() < 1e-9 * w_col,
+            "地震用重量 基部階={}",
+            gen.stories[0].seismic_weight.unwrap()
+        );
+    }
+
+    /// 同条件の S 柱は梁せい付加をせず、DL・地震用重量とも上端 W/2、下端 W/2。
+    #[test]
+    fn test_steel_base_column_has_no_extra_bottom() {
+        let model = base_column_with_base_beams(false, &[600.0, 800.0]);
+        let (nodal, _member) = self_weight_case_content(&model, &LoadCfg::default());
+        let per_mm = 7.85e-9 * 90000.0 * GRAVITY_MM_S2;
+        let w_col = per_mm * 3000.0;
+        assert!(
+            (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "DL 上端={}",
+            node_force(&nodal, 1)
+        );
+        assert!(
+            (node_force(&nodal, 0) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "S 柱は梁せい付加なし: 下端={}",
+            node_force(&nodal, 0)
+        );
+
+        let gen = crate::story_gen::generate_stories(&model, None).unwrap();
+        assert!(
+            (gen.stories[1].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 上端階={}",
+            gen.stories[1].seismic_weight.unwrap()
+        );
+        assert!(
+            (gen.stories[0].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 基部階={}",
+            gen.stories[0].seismic_weight.unwrap()
         );
     }
 }

@@ -195,7 +195,9 @@ pub fn generate_stories_with_opts(
 
     let distribute_line_panel =
         |target: &mut Vec<f64>, item: &SelfWeightItem, panel_density_only: bool| match item {
-            SelfWeightItem::Line { elem_idx, total } => {
+            SelfWeightItem::Line {
+                elem_idx, total, ..
+            } => {
                 let elem = &model.elements[*elem_idx];
                 let ni = elem.nodes[0].index();
                 let nj = elem.nodes[1].index();
@@ -235,6 +237,20 @@ pub fn generate_stories_with_opts(
                 SelfWeightItem::Damper { ni, nj, total } => {
                     node_weight[*ni] += total / 2.0;
                     node_weight[*nj] += total / 2.0;
+                }
+                SelfWeightItem::Line {
+                    elem_idx,
+                    total,
+                    extra_bottom,
+                    is_column: true,
+                } => {
+                    let elem = &model.elements[*elem_idx];
+                    let ni = elem.nodes[0].index();
+                    let nj = elem.nodes[1].index();
+                    let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
+                    let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
+                    node_weight[top] += total / 2.0;
+                    node_weight[bottom] += total / 2.0 + extra_bottom;
                 }
                 SelfWeightItem::Line { .. } | SelfWeightItem::Panel { .. } => {
                     distribute_line_panel(&mut node_weight, item, false);
