@@ -119,7 +119,10 @@
 
 ### フェーズ監査
 
-| レポート | フェーズ | 判定 |
+> フェーズは #313 で廃止した `dev_docs/specs/` のフェーズ実装仕様書の識別子（旧フェーズ）
+> であり、現在の仕様・計画を指すものではない。
+
+| レポート | 旧フェーズ | 判定 |
 |----------|----------|------|
 | [p3_review.md](p3_review.md) | P3 最小 UI | 🔶 |
 | [p4_review.md](p4_review.md) | P4 材料断面 | ✅ |
@@ -129,7 +132,10 @@
 
 ## 索引（要素/設計式 → テスト）
 
-| # | 対象 | クレート | ソースファイル | テスト関数 | フェーズ | 状態 |
+> 「旧フェーズ」は #313 で廃止した `dev_docs/specs/` のフェーズ実装仕様書の識別子であり、
+> 現在の仕様・計画を指すものではない。
+
+| # | 対象 | クレート | ソースファイル | テスト関数 | 旧フェーズ | 状態 |
 |---|------|----------|---------------|-----------|---------|------|
 | 1 | ティモシェンコ梁 | squid-n-element | beam.rs | `test_phi_zero_converges_to_bernoulli`（Bernoulli 極限。軸 EA/L・ねじり GJ/L を含む 12×12 成分。テスト再編により旧 `test_beam_axial_stiffness`・`test_beam_torsion_stiffness` を統合）, `test_torsion_not_stiffened_by_rigid_zone`（剛域ありでもねじりは GJ/L のまま） | P1 | ✅ |
 | 2 | 剛域あり梁 | squid-n-element | beam.rs | `test_apply_auto_rigid_zones_and_manual_protection`, `test_auto_rigid_zone_only_when_all_members_are_rc`（自動剛域の適用と手動端の保護・適用条件。テスト再編により旧 `test_auto_rigid_zone_standard_formula` を統合） | P1 | 🔶 |
@@ -198,13 +204,13 @@
 | 疎行列組立 | ✅ | sparse.rs |
 | Cholesky 分解 | ✅ | cholesky.rs |
 | 固有値 | ✅ | eigen.rs |
-| 時刻歴 | 🔶 | timehistory.rs（P6 実装後に本格化） |
-| プッシュオーバー | 🔶 | pushover.rs（P5 実装後に本格化） |
+| 時刻歴 | 🔶 | timehistory.rs（時刻歴の実装後に本格化） |
+| プッシュオーバー | 🔶 | pushover.rs（増分解析の実装後に本格化） |
 | 並列バッチ（値一致） | ✅ | squid-n-solver/tests/parallel_batch.rs（並列時のケース並列バッチが個別解と一致） |
 
 ## 性能ベンチマーク
 
-`criterion` による性能ベンチマーク（線形静的・固有値・プッシュオーバー1ステップ・時刻歴1ステップ）の計測は CI 導入時（P9）に整備予定。
+`criterion` による性能ベンチマーク（線形静的・固有値・プッシュオーバー1ステップ・時刻歴1ステップ）の計測は CI 導入時に整備予定。
 
 並列計算（ケース並列バッチ・faer 内部並列）の速度比は
 `cargo run -p squid-n-solver --example parallel_bench --release` で計測できる
