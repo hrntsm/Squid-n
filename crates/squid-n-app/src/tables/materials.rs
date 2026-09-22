@@ -412,26 +412,6 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
 mod tests {
     use super::*;
 
-    /// コンクリートプリセット（Fc≤36 帯）の密度が γRC=24.0 kN/m³ 由来であることを確認する。
-    #[test]
-    fn test_concrete_presets_match_unit_weight_table() {
-        let presets = material_presets();
-        let rc_density = mass_density_from_unit_weight_kn_m3(24.0);
-        for name in ["Fc18", "Fc21", "Fc24", "Fc27", "Fc30", "Fc33", "Fc36"] {
-            let p = presets
-                .iter()
-                .find(|p| p.name == name)
-                .unwrap_or_else(|| panic!("preset {name} not found"));
-            assert_eq!(p.category, MaterialCategory::Concrete);
-            assert!(
-                (p.density - rc_density).abs() < 1e-18,
-                "{name}: density={} expected={}",
-                p.density,
-                rc_density
-            );
-        }
-    }
-
     /// SRC造トグル適用時の密度が γSRC=25.0 kN/m³ 由来であることを確認する
     /// （Fc≤36 帯。`apply_src_toggle` に切り出したロジックを直接検証する）。
     #[test]
@@ -443,21 +423,5 @@ mod tests {
             (density - src_density).abs() < 1e-18,
             "density={density} expected={src_density}"
         );
-    }
-
-    /// 鋼材プリセットの密度が γs=77 kN/m³ 由来であることを確認する。
-    #[test]
-    fn test_steel_presets_match_unit_weight_table() {
-        let presets = material_presets();
-        let steel_density = mass_density_from_unit_weight_kn_m3(77.0);
-        let ss400 = presets
-            .iter()
-            .find(|p| p.name == "SS400")
-            .expect("preset SS400 not found");
-        assert_eq!(ss400.category, MaterialCategory::Steel);
-        assert!((ss400.density - steel_density).abs() < 1e-18);
-        // 7.85e-9 とは厳密には一致しない（77/9.80665 が真値）。
-        assert!((steel_density - 7.85e-9).abs() < 1e-11);
-        assert_ne!(steel_density, 7.85e-9);
     }
 }

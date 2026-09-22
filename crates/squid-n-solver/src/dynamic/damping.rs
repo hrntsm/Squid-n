@@ -237,6 +237,13 @@ mod tests {
         let omega2 = 100.0;
         let h2_actual = (alpha_m / omega2 + beta_k * omega2) / 2.0;
         assert!((h2_actual - 0.05).abs() < 1e-6);
+
+        // h1≠h2 の2点指定でも両振動数で目標減衰比を満たす（α_m と β_k の両方が効く）。
+        let (alpha_m, beta_k) = Damping::rayleigh_coeffs(10.0, 50.0, 0.03, 0.05);
+        let h1_actual = (alpha_m / 10.0 + beta_k * 10.0) / 2.0;
+        assert!((h1_actual - 0.03).abs() < 1e-9, "h1={h1_actual}");
+        let h2_actual = (alpha_m / 50.0 + beta_k * 50.0) / 2.0;
+        assert!((h2_actual - 0.05).abs() < 1e-9, "h2={h2_actual}");
     }
 
     /// 重根・近接固有値では単一振動数フォールバックで有限な係数を返し、ω1 で目標減衰比 h1 を満たすこと。

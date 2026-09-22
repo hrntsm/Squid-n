@@ -29,54 +29,31 @@ pub(super) fn frame_at_time(frame_time: &[f64], t: f64) -> usize {
 mod th_playback_tests {
     use super::*;
 
-    /// 再生時刻は dt×速度だけ単調に進む（周回しない範囲）。
+    /// 再生時刻は dt×速度だけ進み、総時間を超えたら先頭へ周回する。
+    /// duration が 0 以下なら常に 0。ケースは (現在時刻, dt, 速度, 総時間, 期待値)。
     #[test]
-    fn advance_play_time_accumulates() {
-        let t = advance_play_time(1.0, 0.1, 2.0, 10.0);
-        // dt_real は f32 のため f64 変換で微小誤差が入る（許容差は f32 精度基準）。
-        assert!((t - 1.2).abs() < 1e-6, "t={t}");
+    fn advance_play_time_cases() {
+        let cases = [
+            (1.0, 0.1_f32, 2.0_f32, 10.0, 1.2),
+            (9.5, 1.0, 1.0, 10.0, 0.5),
+            (5.0, 1.0, 1.0, 0.0, 0.0),
+        ];
+        for (current, dt_real, speed, duration, expected) in cases {
+            let t = advance_play_time(current, dt_real, speed, duration);
+            assert!((t - expected).abs() < 1e-6, "t={t} expected={expected}");
+        }
     }
 
-    /// 総時間を超えたら先頭へ周回する。
+    /// 再生経過時刻に対応するフレーム番号。フレーム時刻ちょうどはその番号、
+    /// 中間は「その時刻以下で最大」、負の時刻・空配列は 0。
     #[test]
-    fn advance_play_time_wraps_at_duration() {
-        let t = advance_play_time(9.5, 1.0, 1.0, 10.0);
-        assert!((t - 0.5).abs() < 1e-9, "got {t}");
-    }
-
-    /// duration が 0 以下なら常に 0。
-    #[test]
-    fn advance_play_time_zero_duration() {
-        assert_eq!(advance_play_time(5.0, 1.0, 1.0, 0.0), 0.0);
-    }
-
-    /// 各フレーム時刻ちょうどではそのフレーム番号を返す。
-    #[test]
-    fn frame_at_time_exact_hits() {
+    fn frame_at_time_cases() {
         let ft = [0.0, 0.5, 1.0, 1.5];
-        assert_eq!(frame_at_time(&ft, 0.0), 0);
-        assert_eq!(frame_at_time(&ft, 0.5), 1);
-        assert_eq!(frame_at_time(&ft, 1.5), 3);
-    }
-
-    /// 中間の時刻は「その時刻以下で最大」のフレームになる。
-    #[test]
-    fn frame_at_time_between_frames() {
-        let ft = [0.0, 0.5, 1.0, 1.5];
-        assert_eq!(frame_at_time(&ft, 0.9), 1);
-        assert_eq!(frame_at_time(&ft, 1.49), 2);
-    }
-
-    /// 範囲外（負の時刻）は 0 にクランプする。
-    #[test]
-    fn frame_at_time_before_start() {
-        let ft = [0.2, 0.5];
-        assert_eq!(frame_at_time(&ft, -1.0), 0);
-    }
-
-    /// 空配列は 0 を返す。
-    #[test]
-    fn frame_at_time_empty() {
-        assert_eq!(frame_at_time(&[], 1.0), 0);
+        let cases = [(0.0, 0), (0.5, 1), (1.5, 3), (0.9, 1), (1.49, 2)];
+        for (t, expected) in cases {
+            assert_eq!(frame_at_time(&ft, t), expected, "t={t}");
+        }
+        assert_eq!(frame_at_time(&[0.2, 0.5], -1.0), 0, "負の時刻");
+        assert_eq!(frame_at_time(&[], 1.0), 0, "空配列");
     }
 }

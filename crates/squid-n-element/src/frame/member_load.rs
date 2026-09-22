@@ -469,46 +469,33 @@ mod tests {
         );
     }
 
-    /// 材軸から外れた位置の集中荷重は、単純梁反力と同じ配分（てこの原理）で
+    /// 材軸上の集中荷重は、作用位置によらず単純梁反力と同じ配分（てこの原理）で
     /// 両端へ分かれる。作用位置の 1 次モーメントが保存される。
+    /// 材端ちょうど（a=0, a=L）も落とさずに配る境界ケースを含む。
     #[test]
     fn brace_point_load_splits_by_lever_rule() {
         let l = 1000.0;
         let p = 100.0;
-        let a = 250.0;
         let frame = horiz_frame();
-        let loads = vec![MemberLoad::manual(
-            ElemId(0),
-            [0.0, 0.0, -1.0],
-            MemberLoadKind::Point { a, p },
-        )];
-        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
-        assert!((q[1].abs() - p * (1.0 - a / l)).abs() < 1e-6, "q1={}", q[1]);
-        assert!((q[7].abs() - p * a / l).abs() < 1e-6, "q7={}", q[7]);
-        assert!(
-            q[5].abs() < 1e-9 && q[11].abs() < 1e-9,
-            "材端モーメントは 0"
-        );
-    }
-
-    /// 材端ちょうどに載る集中荷重も落とさずに配る。
-    #[test]
-    fn brace_point_load_at_far_end_goes_entirely_to_that_end() {
-        let l = 1000.0;
-        let p = 100.0;
-        let frame = horiz_frame();
-        let loads = vec![MemberLoad::manual(
-            ElemId(0),
-            [0.0, 0.0, -1.0],
-            MemberLoadKind::Point { a: l, p },
-        )];
-        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
-        assert!(q[1].abs() < 1e-9, "i 端の分担は 0 のはず q1={}", q[1]);
-        assert!(
-            (q[7].abs() - p).abs() < 1e-6,
-            "j 端が全量を持つ q7={}",
-            q[7]
-        );
+        for a in [0.0, 250.0, l] {
+            let loads = vec![MemberLoad::manual(
+                ElemId(0),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Point { a, p },
+            )];
+            let q =
+                consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+            assert!(
+                (q[1].abs() - p * (1.0 - a / l)).abs() < 1e-6,
+                "a={a}: q1={}",
+                q[1]
+            );
+            assert!((q[7].abs() - p * a / l).abs() < 1e-6, "a={a}: q7={}", q[7]);
+            assert!(
+                q[5].abs() < 1e-9 && q[11].abs() < 1e-9,
+                "a={a}: 材端モーメントは 0"
+            );
+        }
     }
 
     /// 分布荷重が材長の一部に載る場合も、合力は等価節点力方式と一致する

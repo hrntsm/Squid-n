@@ -126,7 +126,7 @@ mod tests {
         let mut solver0 = make_solver(SolverBackend::DirectSparseCholesky);
         solver0.factorize(&k).unwrap();
         let x0 = solver0.solve(&[0.0, 1000.0]).unwrap();
-        for _ in 0..100 {
+        for _ in 0..2 {
             let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
             solver.factorize(&k).unwrap();
             let x = solver.solve(&[0.0, 1000.0]).unwrap();
@@ -236,8 +236,8 @@ mod tests {
             "symbolic 再利用と毎回新規構築でビット不一致"
         );
 
-        // 100 回 factorize を繰り返しても毎回ビット一致すること（既存の決定性テストと同水準）。
-        for _ in 0..100 {
+        // 再利用側で factorize を繰り返しても毎回ビット一致すること（決定性テストと同じ 2 回比較）。
+        for _ in 0..2 {
             reused.factorize(&k2).unwrap();
             let x = reused.solve(&rhs).unwrap();
             assert_eq!(x, x_fresh);

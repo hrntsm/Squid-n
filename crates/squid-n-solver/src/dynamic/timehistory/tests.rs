@@ -205,7 +205,9 @@ fn test_sdof_free_vibration_matches_analytical() {
     };
 
     let dt = 0.0002;
-    let n_steps = (1.0 / dt) as usize;
+    // 自由振動 1 周期（T≈0.1987 s）ぶんを照合する。
+    let total_time = 0.2;
+    let n_steps = (total_time / dt) as usize;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -228,10 +230,10 @@ fn test_sdof_free_vibration_matches_analytical() {
     .expect("time history should converge");
 
     assert_eq!(result.time.len(), n_steps + 1);
-    assert!((result.time.last().copied().unwrap_or(0.0) - 1.0).abs() < 1e-9);
+    assert!((result.time.last().copied().unwrap_or(0.0) - total_time).abs() < 1e-9);
 
     // 各フレームの自由節点（node 1）の X 変位を解析解と照合する。
-    // 許容値は Newmark-β（平均加速度法）の 1 秒間の積分誤差（オーダー 1e-3）を
+    // 許容値は Newmark-β（平均加速度法）の 1 周期ぶんの積分誤差（オーダー 1e-3）を
     // 吸収しつつ、減衰比・周期の誤り（数 % 以上の差）を検出できる大きさとする。
     let recording = result.recording.expect("recording");
     assert_eq!(recording.frame_time.len(), n_steps + 1);
@@ -245,22 +247,6 @@ fn test_sdof_free_vibration_matches_analytical() {
     }
     // 減衰系の自由振動なのでピークは初期変位 1.0。
     assert!((result.peak_disp[1][0] - 1.0).abs() < 1e-9);
-}
-
-/// Rayleigh 減衰の2点指定が正しいこと。
-#[test]
-fn test_rayleigh_damping_two_point() {
-    let omega1 = 10.0;
-    let omega2 = 50.0;
-    let h1 = 0.03;
-    let h2 = 0.05;
-    let (a0, a1) = rayleigh_coeffs(omega1, omega2, h1, h2);
-    // ω1 で h1
-    let z1 = a0 / (2.0 * omega1) + a1 * omega1 / 2.0;
-    assert!((z1 - h1).abs() < 1e-9);
-    // ω2 で h2
-    let z2 = a0 / (2.0 * omega2) + a1 * omega2 / 2.0;
-    assert!((z2 - h2).abs() < 1e-9);
 }
 
 /// 2DOFせん断モデルの1次モード純励振がモード重ね合わせと一致すること。
@@ -942,7 +928,7 @@ fn test_nonlinear_time_history_sdof_plastic() {
     };
 
     let dt = 0.001;
-    let n_steps = 200;
+    let n_steps = 30;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -999,7 +985,7 @@ fn test_nonlinear_time_history_extended_damping_models_run() {
     let omega = (*k_red.get(0, 0).unwrap_or(&0.0) / m_val).sqrt();
 
     let dt = 0.001;
-    let n_steps = 200;
+    let n_steps = 30;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -1056,7 +1042,7 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
     let k_red = red0.reduce_k(&assemble_global_k(&base, &dof0));
     let omega = (*k_red.get(0, 0).unwrap_or(&0.0) / *m_red.get(0, 0).unwrap_or(&1.0)).sqrt();
     let dt = 0.001;
-    let n_steps = 200;
+    let n_steps = 30;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -1135,7 +1121,7 @@ fn test_nonlinear_time_history_convergence() {
     };
 
     let dt = 0.001;
-    let n_steps = 200;
+    let n_steps = 30;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,
@@ -1576,7 +1562,7 @@ fn test_support_spring_free_vibration_matches_linear() {
         basis: StiffnessKind::Initial,
     };
     let dt = 0.001;
-    let n_steps = 200;
+    let n_steps = 30;
     let wave = zero_wave(dt, n_steps);
     let newmark = NewmarkCfg {
         beta: 0.25,

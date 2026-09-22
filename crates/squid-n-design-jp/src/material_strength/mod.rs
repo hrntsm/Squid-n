@@ -201,26 +201,12 @@ mod tests {
         assert!(ultimate_hoop_pw_cap("SD295", 24.0, true).is_none());
     }
 
+    /// F 値表・prefix の詳細は `squid_n_core::material_grade` を正とする。
+    /// 本クレートは再エクスポートの配線のみを確認する。
     #[test]
-    fn test_f_value_buckets() {
-        assert!((steel_f_value("SS400", 40.0).unwrap() - 235.0).abs() < 1e-9);
-        assert!((steel_f_value("SS400", 40.1).unwrap() - 215.0).abs() < 1e-9);
-        assert!((steel_f_value("SM520", 75.0).unwrap() - 335.0).abs() < 1e-9);
-        assert!((steel_f_value("SM520", 76.0).unwrap() - 325.0).abs() < 1e-9);
-    }
-
-    /// TMCP・LY 系（板厚区分なし）が解決できることを確認する。
-    #[test]
-    fn test_f_value_tmcp_ly() {
-        assert_eq!(steel_f_value("TMCP440", 41.0), Some(440.0));
-        assert_eq!(steel_f_value("LY225", 40.0), Some(205.0));
-    }
-
-    #[test]
-    fn test_f_value_prefix_longest_match() {
-        assert!((steel_f_value_prefix("SN400B", 30.0).unwrap() - 235.0).abs() < 1e-9);
-        assert!((steel_f_value_prefix("SN490B", 30.0).unwrap() - 325.0).abs() < 1e-9);
-        assert!(steel_f_value_prefix("UNKNOWN999", 30.0).is_none());
+    fn test_steel_f_value_reexport_wires_to_core() {
+        assert_eq!(steel_f_value("SS400", 40.0), Some(235.0));
+        assert_eq!(steel_f_value_prefix("SN400B", 30.0), Some(235.0));
     }
 
     #[test]

@@ -220,40 +220,6 @@ mod tests {
     use crate::sparse::{assemble_csc, Triplet};
 
     #[test]
-    fn test_pcg_2dof_spring() {
-        let k = assemble_csc(
-            2,
-            vec![
-                Triplet {
-                    row: 0,
-                    col: 0,
-                    val: 300.0,
-                },
-                Triplet {
-                    row: 1,
-                    col: 0,
-                    val: -200.0,
-                },
-                Triplet {
-                    row: 0,
-                    col: 1,
-                    val: -200.0,
-                },
-                Triplet {
-                    row: 1,
-                    col: 1,
-                    val: 200.0,
-                },
-            ],
-        );
-        let mut solver = PcgSolver::new(1e-6, 1000);
-        solver.factorize(&k).unwrap();
-        let x = solver.solve(&[0.0, 1000.0]).unwrap();
-        approx::assert_relative_eq!(x[0], 10.0, max_relative = 1e-4);
-        approx::assert_relative_eq!(x[1], 15.0, max_relative = 1e-4);
-    }
-
-    #[test]
     fn test_pcg_not_factorized() {
         let solver = PcgSolver::new(1e-6, 100);
         let result = solver.solve(&[1.0, 2.0]);

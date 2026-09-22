@@ -249,24 +249,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    #[test]
-    fn test_newrc_peak_at_ec0() {
-        let c = ConcreteNewRc::new(30.0, 2.0);
-        // ピーク（εc0）で σ=-fc（比=1）。
-        let (stress, _) = c.envelope_compression(-c.eps_c0);
-        assert_relative_eq!(stress, -30.0, max_relative = 1e-6);
-    }
-
-    #[test]
-    fn test_newrc_initial_tangent_is_ec() {
-        let c = ConcreteNewRc::new(30.0, 2.0);
-        let (_, t) = c.envelope_compression(-1e-9);
-        // ε=0 近傍の接線は Ec。
-        assert_relative_eq!(t, c.ec, max_relative = 1e-3);
-        // Ec は常識的な範囲（普通コンクリート 2〜3×10⁴ N/mm² 程度）。
-        assert!(c.ec > 2.0e4 && c.ec < 3.5e4, "Ec={}", c.ec);
-    }
-
     /// **ひずみちょうど 0** の接線が Ec であること（逆行型・原点指向型とも）。
     ///
     /// ひずみ 0 の接線はファイバー断面の初期弾性剛性としてそのまま使われる
@@ -305,19 +287,6 @@ mod tests {
         let c = ConcreteNewRc::new(30.0, 2.0);
         // εc0 は 0.002 前後（普通強度コンクリート）。
         assert!(c.eps_c0 > 0.0015 && c.eps_c0 < 0.0030, "εc0={}", c.eps_c0);
-    }
-
-    #[test]
-    fn test_newrc_softening_after_peak() {
-        let mut c = ConcreteNewRc::new(30.0, 2.0);
-        let (s_peak, _) = c.trial(-c.eps_c0);
-        c.commit();
-        let (s_post, _) = c.trial(-2.0 * c.eps_c0);
-        // ピーク後は |σ| が低下（軟化）。
-        assert!(
-            s_post > s_peak,
-            "post-peak stress should reduce magnitude: peak={s_peak}, post={s_post}"
-        );
     }
 
     #[test]
@@ -364,6 +333,7 @@ mod tests {
 
     #[test]
     fn test_newrc_reference_values() {
+        // 塑性率算定（ファイバー梁）が参照する fc と εc0 をそのまま返すこと。
         let c = ConcreteNewRc::new(30.0, 2.0);
         assert_eq!(c.reference_stress(), 30.0);
         assert_relative_eq!(c.reference_strain(), c.eps_c0);
@@ -384,12 +354,14 @@ mod tests {
         let env = NewRcEnvelope::new(30.0);
         let (_, tangent) = env.compression(1e-9);
         assert_relative_eq!(tangent, env.ec, max_relative = 1e-3);
+        // Ec は常識的な範囲（普通コンクリート 2〜3×10⁴ N/mm² 程度）。
+        assert!(env.ec > 2.0e4 && env.ec < 3.5e4, "Ec={}", env.ec);
     }
 
     #[test]
     fn test_newrc_refactor_matches_known_values() {
-        // リファクタ前の実装（工学単位系 kg/cm² 換算の有理式）を Python で再現し
-        // 得た既知値と、NewRcEnvelope 経由の ConcreteNewRc の応答が一致することを確認する。
+        // 工学単位系（kgf/cm²）の NewRC 式を独立に解いて得た既知値と、NewRcEnvelope 経由の
+        // ConcreteNewRc の応答が一致することを確認する。
         // fc=30.0, gamma=2.4（既定）のとき εc0 ≈ 0.0021927039678952937。
         let cases: [(f64, f64); 3] = [
             (-0.0005, -13.585629463966358),

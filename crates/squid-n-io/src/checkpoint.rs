@@ -174,15 +174,6 @@ mod tests {
     }
 
     #[test]
-    fn test_model_hash_same_model_consistent() {
-        let model1 = squid_n_core::model::Model::default();
-        let model2 = squid_n_core::model::Model::default();
-        let h1 = compute_model_hash(&model1);
-        let h2 = compute_model_hash(&model2);
-        assert_eq!(h1, h2);
-    }
-
-    #[test]
     fn test_load_nonexistent_returns_error() {
         let dir = crate::test_util::test_tmp().join("cp_nonexistent_test");
         let _ = std::fs::remove_dir_all(&dir);

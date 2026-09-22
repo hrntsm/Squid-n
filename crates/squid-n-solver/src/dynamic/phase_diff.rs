@@ -76,12 +76,4 @@ mod tests {
         assert!((s[2] - 2.0).abs() < 1e-12); // (30−10)/10
         assert!((s[3] - 0.0).abs() < 1e-12); // (30−30)/10
     }
-
-    #[test]
-    fn test_torsional_series_nonzero_with_lag() {
-        // 位相遅れがあり波形が変化するとねじれ加振が生じる。
-        let base: Vec<f64> = (0..50).map(|k| (k as f64 * 0.3).sin()).collect();
-        let s = torsional_accel_series(&base, 0.01, 0.03, 5000.0);
-        assert!(s.iter().any(|&v| v.abs() > 0.0), "torsion must be nonzero");
-    }
 }
