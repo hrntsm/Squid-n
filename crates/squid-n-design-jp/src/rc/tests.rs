@@ -285,6 +285,59 @@ fn test_beam_shear_damage_control_vs_safety() {
 }
 
 #[test]
+fn test_beam_shear_damage_control_wft_cap_sd490() {
+    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+    let rebar = match &shape {
+        SectionShape::RcRect { rebar, .. } => rebar.clone(),
+        _ => unreachable!(),
+    };
+    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+    assert!(props.pw > 0.002, "テストの前提として pw > 0.002 が必要");
+
+    // 材料表の w_ft は SD490 短期 = 490 のまま（クランプは検定時のみ）。
+    let allow = rc_allow(24.0, ConcreteClass::Normal, "SD490", false);
+    assert!((allow.w_ft - 490.0).abs() < 1e-9);
+
+    let alpha = 1.4;
+    let qa_damage = shear_capacity(&props, &allow, alpha, LoadTerm::Short, true, false);
+    let qa_safety = shear_capacity(&props, &allow, alpha, LoadTerm::Short, false, false);
+
+    // 損傷制御の短期のみ w_ft を 390 にクランプして手計算と照合する。
+    let pw_term_damage = 0.5 * 390.0 * (props.pw.min(0.012) - 0.002);
+    let expected_damage = props.b * props.j * ((2.0 / 3.0) * alpha * allow.fs + pw_term_damage);
+    assert!((qa_damage - expected_damage).abs() / expected_damage < 1e-9);
+
+    // 安全確保の短期は材料表の 490 をそのまま用いる。
+    let pw_term_safety = 0.5 * 490.0 * (props.pw.min(0.012) - 0.002);
+    let expected_safety = props.b * props.j * (alpha * allow.fs + pw_term_safety);
+    assert!((qa_safety - expected_safety).abs() / expected_safety < 1e-9);
+
+    assert!(
+        qa_damage < qa_safety,
+        "損傷制御（w_ft=390）は安全確保（w_ft=490）より小さいはず"
+    );
+
+    // 高強度経路（KH785、w_ft=590）は 390 にクランプされない。
+    let mut allow_hs = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
+    allow_hs.w_ft = high_strength_w_ft("KH785", false);
+    let qa_hs = shear_capacity_high_strength(
+        &props,
+        &allow_hs,
+        alpha,
+        LoadTerm::Short,
+        true,
+        false,
+        "KH785",
+        24.0,
+    );
+    let pw_cap_hs = high_strength_pw_cap("KH785", LoadTerm::Short, true, 24.0);
+    let pw_term_hs = 0.5 * allow_hs.w_ft * (props.pw.min(pw_cap_hs) - 0.001);
+    let expected_hs = props.b * props.j * ((2.0 / 3.0) * alpha * allow_hs.fs + pw_term_hs);
+    assert!((qa_hs - expected_hs).abs() / expected_hs < 1e-9);
+    assert!(qa_hs > qa_damage);
+}
+
+#[test]
 fn test_column_safety_check_excludes_alpha() {
     let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
     let rebar = match &shape {
