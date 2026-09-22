@@ -43,8 +43,6 @@ pub struct WallShearTrilinearInput {
     pub sigma_0: f64,
     /// せん断スパン比 M/(Q·D)（適用範囲 1.0〜3.0 にクランプ）。
     pub shear_span_ratio: f64,
-    /// 高強度せん断補強筋を用いる場合 true（Qu 係数 0.053→0.068）。
-    pub high_strength_shear_rebar: bool,
     /// 開口（`(l0, h0, h, lw)`。l0・h0: 開口幅・高さ、h: 壁の上下梁中心間高さ、
     /// lw: 付帯柱中心間距離）。`None` は無開口（r=1）。
     pub opening: Option<(f64, f64, f64, f64)>,
@@ -125,12 +123,9 @@ pub fn wall_shear_opening_reduction(opening: Option<(f64, f64, f64, f64)>) -> f6
 /// 終局せん断強度 Qu [N]（荒川mean式系・耐震壁、技術基準解説書 P.638-639）。
 ///
 /// ```text
-/// Qu = { 0.053·pte^0.23·(Fc+18)/(M/(Q·D)+0.12)    + 0.85·√(σwh·pwh) + 0.1·σ0 }·te·j·r
-/// Qu = { 0.068·pte^0.23·(Fc+18)/√(M/(Q·D)+0.12)   + 0.85·√(σwh·pwh) + 0.1·σ0 }·te·j·r
+/// Qu = { 0.053·pte^0.23·(Fc+18)/(M/(Q·D)+0.12) + 0.85·√(σwh·pwh) + 0.1·σ0 }·te·j·r
 /// ```
-/// - `k = 0.053`（既定。技術基準解説書 P.638-639 の式で、せん断スパン比の
-///   分母は 1 乗）／`0.068`（高強度せん断補強筋。同 P.281-282 の式で、
-///   分母は `√(M/(Q·D)+0.12)`）
+/// - `k = 0.053`（技術基準解説書 P.638-639 の式で、せん断スパン比の分母は 1 乗）
 /// - `pte = 100·at/(te·d)` [%]（等価引張鉄筋比）
 /// - `d = D − Dc/2`、`j = 7/8·d`
 /// - `M/(Q·D)` は適用範囲 1.0〜3.0 にクランプ
@@ -152,7 +147,6 @@ pub fn wall_shear_ultimate(inp: &WallShearTrilinearInput) -> f64 {
             pwh_ratio: inp.pwh_ratio,
             sigma_0: inp.sigma_0,
             shear_span_ratio: inp.shear_span_ratio,
-            high_strength_shear_rebar: inp.high_strength_shear_rebar,
             opening: inp.opening,
         },
     )
@@ -197,7 +191,6 @@ mod tests {
             pwh_ratio: 0.004,
             sigma_0: 1.0,
             shear_span_ratio: 1.5,
-            high_strength_shear_rebar: false,
             opening: None,
         }
     }
@@ -267,7 +260,6 @@ mod tests {
             pwh_ratio: 0.005,
             sigma_0: 2.5,
             shear_span_ratio: 2.0,
-            high_strength_shear_rebar: true,
             opening: Some((2_000.0, 300.0, 3_000.0, 4_000.0)),
         };
         let expected = squid_n_core::rc_wall_capacity::wall_shear_ultimate(
@@ -282,7 +274,6 @@ mod tests {
                 pwh_ratio: 0.005,
                 sigma_0: 2.5,
                 shear_span_ratio: 2.0,
-                high_strength_shear_rebar: true,
                 opening: Some((2_000.0, 300.0, 3_000.0, 4_000.0)),
             },
         );

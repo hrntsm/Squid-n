@@ -22,8 +22,8 @@ use squid_n_element::frame::beam::MemberForces;
 
 use crate::design_position::{design_positions, is_near_design_position};
 use crate::{
-    beam_has_attached_slab, checker_for, BondMethod, CheckOutcome, CheckResult, DesignCheck,
-    DesignCtx, LoadTerm, MemberForcesAt, MemberKind, QdMethod, SeismicQd,
+    beam_has_attached_slab, checker_for, BondMethod, CheckOutcome, DesignCheck, DesignCtx,
+    LoadTerm, MemberForcesAt, MemberKind, QdMethod, SeismicQd,
 };
 
 /// 一本部材グループ合成値（断面検定の採用応力上書き用）。
@@ -69,7 +69,7 @@ pub struct MemberDesignCheckReport {
     /// 部材断面検定（危険断面位置・BRB・PCa 水平接合面を含む）。
     pub member_checks: Vec<(ElemId, f64, CheckOutcome)>,
     /// 節点単位検定（柱梁接合部・パネルゾーン・冷間成形耐力比・耐震壁等）。
-    pub joint_checks: Vec<(NodeId, String, CheckResult)>,
+    pub joint_checks: Vec<(NodeId, String, CheckOutcome)>,
 }
 
 /// 部材内力に対する許容応力度検定を一括実行する。

@@ -56,7 +56,8 @@ pub struct UltimateCheck {
     pub detail: String,
 }
 
-/// 1 部材の終局検定を実行する（`RcRect` 以外・Fc 未設定は `None`）。
+/// 1 部材の終局検定を実行する（`RcRect` 以外・Fc 未設定は `Ok(None)`、
+/// せん断補強筋に未対応グレードまたは `fy` 未設定がある場合は `Err`）。
 fn check_member(
     elem: &ElementData,
     sec: &Section,
@@ -64,33 +65,43 @@ fn check_member(
     model: &Model,
     demand: MemberDemand,
     opts: &UltimateShearOptions,
-) -> Option<UltimateCheck> {
-    let SectionShape::RcRect { b, d, rebar } = sec.shape.as_ref()? else {
-        return None;
+) -> Result<Option<UltimateCheck>, String> {
+    let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
+        return Ok(None);
     };
     let (b, d) = (*b, *d);
-    let fc = mat.fc?;
+    let Some(fc) = mat.fc else {
+        return Ok(None);
+    };
     if fc <= 0.0 || b <= 0.0 || d <= 0.0 {
-        return None;
+        return Ok(None);
+    }
+    if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
+        model.element_shear_rebar_material(elem),
+    ) {
+        return Err(format!("部材 ID {} の{}", elem.id.0, msg));
     }
     let opts_owned = UltimateShearOptions {
         rp: demand.rp.map(|rp| rp.max(0.0)).unwrap_or(opts.rp),
-        shear_grade: model
-            .element_shear_rebar_material(elem)
-            .map(|m| m.name.trim().to_string())
-            .filter(|g| !g.is_empty()),
+        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(
+            model.element_shear_rebar_material(elem),
+        )
+        .unwrap_or(opts.sigma_wy),
         ..opts.clone()
     };
     let opts = &opts_owned;
     let kind = MemberKind::of_element(elem, model);
-    let sigma_y =
-        squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))?;
+    let Some(sigma_y) =
+        squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))
+    else {
+        return Ok(None);
+    };
     let l_clear = clear_span(elem, model);
 
     let dt = rebar_tension_dt(rebar);
     let d_eff = d - dt;
     if d_eff <= 0.0 {
-        return None;
+        return Ok(None);
     }
     let jt = 7.0 * d_eff / 8.0;
     let at = bar_set_area(&rebar.main_x) / 2.0;
@@ -126,18 +137,7 @@ fn check_member(
         }
     };
 
-    let qsu = member_shear_strength(
-        b,
-        d,
-        jt,
-        pw,
-        rebar,
-        fc,
-        n_axial,
-        l_clear,
-        matches!(kind, MemberKind::Column),
-        opts,
-    );
+    let qsu = member_shear_strength(b, d, jt, pw, rebar, fc, n_axial, l_clear, opts);
 
     let (qbu, tau_bu) = if opts.include_bond {
         let n_tension = (rebar.main_x.count as f64 / 2.0).max(1.0);
@@ -193,25 +193,7 @@ fn check_member(
         (0.0, 0.0)
     };
 
-    let use_q_simple = opts
-        .shear_grade
-        .as_deref()
-        .map(|g| {
-            let g = g.trim().to_uppercase();
-            ["MK785", "SPR785", "SPR685"]
-                .iter()
-                .any(|p| g.starts_with(p))
-        })
-        .unwrap_or(false);
-    let ql = if use_q_simple {
-        demand
-            .q_simple
-            .or(demand.q_long)
-            .map(|q| q.abs())
-            .unwrap_or(0.0)
-    } else {
-        demand.q_long.map(|q| q.abs()).unwrap_or(0.0)
-    };
+    let ql = demand.q_long.map(|q| q.abs()).unwrap_or(0.0);
     let shear_margin = if qmu > 0.0 {
         ((qsu - ql).max(0.0)) / qmu
     } else {
@@ -324,7 +306,7 @@ fn check_member(
         opts.rp
     );
 
-    Some(UltimateCheck {
+    Ok(Some(UltimateCheck {
         elem: elem.id,
         kind,
         mu,
@@ -339,7 +321,7 @@ fn check_member(
         ok,
         basis,
         detail,
-    })
+    }))
 }
 
 /// モデルの RC 矩形部材について終局検定（塑性理論式）を一括実行する。
@@ -350,11 +332,13 @@ fn check_member(
 ///   応答値を渡すことを想定する。
 /// - 対象外（`RcRect` 以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
 ///   結果に含めない。
+/// - 検定対象の部材でせん断補強筋に未対応グレードまたは `fy` 未設定がある場合は、
+///   部材 ID と是正内容を含む理由を `Err` で返す。
 pub fn collect_rc_ultimate_checks(
     model: &Model,
     demand_by_elem: &[(ElemId, MemberDemand)],
     opts: &UltimateShearOptions,
-) -> Vec<UltimateCheck> {
+) -> Result<Vec<UltimateCheck>, String> {
     let mut out = Vec::new();
     for elem in &model.elements {
         let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -368,9 +352,9 @@ pub fn collect_rc_ultimate_checks(
             .find(|(id, _)| *id == elem.id)
             .map(|(_, d)| *d)
             .unwrap_or_default();
-        if let Some(check) = check_member(elem, sec, mat, model, demand, opts) {
+        if let Some(check) = check_member(elem, sec, mat, model, demand, opts)? {
             out.push(check);
         }
     }
-    out
+    Ok(out)
 }

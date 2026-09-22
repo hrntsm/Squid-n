@@ -129,7 +129,7 @@ fn test_collect_rc_ultimate_checks_column_and_beam() {
     let opts = UltimateShearOptions::default();
     // 柱に圧縮軸力 2000kN。
     let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
-    let checks = collect_rc_ultimate_checks(&model, &axial, &opts);
+    let checks = collect_rc_ultimate_checks(&model, &axial, &opts).unwrap();
     assert_eq!(checks.len(), 2, "柱・梁の 2 部材が検定される");
 
     let col = checks.iter().find(|c| c.elem == ElemId(0)).unwrap();
@@ -153,44 +153,165 @@ fn test_collect_rc_ultimate_checks_column_and_beam() {
     assert!((col.shear_margin - col.qsu / col.qmu).abs() < 1e-9);
 }
 
+/// 終局 σwy は断面のせん断補強筋材料の `fy` から解決する。材料名の数値ではなく
+/// 材料の `fy` が効き、対応グレードで `fy` 未設定は入力不備として停止する。
 #[test]
-fn test_ultimate_check_ql_q0_substitution_for_mk785() {
-    // MK785/SPR785/SPR685 使用時は余裕率の QL 控除を QL=Q0（単純梁せん断）と
-    // 読み替える。普通強度筋は q_long のまま。
+fn test_ultimate_sigma_wy_from_shear_rebar_material_fy() {
+    let opts = UltimateShearOptions::default();
+    // 梁断面（要素 1）の σwy だけを変えた Qsu の手計算値を返す。
+    let qsu_with_sigma_wy = |model: &Model, sigma_wy: f64| -> f64 {
+        let SectionShape::RcRect { b, d, rebar } = model.sections[1].shape.clone().unwrap() else {
+            unreachable!()
+        };
+        let dt = squid_n_core::rc_rebar_geom::rebar_tension_dt(&rebar);
+        let d_eff = d - dt;
+        let jt = 7.0 * d_eff / 8.0;
+        let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
+        let l_clear = super::geometry::clear_span(&model.elements[1], model);
+        super::rc_strength::member_shear_strength(
+            b,
+            d,
+            jt,
+            pw,
+            &rebar,
+            24.0,
+            0.0,
+            l_clear,
+            &UltimateShearOptions {
+                sigma_wy,
+                ..opts.clone()
+            },
+        )
+    };
+    // 梁のせん断補強筋だけ専用材料（fy を指定）に差し替えたモデル。主筋・
+    // コンクリートは既定の material()（SD345・fy=345・Fc=24）を共有する。
+    let model_with_shear_fy = |shear_fy: Option<f64>| -> Model {
+        let mut model = column_and_beam_model();
+        model.materials.push(Material {
+            id: MaterialId(model.materials.len() as u32),
+            name: "SD345".to_string(),
+            fy: shear_fy,
+            ..material()
+        });
+        let shear_id = MaterialId(model.materials.len() as u32 - 1);
+        model.sections[1].shear_rebar_material = Some(shear_id);
+        model
+    };
+
+    // 標準ケース（fy=345）では材料の fy=345 が σwy に効く。
+    let model = model_with_shear_fy(Some(345.0));
+    let checks = collect_rc_ultimate_checks(&model, &[], &opts).unwrap();
+    let beam = checks.iter().find(|c| c.elem == ElemId(1)).unwrap();
+    let qsu_345 = qsu_with_sigma_wy(&model, 345.0);
+    assert!(
+        (beam.qsu - qsu_345).abs() / qsu_345 < 1e-12,
+        "材料 fy=345 を σwy に用いるはず: qsu={}, expected={qsu_345}",
+        beam.qsu
+    );
+
+    // 材料名の数値が同じでも fy が異なれば fy が効く（fy=490）。
+    let model_490 = model_with_shear_fy(Some(490.0));
+    let checks_490 = collect_rc_ultimate_checks(&model_490, &[], &opts).unwrap();
+    let beam_490 = checks_490.iter().find(|c| c.elem == ElemId(1)).unwrap();
+    let qsu_490 = qsu_with_sigma_wy(&model_490, 490.0);
+    assert!(
+        (beam_490.qsu - qsu_490).abs() / qsu_490 < 1e-12,
+        "材料 fy=490 を σwy に用いるはず: qsu={}, expected={qsu_490}",
+        beam_490.qsu
+    );
+    assert!(beam_490.qsu > beam.qsu, "fy の増加に伴い Qsu も増える");
+
+    // 対応グレードでも fy 未設定は入力不備として停止する（既定 295 で代替しない）。
+    let model_none = model_with_shear_fy(None);
+    let err = collect_rc_ultimate_checks(&model_none, &[], &opts).unwrap_err();
+    assert!(err.contains("fy"), "{err}");
+    assert!(err.contains("部材 ID 1"), "{err}");
+}
+
+/// SR235 は対応グレードだが、fy 未設定なら入力不備として停止する
+/// （既定 295 で評価すると σwy が 235→295 に増える危険側）。fy を設定すれば算定できる。
+#[test]
+fn test_ultimate_sr235_requires_fy() {
+    let opts = UltimateShearOptions::default();
+    let model_with_shear = |name: &str, fy: Option<f64>| -> Model {
+        let mut model = column_and_beam_model();
+        model.materials.push(Material {
+            id: MaterialId(model.materials.len() as u32),
+            name: name.to_string(),
+            fy,
+            ..material()
+        });
+        let shear_id = MaterialId(model.materials.len() as u32 - 1);
+        model.sections[1].shear_rebar_material = Some(shear_id);
+        model
+    };
+
+    let err = collect_rc_ultimate_checks(&model_with_shear("SR235", None), &[], &opts).unwrap_err();
+    assert!(err.contains("SR235") && err.contains("fy"), "{err}");
+
+    let checks =
+        collect_rc_ultimate_checks(&model_with_shear("SR235", Some(235.0)), &[], &opts).unwrap();
+    let beam = checks.iter().find(|c| c.elem == ElemId(1)).unwrap();
+    assert!(beam.qsu > 0.0);
+}
+
+/// `SD295` の未知名（`SD295X` 等）は未対応として停止し、設定した `fy` を
+/// 終局 σwy に使わない（`SD295` の前方一致で任意の `fy` をすり抜けさせない）。
+#[test]
+fn test_ultimate_unknown_sd295_is_unsupported() {
+    let opts = UltimateShearOptions::default();
+    for name in ["SD295X", "SD295Z", "SD295-FOO"] {
+        let mut model = column_and_beam_model();
+        model.materials.push(Material {
+            id: MaterialId(model.materials.len() as u32),
+            name: name.to_string(),
+            fy: Some(295.0),
+            ..material()
+        });
+        let shear_id = MaterialId(model.materials.len() as u32 - 1);
+        model.sections[1].shear_rebar_material = Some(shear_id);
+        let err = collect_rc_ultimate_checks(&model, &[], &opts).unwrap_err();
+        assert!(err.contains(name), "{name}: {err}");
+        assert!(err.contains("未対応"), "{name}: {err}");
+    }
+}
+
+#[test]
+fn test_ultimate_check_ql_subtraction_and_unsupported_error() {
+    // 余裕率の QL 控除は `q_long` のみで行う。
     let ql = 50_000.0;
-    let q0 = 80_000.0;
     let demand = vec![(
         ElemId(1),
         MemberDemand {
             q_long: Some(ql),
-            q_simple: Some(q0),
             ..MemberDemand::axial(0.0)
         },
     )];
     let opts = UltimateShearOptions::default();
 
-    // 普通強度（grade=None）: QL 控除。
+    // 普通強度（SD345）: QL 控除。
     let model = column_and_beam_model();
-    let checks = collect_rc_ultimate_checks(&model, &demand, &opts);
+    let checks = collect_rc_ultimate_checks(&model, &demand, &opts).unwrap();
     let beam = checks.iter().find(|c| c.elem == ElemId(1)).unwrap();
     assert!((beam.shear_margin - (beam.qsu - ql).max(0.0) / beam.qmu).abs() < 1e-9);
 
-    // MK785: Q0 控除（σwy も製品値に変わるため Qsu 自体も変化する）。
-    // せん断補強筋の材質は断面が持つ材料の名前で決まる。
-    let mut model_mk = column_and_beam_model();
-    model_mk.materials.push(Material {
-        id: MaterialId(model_mk.materials.len() as u32),
-        name: "MK785".to_string(),
+    // 未対応グレード（KH785）は入力不備として理由付きで停止する。
+    let mut model_kh = column_and_beam_model();
+    model_kh.materials.push(Material {
+        id: MaterialId(model_kh.materials.len() as u32),
+        name: "KH785".to_string(),
         fy: Some(785.0),
         ..material()
     });
-    let mk = MaterialId(model_mk.materials.len() as u32 - 1);
-    model_mk.sections[1].shear_rebar_material = Some(mk);
-    let checks_mk = collect_rc_ultimate_checks(&model_mk, &demand, &opts);
-    let beam_mk = checks_mk.iter().find(|c| c.elem == ElemId(1)).unwrap();
-    assert!((beam_mk.shear_margin - (beam_mk.qsu - q0).max(0.0) / beam_mk.qmu).abs() < 1e-9);
-    // 製品別 σwy=min(25·24, 785)=600 > 既定 295 のため Qsu は増える方向。
-    assert!(beam_mk.qsu > beam.qsu);
+    let kh = MaterialId(model_kh.materials.len() as u32 - 1);
+    model_kh.sections[1].shear_rebar_material = Some(kh);
+    let err = collect_rc_ultimate_checks(&model_kh, &demand, &opts).unwrap_err();
+    assert!(err.contains("KH785"), "{err}");
+    assert!(
+        err.contains("SR235・SR295・SD295・SD345・SD390・SD490"),
+        "{err}"
+    );
+    assert!(err.contains("部材 ID 1"), "部材 ID を含むはず: {err}");
 }
 
 /// 算定オプション（軽量コンクリートの低減・付着検定の省略）が機能する。
@@ -199,7 +320,7 @@ fn test_ultimate_check_option_flags() {
     let model = column_and_beam_model();
 
     // 軽量コンクリートは Qsu・Qbu を 0.9 倍に低減する。
-    let std = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default());
+    let std = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default()).unwrap();
     let lw = collect_rc_ultimate_checks(
         &model,
         &[],
@@ -207,7 +328,8 @@ fn test_ultimate_check_option_flags() {
             lightweight: true,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let col_std = std.iter().find(|c| c.elem == ElemId(0)).unwrap();
     let col_lw = lw.iter().find(|c| c.elem == ElemId(0)).unwrap();
     assert!((col_lw.qsu - 0.9 * col_std.qsu).abs() < 1e-3);
@@ -221,7 +343,8 @@ fn test_ultimate_check_option_flags() {
             include_bond: false,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     for c in &no_bond {
         assert_eq!(c.qbu, 0.0);
         assert!(c.bond_margin.is_infinite());
@@ -233,7 +356,7 @@ fn test_ultimate_check_skips_non_rc() {
     // 鋼断面（shape=None 相当）は検定対象外。
     let mut model = column_and_beam_model();
     model.sections[0].shape = None;
-    let checks = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default());
+    let checks = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default()).unwrap();
     // 柱がスキップされ梁のみ。
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].elem, ElemId(1));
@@ -257,7 +380,7 @@ fn test_biaxial_margin_handcalc() {
 fn test_ultimate_check_biaxial_shear() {
     let model = column_and_beam_model();
     let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
-    let uni = collect_rc_ultimate_checks(&model, &axial, &UltimateShearOptions::default());
+    let uni = collect_rc_ultimate_checks(&model, &axial, &UltimateShearOptions::default()).unwrap();
     let bi = collect_rc_ultimate_checks(
         &model,
         &axial,
@@ -265,7 +388,8 @@ fn test_ultimate_check_biaxial_shear() {
             biaxial_shear: true,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let col_uni = uni.iter().find(|c| c.elem == ElemId(0)).unwrap();
     let col_bi = bi.iter().find(|c| c.elem == ElemId(0)).unwrap();
     // 既定では 2 軸余裕度は None。
@@ -296,7 +420,8 @@ fn test_ultimate_check_biaxial_bending() {
             ..Default::default()
         },
     )];
-    let uni = collect_rc_ultimate_checks(&model, &demand, &UltimateShearOptions::default());
+    let uni =
+        collect_rc_ultimate_checks(&model, &demand, &UltimateShearOptions::default()).unwrap();
     let bi = collect_rc_ultimate_checks(
         &model,
         &demand,
@@ -304,7 +429,8 @@ fn test_ultimate_check_biaxial_bending() {
             biaxial_bending: true,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let col_uni = uni.iter().find(|c| c.elem == ElemId(0)).unwrap();
     let col_bi = bi.iter().find(|c| c.elem == ElemId(0)).unwrap();
     // 既定では None、指定で Some。
@@ -325,7 +451,8 @@ fn test_ultimate_check_biaxial_bending() {
             biaxial_bending: true,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let col_z = z.iter().find(|c| c.elem == ElemId(0)).unwrap();
     assert!(col_z.biaxial_bending_margin.unwrap().is_infinite());
     // 梁は対象外。
@@ -337,7 +464,8 @@ fn test_ultimate_check_biaxial_bending() {
 #[test]
 fn test_ultimate_check_shear_method_ductility() {
     let model = column_and_beam_model();
-    let plastic = collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default());
+    let plastic =
+        collect_rc_ultimate_checks(&model, &[], &UltimateShearOptions::default()).unwrap();
     let ductility = collect_rc_ultimate_checks(
         &model,
         &[],
@@ -345,7 +473,8 @@ fn test_ultimate_check_shear_method_ductility() {
             shear_method: ShearMethod::Ductility,
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     // 両手法とも柱・梁の Qsu/Vu は正値（別定式なので値は一般に異なる）。
     for c in &plastic {
         assert!(c.qsu > 0.0, "塑性 Qsu>0: elem={:?}", c.elem);
@@ -385,7 +514,8 @@ fn test_ultimate_check_pushover_demand() {
         ElemId(0),
         MemberDemand::from_pushover(1_000_000.0, 1.0e8, 5.0e7, qm, 0.0, 0.0),
     )];
-    let checks = collect_rc_ultimate_checks(&model, &demand, &UltimateShearOptions::default());
+    let checks =
+        collect_rc_ultimate_checks(&model, &demand, &UltimateShearOptions::default()).unwrap();
     let col = checks.iter().find(|c| c.elem == ElemId(0)).unwrap();
     // 上限強度倍率=1.0（既定）なので Qmu = |Qm|。
     assert!(
@@ -404,8 +534,8 @@ fn test_ultimate_check_pushover_demand() {
         ElemId(0),
         MemberDemand::from_pushover(1_000_000.0, 1.0e8, 5.0e7, qm, 0.0, 0.03),
     )];
-    let c0 = collect_rc_ultimate_checks(&model, &d_rp0, &UltimateShearOptions::default());
-    let c3 = collect_rc_ultimate_checks(&model, &d_rp3, &UltimateShearOptions::default());
+    let c0 = collect_rc_ultimate_checks(&model, &d_rp0, &UltimateShearOptions::default()).unwrap();
+    let c3 = collect_rc_ultimate_checks(&model, &d_rp3, &UltimateShearOptions::default()).unwrap();
     let q0 = c0.iter().find(|c| c.elem == ElemId(0)).unwrap().qsu;
     let q3 = c3.iter().find(|c| c.elem == ElemId(0)).unwrap().qsu;
     assert!(
@@ -415,7 +545,8 @@ fn test_ultimate_check_pushover_demand() {
 
     // (3) shear/rp 未指定（axial のみ）は Qmu=2·Mu/内法（Qm 直接反映なし）。
     let d_axial = vec![(ElemId(0), MemberDemand::axial(1_000_000.0))];
-    let ca = collect_rc_ultimate_checks(&model, &d_axial, &UltimateShearOptions::default());
+    let ca =
+        collect_rc_ultimate_checks(&model, &d_axial, &UltimateShearOptions::default()).unwrap();
     let col_a = ca.iter().find(|c| c.elem == ElemId(0)).unwrap();
     assert!(
         (col_a.qmu - qm).abs() > 1.0,
@@ -437,8 +568,8 @@ fn test_ultimate_check_pushover_demand() {
         ElemId(0),
         MemberDemand::from_pushover(1_000_000.0, 0.0, 0.0, qm, 400_000.0, 0.0),
     )];
-    let cs = collect_rc_ultimate_checks(&model, &small, &opts);
-    let cl = collect_rc_ultimate_checks(&model, &large, &opts);
+    let cs = collect_rc_ultimate_checks(&model, &small, &opts).unwrap();
+    let cl = collect_rc_ultimate_checks(&model, &large, &opts).unwrap();
     let ms = cs
         .iter()
         .find(|c| c.elem == ElemId(0))

@@ -11,7 +11,8 @@
 //! - [`rebar_f_value`] — 鉄筋の基準強度（`SD345` → 345 等）
 //! - [`rebar_grade_f_value`] — 同（高強度鉄筋の製品名を含む。`KH785` → 785 等）
 //! - [`rebar_yield_strength`] / [`shear_rebar_yield_strength`] — 配筋の材質からの σy・σwy 解決
-//! - [`is_high_strength_shear_grade`] — 高強度せん断補強筋かどうかの判定
+//! - [`is_supported_shear_rebar_grade`] — せん断補強筋として対応するグレードかどうかの判定
+//! - [`shear_rebar_material_issue`] — 未対応グレード・`fy` 未設定をまとめた材料不備の判定
 //! - [`parse_concrete_fc`] — コンクリート `FcXX` 名称の解釈
 //! - [`material_presets`] — UI に提示する標準材料プリセット一覧
 
@@ -201,38 +202,58 @@ pub fn rebar_yield_strength(rebar_mat: Option<&crate::model::Material>) -> Optio
 /// せん断補強筋の降伏点 σwy [N/mm²] を解決する。
 ///
 /// 断面のせん断補強筋材料（[`crate::model::Section::shear_rebar_material`]）の
-/// `fy` を用いる。未設定は `None` を返し、呼び出し側は普通強度せん断補強筋の
-/// SD295 相当（295）を既定とする（規格上の最小グレードであり、実際がより高強度でも
-/// 耐力を過小評価する側＝安全側に外れる）。
+/// `fy` を用いる。材料未割当（`None`）は `None` を返し、呼び出し側が
+/// [`SHEAR_REBAR_DEFAULT_FY`]（材料未割当時に用いる SD295 相当の代表値）を既定とする。
+/// 材料を割り当てているのに `fy` が未設定の場合は [`shear_rebar_material_issue`] が
+/// 不備として扱う（無言で既定値を用いない）。
 pub fn shear_rebar_yield_strength(mat: Option<&crate::model::Material>) -> Option<f64> {
     mat.and_then(|m| m.fy).filter(|v| *v > 0.0)
 }
 
-/// せん断補強筋の材質が未設定の場合に用いる降伏点 σwy [N/mm²]（SD295 相当）。
+/// せん断補強筋の材料が未割当（`None`）のときに用いる降伏点 σwy [N/mm²]。
+/// SD295 相当の代表値。材料を割り当てている場合には用いない
+/// （`fy` 未設定は [`shear_rebar_material_issue`] が不備とする）。
 pub const SHEAR_REBAR_DEFAULT_FY: f64 = 295.0;
 
-/// 材料の名称が**高強度**せん断補強筋か（普通強度の異形鉄筋・丸鋼は false）。
+/// せん断補強筋として対応するグレードかどうかを判定する。
 ///
-/// せん断補強筋の材料欄には普通強度（`SD295A`・`SD345` 等）も割り当てられるため、
-/// 「材料が割り当てられている＝高強度品」とみなしてはならない（普通強度を高強度品の
-/// 表で評価すると w_ft を 590 N/mm² と大幅に過大評価し**危険側**になる）。
-/// JIS の異形棒鋼 `SD*`・丸鋼 `SR*` は普通強度として false を返し、それ以外の
-/// 製品名（`UB785`・`KH785`・`SBPD1275`・`USD685` 等）を高強度として扱う。
-///
-/// 許容応力度計算（`squid-n-design-jp` の w_ft・pw 上限）と、耐震壁の終局せん断強度
-/// （`squid-n-element` の Qu 係数 0.053 / 0.068）の両方が本判定を用いる。
-pub fn is_high_strength_shear_grade(name: &str) -> bool {
-    let g = name.trim().to_uppercase();
-    if g.is_empty() {
-        return false;
-    }
-    !(g.starts_with("SD") || g.starts_with("SR"))
+/// 対応グレードは `SR235`・`SR295`・`SD295`・`SD295A`・`SD295B`・`SD345`・`SD390`・
+/// `SD490`（名称の明示一致）。名称は trim のみを行い、許容応力度表の行選択にのみ
+/// 用いる（材料の降伏強度は `Material.fy` から解決する）。
+pub fn is_supported_shear_rebar_grade(name: &str) -> bool {
+    let g = name.trim();
+    matches!(
+        g,
+        "SR235" | "SR295" | "SD295" | "SD295A" | "SD295B" | "SD345" | "SD390" | "SD490"
+    )
 }
 
-/// 断面のせん断補強筋材料が高強度品かどうかを判定する。
-/// 材料が未割当のときは普通強度（false）として扱う。
-pub fn is_high_strength_shear_material(mat: Option<&crate::model::Material>) -> bool {
-    mat.is_some_and(|m| is_high_strength_shear_grade(&m.name))
+/// 未対応のせん断補強筋グレードに対するエラー文言を組み立てる。
+/// 材料名と対応グレードの一覧を示す。
+pub fn unsupported_shear_rebar_message(name: &str) -> String {
+    format!(
+        "せん断補強筋グレード『{}』は未対応です。対応グレードは SR235・SR295・SD295・SD345・SD390・SD490 です。",
+        name.trim()
+    )
+}
+
+/// せん断補強筋材料の不備（未対応グレード・`fy` 未設定）をまとめて判定する。
+///
+/// 材料未割当（`None`）は不備なし（`None`）。未対応グレードは
+/// [`unsupported_shear_rebar_message`]、対応グレードで `fy` が未設定または 0 以下なら
+/// 材料名を含む是正文言を返す。
+pub fn shear_rebar_material_issue(mat: Option<&crate::model::Material>) -> Option<String> {
+    let mat = mat?;
+    if !is_supported_shear_rebar_grade(&mat.name) {
+        return Some(unsupported_shear_rebar_message(&mat.name));
+    }
+    if !mat.fy.is_some_and(|fy| fy > 0.0) {
+        return Some(format!(
+            "せん断補強筋材料「{}」に降伏強度 fy が設定されていません。材料タブで fy を設定してください。",
+            mat.name.trim()
+        ));
+    }
+    None
 }
 
 /// UI で選択できる主筋のグレード（表示順。JIS G 3112 の異形棒鋼と高強度異形棒鋼）。
@@ -245,13 +266,6 @@ pub const MAIN_REBAR_GRADES: &[&str] = &["SD295A", "SD295B", "SD345", "SD390", "
 /// 公称直径 [mm] ではない）。
 pub const REBAR_NOMINAL_SIZES: &[f64] = &[
     10.0, 13.0, 16.0, 19.0, 22.0, 25.0, 29.0, 32.0, 35.0, 38.0, 41.0,
-];
-
-/// UI で選択できるせん断補強筋のグレード（表示順）。
-/// 普通強度（`SD*`）に加え、大臣認定の高強度せん断補強筋を含む。
-pub const SHEAR_REBAR_GRADES: &[&str] = &[
-    "SD295A", "SD295B", "SD345", "SD390", "KH785", "UB785", "KSS785", "SHD685", "SPR785", "MK785",
-    "SBPD1275",
 ];
 
 /// コンクリートのグレード名 `FcXX` から設計基準強度 Fc [N/mm²] を取り出す。
@@ -634,12 +648,78 @@ mod tests {
     /// せん断補強筋 σwy も材料の `fy` から解決し、未設定は None（既定 295 は呼び出し側）。
     #[test]
     fn test_shear_rebar_yield_strength() {
-        let mat = rebar_mat("SD295A", Some(295.0));
-        assert_eq!(shear_rebar_yield_strength(Some(&mat)), Some(295.0));
-        let high = rebar_mat("KH785", Some(785.0));
-        assert_eq!(shear_rebar_yield_strength(Some(&high)), Some(785.0));
+        let mat = rebar_mat("SD345", Some(345.0));
+        assert_eq!(shear_rebar_yield_strength(Some(&mat)), Some(345.0));
         assert_eq!(shear_rebar_yield_strength(None), None);
         assert_eq!(SHEAR_REBAR_DEFAULT_FY, 295.0);
+    }
+
+    /// せん断補強筋として対応するグレードの判定。対応は SR235・SR295・SD295 系・
+    /// SD345・SD390・SD490 の明示一致のみで、高強度製品名・`SD295` の未知名は未対応とする。
+    #[test]
+    fn test_is_supported_shear_rebar_grade() {
+        for name in [
+            "SR235",
+            "SR295",
+            "SD295",
+            "SD295A",
+            "SD295B",
+            "SD345",
+            "SD390",
+            "SD490",
+            "  SD345  ",
+        ] {
+            assert!(is_supported_shear_rebar_grade(name), "{name} は対応");
+        }
+        for name in [
+            "KH785",
+            "UB785",
+            "SBPD1275",
+            "USD685",
+            "",
+            "S",
+            "SS400",
+            "SD295X",
+            "SD295Z",
+            "SD295-FOO",
+        ] {
+            assert!(!is_supported_shear_rebar_grade(name), "{name} は未対応");
+        }
+    }
+
+    /// 未対応グレードのエラー文言に材料名と対応グレードの一覧が含まれる。
+    #[test]
+    fn test_unsupported_shear_rebar_message() {
+        let msg = unsupported_shear_rebar_message("KH785");
+        assert!(msg.contains("KH785"), "{msg}");
+        assert!(
+            msg.contains("SR235・SR295・SD295・SD345・SD390・SD490"),
+            "{msg}"
+        );
+    }
+
+    /// せん断補強筋材料の不備判定: 未割当は不備なし、未対応グレードと
+    /// 対応グレードの `fy` 未設定（0 以下を含む）は不備とする。
+    #[test]
+    fn test_shear_rebar_material_issue() {
+        assert_eq!(shear_rebar_material_issue(None), None);
+        assert_eq!(
+            shear_rebar_material_issue(Some(&rebar_mat("SR235", Some(235.0)))),
+            None
+        );
+        let msg = shear_rebar_material_issue(Some(&rebar_mat("KH785", Some(785.0)))).unwrap();
+        assert!(msg.contains("KH785"), "{msg}");
+        for fy in [None, Some(0.0)] {
+            let msg = shear_rebar_material_issue(Some(&rebar_mat("SR235", fy))).unwrap();
+            assert!(msg.contains("SR235") && msg.contains("fy"), "{msg}");
+        }
+        // SD295 の未知名は、fy を設定しても未対応として不備を返す
+        // （終局 σwy にこの fy を使わせない）。
+        for name in ["SD295X", "SD295Z", "SD295-FOO"] {
+            let msg = shear_rebar_material_issue(Some(&rebar_mat(name, Some(295.0)))).unwrap();
+            assert!(msg.contains(name), "{msg}");
+            assert!(msg.contains("未対応"), "{msg}");
+        }
     }
 
     #[test]

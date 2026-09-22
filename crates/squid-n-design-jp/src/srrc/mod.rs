@@ -288,6 +288,13 @@ impl DesignCheck for SrcDesign {
                     .to_string(),
             };
         }
+        if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
+            ctx.shear_rebar_material.as_ref(),
+        ) {
+            return CheckOutcome::Skipped {
+                reason: format!("SRC検定: {msg}"),
+            };
+        }
         let Some(steel_mat) = ctx.steel_material.as_ref() else {
             return CheckOutcome::Skipped {
                 reason: "SRC検定: 内蔵鉄骨の材料が未割当\

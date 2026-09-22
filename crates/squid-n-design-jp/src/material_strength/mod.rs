@@ -2,7 +2,6 @@
 //! コンクリート・鉄筋は RC 規準・構造規定、鋼材は鋼構造設計規準 1973・構造規定に準拠する。
 
 mod concrete;
-mod high_strength_hoop;
 mod rebar;
 mod steel;
 
@@ -10,10 +9,6 @@ pub use concrete::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
     concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
     young_ratio_n,
-};
-pub use high_strength_hoop::{
-    high_strength_group, high_strength_pw_cap, high_strength_w_ft, is_high_strength_shear_grade,
-    ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy, HighStrengthGroup,
 };
 pub use rebar::{
     main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of,
@@ -97,8 +92,6 @@ mod tests {
     fn test_rebar_usd685() {
         assert!((rebar_allowable_tension("USD685", 32.0, true) - 215.0).abs() < 1e-9);
         assert!((rebar_allowable_tension("USD685", 32.0, false) - 685.0).abs() < 1e-9);
-        assert!((rebar_allowable_shear("USD685", true) - 195.0).abs() < 1e-9);
-        assert!((rebar_allowable_shear("USD685", false) - 590.0).abs() < 1e-9);
     }
 
     /// σy は断面の主筋材料の `fy` だけから決まる。材料名からの推定は行わない
@@ -124,81 +117,6 @@ mod tests {
         assert!((rebar_sigma_y_of(Some(&m)) - 400.0).abs() < 1e-9);
         // 主筋の材料が未割当でも 0 とし、既定値をでっち上げない。
         assert!(rebar_sigma_y_of(None).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_high_strength_pw_cap_groups() {
-        // ウルボン系(UB785)・SPR785: 短期 1.2%(損傷制御)/1.0%(安全確保)。
-        assert!((high_strength_pw_cap("UB785", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
-        assert!((high_strength_pw_cap("UB785", LoadTerm::Short, false, 24.0) - 0.010).abs() < 1e-9);
-        // KW785/KSS785/HDC685: 0.8%。
-        assert!((high_strength_pw_cap("KW785", LoadTerm::Short, true, 24.0) - 0.008).abs() < 1e-9);
-        // SHD685・MK785: 1.2% 固定。
-        assert!((high_strength_pw_cap("SHD685", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
-        assert!((high_strength_pw_cap("MK785", LoadTerm::Short, false, 24.0) - 0.012).abs() < 1e-9);
-        // KH785: min(1.2%, 1.0%・Fc/27)。Fc=24 → 0.010×24/27≈0.008889。
-        assert!(
-            (high_strength_pw_cap("KH785", LoadTerm::Short, false, 24.0) - 0.010 * 24.0 / 27.0)
-                .abs()
-                < 1e-9
-        );
-        // KH685/SPR685: min(1.2%, 1.2%・Fc/27)。Fc=36 → 頭打ち 1.2%。
-        assert!((high_strength_pw_cap("KH685", LoadTerm::Short, true, 36.0) - 0.012).abs() < 1e-9);
-        assert!(
-            (high_strength_pw_cap("SPR685", LoadTerm::Short, false, 24.0) - 0.012 * 24.0 / 27.0)
-                .abs()
-                < 1e-9
-        );
-        // 未知品・長期。
-        assert!((high_strength_pw_cap("XYZ999", LoadTerm::Short, true, 24.0) - 0.008).abs() < 1e-9);
-        assert!((high_strength_pw_cap("UB785", LoadTerm::Long, true, 24.0) - 0.006).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_high_strength_w_ft() {
-        assert!((high_strength_w_ft("SBPD1275", false) - 585.0).abs() < 1e-9);
-        assert!((high_strength_w_ft("UB785", false) - 590.0).abs() < 1e-9);
-        assert!((high_strength_w_ft("KH785", true) - 195.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_ultimate_hoop_sigma_wy_products() {
-        // min(25Fc, 上限) 系: Fc=24 → 25·24=600 が支配。Fc=60 → 上限が支配。
-        assert!((ultimate_hoop_sigma_wy("SBPD1275", 24.0).unwrap() - 600.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("SBPD1275", 60.0).unwrap() - 1275.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("SBPDN1275/1420", 60.0).unwrap() - 1275.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("UB785", 60.0).unwrap() - 785.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("KSS785", 24.0).unwrap() - 600.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("SHD685", 60.0).unwrap() - 685.0).abs() < 1e-9);
-        // HDC685 は Fc 非依存の 685。
-        assert!((ultimate_hoop_sigma_wy("HDC685", 24.0).unwrap() - 685.0).abs() < 1e-9);
-        // しきい値切替系: KH785 は Fc=27.4 で 25Fc→785 に跳ぶ。
-        assert!((ultimate_hoop_sigma_wy("KH785", 27.0).unwrap() - 675.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("KH785", 27.4).unwrap() - 785.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("SPR785", 31.0).unwrap() - 775.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("SPR785", 32.0).unwrap() - 785.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("MK785", 31.0).unwrap() - 775.0).abs() < 1e-9);
-        assert!((ultimate_hoop_sigma_wy("MK785", 31.4).unwrap() - 785.0).abs() < 1e-9);
-        // 未知製品は None。
-        assert!(ultimate_hoop_sigma_wy("SD295", 24.0).is_none());
-        assert!(ultimate_hoop_sigma_wy("XYZ999", 24.0).is_none());
-    }
-
-    #[test]
-    fn test_ultimate_hoop_nu0_and_pw_cap() {
-        // 1275 級: ν0 = 0.7·(1.0−Fc/140)。
-        let nu = ultimate_hoop_nu0("SBPD1275", 24.0).unwrap();
-        assert!((nu - 0.7 * (1.0 - 24.0 / 140.0)).abs() < 1e-12);
-        // 785/685 級: ν0 = 0.7·(0.7−Fc/200)。
-        let nu2 = ultimate_hoop_nu0("UB785", 24.0).unwrap();
-        assert!((nu2 - 0.7 * (0.7 - 24.0 / 200.0)).abs() < 1e-12);
-        assert!(ultimate_hoop_nu0("SD295", 24.0).is_none());
-        // pw 上限: 1275 級の柱かつ Fc<27 のみ 0.8%、それ以外 1.2%。
-        assert!((ultimate_hoop_pw_cap("SBPD1275", 24.0, true).unwrap() - 0.008).abs() < 1e-12);
-        assert!((ultimate_hoop_pw_cap("SBPD1275", 24.0, false).unwrap() - 0.012).abs() < 1e-12);
-        assert!((ultimate_hoop_pw_cap("SBPD1275", 30.0, true).unwrap() - 0.012).abs() < 1e-12);
-        assert!((ultimate_hoop_pw_cap("KH785", 24.0, true).unwrap() - 0.012).abs() < 1e-12);
-        assert!(ultimate_hoop_pw_cap("SD295", 24.0, true).is_none());
     }
 
     /// F 値表・prefix の詳細は `squid_n_core::material_grade` を正とする。

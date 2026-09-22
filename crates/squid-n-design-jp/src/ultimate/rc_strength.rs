@@ -55,9 +55,7 @@ pub(super) fn column_axis_shear(
     let jt = 7.0 * d_eff / 8.0;
     let at = bar_set_area(main) / 2.0;
     let pw = pw_ratio(&rebar.shear, b_dir);
-    let qsu = member_shear_strength(
-        b_dir, d_dir, jt, pw, rebar, fc, n_axial, l_clear, true, opts,
-    );
+    let qsu = member_shear_strength(b_dir, d_dir, jt, pw, rebar, fc, n_axial, l_clear, opts);
     let cap = RcCapacityInput {
         b: b_dir,
         d: d_dir,
@@ -150,45 +148,7 @@ pub(super) fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
     (be, n_s)
 }
 
-/// 部材のせん断補強筋の終局検定用 σwy・ν0 上書き・上限適用後 pw を解決する。
-///
-/// せん断補強筋の材質（`UltimateShearOptions::shear_grade`。断面の
-/// `shear_rebar_material` の名前）が高強度せん断補強筋の既知製品の場合、製品別の
-/// σwy（min(25·Fc, 上限) 等）・ν0（1275 級 0.7(1.0−Fc/140)、785/685 級
-/// 0.7(0.7−Fc/200)）・pw 上限（1.2%、1275 級の柱かつ Fc＜27 は 0.8%）を適用する
-/// （[`crate::material_strength::ultimate_hoop_sigma_wy`] ほか）。
-/// 普通強度・判別不能な製品名は (opts.sigma_wy, None, pw) のまま。
-fn resolve_hoop_ultimate(
-    fc: f64,
-    pw: f64,
-    is_column: bool,
-    opts: &UltimateShearOptions,
-) -> (f64, Option<f64>, f64) {
-    use crate::material_strength::{
-        ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy,
-    };
-    let grade = opts.shear_grade.as_deref();
-    let sigma_wy = grade
-        .and_then(|g| ultimate_hoop_sigma_wy(g, fc))
-        .or_else(|| {
-            grade
-                .filter(|g| !crate::material_strength::is_high_strength_shear_grade(g))
-                .and_then(squid_n_core::material_grade::rebar_grade_f_value)
-        })
-        .unwrap_or(opts.sigma_wy);
-    let nu0_override = grade.and_then(|g| ultimate_hoop_nu0(g, fc));
-    let pw_capped = match grade.and_then(|g| ultimate_hoop_pw_cap(g, fc, is_column)) {
-        Some(cap) => pw.min(cap),
-        None => pw,
-    };
-    (sigma_wy, nu0_override, pw_capped)
-}
-
 /// 選択された [`ShearMethod`] に応じた終局せん断強度 `Qsu`/`Vu` [N]。
-///
-/// 高強度せん断補強筋（`ShearBar.grade`）使用時は製品別の σwy・ν0・pw 上限を
-/// 適用する（[`resolve_hoop_ultimate`]）。靭性指針式（Vu）には製品別 σwy のみ
-/// 適用し、ν は指針の標準式のまま（製品別 ν は塑性理論式の表による規定のため）。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn member_shear_strength(
     b_dir: f64,
@@ -199,10 +159,9 @@ pub(super) fn member_shear_strength(
     fc: f64,
     n_axial: f64,
     l_clear: f64,
-    is_column: bool,
     opts: &UltimateShearOptions,
 ) -> f64 {
-    let (sigma_wy, nu0_override, pw) = resolve_hoop_ultimate(fc, pw, is_column, opts);
+    let sigma_wy = opts.sigma_wy;
     match opts.shear_method {
         ShearMethod::Plastic => rc_shear_qsu_plastic(&RcPlasticShearInput {
             b: b_dir,
@@ -214,7 +173,6 @@ pub(super) fn member_shear_strength(
             fc,
             rp: opts.rp,
             lightweight: opts.lightweight,
-            nu0_override,
         }),
         ShearMethod::Ductility => member_vu_ductility(
             b_dir, d_dir, jt, rebar, fc, n_axial, l_clear, sigma_wy, opts,

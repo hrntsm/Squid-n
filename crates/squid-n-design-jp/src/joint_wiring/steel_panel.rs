@@ -2,7 +2,7 @@
 
 use super::common::MemberInfo;
 use crate::steel::panel_zone::{s_panel_zone_check, SPanelInput};
-use crate::CheckResult;
+use crate::CheckOutcome;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::Model;
 use squid_n_core::panel_zone::resolve_panel_joint;
@@ -26,7 +26,7 @@ pub(super) fn check_s_panel(
     beams: &[&MemberInfo<'_>],
     nid: NodeId,
     panel_moment: Option<f64>,
-    out: &mut Vec<(NodeId, String, CheckResult)>,
+    out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let members = cols.iter().chain(beams.iter()).map(|m| m.elem);
     let Some(joint) = resolve_panel_joint(model, nid, members) else {
@@ -69,5 +69,9 @@ pub(super) fn check_s_panel(
         col_shear_lower: col_qs[1],
         design_moment: panel_moment,
     };
-    out.push((nid, "パネルゾーン(S)".to_string(), s_panel_zone_check(&inp)));
+    out.push((
+        nid,
+        "パネルゾーン(S)".to_string(),
+        CheckOutcome::Checked(s_panel_zone_check(&inp)),
+    ));
 }

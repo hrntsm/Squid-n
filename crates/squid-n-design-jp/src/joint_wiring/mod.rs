@@ -20,13 +20,13 @@ pub(crate) use crate::wall_opening::equivalent_opening;
 #[cfg(test)]
 pub(crate) use squid_n_core::model::ElementKind;
 
-use crate::{CheckResult, LoadTerm};
+use crate::{CheckOutcome, LoadTerm};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::Model;
 
 /// モデルと部材内力から節点単位の検定を一括実行する。
 ///
-/// 戻り値: `(節点, 種別ラベル, 検定結果)` のリスト。
+/// 戻り値: `(節点, 種別ラベル, 検定結果/検定不能)` のリスト。
 ///
 /// 冷間成形角形鋼管の存在軸力に `NL + 1.5・NE` の割増を効かせたい場合は
 /// [`collect_joint_checks_with_long`] を使う（本関数は割増なし＝当該ケースの
@@ -35,7 +35,7 @@ pub fn collect_joint_checks(
     model: &Model,
     member_forces: &[(ElemId, ForcesAt<'_>)],
     term: LoadTerm,
-) -> Vec<(NodeId, String, CheckResult)> {
+) -> Vec<(NodeId, String, CheckOutcome)> {
     collect_joint_checks_with_long(model, member_forces, None, &[], term)
 }
 
@@ -57,7 +57,7 @@ pub fn collect_joint_checks_with_long(
     long_member_forces: Option<&[(ElemId, ForcesAt<'_>)]>,
     panel_moments: &[(NodeId, [f64; 2])],
     term: LoadTerm,
-) -> Vec<(NodeId, String, CheckResult)> {
+) -> Vec<(NodeId, String, CheckOutcome)> {
     let mut out = Vec::new();
 
     let mut members: Vec<MemberInfo<'_>> = Vec::new();

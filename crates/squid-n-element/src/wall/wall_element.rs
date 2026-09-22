@@ -115,8 +115,6 @@ struct WallShearGeometry {
     has_side_column: bool,
     /// 壁横筋の降伏点 σwh [N/mm²]
     sigma_wh: f64,
-    /// 壁横筋が高強度せん断補強筋か
-    high_strength_shear_rebar: bool,
     /// 開口寸法 `(l0, h0)` [mm]（無開口は `None`）
     opening: Option<(f64, f64)>,
 }
@@ -443,7 +441,6 @@ impl WallElement {
             col_main_at,
             has_side_column,
             sigma_wh,
-            high_strength_shear_rebar,
             opening,
         } = inp;
         let Some(fc) = fc else {
@@ -476,7 +473,6 @@ impl WallElement {
                 pwh_ratio: ps.max(0.0),
                 sigma_0: 0.0,
                 shear_span_ratio: h / d_wall,
-                high_strength_shear_rebar,
                 opening: opening.map(|(l0, h0)| (l0, h0, h, lw)),
             },
         )
@@ -546,6 +542,9 @@ impl WallElement {
         };
         let te = (properties.area_mm2 / d_wall).min(1.5 * t);
         let shear_mat = model.element_shear_rebar_material(data);
+        if squid_n_core::material_grade::shear_rebar_material_issue(shear_mat).is_some() {
+            return [0.0; 2];
+        }
         let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
             .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
         std::array::from_fn(|tension| {
@@ -561,8 +560,6 @@ impl WallElement {
                 col_main_at: at[tension],
                 has_side_column: section.columns[tension].is_some(),
                 sigma_wh,
-                high_strength_shear_rebar:
-                    squid_n_core::material_grade::is_high_strength_shear_material(shear_mat),
                 opening: wall_opening_equiv_dims(data, model),
             })
         })
@@ -678,6 +675,12 @@ impl WallElement {
                 ));
             }
             Some(_) => {}
+        }
+
+        if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
+            model.element_shear_rebar_material(data),
+        ) {
+            return Some(format!("耐震壁 ID {} の{}", data.id.0, msg));
         }
 
         let section = match super::shear_section::WallSection::new(data, model) {
@@ -2120,12 +2123,12 @@ mod shear_yield_tests {
     }
 
     /// 壁横筋の材料（`SectionShape` によらず断面の `shear_rebar_material`）から
-    /// σwh と高強度判定を解決することを確認する。
+    /// σwh を解決することを確認する。
     ///
-    /// - 未割当は SD295 相当（295 N/mm²・普通強度）を既定とする
+    /// - 未割当は SD295 相当（295 N/mm²）を既定とする
     /// - SD295 を明示的に割り当てても未割当と同じ Qu になる
     /// - SD390 を割り当てると σwh が上がり Qu が増える
-    /// - 高強度品（KH785）は Qu 係数が 0.053 → 0.068 へ切り替わり、さらに増える
+    /// - 未対応グレード（KH785）を割り当てると Qu は算定不能（0）になる
     #[test]
     fn test_wall_qu_uses_section_shear_rebar_material() {
         let rebar = |id: u32, name: &str, fy: f64| Material {
@@ -2165,9 +2168,43 @@ mod shear_yield_tests {
 
         model.sections[0].shear_rebar_material = Some(MaterialId(3));
         let qu_kh785 = WallElement::shear_capacity_of(&data, &model);
+        assert_eq!(qu_kh785, 0.0, "未対応グレードの Qu は算定不能");
         assert!(
-            qu_kh785 > qu_sd390,
-            "高強度せん断補強筋の Qu {qu_kh785:.6e} が SD390 の Qu {qu_sd390:.6e} を超えていない"
+            WallElement::wall_shear_capacity_issue(&data, &model).is_some(),
+            "未対応グレードは入力不備として報告されるはず"
+        );
+    }
+
+    /// 対応グレード（SR235）でも fy 未設定なら Qu は算定不能（0）・入力不備とし、
+    /// fy を設定すれば算定できる。
+    #[test]
+    fn test_wall_qu_requires_fy_for_supported_grade() {
+        let (mut model, data) = wall_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SR235".into(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+        });
+        model.sections[0].shear_rebar_material = Some(MaterialId(1));
+
+        assert_eq!(WallElement::shear_capacity_of(&data, &model), 0.0);
+        let issue =
+            WallElement::wall_shear_capacity_issue(&data, &model).expect("fy 未設定は入力不備");
+        assert!(issue.contains("SR235") && issue.contains("fy"), "{issue}");
+
+        model.materials[1].fy = Some(235.0);
+        assert!(WallElement::shear_capacity_of(&data, &model) > 0.0);
+        assert!(
+            WallElement::wall_shear_capacity_issue(&data, &model).is_none(),
+            "fy 設定時は入力不備なし"
         );
     }
 

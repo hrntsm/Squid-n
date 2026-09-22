@@ -1,8 +1,7 @@
 //! 鉄筋コンクリート造柱の断面検定（RC 規準14条: 軸力・軸力+曲げ・せん断）。
 
 use super::{
-    bar_set_area, circle_axis_props, effective_damage_control, high_strength_w_ft,
-    is_high_strength_shear_grade, main_rebar_grade, rc_allow, rebar_allowable_tension,
+    bar_set_area, circle_axis_props, main_rebar_grade, rc_allow, rebar_allowable_tension,
     rebar_sigma_y_of, rect_axis_props_strong, rect_axis_props_weak, seismic_design_shear,
     shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
 };
@@ -26,7 +25,7 @@ pub(crate) fn column_check(
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
-    let mut allow = rc_allow(
+    let allow = rc_allow(
         fc_raw,
         mat.concrete_class,
         shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
@@ -36,16 +35,7 @@ pub(crate) fn column_check(
     let n_design = -forces.n;
 
     if let SectionShape::RcCircle { d, rebar } = shape {
-        let shear_grade = ctx
-            .shear_rebar_material
-            .as_ref()
-            .map(|m| m.name.as_str())
-            .filter(|g| is_high_strength_shear_grade(g));
-        if let Some(g) = shear_grade {
-            allow.w_ft = high_strength_w_ft(g, long_term);
-        }
-        let damage_control =
-            effective_damage_control(ctx.rc_damage_control, shear_grade, mat.concrete_class);
+        let damage_control = ctx.rc_damage_control;
         let d_full = *d;
         let props = circle_axis_props(d_full, rebar);
         let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
@@ -76,16 +66,7 @@ pub(crate) fn column_check(
         let (m_for_alpha_y, q_for_alpha_y) =
             ctx.shear_span.unwrap_or((forces.mz.abs(), forces.qy.abs()));
         let alpha_y = shear_alpha(m_for_alpha_y, q_for_alpha_y, axis.props.d, 1.5);
-        let qay = shear_capacity_for(
-            &axis.props,
-            &allow,
-            alpha_y,
-            ctx.term,
-            damage_control,
-            true,
-            shear_grade,
-            fc_raw,
-        );
+        let qay = shear_capacity_for(&axis.props, &allow, alpha_y, ctx.term, damage_control, true);
         let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
             let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
                 b: gross_area / d_full,
@@ -118,16 +99,7 @@ pub(crate) fn column_check(
             .shear_span_y
             .unwrap_or((forces.my.abs(), forces.qz.abs()));
         let alpha_z = shear_alpha(m_for_alpha_z, q_for_alpha_z, axis.props.d, 1.5);
-        let qaz = shear_capacity_for(
-            &axis.props,
-            &allow,
-            alpha_z,
-            ctx.term,
-            damage_control,
-            true,
-            shear_grade,
-            fc_raw,
-        );
+        let qaz = shear_capacity_for(&axis.props, &allow, alpha_z, ctx.term, damage_control, true);
         let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
         let basis = "RC 規準14条（円形柱、等価矩形近似）".to_string();
@@ -184,16 +156,7 @@ pub(crate) fn column_check(
         SectionShape::RcRect { rebar, .. } => rebar,
         _ => unreachable!(),
     };
-    let shear_grade = ctx
-        .shear_rebar_material
-        .as_ref()
-        .map(|m| m.name.as_str())
-        .filter(|g| is_high_strength_shear_grade(g));
-    if let Some(g) = shear_grade {
-        allow.w_ft = high_strength_w_ft(g, long_term);
-    }
-    let damage_control =
-        effective_damage_control(ctx.rc_damage_control, shear_grade, mat.concrete_class);
+    let damage_control = ctx.rc_damage_control;
 
     let props_z = rect_axis_props_strong(sec, rebar);
     let props_y = rect_axis_props_weak(sec, rebar);
@@ -252,8 +215,6 @@ pub(crate) fn column_check(
         ctx.term,
         damage_control,
         true,
-        shear_grade,
-        fc_raw,
     );
     let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
         let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
@@ -298,8 +259,6 @@ pub(crate) fn column_check(
         ctx.term,
         damage_control,
         true,
-        shear_grade,
-        fc_raw,
     );
     let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 

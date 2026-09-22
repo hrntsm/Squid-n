@@ -23,7 +23,6 @@ impl App {
             lightweight: self.core.ultimate_lightweight,
             upper_strength_factor: self.core.ultimate_upper_factor.max(0.0),
             sigma_wy: 295.0,
-            shear_grade: None,
             include_bond: self.core.ultimate_include_bond,
             shear_method: if self.core.ultimate_shear_ductility {
                 squid_n_design_jp::ultimate::ShearMethod::Ductility
@@ -37,7 +36,7 @@ impl App {
             &self.core.model,
             &demand,
             &opts,
-        );
+        )?;
 
         let has_rc_rect = self.core.model.elements.iter().any(|e| {
             e.section
@@ -76,7 +75,6 @@ impl App {
                 return demand;
             }
         }
-        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model);
         let gravity_long = self.core.scoped.results.as_ref().and_then(|r| {
             squid_n_job::sum_analyzed_gravity_member_forces(&self.core.model, |lc| {
                 r.statics
@@ -102,11 +100,7 @@ impl App {
                 let member_forces: &[(ElemId, squid_n_element::frame::beam::MemberForces)] =
                     gravity_long.as_deref().unwrap_or(fallback);
                 let ql_map = squid_n_job::q_long_map_from_member_forces(member_forces);
-                squid_n_job::member_demand_from_static_forces(
-                    member_forces,
-                    Some(&ql_map),
-                    Some(&q0_map),
-                )
+                squid_n_job::member_demand_from_static_forces(member_forces, Some(&ql_map))
             })
             .unwrap_or_default()
     }
@@ -140,12 +134,7 @@ impl App {
                     })
                     .collect()
             });
-        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model);
-        squid_n_job::member_demand_from_pushover(
-            &po.member_response,
-            ql_by_elem.as_ref(),
-            Some(&q0_map),
-        )
+        squid_n_job::member_demand_from_pushover(&po.member_response, ql_by_elem.as_ref())
     }
 
     /// CFT 柱の軸終局検定（CFT指針）: CftBox/CftPipe 柱の
