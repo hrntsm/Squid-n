@@ -53,10 +53,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 &mut app.core.analysis_cfg.rc_damage_control,
                 "RC短期せん断: 損傷制御",
             )
-            .on_hover_text(
-                "ON: 損傷制御のための検討（2/3・α・fs）、OFF: 安全確保のための検討。\
-                 軽量コンクリート×高強度せん断補強筋は常に安全確保式（RC規準）",
-            )
+            .on_hover_text("ON: 損傷制御のための検討（2/3・α・fs）、OFF: 安全確保のための検討")
             .changed();
         ui.label("QD:");
         for (m, label) in [

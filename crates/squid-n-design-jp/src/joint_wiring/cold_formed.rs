@@ -4,7 +4,7 @@ use super::common::{ForcesAt, MemberInfo};
 use crate::steel::cold_formed::{
     box_zp, cold_formed_column_ratio_check, panel_mpp, ColdFormedInput,
 };
-use crate::CheckResult;
+use crate::CheckOutcome;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::section_shape::SectionShape;
 
@@ -25,7 +25,7 @@ pub(super) fn check_cold_formed(
     beams: &[&MemberInfo<'_>],
     nid: NodeId,
     long_member_forces: Option<&[(ElemId, ForcesAt<'_>)]>,
-    out: &mut Vec<(NodeId, String, CheckResult)>,
+    out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let cf_cols: Vec<&&MemberInfo> = cols
         .iter()
@@ -145,7 +145,7 @@ pub(super) fn check_cold_formed(
                 out.push((
                     nid,
                     "冷間成形耐力比".to_string(),
-                    cold_formed_column_ratio_check(&inp),
+                    CheckOutcome::Checked(cold_formed_column_ratio_check(&inp)),
                 ));
             }
         }

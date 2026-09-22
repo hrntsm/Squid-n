@@ -215,6 +215,65 @@ fn test_issue_when_rc_member_fc_missing_or_not_positive() {
     }
 }
 
+/// せん断補強筋に未対応グレード（KH785）を割り当てた部材はエラーとする。
+/// 未対応グレードを普通強度式で代替すると耐力を過大評価する（危険側）。
+#[test]
+fn test_issue_when_shear_rebar_grade_unsupported() {
+    let mut mats = vec![
+        concrete_material(),
+        rebar_material(),
+        steel_grade_material("SN400B"),
+    ];
+    mats[1].name = "KH785".into();
+    let mut sec = rc_section();
+    sec.material = Some(MaterialId(0));
+    let model = beam_model_inner(sec, mats);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("KH785"), "{}", issues[0]);
+    assert!(issues[0].contains("未対応"), "{}", issues[0]);
+    assert!(ensure_nonlinear_input(&model).is_err());
+}
+
+/// 対応グレード（SR235）でも fy が未設定なら入力不備として停止する。
+/// 既定 295 で代替すると σwy が 235→295 に増え、耐力を過大評価する（危険側）。
+#[test]
+fn test_issue_when_supported_shear_rebar_fy_missing() {
+    let make = |fy: Option<f64>| {
+        let mut shear = rebar_material();
+        shear.id = MaterialId(3);
+        shear.name = "SR235".into();
+        shear.fy = fy;
+        let mut sec = rc_section();
+        sec.material = Some(MaterialId(0));
+        sec.shear_rebar_material = Some(MaterialId(3));
+        beam_model_inner(
+            sec,
+            vec![
+                concrete_material(),
+                rebar_material(),
+                steel_grade_material("SN400B"),
+                shear,
+            ],
+        )
+    };
+
+    let model = make(None);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("SR235"), "{}", issues[0]);
+    assert!(issues[0].contains("fy"), "{}", issues[0]);
+    assert!(ensure_nonlinear_input(&model).is_err());
+
+    // fy を設定すれば不備なし。
+    let model = make(Some(235.0));
+    assert!(
+        nonlinear_input_issues(&model).is_empty(),
+        "{:?}",
+        nonlinear_input_issues(&model)
+    );
+}
+
 /// 断面形状未設定の部材で正の耐力を算定できない材料はエラーとする。
 /// - fy なし: せん断降伏耐力が ∞ となり降伏しない。
 /// - fy=0（非正値）: 「設定済み」と素通しすると要素生成（`steel_fiber_material`）が

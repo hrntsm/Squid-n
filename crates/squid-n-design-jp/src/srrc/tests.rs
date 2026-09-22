@@ -444,6 +444,63 @@ fn test_src_shape_mismatch_skip() {
     }
 }
 
+/// せん断補強筋に未対応グレード（KH785）を割り当てた SRC 部材は、普通強度として
+/// 検定せずに理由付きで検定不能とする。
+#[test]
+fn test_src_unsupported_shear_rebar_grade_skip() {
+    let sec = make_section(src_column_shape());
+    let mat = make_material(24.0, "SD345");
+    let ctx = DesignCtx {
+        shear_rebar_material: Some(make_rebar_material("KH785", 785.0)),
+        ..ctx_column(LoadTerm::Long)
+    };
+    let design = SrcDesign;
+    let outcome = design.check(&zero_forces(), &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => {
+            assert!(reason.contains("KH785"), "{reason}");
+            assert!(
+                reason.contains("SR235・SR295・SD295・SD345・SD390・SD490"),
+                "{reason}"
+            );
+        }
+        CheckOutcome::Checked(_) => panic!("未対応グレードは検定不能(Skipped)のはず"),
+    }
+}
+
+/// 対応グレード（SR235）でもせん断補強筋の fy が未設定なら検定不能とする。
+/// fy を設定すれば検定する。
+#[test]
+fn test_src_supported_shear_rebar_fy_missing_skip() {
+    let sec = make_section(src_column_shape());
+    let mat = make_material(24.0, "SD345");
+    let mut shear_mat = make_rebar_material("SR235", 235.0);
+    shear_mat.fy = None;
+    let ctx = DesignCtx {
+        shear_rebar_material: Some(shear_mat),
+        ..ctx_column(LoadTerm::Long)
+    };
+    let design = SrcDesign;
+    match design.check(&zero_forces(), &sec, &mat, &ctx) {
+        CheckOutcome::Skipped { reason } => {
+            assert!(
+                reason.contains("SR235") && reason.contains("fy"),
+                "{reason}"
+            );
+        }
+        CheckOutcome::Checked(_) => panic!("fy 未設定は検定不能(Skipped)のはず"),
+    }
+
+    let ctx = DesignCtx {
+        shear_rebar_material: Some(make_rebar_material("SR235", 235.0)),
+        ..ctx_column(LoadTerm::Long)
+    };
+    match design.check(&zero_forces(), &sec, &mat, &ctx) {
+        CheckOutcome::Checked(_) => {}
+        CheckOutcome::Skipped { reason } => panic!("fy 設定時は検定するはず: {reason}"),
+    }
+}
+
 // ------------------------------------------------------------------
 // 地震時短期の設計用せん断力（構造規定方式）: SRC 梁
 // ------------------------------------------------------------------

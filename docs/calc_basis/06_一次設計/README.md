@@ -20,7 +20,7 @@
 
 </div>
 
-本章の断面検定は `squid_n_design_jp` にあり、材料強度は `squid_n_design_jp::material_strength`（`concrete`・`rebar`・`steel`・`high_strength_hoop`）が担います。
+本章の断面検定は `squid_n_design_jp` にあり、材料強度は `squid_n_design_jp::material_strength`（`concrete`・`rebar`・`steel`）が担います。
 突合の全体は[断面検定_参照実装照合](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/断面検定_参照実装照合.md)を参照してください。
 
 ## この章の内容

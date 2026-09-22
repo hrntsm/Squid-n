@@ -36,10 +36,8 @@ pub use wall_nonlinear::{
 
 pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_shear,
-    concrete_allowable_shear_class, concrete_young_modulus, high_strength_group,
-    high_strength_pw_cap, high_strength_w_ft, is_high_strength_shear_grade, main_rebar_grade,
-    rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of, shear_rebar_grade,
-    young_ratio_n, HighStrengthGroup,
+    concrete_allowable_shear_class, concrete_young_modulus, main_rebar_grade, rebar_allowable_shear,
+    rebar_allowable_tension, rebar_sigma_y_of, shear_rebar_grade, young_ratio_n,
 };
 
 pub(crate) use allowable::*;
@@ -88,6 +86,13 @@ impl DesignCheck for RcDesign {
                 reason: "RC 検定: せん断補強筋の材料が未割当\
                          （断面タブでせん断補強筋の材料を割り当ててください）"
                     .to_string(),
+            };
+        }
+        if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
+            ctx.shear_rebar_material.as_ref(),
+        ) {
+            return CheckOutcome::Skipped {
+                reason: format!("RC 検定: {msg}"),
             };
         }
 

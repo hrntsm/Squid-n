@@ -2,7 +2,7 @@
 
 use super::common::{rc_dt, MemberInfo};
 use crate::rc::joint::{rc_joint_shear_check, JointShape, RcJointInput};
-use crate::{CheckComponent, CheckKind, CheckResult};
+use crate::{CheckComponent, CheckKind, CheckOutcome, CheckResult};
 use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
 
@@ -11,7 +11,7 @@ pub(super) fn check_rc_joint(
     cols: &[&MemberInfo<'_>],
     beams: &[&MemberInfo<'_>],
     nid: NodeId,
-    out: &mut Vec<(NodeId, String, CheckResult)>,
+    out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let rc_col = cols.iter().find(|c| {
         matches!(c.sec.shape, Some(SectionShape::RcRect { .. })) && c.mat.fc.unwrap_or(0.0) > 0.0
@@ -86,7 +86,11 @@ pub(super) fn check_rc_joint(
             col_height,
             beam_span,
         };
-        out.push((nid, "接合部(RC)".to_string(), rc_joint_shear_check(&inp)));
+        out.push((
+            nid,
+            "接合部(RC)".to_string(),
+            CheckOutcome::Checked(rc_joint_shear_check(&inp)),
+        ));
 
         let bi = (col.sec.width - beam0.sec.width) / 2.0;
         let bai = (bi / 2.0).min(col.sec.depth / 4.0).max(0.0);
@@ -128,7 +132,7 @@ pub(super) fn check_rc_joint(
         out.push((
                 nid,
                 "接合部終局(RC)".to_string(),
-                CheckResult {
+                CheckOutcome::Checked(CheckResult {
                     basis: "靭性保証型指針 柱梁接合部終局(Vju=κ·φ·Fj·bj·Dj)".to_string(),
                     detail: String::new(),
                     components: vec![CheckComponent {
@@ -140,7 +144,7 @@ pub(super) fn check_rc_joint(
                             u.kappa, phi, u.fj, bj, col.sec.depth, u.vju, t_top, t_bottom, qcu, u.qdu, u.margin
                         ),
                     }],
-                },
+                }),
             ));
     }
 }

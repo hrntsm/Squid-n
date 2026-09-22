@@ -26,17 +26,3 @@ pub(crate) fn rc_allow(fc_raw: f64, class: ConcreteClass, grade: &str, long_term
         n_ratio: young_ratio_n(fc_raw),
     }
 }
-
-/// 高強度せん断補強筋使用時の有効 damage_control。
-/// `shear_grade` が `Some` かつ軽量のとき false にする。
-pub(crate) fn effective_damage_control(
-    damage_control: bool,
-    shear_grade: Option<&str>,
-    class: ConcreteClass,
-) -> bool {
-    if shear_grade.is_some() && class != ConcreteClass::Normal {
-        false
-    } else {
-        damage_control
-    }
-}

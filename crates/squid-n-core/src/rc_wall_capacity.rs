@@ -34,8 +34,6 @@ pub struct RcWallShearInput {
     pub sigma_0: f64,
     /// せん断スパン比 M/(Q·D)（適用範囲 1.0〜3.0 にクランプ）。
     pub shear_span_ratio: f64,
-    /// 高強度せん断補強筋を用いる場合 true（Qu 係数 0.053→0.068）。
-    pub high_strength_shear_rebar: bool,
     /// 開口（`(l0, h0, h, lw)`。l0・h0: 開口幅・高さ、h: 壁の上下梁中心間高さ、
     /// lw: 付帯柱中心間距離）。`None` は無開口（r=1）。
     pub opening: Option<(f64, f64, f64, f64)>,
@@ -87,8 +85,7 @@ pub fn wall_opening_reduction_stiffness(r0: f64) -> f64 {
 /// ```text
 /// Qu = { k·pte^0.23·(Fc+18)/denom + 0.85·√(σwh·pwh) + 0.1·σ0 }·te·j·r
 /// ```
-/// - `k = 0.053`（既定。denom = M/(Q·D)+0.12）／`0.068`（高強度せん断補強筋。
-///   denom = √(M/(Q·D)+0.12)）
+/// - `k = 0.053`、`denom = M/(Q·D)+0.12`
 /// - `pte = 100·at/(te·d)` \[%\]（等価引張鉄筋比）、`d = D − Dc/2`、`j = 7/8·d`
 /// - `M/(Q·D)` は適用範囲 1.0〜3.0 にクランプ、`pwh` は 1.2% 上限、
 ///   `σ0` は 0〜0.4Fc にクランプ（引張は 0）
@@ -108,21 +105,13 @@ pub fn wall_shear_ultimate(inp: &RcWallShearInput) -> f64 {
     let pte = 100.0 * inp.tension_column_at / (inp.te * d);
     let j = 7.0 / 8.0 * d;
     let shear_span_ratio = inp.shear_span_ratio.clamp(1.0, 3.0);
-    let k = if inp.high_strength_shear_rebar {
-        0.068
-    } else {
-        0.053
-    };
+    let k = 0.053;
     let pwh = if inp.te > 0.0 {
         (inp.pwh_ratio.max(0.0) * inp.t / inp.te).min(0.012)
     } else {
         0.0
     };
-    let denom = if inp.high_strength_shear_rebar {
-        (shear_span_ratio + 0.12).sqrt()
-    } else {
-        shear_span_ratio + 0.12
-    };
+    let denom = shear_span_ratio + 0.12;
     let concrete_term = k * pte.powf(0.23) * (inp.fc + 18.0) / denom;
     let hoop_term = 0.85 * (pwh * inp.sigma_wh).max(0.0).sqrt();
     let sigma_0 = inp.sigma_0.clamp(0.0, 0.4 * inp.fc);
@@ -147,7 +136,6 @@ mod tests {
             pwh_ratio: 0.0025,
             sigma_0: 0.0,
             shear_span_ratio: 1.0,
-            high_strength_shear_rebar: false,
             opening: None,
         }
     }
@@ -270,7 +258,6 @@ mod tests {
             pwh_ratio: 0.004,
             sigma_0: 1.0,
             shear_span_ratio: 1.5,
-            high_strength_shear_rebar: false,
             opening: None,
         };
         // 手計算:
@@ -289,25 +276,6 @@ mod tests {
             wall_shear_ultimate(&inp),
             expect
         );
-    }
-
-    /// 高強度せん断補強筋は係数 0.068・分母 √(M/(Q·D)+0.12) に切り替わり Qu が増える。
-    #[test]
-    fn test_qu_high_strength_branch_increases() {
-        let mut hi = sample();
-        hi.high_strength_shear_rebar = true;
-        let qu_hi = wall_shear_ultimate(&hi);
-        let qu_std = wall_shear_ultimate(&sample());
-        assert!(qu_hi > qu_std, "hi={qu_hi} std={qu_std}");
-
-        // 手計算（無開口・軸力なし・M/(QD)=1.0）:
-        let d: f64 = 4000.0;
-        let pte: f64 = 100.0 * 1000.0 / (200.0 * d);
-        let j = 7.0 / 8.0 * d;
-        let concrete = 0.068 * pte.powf(0.23) * (24.0 + 18.0) / (1.0_f64 + 0.12).sqrt();
-        let hoop = 0.85 * (0.0025_f64 * 295.0).sqrt();
-        let expect = (concrete + hoop) * 200.0 * j;
-        assert!((qu_hi - expect).abs() < 1e-6, "{qu_hi} vs {expect}");
     }
 
     /// M/(Q·D) は適用範囲 1.0〜3.0、pwh は 1.2% にクランプされる。

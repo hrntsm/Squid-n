@@ -106,14 +106,27 @@ pub(crate) fn compute_design_check_job(
     }
 
     let n_joint_checks = report.joint_checks.len();
-    let n_joint_ng = report
-        .joint_checks
-        .iter()
-        .filter(|(_, _, cr)| !cr.ok())
-        .count();
-    for (_, _, cr) in &report.joint_checks {
-        if cr.ratio() > max_ratio {
-            max_ratio = cr.ratio();
+    let mut n_joint_ng = 0usize;
+    let mut n_joint_skipped = 0usize;
+    let mut joint_skipped = Vec::new();
+    for (node, label, outcome) in &report.joint_checks {
+        match outcome {
+            squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                if !cr.ok() {
+                    n_joint_ng += 1;
+                }
+                if cr.ratio() > max_ratio {
+                    max_ratio = cr.ratio();
+                }
+            }
+            squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                n_joint_skipped += 1;
+                joint_skipped.push(serde_json::json!({
+                    "node": node.0,
+                    "label": label,
+                    "reason": reason,
+                }));
+            }
         }
     }
 
@@ -129,6 +142,8 @@ pub(crate) fn compute_design_check_job(
         "n_skipped": n_skipped,
         "n_joint_checks": n_joint_checks,
         "n_joint_ng": n_joint_ng,
+        "n_joint_skipped": n_joint_skipped,
+        "joint_skipped": joint_skipped,
         "max_ratio": max_ratio,
         "qd_wired": long_member_forces.is_some(),
         "gravity_failed": gravity_failed,
