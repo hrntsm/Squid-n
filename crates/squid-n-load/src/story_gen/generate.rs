@@ -234,11 +234,13 @@ pub fn generate_stories_with_opts(
         }
         SelfWeightItem::Panel {
             load_shares,
-            mass_shares,
+            mass_equiv_shares,
+            matrix_shares,
         } => {
             let src = match basis {
-                Basis::Matrix => mass_shares,
-                Basis::Load | Basis::MassEquiv => load_shares,
+                Basis::Load => load_shares,
+                Basis::MassEquiv => mass_equiv_shares,
+                Basis::Matrix => matrix_shares,
             };
             for &(i, w) in src {
                 target[i] += w;
@@ -275,7 +277,7 @@ pub fn generate_stories_with_opts(
             model,
             &mut node_weight,
         )?;
-        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_mass_equiv);
+        crate::wall_attached::accumulate_attached_wall_mass_equiv(model, &mut node_mass_equiv);
         crate::wall_plate_load::accumulate_wall_and_secondary_mass_equiv(
             model,
             &mut node_mass_equiv,
@@ -351,7 +353,7 @@ pub fn generate_stories_with_opts(
             distribute(&mut node_matrix_mass_equiv, item, Basis::Matrix);
         }
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut design_sw);
-        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut physical_sw);
+        crate::wall_attached::accumulate_attached_wall_mass_equiv(model, &mut physical_sw);
         crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight(
             model,
             &mut design_sw,

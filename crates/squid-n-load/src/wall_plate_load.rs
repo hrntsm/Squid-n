@@ -160,14 +160,24 @@ pub fn slit_specification_is_reflected(model: &Model, plate: &WallPlate) -> bool
 /// （境界の頂点にモデル節点が無くても支持先を引ける）。負担率の並びは境界の辺順に
 /// 対応する。スリットは 4 節点の囲まれた壁版でのみ意味を持ち、境界頂点の節点を
 /// 引けない場合は切れていない扱いとする。
-fn edge_shares_with(model: &Model, plate: &WallPlate) -> Vec<WallEdgeShare> {
+fn edge_shares_with(
+    model: &Model,
+    plate: &WallPlate,
+    basis: crate::cascade::SelfWeightBasis,
+) -> Vec<WallEdgeShare> {
     if !matches!(plate.shape, WallPlateShape::Enclosed) {
         return Vec::new();
     }
     if model.wall_plate_becomes_element(plate) {
         return Vec::new();
     }
-    let Some(total) = model.wall_plate_self_weight(plate, model) else {
+    let total = match basis {
+        crate::cascade::SelfWeightBasis::Design => model.wall_plate_self_weight(plate, model),
+        crate::cascade::SelfWeightBasis::MassEquiv => {
+            model.wall_plate_physical_weight(plate, model)
+        }
+    };
+    let Some(total) = total else {
         return Vec::new();
     };
     if total <= 0.0 || !plate.has_valid_self_weight_shares(model) {
@@ -200,11 +210,20 @@ fn edge_shares_with(model: &Model, plate: &WallPlate) -> Vec<WallEdgeShare> {
     shares
 }
 
-/// 要素にならない全壁版の自重を分配する。
+/// 要素にならない全壁版の自重を分配する（設計重量基準）。
 pub fn distribute_enclosed_wall_plates(model: &Model) -> EnclosedWallLoads {
+    distribute_enclosed_wall_plates_with_basis(model, crate::cascade::SelfWeightBasis::Design)
+}
+
+/// [`distribute_enclosed_wall_plates`] の自重基準（[`crate::cascade::SelfWeightBasis`]）を
+/// 選べる版。支持経路・負担率は基準によらず同じで、躯体の単位体積重量だけが変わる。
+pub fn distribute_enclosed_wall_plates_with_basis(
+    model: &Model,
+    basis: crate::cascade::SelfWeightBasis,
+) -> EnclosedWallLoads {
     let mut out = EnclosedWallLoads::default();
     for plate in &model.wall_plates {
-        for share in edge_shares_with(model, plate) {
+        for share in edge_shares_with(model, plate, basis) {
             match share.post() {
                 Some(key) => push_post_share(model, &mut out, key, &share),
                 None => push_primary_share(model, &mut out.primary, &share),
@@ -328,7 +347,7 @@ fn accumulate_wall_and_secondary_with_basis(
         return Err("二次部材の端部負担率または支持先が不正で、自重を伝えられません".into());
     }
     for plate in &model.wall_plates {
-        for share in edge_shares_with(model, plate)
+        for share in edge_shares_with(model, plate, basis)
             .into_iter()
             .filter(|s| s.post().is_none())
         {
@@ -399,7 +418,8 @@ pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
             model
                 .wall_plate_self_weight(plate, model)
                 .is_some_and(|w| w > 0.0)
-                && edge_shares_with(model, plate).is_empty()
+                && edge_shares_with(model, plate, crate::cascade::SelfWeightBasis::Design)
+                    .is_empty()
         })
         .map(|plate| plate.id)
         .collect()

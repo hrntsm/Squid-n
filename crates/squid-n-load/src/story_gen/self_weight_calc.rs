@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use squid_n_core::section_shape::SectionShape;
+
 use super::geom::{dist3, is_vertical_pair, polygon_area_3d};
 use super::*;
 
@@ -79,6 +81,14 @@ pub(crate) fn steel_design_unit_weight_n_per_mm3() -> f64 {
     )
 }
 
+/// 解析の質量行列が線材へ与える単位長さ当たり質量 [t/mm]。
+/// 質量行列の組み立てと同じ [`Model::element_mass_properties`] から求める。
+fn analysis_mass_per_length(model: &Model, elem: &ElementData) -> f64 {
+    model
+        .element_mass_properties(elem)
+        .map_or(0.0, |properties| properties.mass_per_length)
+}
+
 /// 仕上げ周長 φ（柱梁自重の仕上げ荷重）。
 /// 鉛直材（柱）は四周仕上げ `2(b+D)`、それ以外（梁）は三面仕上げ `b+2D`。
 /// 断面の `width`/`depth` のいずれかが 0 以下の場合は 0（換算対象外）とする。
@@ -131,15 +141,16 @@ pub(crate) enum SelfWeightItem {
     },
     /// 壁・シェルの自重の頂点配分（`model.nodes` 添字 → [N]）。
     ///
+    /// 質量方式ごとに基準が異なるため 3 値を持つ。
     /// `load_shares` は設計重量（設計躯体 ＋ 仕上げ・増打ち ＋ 開口重量）、
-    /// `mass_shares` は物理密度の躯体 ＋ 開口重量を同じ規則で配ったものである。
-    /// 2 つに分けるのは `CorrectedLumped`（既定の質量方式）の控除に物理密度の躯体分
-    /// だけを使うためで、解析の質量行列は要素の密度からしか質量を作らない。
-    /// 総重量で控除すると、仕上げ・増打ちの質量が控除されるだけで分布質量としては
-    /// 現れず、黙って消える。
+    /// `mass_equiv_shares` は物理密度の躯体 ＋ 仕上げ・増打ち ＋ 開口重量、
+    /// `matrix_shares` は物理密度の躯体 ＋ 開口重量（解析の質量行列が受け持つ分）。
+    /// 仕上げ・増打ちは質量行列に対応物がないため、`mass_equiv_shares` と
+    /// `matrix_shares` の差として補正質点に残す。
     Panel {
         load_shares: Vec<(usize, f64)>,
-        mass_shares: Vec<(usize, f64)>,
+        mass_equiv_shares: Vec<(usize, f64)>,
+        matrix_shares: Vec<(usize, f64)>,
     },
 }
 
@@ -167,7 +178,8 @@ pub(crate) enum SelfWeightItem {
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
 ///   あれば自重算定長を掛けて加算する。
 /// - 壁・シェル（`ElementKind::Wall`/`Shell`, 節点数3以上）: 設計重量（設計躯体＋
-///   仕上げ・増打ち＋開口重量）と物理質量相当（物理密度の躯体＋開口重量）を別々に
+///   仕上げ・増打ち＋開口重量）・物理質量相当（物理密度の躯体＋仕上げ・増打ち＋
+///   開口重量）・質量行列が受け持つ分（物理密度の躯体＋開口重量）を別々に
 ///   全頂点へ等分配（§壁自重）。要素になる壁版は上下の梁と一体なので、行き先を
 ///   上下どちらかへ寄せる扱いはしない（上下いずれかの梁との縁切りは壁版の形が表し、
 ///   取り付く壁版として `crate::wall_attached` が受け持つ）。
@@ -327,7 +339,16 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 }
                 let load = design_per_length * eff_len;
                 let body_design = mat.design_unit_weight_n_per_mm3() * self_weight_area * eff_len;
-                let body_physical = mat.density * self_weight_area * eff_len * GRAVITY_MM_S2;
+                let matrix_mass_equiv = analysis_mass_per_length(model, elem) * len * GRAVITY_MM_S2;
+                let is_cft = matches!(
+                    sec.shape,
+                    Some(SectionShape::CftBox { .. } | SectionShape::CftPipe { .. })
+                );
+                let body_physical = if is_cft {
+                    matrix_mass_equiv
+                } else {
+                    mat.density * self_weight_area * eff_len * GRAVITY_MM_S2
+                };
                 let mass_equiv = load - body_design + body_physical;
 
                 let extra_bottom_load = design_per_length * max_depth;
@@ -336,7 +357,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     elem_idx,
                     load,
                     mass_equiv,
-                    matrix_mass_equiv: body_physical,
+                    matrix_mass_equiv,
                     extra_bottom_load,
                     extra_bottom_mass_equiv,
                     is_column,
@@ -364,11 +385,17 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
 
                 let slit = attr.map(|a| a.slit).unwrap_or_default();
                 let load_shares = wall_corner_shares(elem, &pts, w_load, slit);
-                let w_mass = (mat.density * t * GRAVITY_MM_S2 * net_area + opening_weight).max(0.0);
-                let mass_shares = wall_corner_shares(elem, &pts, w_mass, slit);
+                let w_matrix =
+                    (mat.density * t * GRAVITY_MM_S2 * net_area + opening_weight).max(0.0);
+                let matrix_shares = wall_corner_shares(elem, &pts, w_matrix, slit);
+                let w_mass_equiv = ((mat.density * t * GRAVITY_MM_S2 + finish) * net_area
+                    + opening_weight)
+                    .max(0.0);
+                let mass_equiv_shares = wall_corner_shares(elem, &pts, w_mass_equiv, slit);
                 items.push(SelfWeightItem::Panel {
                     load_shares,
-                    mass_shares,
+                    mass_equiv_shares,
+                    matrix_shares,
                 });
             }
             _ => {}

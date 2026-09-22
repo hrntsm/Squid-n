@@ -222,6 +222,16 @@ fn add_node_weight(node_weight: &mut [f64], node: NodeId, w: f64) {
 /// （[`attached_wall_beam_loads`] / 等価面荷重）が担い、こちらは階重量の総和が
 /// 抜けないことだけを保証する。
 pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut [f64]) {
+    accumulate_attached_wall_weight_with(model, node_weight, false);
+}
+
+/// 取り付く壁版の物理質量相当の重量を節点へ配分する（質量行列・動的解析用）。
+/// 躯体は [`Model::wall_plate_physical_weight`]（物理密度×g）、仕上げ等は設計と同じ。
+pub fn accumulate_attached_wall_mass_equiv(model: &Model, node_weight: &mut [f64]) {
+    accumulate_attached_wall_weight_with(model, node_weight, true);
+}
+
+fn accumulate_attached_wall_weight_with(model: &Model, node_weight: &mut [f64], physical: bool) {
     for plate in &model.wall_plates {
         let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
             continue;
@@ -229,7 +239,12 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
         let Some(extent) = model.wall_plate_extent(plate) else {
             continue;
         };
-        let Some(total) = model.wall_plate_self_weight(plate, model) else {
+        let total = if physical {
+            model.wall_plate_physical_weight(plate, model)
+        } else {
+            model.wall_plate_self_weight(plate, model)
+        };
+        let Some(total) = total else {
             continue;
         };
         if total <= 0.0 {
