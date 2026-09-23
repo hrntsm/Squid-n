@@ -27,7 +27,8 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
 - `SelfWeightItem`: `Line { load, mass_equiv, matrix_mass_equiv, extra_bottom_load,
   extra_bottom_mass_equiv, is_column }`、`Damper { load, mass_equiv }`、
   `Panel { load_shares, mass_equiv_shares, matrix_shares }`。`Line` の `mass_equiv` の
-  躯体分は質量行列と同じ幾何（総断面・節点間長）で物理密度から算定する。
+  躯体分は質量行列と同じ幾何（総断面・節点間長）で物理密度から算定し、鉄骨重量割増
+  `factor` を乗じる。付加線重量・仕上げは割増の対象外としてそのまま加算する。
 - `generate.rs`: 節点ごとに設計地震用重量 `node_weight`、物理質量相当 `node_mass_equiv`、
   質量行列に入る分 `node_matrix_mass_equiv` を別配列で集計。内部で `SelfWeightMode`
   （`Density`／`GravityCasesOnly`／`SyncedGravityCases`）を切り替える。
@@ -42,7 +43,8 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
   `resolve_nodal_to_primary` で主架構へ解決してから集計する `*_resolved` 版を追加。
   設計重量（地震用重量）の節点集計は従来どおり二次部材端へ配る版を維持する。
 - `cascade.rs` に `SelfWeightBasis` を追加し、二次部材の自重を設計用と質量用で
-  同じ支持経路・端部負担率により流す。
+  同じ支持経路・端部負担率により流す。質量用（`MassEquiv`）でも鋼材には設計と同じ
+  鉄骨重量割増 `factor` を掛ける（主架構線材と同一規則）。
 - プリセット・ST-Bridge 取込・UI 既定の鋼材・鉄筋密度は 7.85e-9 t/mm³。
 - アプリ `generate_stories_action` は、DL がないモデルでは `Density`、DL があるモデルでは
   直前に `sync_gravity_load_cases_action` で DL を自動同期済みのため
@@ -61,6 +63,7 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
 
 - **D8**: 質点系解析 `crates/squid-n-job/src/lumped_mass.rs` は `seismic_weight/g` を
   用いており、設計重量ベースの質量のまま。物理質量へ切り替えるかは別途判断。
+  [GitHub Issue #365](https://github.com/hrntsm/Squid-n/issues/365) で追跡。
   [残課題一覧](../handoff/残課題一覧.md) に記載。
 - **高密度カスタム鋼材**: 設計重量を 78.5 kN/m³ 固定としたため、78.5/g ≈ 8.005 t/m³ を
   超える密度を入力した鋼材では設計重量が物理重量を下回る（DL・地震用重量を過小評価する
@@ -72,4 +75,5 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
   クランプ（`max(0, mass_equiv − matrix)`）は発生せず両方式が一致する。
 - **CFT**: 線材の設計重量（DL・地震用重量）は鋼管断面×78.5 のみで、充填コンクリート分を
   欠く（質量行列は `element_mass_properties` でコアを含むため両方式が一致しない）。
-  **危険側**。要検討。[残課題一覧](../handoff/残課題一覧.md) に記載。
+  **危険側**。要検討。[GitHub Issue #364](https://github.com/hrntsm/Squid-n/issues/364)、
+  [残課題一覧](../handoff/残課題一覧.md) に記載。
