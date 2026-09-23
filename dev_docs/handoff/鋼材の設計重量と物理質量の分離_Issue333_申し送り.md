@@ -8,7 +8,8 @@
 Squid-n の設計判断として設計重量（DL・地震用重量）と物理質量（質量行列・動的解析）を
 分離した。`CorrectedLumped` と `LumpedOnly` の公称並進総動的質量を一致させる。
 
-- 設計重量（鋼材）: γs = 78.5 kN/m³（基準資料 p.11 表2.1.1-1 由来）
+- 設計重量（鋼材）: γs = 78.5 kN/m³（基準資料 p.11 表2.1.1-1 由来。標準密度 7.85 t/m³
+  のときの値で、物理質量密度に比例させる）
 - 物理質量（鋼材）: ρ = 7.85 t/m³（Squid-n 側の設計判断）
 - 数量積算: 7.85 t/m³（不変。物理質量と値は同じだが用途は独立）
 - 動的質量は `Σ mass_equiv / g` に一致し、地震用重量/g とは一致しない
@@ -21,7 +22,7 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
   （`STEEL_MASS_DENSITY_TON_MM3 = 7.85e-9`）、`STEEL_UNIT_WEIGHT_TAKEOFF_T_M3 = 7.85` を
   独立定数として維持。
 - `Material::design_unit_weight_n_per_mm3`: 材料区分から設計単位体積重量を解決
-  （`Steel`→78.5、その他→密度×g）。`fc.is_some()` では判定しない。鉄筋は Steel に含めない。
+  （`Steel`→78.5×密度/7.85、その他→密度×g）。`fc.is_some()` では判定しない。鉄筋は Steel に含めない。
 - `SelfWeightItem`: `Line { load, mass_equiv, matrix_mass_equiv, extra_bottom_load,
   extra_bottom_mass_equiv, is_column }`、`Damper { load, mass_equiv }`、
   `Panel { load_shares, mass_equiv_shares, matrix_shares }`。`Line` の `mass_equiv` の
