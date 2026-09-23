@@ -912,3 +912,108 @@ fn test_cft_core_props_degenerate_gives_zero_area() {
     assert_eq!(dp.cft_core_props().unwrap().area, 0.0);
     assert!(dp.cft_equivalent_props(205000.0, 0.3, 36.0).is_none());
 }
+
+/// 梁・矩形柱・円形柱の実配筋型が serde を往復しても一致する。
+#[test]
+fn test_real_rebar_serde_round_trip() {
+    let beam = RcBeamRebar {
+        main_dia: 22.0,
+        top: vec![4, 2],
+        bottom: vec![3, 2],
+        cover: 40.0,
+        stirrup: BeamStirrup {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+        },
+    };
+    let beam_json = serde_json::to_string(&beam).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RcBeamRebar>(&beam_json).unwrap(),
+        beam
+    );
+
+    let column = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![4, 2],
+        y: vec![4],
+        cover: 50.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 3,
+            legs_y: 3,
+        },
+    };
+    let column_json = serde_json::to_string(&column).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RcRectColumnRebar>(&column_json).unwrap(),
+        column
+    );
+
+    let circle = RcCircleColumnRebar {
+        main_dia: 22.0,
+        count: 12,
+        cover: 40.0,
+        hoop: CircleColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+        },
+    };
+    let circle_json = serde_json::to_string(&circle).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RcCircleColumnRebar>(&circle_json).unwrap(),
+        circle
+    );
+}
+
+/// `is_unset()` は段・本数が空のとき true、1 つでも入力があれば false。
+#[test]
+fn test_real_rebar_is_unset() {
+    let empty_beam = RcBeamRebar {
+        main_dia: 22.0,
+        top: vec![],
+        bottom: vec![],
+        cover: 40.0,
+        stirrup: BeamStirrup {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+        },
+    };
+    assert!(empty_beam.is_unset());
+    let mut beam = empty_beam.clone();
+    beam.top = vec![4];
+    assert!(!beam.is_unset());
+
+    let empty_column = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![],
+        y: vec![],
+        cover: 50.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 3,
+            legs_y: 3,
+        },
+    };
+    assert!(empty_column.is_unset());
+    let mut column = empty_column.clone();
+    column.y = vec![4];
+    assert!(!column.is_unset());
+
+    let empty_circle = RcCircleColumnRebar {
+        main_dia: 22.0,
+        count: 0,
+        cover: 40.0,
+        hoop: CircleColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+        },
+    };
+    assert!(empty_circle.is_unset());
+    let mut circle = empty_circle.clone();
+    circle.count = 12;
+    assert!(!circle.is_unset());
+}

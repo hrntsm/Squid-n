@@ -2,7 +2,7 @@
 //!
 //! 責務ごとにサブモジュールへ分割している。
 //!
-//! - [`types`] — 型定義（BarSet, ShearBar, RcRebar, SectionShape, one_bar_area, bar_set_area, shear_legs_area）
+//! - [`types`] — 型定義（BarSet, ShearBar, RcRebar, RcBeamRebar, RcRectColumnRebar, RcCircleColumnRebar, RebarPoint, SectionShape, one_bar_area, bar_set_area, shear_legs_area）
 //! - [`constants`] — 材料・換算定数
 //! - [`material`] — 材料換算関数（Ec, 壁せん断形状係数）
 //! - [`geometry`] — 断面幾何量のヘルパ
@@ -38,5 +38,7 @@ pub use shear::{
     StripSectionProperties,
 };
 pub use types::{
-    bar_set_area, one_bar_area, shear_legs_area, BarSet, RcRebar, SectionShape, ShearBar,
+    bar_set_area, one_bar_area, shear_legs_area, BarSet, BeamStirrup, CircleColumnHoop,
+    RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar, RebarPoint, RectColumnHoop,
+    SectionShape, ShearBar,
 };
