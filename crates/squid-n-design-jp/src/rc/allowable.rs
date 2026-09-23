@@ -1,7 +1,7 @@
 //! RC 検定に用いる許容応力度のまとめ（部材単位で term 依存の値を 1 回だけ計算する）。
 
 use crate::material_strength::{
-    concrete_allowable_compression_class, concrete_allowable_shear_class, rebar_allowable_shear,
+    concrete_allowable_compression, concrete_allowable_shear_class, rebar_allowable_shear,
     young_ratio_n,
 };
 pub(crate) use squid_n_core::units::ConcreteClass;
@@ -20,7 +20,7 @@ pub(crate) struct RcAllow {
 
 pub(crate) fn rc_allow(fc_raw: f64, class: ConcreteClass, grade: &str, long_term: bool) -> RcAllow {
     RcAllow {
-        fc: concrete_allowable_compression_class(fc_raw, class, long_term),
+        fc: concrete_allowable_compression(fc_raw, long_term),
         fs: concrete_allowable_shear_class(fc_raw, class, long_term),
         w_ft: rebar_allowable_shear(grade, long_term),
         n_ratio: young_ratio_n(fc_raw),

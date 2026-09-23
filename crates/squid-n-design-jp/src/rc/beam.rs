@@ -473,7 +473,7 @@ mod tests {
     }
 
     /// 軽量1種の RcDesign 検定は、普通コンクリートより検定比が大きくなる
-    /// （fc・fs の 0.9 倍低減が `mat.concrete_class` 経由で効いている）。
+    /// （許容せん断応力度 fs の 0.9 倍低減が `mat.concrete_class` 経由で効いている）。
     #[test]
     fn test_beam_check_lightweight_reduces_capacity() {
         let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);

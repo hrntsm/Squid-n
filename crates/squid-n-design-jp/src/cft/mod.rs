@@ -10,7 +10,7 @@
 //! [`crate::srrc`] の共通ヘルパ（断面諸元抽出等）には依存しない
 //! （断面形状・N-M 相関の算定方法が SRC 矩形断面と異なるため）。
 
-use crate::rc::concrete_allowable_compression_class;
+use crate::rc::concrete_allowable_compression;
 use crate::steel::{steel_f_value_prefix, steel_fc, steel_fs, steel_ft};
 use crate::{
     effective_slenderness, CheckComponent, CheckKind, CheckOutcome, CheckResult, DesignCheck,
@@ -211,7 +211,7 @@ fn cft_box_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
+    let fc_allow = concrete_allowable_compression(fc_raw, long_term);
 
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
@@ -338,7 +338,7 @@ fn cft_pipe_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
+    let fc_allow = concrete_allowable_compression(fc_raw, long_term);
 
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)

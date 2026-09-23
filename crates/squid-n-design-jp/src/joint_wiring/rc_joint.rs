@@ -76,6 +76,7 @@ pub(super) fn check_rc_joint(
         let inp = RcJointInput {
             shape,
             fc: col.mat.fc.unwrap_or(0.0),
+            concrete_class: col.mat.concrete_class,
             col_depth: col.sec.depth,
             col_width: col.sec.width,
             beam_width: beam0.sec.width,

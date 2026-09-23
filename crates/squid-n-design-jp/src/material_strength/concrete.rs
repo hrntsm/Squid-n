@@ -17,9 +17,9 @@ pub fn concrete_allowable_compression(fc: f64, long_term: bool) -> f64 {
 
 /// コンクリートの許容せん断応力度 fs [N/mm²]。
 ///
-/// `長期 = min(Fc/30, 0.49 + Fc/100)`、`短期 = 長期 × 1.5`。
+/// `長期 = min(Fc/30, 0.5 + Fc/100)`、`短期 = 長期 × 1.5`。
 pub fn concrete_allowable_shear(fc: f64, long_term: bool) -> f64 {
-    let long = (fc / 30.0).min(0.49 + fc / 100.0);
+    let long = (fc / 30.0).min(0.5 + fc / 100.0);
     if long_term {
         long
     } else {
@@ -27,22 +27,14 @@ pub fn concrete_allowable_shear(fc: f64, long_term: bool) -> f64 {
     }
 }
 
-/// コンクリート種類による許容応力度の低減係数。
+/// コンクリート種類による許容せん断応力度の低減係数。
 ///
-/// 軽量コンクリート1種・2種の許容応力度（圧縮・せん断）は普通コンクリートの
-/// `0.9 倍`（RC規準・構造規定）。
+/// 軽量コンクリート1種・2種の許容せん断応力度は普通コンクリートの `0.9 倍`。
 fn concrete_class_factor(class: ConcreteClass) -> f64 {
     match class {
         ConcreteClass::Normal => 1.0,
         ConcreteClass::Lightweight1 | ConcreteClass::Lightweight2 => 0.9,
     }
-}
-
-/// コンクリートの許容圧縮応力度 fc [N/mm²]（コンクリート種類対応版）。
-///
-/// `fc = concrete_allowable_compression × concrete_class_factor`。
-pub fn concrete_allowable_compression_class(fc: f64, class: ConcreteClass, long_term: bool) -> f64 {
-    concrete_allowable_compression(fc, long_term) * concrete_class_factor(class)
 }
 
 /// コンクリートの許容せん断応力度 fs [N/mm²]（コンクリート種類対応版）。

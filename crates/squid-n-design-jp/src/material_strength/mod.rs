@@ -6,9 +6,8 @@ mod rebar;
 mod steel;
 
 pub use concrete::{
-    concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
-    concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
-    young_ratio_n,
+    concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_shear,
+    concrete_allowable_shear_class, concrete_young_modulus, young_ratio_n,
 };
 pub use rebar::{
     main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of,
@@ -27,7 +26,7 @@ mod tests {
 
     #[test]
     fn test_concrete_shear_long_term_min_branch() {
-        // Fc=21: Fc/30=0.7, 0.49+Fc/100=0.7 で同値。
+        // Fc=21: Fc/30=0.7, 0.5+Fc/100=0.71 → Fc/30 側が支配。
         assert!((concrete_allowable_shear(21.0, true) - 0.7).abs() < 1e-9);
     }
 
@@ -50,9 +49,26 @@ mod tests {
         let normal = concrete_allowable_shear_class(24.0, ConcreteClass::Normal, false);
         let light = concrete_allowable_shear_class(24.0, ConcreteClass::Lightweight1, false);
         assert!((light - normal * 0.9).abs() < 1e-12);
-        let normal_c = concrete_allowable_compression_class(24.0, ConcreteClass::Normal, true);
-        let light_c = concrete_allowable_compression_class(24.0, ConcreteClass::Lightweight2, true);
-        assert!((light_c - normal_c * 0.9).abs() < 1e-12);
+        // 許容圧縮応力度はコンクリート種類に依存しない（普通コンクリートと同値）。
+        assert!((concrete_allowable_compression(24.0, true) - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_concrete_fc24_representative_values() {
+        assert!((concrete_allowable_compression(24.0, true) - 8.0).abs() < 1e-12);
+        assert!((concrete_allowable_compression(24.0, false) - 16.0).abs() < 1e-12);
+        assert!(
+            (concrete_allowable_shear_class(24.0, ConcreteClass::Normal, true) - 0.74).abs()
+                < 1e-12
+        );
+        assert!(
+            (concrete_allowable_shear_class(24.0, ConcreteClass::Normal, false) - 1.11).abs()
+                < 1e-12
+        );
+        for class in [ConcreteClass::Lightweight1, ConcreteClass::Lightweight2] {
+            assert!((concrete_allowable_shear_class(24.0, class, true) - 0.666).abs() < 1e-12);
+            assert!((concrete_allowable_shear_class(24.0, class, false) - 0.999).abs() < 1e-12);
+        }
     }
 
     #[test]

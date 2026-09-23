@@ -16,6 +16,7 @@
 //!   （2026-08-12）で `min` に戻した。
 
 use crate::{CheckComponent, CheckKind, CheckResult};
+use squid_n_core::units::ConcreteClass;
 
 /// 柱梁接合部の形状（取り付く梁の本数・配置による分類）。
 ///
@@ -42,6 +43,8 @@ pub struct RcJointInput {
     pub shape: JointShape,
     /// コンクリート設計基準強度 Fc [N/mm²]。
     pub fc: f64,
+    /// コンクリート種類（軽量1種・2種は許容せん断応力度を 0.9 倍）。
+    pub concrete_class: ConcreteClass,
     /// 柱せい D [mm]（検定する加力方向の柱せい）。
     pub col_depth: f64,
     /// 柱幅 [mm]（加力方向と直交する方向の柱幅）。
@@ -66,7 +69,7 @@ pub struct RcJointInput {
 /// `QAj = κA・(fs − 0.5)・bj・D`
 /// - κA: 十字形=10, T字形=7, ト字形=5, L字形=3
 /// - `fs`: コンクリートの**短期**許容せん断応力度
-///   （[`crate::rc::concrete_allowable_shear`]`(fc, false)`）
+///   （[`crate::rc::concrete_allowable_shear_class`]`(fc, concrete_class, false)`）
 /// - `bj = bb + ba1 + ba2`（接合部有効幅）。
 ///   `bai = min(bi/2, D/4)`、`bi = (col_width − beam_width) / 2`。
 ///   梁が柱断面の中心に取り付き、柱幅と梁幅の差が両側に均等に振り分けられる
@@ -93,7 +96,7 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         JointShape::Corner => 3.0,
     };
 
-    let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
+    let fs = crate::rc::concrete_allowable_shear_class(inp.fc, inp.concrete_class, false);
 
     let bi = (inp.col_width - inp.beam_width) / 2.0;
     let bai = (bi / 2.0).min(inp.col_depth / 4.0).max(0.0);
@@ -142,6 +145,7 @@ mod tests {
         RcJointInput {
             shape,
             fc: 24.0,
+            concrete_class: ConcreteClass::Normal,
             col_depth: 600.0,
             col_width: 600.0,
             beam_width: 300.0,
@@ -239,5 +243,30 @@ mod tests {
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj1 / qaj;
         assert!((res.ratio() - expected_ratio).abs() < 1e-6);
+    }
+
+    /// 軽量コンクリート1種では接合部の許容せん断応力度が普通コンクリートの
+    /// 0.9 倍になり、検定比が `(fs_普通−0.5)/(fs_軽量−0.5)` 倍（設計用せん断力
+    /// は共通なので許容値の逆比）になることを確認する。
+    #[test]
+    fn rc_joint_lightweight_reduces_shear_capacity() {
+        let normal = base_joint_input(JointShape::Cross);
+        let mut light = base_joint_input(JointShape::Cross);
+        light.concrete_class = ConcreteClass::Lightweight1;
+
+        let fs_n =
+            crate::rc::concrete_allowable_shear_class(normal.fc, normal.concrete_class, false);
+        let fs_l = crate::rc::concrete_allowable_shear_class(light.fc, light.concrete_class, false);
+        assert!((fs_l - fs_n * 0.9).abs() < 1e-12);
+
+        let res_n = rc_joint_shear_check(&normal);
+        let res_l = rc_joint_shear_check(&light);
+
+        let bi = (light.col_width - light.beam_width) / 2.0;
+        let bai = (bi / 2.0).min(light.col_depth / 4.0);
+        let bj = light.beam_width + 2.0 * bai;
+        let qaj_n = 10.0 * (fs_n - 0.5) * bj * light.col_depth;
+        let qaj_l = 10.0 * (fs_l - 0.5) * bj * light.col_depth;
+        assert!((res_l.ratio() / res_n.ratio() - qaj_n / qaj_l).abs() < 1e-9);
     }
 }
