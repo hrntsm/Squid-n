@@ -139,6 +139,10 @@ pub(crate) struct RcRebarInfo {
     pub tension_count: u32,
     /// 検定方向の引張側の段数（付着検定の `layers`。多段で 0.6 低減に用いる）。
     pub tension_layers: u32,
+    /// 検定方向の引張側最外段の本数（付着検定 1999 の n1）。
+    pub tension_first_layer_count: f64,
+    /// 付着検定 1991 の φ に用いる引張筋本数。
+    pub tension_count_1991: f64,
     pub shear_dia: f64,
     pub shear_pitch: f64,
     pub shear_legs: u32,
@@ -161,6 +165,9 @@ pub(crate) fn rebar_info_from_shape(
             main_area: bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y),
             tension_count: rebar.main_x.count,
             tension_layers: rebar.main_x.layers.max(1),
+            tension_first_layer_count: rebar.main_x.count as f64
+                / rebar.main_x.layers.max(1) as f64,
+            tension_count_1991: (rebar.main_x.count as f64 / 2.0).max(1.0),
             shear_dia: rebar.shear.dia,
             shear_pitch: rebar.shear.pitch,
             shear_legs: rebar.shear.legs,
@@ -174,6 +181,9 @@ pub(crate) fn rebar_info_from_shape(
             main_area: bar_set_area(&rebar.main_x),
             tension_count: rebar.main_x.count,
             tension_layers: rebar.main_x.layers.max(1),
+            tension_first_layer_count: rebar.main_x.count as f64
+                / rebar.main_x.layers.max(1) as f64,
+            tension_count_1991: (rebar.main_x.count as f64 / 2.0).max(1.0),
             shear_dia: rebar.shear.dia,
             shear_pitch: rebar.shear.pitch,
             shear_legs: rebar.shear.legs,
@@ -185,10 +195,18 @@ pub(crate) fn rebar_info_from_shape(
             }
             let top_count: u32 = rebar.top.iter().sum();
             let bottom_count: u32 = rebar.bottom.iter().sum();
-            let (tension_count, tension_layers) = if tension_is_top {
-                (top_count, rebar.top.len().max(1) as u32)
+            let (tension_count, tension_layers, first_layer_count) = if tension_is_top {
+                (
+                    top_count,
+                    rebar.top.len().max(1) as u32,
+                    rebar.top.first().copied().unwrap_or(0),
+                )
             } else {
-                (bottom_count, rebar.bottom.len().max(1) as u32)
+                (
+                    bottom_count,
+                    rebar.bottom.len().max(1) as u32,
+                    rebar.bottom.first().copied().unwrap_or(0),
+                )
             };
             Some(RcRebarInfo {
                 cover: rebar.cover,
@@ -198,6 +216,8 @@ pub(crate) fn rebar_info_from_shape(
                 main_area: rebar.total_main_area(),
                 tension_count,
                 tension_layers,
+                tension_first_layer_count: first_layer_count as f64,
+                tension_count_1991: tension_count as f64,
                 shear_dia: rebar.stirrup.dia,
                 shear_pitch: rebar.stirrup.pitch,
                 shear_legs: rebar.stirrup.legs,
@@ -221,6 +241,8 @@ pub(crate) fn rebar_info_from_shape(
                 main_area: rebar.total_main_area(),
                 tension_count: main_count,
                 tension_layers: 1,
+                tension_first_layer_count: main_count as f64,
+                tension_count_1991: main_count as f64,
                 shear_dia: rebar.hoop.dia,
                 shear_pitch: rebar.hoop.pitch,
                 shear_legs: rebar.hoop.legs_x.max(rebar.hoop.legs_y),
@@ -239,6 +261,8 @@ pub(crate) fn rebar_info_from_shape(
                 main_area: rebar.total_main_area(),
                 tension_count: rebar.count,
                 tension_layers: 1,
+                tension_first_layer_count: rebar.count as f64,
+                tension_count_1991: rebar.count as f64,
                 shear_dia: rebar.hoop.dia,
                 shear_pitch: rebar.hoop.pitch,
                 shear_legs: 0,
@@ -514,6 +538,8 @@ mod tests {
         assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 6);
         assert_eq!(info.tension_layers, 2);
+        assert!((info.tension_first_layer_count - 3.0).abs() < 1e-9);
+        assert!((info.tension_count_1991 - 3.0).abs() < 1e-9);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);
         assert!(!info.is_circle);
     }
@@ -525,12 +551,16 @@ mod tests {
         assert!((top.main_area - 11.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(top.tension_count, 6);
         assert_eq!(top.tension_layers, 2);
+        assert!((top.tension_first_layer_count - 4.0).abs() < 1e-9);
+        assert!((top.tension_count_1991 - 6.0).abs() < 1e-9);
 
         let bottom = rebar_info_from_shape(&beam_shape(), false).unwrap();
         assert_eq!(bottom.main_count, 11);
         assert!((bottom.main_area - 11.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(bottom.tension_count, 5);
         assert_eq!(bottom.tension_layers, 2);
+        assert!((bottom.tension_first_layer_count - 3.0).abs() < 1e-9);
+        assert!((bottom.tension_count_1991 - 5.0).abs() < 1e-9);
     }
 
     #[test]
@@ -539,6 +569,8 @@ mod tests {
         assert_eq!(info.main_count, 10);
         assert_eq!(info.main_count_per_side, 4);
         assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
+        assert_eq!(info.tension_first_layer_count, 10.0);
+        assert_eq!(info.tension_count_1991, 10.0);
         assert_eq!(info.shear_legs, 3);
         assert!(!info.is_circle);
     }
@@ -550,6 +582,8 @@ mod tests {
         assert_eq!(info.main_count_per_side, 3);
         assert!((info.main_area - 8.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 8);
+        assert_eq!(info.tension_first_layer_count, 8.0);
+        assert_eq!(info.tension_count_1991, 8.0);
         assert!(info.is_circle);
     }
 
@@ -566,6 +600,8 @@ mod tests {
         assert!((info.main_area - 6.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 6);
         assert_eq!(info.tension_layers, 1);
+        assert!((info.tension_first_layer_count - 6.0).abs() < 1e-9);
+        assert!((info.tension_count_1991 - 3.0).abs() < 1e-9);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);
         assert!(info.is_circle);
     }

@@ -94,8 +94,7 @@ pub(crate) fn rc_beam_bond_check(
         return None;
     }
 
-    let layers = (info.tension_layers.max(1)) as f64;
-    let n1 = (info.tension_count as f64 / layers).max(1.0);
+    let n1 = info.tension_first_layer_count;
 
     let clear_spacing = if n1 <= 1.0 {
         5.0 * db
@@ -153,6 +152,7 @@ pub(crate) fn rc_beam_bond_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
 
     #[test]
     fn test_rc_beam_bond_check_1991_hand_calc() {
@@ -179,6 +179,8 @@ mod tests {
             main_area: 6.0 * one_bar_area(22.0),
             tension_count: 6,
             tension_layers: 1,
+            tension_first_layer_count: 6.0,
+            tension_count_1991: 3.0,
             shear_dia: 10.0,
             shear_pitch: 100.0,
             shear_legs: 2,
@@ -318,6 +320,50 @@ mod tests {
         assert!((result.k - expected_k).abs() < 1e-6);
     }
 
+    /// 新型 `RcBeamRect`（上 4+2 / 下 3+2）の Rc1999 付着で、n1 は引張側最外段の
+    /// 本数（上端引張 4 本・下端引張 3 本）を用いる。`w` は n1 に反比例するため
+    /// その値で n1 の配線を確認する。
+    #[test]
+    fn test_bond_1999_n1_uses_first_layer_count_for_new_model() {
+        let shape = SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4, 2],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+        let top = super::super::rebar_info_from_shape(&shape, true).unwrap();
+        let bottom = super::super::rebar_info_from_shape(&shape, false).unwrap();
+        let run = |info: &RcRebarInfo| {
+            rc_beam_bond_check(
+                0.1,
+                3000.0,
+                400.0,
+                539.0,
+                471.625,
+                6.0 * one_bar_area(22.0),
+                30_000_000.0,
+                info,
+                24.0,
+                false,
+            )
+            .unwrap()
+        };
+        let ast = 2.0 * one_bar_area(10.0);
+        let expected_top = (20.0 * ast / (100.0 * 4.0)).min(2.5 * 22.0);
+        let expected_bottom = (20.0 * ast / (100.0 * 3.0)).min(2.5 * 22.0);
+        assert!((run(&top).w - expected_top).abs() < 1e-9);
+        assert!((run(&bottom).w - expected_bottom).abs() < 1e-9);
+    }
+
     #[test]
     fn test_bond_k_clamped_at_2_5() {
         // C・W ともに上限（5db・2.5db）近くまで大きくし、K が 2.5 にクランプ
@@ -330,6 +376,8 @@ mod tests {
             main_area: 2.0 * one_bar_area(10.0),
             tension_count: 2,
             tension_layers: 1,
+            tension_first_layer_count: 2.0,
+            tension_count_1991: 1.0,
             shear_dia: 12.0,
             shear_pitch: 50.0,
             shear_legs: 10,
@@ -361,6 +409,8 @@ mod tests {
         let info2 = RcRebarInfo {
             tension_count: 12,
             tension_layers: 2,
+            tension_first_layer_count: 6.0,
+            tension_count_1991: 6.0,
             ..info1
         };
         let run = |info: &RcRebarInfo| {

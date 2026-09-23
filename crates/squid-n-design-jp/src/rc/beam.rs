@@ -170,7 +170,7 @@ pub(crate) fn beam_check(
             (ratio, detail)
         }
         BondMethod::Rc1991 => {
-            let n_t = ((info.tension_count as f64) / 2.0).max(1.0);
+            let n_t = info.tension_count_1991;
             let phi = n_t * std::f64::consts::PI * info.main_dia;
             let is_end = !(0.25 < forces.pos && forces.pos < 0.75);
             let bond = rc_beam_bond_check_1991(q_design, props.j, phi, fc_raw, is_end, long_term);
@@ -284,7 +284,7 @@ mod tests {
     use super::*;
     use crate::rc::tests::{ctx_beam, make_material, make_section, rc_rect_shape};
     use crate::DesignCheck;
-    use squid_n_core::section_shape::SectionShape;
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
     use squid_n_core::units::ConcreteClass;
 
     fn make_material_class(fc: f64, grade: &str, class: ConcreteClass) -> Material {
@@ -633,6 +633,66 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Bond));
+    }
+
+    /// 新型 `RcBeamRect`（上 4+2 / 下 3+2）の Rc1991 付着で、φ は引張側合計本数
+    /// （上端引張 6 本・下端引張 5 本）× π × dia に一致する（旧モデルのように /2 しない）。
+    #[test]
+    fn test_beam_bond_1991_phi_uses_total_tension_count_for_new_model() {
+        let shape = SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4, 2],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let mut ctx = ctx_beam(LoadTerm::Short);
+        ctx.bond_method = BondMethod::Rc1991;
+        ctx.length = 3000.0;
+
+        let bond_detail = |mz: f64| {
+            let forces = MemberForcesAt {
+                pos: 0.0,
+                n: 0.0,
+                qy: 20_000.0,
+                qz: 0.0,
+                my: 0.0,
+                mz,
+            };
+            let r = crate::rc::RcDesign
+                .check(&forces, &sec, &mat, &ctx)
+                .unwrap_checked();
+            r.components
+                .iter()
+                .find(|c| c.kind == crate::CheckKind::Bond)
+                .expect("Bond component")
+                .detail
+                .clone()
+        };
+
+        let dia = 22.0;
+        let expected_top = format!("ψ={:.1}", 6.0 * std::f64::consts::PI * dia);
+        let expected_bottom = format!("ψ={:.1}", 5.0 * std::f64::consts::PI * dia);
+        assert!(
+            bond_detail(-30_000_000.0).contains(&expected_top),
+            "上端引張の φ は 6 本分: {}",
+            bond_detail(-30_000_000.0)
+        );
+        assert!(
+            bond_detail(30_000_000.0).contains(&expected_bottom),
+            "下端引張の φ は 5 本分: {}",
+            bond_detail(30_000_000.0)
+        );
     }
 
     #[test]

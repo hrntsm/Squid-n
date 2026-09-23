@@ -379,6 +379,8 @@ mod tests {
             main_area: count as f64 * one_bar_area(dia),
             tension_count: count,
             tension_layers: 1,
+            tension_first_layer_count: count as f64,
+            tension_count_1991: (count as f64 / 2.0).max(1.0),
             shear_dia: 10.0,
             shear_pitch: pitch,
             shear_legs: 2,
