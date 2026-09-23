@@ -39,6 +39,7 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0031](0031-withdraw-high-strength-shear-reinforcement.md) | accepted | 高強度せん断補強筋の製品別対応を撤回する |
 | [0032](0032-concrete-allowable-stress-basis.md) | accepted | コンクリートの許容圧縮・せん断応力度は基準資料（表2.1.1-2）を正とする |
 | [0033](0033-steel-design-weight-vs-physical-mass.md) | accepted | 鋼材の設計重量（78.5 kN/m³）と物理質量（7.85 t/m³）を分離する |
+| [0034](0034-rc-section-purpose-types-and-real-rebar.md) | accepted | RC 断面を用途別に型分離し、実配筋モデルへ移行する |
 
 ## 規約
 
