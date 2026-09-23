@@ -1,8 +1,8 @@
 //! 自重（線材・壁・シェル・ダンパー）の列挙と算定。
 //!
-//! - [`SelfWeightItem`] — 自重 1 件分の重量と帰属の中間表現
+//! - [`SelfWeightItem`] — 自重 1 件分の設計重量・物理質量相当と帰属の中間表現
 //! - [`enumerate_self_weight`] — モデル全要素の自重を列挙する
-//! - [`steel_density_ton_mm3`] — 鋼材の質量密度 [ton/mm³]
+//! - [`steel_density_ton_mm3`] — 鋼材の物理質量密度 [ton/mm³]
 //! - [`finish_perimeter`] — 仕上げ周長 φ
 //! - [`wall_clear_area`] — 耐震壁の内法面積
 
@@ -65,13 +65,26 @@ fn beam_pair_map(model: &Model) -> HashMap<(NodeId, NodeId), usize> {
     map
 }
 
-/// 鋼材単位体積重量（γs=77kN/m³、実務慣用値）を内部単位系の質量密度
-/// [ton/mm³] に換算した値（≈7.85e-9）。ダンパー支持部重量（§ダンパー自重）に用いる。
-/// `squid-n-core::units` の単一ソースオブトゥルースから導出する（レビュー §1.11 と同じ方針）。
+/// 鋼材の物理質量密度 [ton/mm³]（質量行列・動的解析用）。ダンパー支持部の
+/// 質量相当重量の算定に用いる。設計用単位体積重量からは導出しない。
 pub(crate) fn steel_density_ton_mm3() -> f64 {
-    squid_n_core::units::to_internal::mass_density_from_unit_weight_kn_m3(
+    squid_n_core::units::STEEL_MASS_DENSITY_TON_MM3
+}
+
+/// 鋼材の設計用単位体積重量 [N/mm³]（DL・地震用重量用）。ダンパー支持部の
+/// 設計重量の算定に用いる。
+pub(crate) fn steel_design_unit_weight_n_per_mm3() -> f64 {
+    squid_n_core::units::to_internal::unit_weight_kn_per_m3(
         squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3,
     )
+}
+
+/// 解析の質量行列が線材へ与える単位長さ当たり質量 [t/mm]。
+/// 質量行列の組み立てと同じ [`Model::element_mass_properties`] から求める。
+fn analysis_mass_per_length(model: &Model, elem: &ElementData) -> f64 {
+    model
+        .element_mass_properties(elem)
+        .map_or(0.0, |properties| properties.mass_per_length)
 }
 
 /// 仕上げ周長 φ（柱梁自重の仕上げ荷重）。
@@ -97,33 +110,57 @@ fn finish_perimeter(width: f64, depth: f64, is_vertical: bool) -> f64 {
 pub(crate) enum SelfWeightItem {
     /// 線材（柱・梁・ブレース）の自重。`elem_idx` は `model.elements` の添字。
     ///
-    /// `total` は通常自重（上下節点へ 1/2 ずつ）[N]、`extra_bottom` は下端節点だけへ
-    /// 加算する追加自重 [N]（柱以外・S 柱・下階柱ありは 0）。`is_column` は 2 節点の
-    /// 鉛直 `ElementKind::Beam`（ブレースは false）。
+    /// - `load` は通常部の設計重量 [N]（DL・地震用重量）。鉄骨重量割増 `factor`・
+    ///   付加線重量・仕上げを含む。
+    /// - `extra_bottom_load` は下端節点だけへ加算する設計重量 [N]（通常部の外側。
+    ///   柱以外・S 柱・下階柱ありは 0）。
+    /// - `mass_equiv` は通常部の物理質量相当の重量 [N]。躯体分は解析の質量行列と同じ
+    ///   幾何（総断面・節点間長）で物理密度（×g）により算定し、鉄骨重量割増 `factor` を
+    ///   乗じる。付加重量（仕上げ・付加線重量）はそのまま残す。
+    /// - `extra_bottom_mass_equiv` は `extra_bottom_load` に対応する物理質量相当 [N]。
+    /// - `matrix_mass_equiv` は通常部のうち解析の質量行列（部材密度質量）が受け持つ分 [N]。
+    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分の割増増分
+    ///   (`matrix_mass_equiv × (factor−1)`) と付加重量が `mass_equiv − matrix_mass_equiv`
+    ///   に残る。
+    /// - `is_column` は 2 節点の鉛直 `ElementKind::Beam`（ブレースは false）。
     Line {
         elem_idx: usize,
-        total: f64,
-        extra_bottom: f64,
+        load: f64,
+        mass_equiv: f64,
+        matrix_mass_equiv: f64,
+        extra_bottom_load: f64,
+        extra_bottom_mass_equiv: f64,
         is_column: bool,
     },
-    /// ダンパー装置＋支持部の重量（総量 [N]）。両端節点（`model.nodes` 添字）へ 1/2 ずつ。
-    Damper { ni: usize, nj: usize, total: f64 },
+    /// ダンパー装置＋支持部の重量。両端節点（`model.nodes` 添字）へ 1/2 ずつ。
+    /// `load` は設計重量、`mass_equiv` は物理質量相当（装置重量はそのまま）。
+    Damper {
+        ni: usize,
+        nj: usize,
+        load: f64,
+        mass_equiv: f64,
+    },
     /// 壁・シェルの自重の頂点配分（`model.nodes` 添字 → [N]）。
     ///
-    /// `shares` は総重量（躯体 ＋ 仕上げ・増打ち）、`density_shares` はそのうち
-    /// **躯体の密度から生じる分だけ**を同じ規則で配ったものである。2 つに分けるのは
-    /// `CorrectedLumped`（既定の質量方式）の控除に密度分だけを使うためで、解析の
-    /// 質量行列は要素の密度からしか質量を作らない。総重量で控除すると、仕上げ・
-    /// 増打ちの質量が控除されるだけで分布質量としては現れず、黙って消える。
+    /// 質量方式ごとに基準が異なるため 3 値を持つ。
+    /// `load_shares` は設計重量（設計躯体 ＋ 仕上げ・増打ち ＋ 開口重量）、
+    /// `mass_equiv_shares` は物理密度の躯体 ＋ 仕上げ・増打ち ＋ 開口重量、
+    /// `matrix_shares` は物理密度の躯体 ＋ 開口重量（解析の質量行列が受け持つ分）。
+    /// 仕上げ・増打ちは質量行列に対応物がないため、`mass_equiv_shares` と
+    /// `matrix_shares` の差として補正質点に残す。
     Panel {
-        shares: Vec<(usize, f64)>,
-        density_shares: Vec<(usize, f64)>,
+        load_shares: Vec<(usize, f64)>,
+        mass_equiv_shares: Vec<(usize, f64)>,
+        matrix_shares: Vec<(usize, f64)>,
     },
 }
 
 /// モデル全要素の自重を列挙する（§柱梁自重・§壁自重・§ダンパー自重）。
 ///
-/// - 線材（柱・梁・ブレース, `ElementKind::Beam`/`Brace`）: ρ·A·L·g。
+/// - 線材（柱・梁・ブレース, `ElementKind::Beam`/`Brace`）: 設計重量（設計単位体積
+///   重量×A×L。付加線重量・仕上げを含む）と物理質量相当（質量行列と同じ総断面・
+///   節点間長で物理密度×g を算定し、鉄骨重量割増を掛けて付加重量を足したもの）を
+///   別々に持つ。
 ///   §1.8: 自重算定長 L は、コンクリート材（`mat.fc` あり = RC/SRC）の水平材（梁）は
 ///   柱面間距離（`len` から両端の柱フェース距離を引いた、負にならない範囲）、鉛直材（柱）は
 ///   床上面から床上面まで（＝節点間距離。フェイス控除しない）、鋼材（S 梁・柱）は
@@ -138,12 +175,15 @@ pub(crate) enum SelfWeightItem {
 ///   非鉛直 Beam の最大せい [mm] に相当する重量を
 ///   追加自重として下端節点だけへ加算する（通常自重は上下へ 1/2 ずつ。柱以外・S 柱・
 ///   下階柱ありは 0。ブレースは柱とみなさない）。総重量は `w·(L+Dmax)` で保存する。
-///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を乗じ、
+///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を
+///   設計重量と物理質量の両方の躯体分に乗じ（物理質量では増分も物理密度ベース）、
 ///   `load_cfg.extra_line_weight`（耐火被覆等の付加線重量 [N/mm]）・
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
 ///   あれば自重算定長を掛けて加算する。
-/// - 壁・シェル（`ElementKind::Wall`/`Shell`, 節点数3以上）: ρ·t·(A−開口面積)·g＋開口重量
-///   （§壁自重）を全頂点に等分配。要素になる壁版は上下の梁と一体なので、行き先を
+/// - 壁・シェル（`ElementKind::Wall`/`Shell`, 節点数3以上）: 設計重量（設計躯体＋
+///   仕上げ・増打ち＋開口重量）・物理質量相当（物理密度の躯体＋仕上げ・増打ち＋
+///   開口重量）・質量行列が受け持つ分（物理密度の躯体＋開口重量）を別々に
+///   全頂点へ等分配（§壁自重）。要素になる壁版は上下の梁と一体なので、行き先を
 ///   上下どちらかへ寄せる扱いはしない（上下いずれかの梁との縁切りは壁版の形が表し、
 ///   取り付く壁版として `crate::wall_attached` が受け持つ）。
 ///   §1.2: 壁の重量を階高の中央で上下階の節点に分配する扱いに対応
@@ -151,8 +191,9 @@ pub(crate) enum SelfWeightItem {
 ///   §壁自重: 4 節点の耐震壁は「周辺の柱梁の内法寸法」で面積を評価する
 ///   （[`wall_clear_area`]。芯々面積に内法係数を乗じる。控除相手の
 ///   柱・梁が見つからない辺は控除なし＝芯々のまま保守側）。
-/// - ダンパー（`load_cfg.dampers` に登録された Beam/Brace 要素）: 断面自重
-///   （ρ·A·L·g）は使わず、装置重量＋支持部重量に置き換える（§ダンパー自重。
+/// - ダンパー（`load_cfg.dampers` に登録された Beam/Brace 要素）: 断面自重は使わず、
+///   設計重量は装置重量＋支持部×設計単位体積重量、物理質量相当は装置重量＋支持部×
+///   物理密度×g に置き換える（§ダンパー自重。装置重量は両者で同値。
 ///   `device_weight=0` かつ `support_area>0` の場合は支持部のみが算入され、
 ///   自重を考慮しない部材に相当する）。
 ///
@@ -164,9 +205,7 @@ pub(crate) enum SelfWeightItem {
 /// 生成要素は展開モデルの末尾へ追加されるだけなので、`model.elements` に対する
 /// 添字としてもそのまま有効。壁の開口は、壁展開モデルに合成される
 /// `wall_attrs`（[`crate::wall_expand::expand_wall_elements`] が壁版から複製する。
-/// モジュール doc 参照）から今までどおり読む（**この関数のロジック自体は
-/// 型移行の前後で無改修**。dig Q5=A: 自重算定の計算根拠を変えないことで、
-/// 型移行後も `wall_model.rs` の代表スカラが一致することを回帰検知の根拠にする）。
+/// モジュール doc 参照）から今までどおり読む。
 pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<SelfWeightItem> {
     let (expanded, _wall_index, _wall_expand_report) =
         crate::wall_expand::expand_wall_elements(model);
@@ -184,9 +223,16 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let nj = elem.nodes[1].index();
                 let len = dist3(model.nodes[ni].coord, model.nodes[nj].coord);
                 let support_len = (len - damper.device_length).max(0.0);
-                let w = damper.device_weight
+                let load = damper.device_weight
+                    + damper.support_area * support_len * steel_design_unit_weight_n_per_mm3();
+                let mass_equiv = damper.device_weight
                     + damper.support_area * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
-                items.push(SelfWeightItem::Damper { ni, nj, total: w });
+                items.push(SelfWeightItem::Damper {
+                    ni,
+                    nj,
+                    load,
+                    mass_equiv,
+                });
                 continue;
             }
         }
@@ -273,13 +319,13 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 } else {
                     sec.area
                 };
-                let mut per_length = mat.density * self_weight_area * GRAVITY_MM_S2 * factor;
+                let mut extras_per_length = 0.0;
                 if let Some(&(_, lw)) = load_cfg
                     .extra_line_weight
                     .iter()
                     .find(|(id, _)| *id == elem.id)
                 {
-                    per_length += lw;
+                    extras_per_length += lw;
                 }
                 if let Some(&(_, wf)) = load_cfg
                     .finish_area_weight
@@ -287,15 +333,26 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     .find(|(id, _)| *id == elem.id)
                 {
                     let phi = finish_perimeter(sec.width, sec.depth, is_vertical);
-                    per_length += wf * phi;
+                    extras_per_length += wf * phi;
                 }
+                let design_per_length =
+                    mat.design_unit_weight_n_per_mm3() * self_weight_area * factor
+                        + extras_per_length;
+                let physical_per_length =
+                    mat.density * self_weight_area * GRAVITY_MM_S2 * factor + extras_per_length;
+                let load = design_per_length * eff_len;
+                let matrix_mass_equiv = analysis_mass_per_length(model, elem) * len * GRAVITY_MM_S2;
+                let mass_equiv = matrix_mass_equiv * factor + extras_per_length * eff_len;
 
-                let total = per_length * eff_len;
-                let extra_bottom = per_length * max_depth;
+                let extra_bottom_load = design_per_length * max_depth;
+                let extra_bottom_mass_equiv = physical_per_length * max_depth;
                 items.push(SelfWeightItem::Line {
                     elem_idx,
-                    total,
-                    extra_bottom,
+                    load,
+                    mass_equiv,
+                    matrix_mass_equiv,
+                    extra_bottom_load,
+                    extra_bottom_mass_equiv,
                     is_column,
                 });
             }
@@ -315,17 +372,23 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
                 let net_area = (area - opening_area).max(0.0);
                 let finish = attr.map(|a| a.finish_intensity).unwrap_or(0.0);
-                let w = ((mat.density * t * GRAVITY_MM_S2 + finish) * net_area + opening_weight)
+                let w_load = ((mat.design_unit_weight_n_per_mm3() * t + finish) * net_area
+                    + opening_weight)
                     .max(0.0);
 
                 let slit = attr.map(|a| a.slit).unwrap_or_default();
-                let shares = wall_corner_shares(elem, &pts, w, slit);
-                let w_density =
+                let load_shares = wall_corner_shares(elem, &pts, w_load, slit);
+                let w_matrix =
                     (mat.density * t * GRAVITY_MM_S2 * net_area + opening_weight).max(0.0);
-                let density_shares = wall_corner_shares(elem, &pts, w_density, slit);
+                let matrix_shares = wall_corner_shares(elem, &pts, w_matrix, slit);
+                let w_mass_equiv = ((mat.density * t * GRAVITY_MM_S2 + finish) * net_area
+                    + opening_weight)
+                    .max(0.0);
+                let mass_equiv_shares = wall_corner_shares(elem, &pts, w_mass_equiv, slit);
                 items.push(SelfWeightItem::Panel {
-                    shares,
-                    density_shares,
+                    load_shares,
+                    mass_equiv_shares,
+                    matrix_shares,
                 });
             }
             _ => {}

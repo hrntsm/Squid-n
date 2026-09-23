@@ -730,9 +730,9 @@ mod tests {
         use squid_n_core::model::{
             Material, MaterialCategory, SecondaryMember, SecondaryMemberEnds, Section,
         };
-        use squid_n_core::units::GRAVITY_MM_S2;
 
         const DENSITY: f64 = 7.85e-9;
+        const DESIGN_UNIT_WEIGHT_N_PER_MM3: f64 = 78.5e-6;
         const AREA: f64 = 10_000.0;
 
         let mk_node = |id: u32, x: f64, y: f64| Node {
@@ -818,7 +818,7 @@ mod tests {
             .filter(|m| matches!(m.kind, MemberLoadKind::Point { .. }))
             .collect();
         assert_eq!(points.len(), 2, "2 本の大梁へ 1 件ずつ: {member:?}");
-        let expected = DENSITY * AREA * GRAVITY_MM_S2 * 2000.0;
+        let expected = DESIGN_UNIT_WEIGHT_N_PER_MM3 * AREA * 2000.0;
         for m in points {
             let MemberLoadKind::Point { a, p } = m.kind else {
                 unreachable!("Point で絞り込み済み")

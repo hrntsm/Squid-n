@@ -553,11 +553,33 @@ fn point_dist_to_axis(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
     dist3(p, lerp3(a, b, t))
 }
 
-/// 二次部材小梁の自重を単純梁の等分布荷重 [N/mm] として返す。
+/// 二次部材小梁の自重を単純梁の等分布荷重 [N/mm] として返す（設計重量）。
 ///
-/// 自重算定（`enumerate_self_weight`）と同じ ρ·A·g·鉄骨割増。断面または材料が
-/// 無ければ `None`（その小梁の検定荷重には自重を足さない）。
+/// 自重算定（`enumerate_self_weight`）と同じ設計単位体積重量（鋼材 78.5 kN/m³・
+/// その他は密度×g）と鉄骨割増。断面または材料が無ければ `None`。
 pub fn joist_self_weight_udl(
+    model: &Model,
+    sm: &squid_n_core::model::SecondaryMember,
+) -> Option<f64> {
+    let mat = model.secondary_material(sm)?;
+    let sec = model.sections.get(sm.section?.index())?;
+    let factor = if mat.fc.is_some() {
+        1.0
+    } else {
+        model
+            .load_cfg
+            .as_ref()
+            .map(|c| c.effective_steel_factor())
+            .unwrap_or(1.0)
+    };
+    let w = mat.design_unit_weight_n_per_mm3() * sec.area * factor;
+    (w > 0.0).then_some(w)
+}
+
+/// 二次部材小梁の物理質量相当の自重 [N/mm]（質量行列・動的解析用）。
+/// 物理密度（`Material::density` × g）に鉄骨割増を掛ける（主架構線材と同じ規則）。
+/// 断面または材料が無ければ `None`。
+pub fn joist_mass_equiv_udl(
     model: &Model,
     sm: &squid_n_core::model::SecondaryMember,
 ) -> Option<f64> {

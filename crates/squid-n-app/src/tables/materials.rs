@@ -152,12 +152,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 "新規材料".into(),
                 "205000".into(),
                 "0.3".into(),
-                format!(
-                    "{:.4e}",
-                    mass_density_from_unit_weight_kn_m3(
-                        squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3
-                    )
-                ),
+                format!("{:.4e}", squid_n_core::units::STEEL_MASS_DENSITY_TON_MM3),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -422,6 +417,16 @@ mod tests {
         assert!(
             (density - src_density).abs() < 1e-18,
             "density={density} expected={src_density}"
+        );
+    }
+
+    /// 直接入力の既定密度は鋼材の物理質量密度 7.85 t/m³（= 7.85e-9 t/mm³）由来。
+    /// 設計用単位体積重量 78.5 kN/m³ からは導出しない。
+    #[test]
+    fn test_default_custom_density_is_steel_mass_density() {
+        assert_eq!(
+            format!("{:.4e}", squid_n_core::units::STEEL_MASS_DENSITY_TON_MM3),
+            "7.8500e-9"
         );
     }
 }

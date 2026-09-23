@@ -57,15 +57,25 @@ pub fn concrete_unit_weight_kn_m3(fc: f64, class: ConcreteClass, comp: ConcreteC
     }
 }
 
-/// 鋼材の単位体積重量 [kN/m³]（固定荷重: γs = 77 kN/m³）。
-pub const STEEL_UNIT_WEIGHT_KN_M3: f64 = 77.0;
+/// 鋼材の設計用単位体積重量 [kN/m³]（固定荷重: γs = 78.5 kN/m³。基準資料による）。
+/// DL 荷重・地震用重量の算定に用いる。物理質量密度 [`STEEL_MASS_DENSITY_T_M3`] とは
+/// 用途が別であり、質量をこの値から導出してはならない。
+pub const STEEL_UNIT_WEIGHT_KN_M3: f64 = 78.5;
+
+/// 鋼材の物理質量密度 [t/m³]（質量行列・動的解析に用いる）。
+/// 設計用単位体積重量 [`STEEL_UNIT_WEIGHT_KN_M3`] とは用途が別であり、
+/// たまたま数量積算の慣用値と同値でも独立に扱う。
+pub const STEEL_MASS_DENSITY_T_M3: f64 = 7.85;
+
+/// 鋼材の物理質量密度 [t/mm³]（内部単位系 N-mm-s）。
+/// [`STEEL_MASS_DENSITY_T_M3`] × 1e-9。`Material::density` はこの値を持つ。
+pub const STEEL_MASS_DENSITY_TON_MM3: f64 = STEEL_MASS_DENSITY_T_M3 * 1.0e-9;
 
 /// 鋼材の単位重量 [t/m³]（数量積算の慣用値）。
 ///
-/// 積算分野では鋼材比重 7.85 を用いるのが慣用であり、固定荷重の
-/// γs = 77 kN/m³（[`STEEL_UNIT_WEIGHT_KN_M3`]。質量換算 ≒7.8518 t/m³）とは
-/// 約 0.02% の系統差がある。荷重・質量は 77 kN/m³、数量積算は 7.85 t/m³ を
-/// それぞれ正とする分野別の慣用値として使い分ける（仕様）。
+/// 積算分野では鋼材比重 7.85 を用いるのが慣用である。物理質量密度
+/// [`STEEL_MASS_DENSITY_T_M3`] と値は同じだが、数量積算という独立の用途の
+/// 慣用値であり、[`STEEL_UNIT_WEIGHT_KN_M3`]（設計重量）とは別の定数として扱う。
 pub const STEEL_UNIT_WEIGHT_TAKEOFF_T_M3: f64 = 7.85;
 
 pub mod to_internal {
@@ -293,5 +303,26 @@ mod tests {
         let rho = to_internal::mass_density_from_unit_weight_kn_m3(24.0);
         assert_relative_eq!(rho, 24.0e-6 / GRAVITY_MM_S2, max_relative = 1e-12);
         assert!((rho - 2.4473e-9).abs() / rho < 1e-3);
+    }
+
+    /// 鋼材の設計重量 78.5 kN/m³、物理質量密度 7.85 t/m³ が別用途の値であり、
+    /// g 換算で一致しないこと（78.5 から質量を導出しないことの根拠）。
+    #[test]
+    fn test_steel_design_weight_and_mass_density_are_separate() {
+        let design_n_per_mm3 = to_internal::unit_weight_kn_per_m3(STEEL_UNIT_WEIGHT_KN_M3);
+        assert_relative_eq!(design_n_per_mm3, 78.5e-6, max_relative = 1e-12);
+        assert_relative_eq!(STEEL_MASS_DENSITY_TON_MM3, 7.85e-9, max_relative = 1e-12);
+        // 78.5 kN/m³ を質量へ換算すると 7.85 t/m³ にはならない（約 8.005 t/m³）。
+        let mass_from_design = design_n_per_mm3 / GRAVITY_MM_S2;
+        assert!(
+            (mass_from_design - STEEL_MASS_DENSITY_TON_MM3).abs() > 1e-10,
+            "設計重量から物理質量を導出してはならない"
+        );
+        // 物理質量密度を重量へ換算しても 78.5 kN/m³ にはならない（約 76.98 kN/m³）。
+        let weight_from_mass = STEEL_MASS_DENSITY_TON_MM3 * GRAVITY_MM_S2;
+        assert!(
+            (weight_from_mass * 1.0e6 - STEEL_UNIT_WEIGHT_KN_M3).abs() > 1e-3,
+            "物理質量を設計重量として使ってはならない"
+        );
     }
 }

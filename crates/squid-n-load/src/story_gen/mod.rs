@@ -32,10 +32,12 @@
 //! （[`MassMethod`]、`Model::mass_method`）に従って設定する。
 //! `CorrectedLumped`（既定）は、要素・節点側に残った分布質量が Reducer の
 //! TᵀMT 縮約（`eigen.rs`）で自動的にマスターへ集約されることを踏まえ、
-//! 代表節点へは「地震用重量のうち分布質量として計上されない分」
+//! 代表節点へは「物理質量相当重量のうち分布質量として計上されない分」
 //! （主架構線材・壁エレメント以外＝床・仕上げ・積載・二次部材・雑壁など）を
 //! 補正質点として与える（二重計上を避ける）。`LumpedOnly` は分布質量を
-//! 質量行列に算入しないため、代表節点へ地震用重量の全量を与える。
+//! 質量行列に算入しないため、代表節点へ物理質量相当重量の全量を与える。
+//! 両方式の公称並進総動的質量は一致する（地震用重量とは一致しない。設計重量は
+//! 鋼材 78.5 kN/m³、動的質量は物理密度 7.85 t/m³ で別の値のため）。
 //!
 //! 責務ごとに以下のサブモジュールへ分割している。
 //!
@@ -64,14 +66,13 @@ mod reactions;
 mod self_weight_calc;
 
 pub use generate::{
-    generate_stories, generate_stories_multi, generate_stories_with_opts, StoryGenResult,
+    generate_stories, generate_stories_multi, generate_stories_with_opts,
+    generate_stories_with_synced_self_weight, StoryGenResult,
 };
 pub(crate) use self_weight_calc::{enumerate_self_weight, SelfWeightItem};
 
 #[cfg(test)]
 use reactions::static_reactions;
-#[cfg(test)]
-use self_weight_calc::steel_density_ton_mm3;
 
 #[cfg(test)]
 mod tests;

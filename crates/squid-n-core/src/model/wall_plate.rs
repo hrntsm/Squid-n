@@ -552,8 +552,8 @@ impl Model {
             .map(|e| e - z)
     }
 
-    /// 壁版の自重 [N]。躯体（開口控除後の正味面積 × 板厚 × 主材料の密度 ×
-    /// 重力加速度）＋ 仕上げ・増打ち（正味面積 × [`WallPlate::finish_intensity`]）
+    /// 壁版の自重 [N]。躯体（開口控除後の正味面積 × 板厚 × 主材料の設計単位体積重量）
+    /// ＋ 仕上げ・増打ち（正味面積 × [`WallPlate::finish_intensity`]）
     /// ＋ 開口部（サッシ等）の重量。
     ///
     /// 仕上げ・増打ちを躯体と同じ**正味面積**に乗じるのは、開口部にはコンクリートも
@@ -565,6 +565,25 @@ impl Model {
     /// そのまま計上する。壁版の高さが決まらないときだけ `None` を返す
     /// （[`Model::wall_plate_extent`]）。開口面積が壁の面積を超える場合は正味面積を 0 とする。
     pub fn wall_plate_self_weight(&self, plate: &WallPlate, model_for_area: &Model) -> Option<f64> {
+        self.wall_plate_self_weight_with(plate, model_for_area, false)
+    }
+
+    /// 壁版の物理質量相当の重量 [N]（質量行列・動的解析用）。躯体の単位体積重量だけ
+    /// [`Material::density`]×g に置き換え、仕上げ・増打ち・開口重量は設計と同じに扱う。
+    pub fn wall_plate_physical_weight(
+        &self,
+        plate: &WallPlate,
+        model_for_area: &Model,
+    ) -> Option<f64> {
+        self.wall_plate_self_weight_with(plate, model_for_area, true)
+    }
+
+    fn wall_plate_self_weight_with(
+        &self,
+        plate: &WallPlate,
+        model_for_area: &Model,
+        physical: bool,
+    ) -> Option<f64> {
         if plate.is_attached() && model_for_area.wall_plate_extent(plate).is_none() {
             return None;
         }
@@ -574,7 +593,14 @@ impl Model {
             self.wall_plate_thickness(plate),
             self.wall_plate_material(plate),
         ) {
-            (Some(t), Some(mat)) => mat.density * t * net_area * crate::units::GRAVITY_MM_S2,
+            (Some(t), Some(mat)) => {
+                let unit_weight = if physical {
+                    mat.density * crate::units::GRAVITY_MM_S2
+                } else {
+                    mat.design_unit_weight_n_per_mm3()
+                };
+                unit_weight * t * net_area
+            }
             _ => 0.0,
         };
         let finish = plate.finish_intensity() * net_area;

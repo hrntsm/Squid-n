@@ -1,8 +1,9 @@
 //! 自重の荷重ケース内容の生成（標準構成では「DL」ケースへ同期される）。
 //!
 //! **地震用重量との関係:** 本内容を含む「DL」ケースを地震用重量の重力ケースに
-//! 算入する場合は、階の自動生成で密度からの自重直接算入を無効にすること
-//! （二重計上になる）。
+//! 算入する場合、階の自動生成では密度からの自重直接算入を行わず、DL の設計自重を
+//! 物理質量へ置換する `generate_stories_with_synced_self_weight` を使う
+//! （密度から直接算入すると二重計上になる）。
 
 use squid_n_core::model::{LoadCfg, MemberLoad, MemberLoadKind, Model, NodalLoad};
 
@@ -46,9 +47,10 @@ pub fn self_weight_case_content(
         match item {
             SelfWeightItem::Line {
                 elem_idx,
-                total,
-                extra_bottom,
+                load,
+                extra_bottom_load,
                 is_column,
+                ..
             } => {
                 let elem = &model.elements[elem_idx];
                 let ni = elem.nodes[0].index();
@@ -56,15 +58,15 @@ pub fn self_weight_case_content(
                 let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
                 if is_column {
                     let (top, bottom) = if ci[2] <= cj[2] { (nj, ni) } else { (ni, nj) };
-                    node_force[top] += total / 2.0;
-                    node_force[bottom] += total / 2.0 + extra_bottom;
-                } else if total > 0.0 {
+                    node_force[top] += load / 2.0;
+                    node_force[bottom] += load / 2.0 + extra_bottom_load;
+                } else if load > 0.0 {
                     let len = ((cj[0] - ci[0]).powi(2)
                         + (cj[1] - ci[1]).powi(2)
                         + (cj[2] - ci[2]).powi(2))
                     .sqrt();
                     if len > 0.0 {
-                        let w = total / len;
+                        let w = load / len;
                         member.push(MemberLoad::auto(
                             elem.id,
                             DIR_DOWN,
@@ -76,17 +78,17 @@ pub fn self_weight_case_content(
                             },
                         ));
                     } else {
-                        node_force[ni] += total / 2.0;
-                        node_force[nj] += total / 2.0;
+                        node_force[ni] += load / 2.0;
+                        node_force[nj] += load / 2.0;
                     }
                 }
             }
-            SelfWeightItem::Damper { ni, nj, total } => {
-                node_force[ni] += total / 2.0;
-                node_force[nj] += total / 2.0;
+            SelfWeightItem::Damper { ni, nj, load, .. } => {
+                node_force[ni] += load / 2.0;
+                node_force[nj] += load / 2.0;
             }
-            SelfWeightItem::Panel { shares, .. } => {
-                for (i, w) in shares {
+            SelfWeightItem::Panel { load_shares, .. } => {
+                for (i, w) in load_shares {
                     node_force[i] += w;
                 }
             }
@@ -293,13 +295,13 @@ mod tests {
             .iter()
             .map(|item| match item {
                 crate::story_gen::SelfWeightItem::Line {
-                    total,
-                    extra_bottom,
+                    load,
+                    extra_bottom_load,
                     ..
-                } => *total + *extra_bottom,
-                crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
-                crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
-                    shares.iter().map(|(_, w)| w).sum()
+                } => *load + *extra_bottom_load,
+                crate::story_gen::SelfWeightItem::Damper { load, .. } => *load,
+                crate::story_gen::SelfWeightItem::Panel { load_shares, .. } => {
+                    load_shares.iter().map(|(_, w)| w).sum()
                 }
             })
             .sum();
@@ -467,7 +469,7 @@ mod tests {
     fn test_steel_base_column_has_no_extra_bottom() {
         let model = base_column_with_base_beams(false, &[600.0, 800.0]);
         let (nodal, _member) = self_weight_case_content(&model, &LoadCfg::default());
-        let per_mm = 7.85e-9 * 90000.0 * GRAVITY_MM_S2;
+        let per_mm = model.materials[0].design_unit_weight_n_per_mm3() * 90000.0;
         let w_col = per_mm * 3000.0;
         assert!(
             (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,

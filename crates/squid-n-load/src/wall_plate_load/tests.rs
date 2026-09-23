@@ -288,7 +288,12 @@ fn 指定した辺がスリットで切れていれば別の辺へ振り替え�
     m.wall_plates[0].slit.column_face[k] = true;
 
     assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-    assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
+    assert!(edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design
+    )
+    .is_empty());
 }
 
 /// 負担率を指定した梁際の辺がスリットで切れていると、その壁版は自重を伝えられない。
@@ -303,7 +308,12 @@ fn 梁際スリットで切れた辺に負担率を指定すると振り替え�
     m.wall_plates[0].slit.beam_face = [true, false];
 
     assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-    assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
+    assert!(edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design
+    )
+    .is_empty());
 }
 
 /// 明示した負担率どおりの辺へ配る。左右に柱があっても、指定した辺だけが受ける。
@@ -311,7 +321,11 @@ fn 梁際スリットで切れた辺に負担率を指定すると振り替え�
 fn 指定した辺の負担率どおりに壁自重を配る() {
     let mut m = bay();
     add_plate(&mut m, 0, [0, 1, 2, 3], [0.75, 0.0, 0.25, 0.0]);
-    let out = edge_shares_with(&m, &m.wall_plates[0]);
+    let out = edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design,
+    );
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(2)));
     assert_eq!(out[1].support, SupportMemberId::Primary(ElemId(3)));
@@ -329,7 +343,11 @@ fn 負担率を明示すれば下辺のみ梁際スリットの非要素壁版�
     add_plate(&mut m, 0, [0, 1, 2, 3], [0.0, 0.0, 1.0, 0.0]);
     m.wall_plates[0].slit.beam_face = [true, false];
 
-    let out = edge_shares_with(&m, &m.wall_plates[0]);
+    let out = edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(3)));
     assert!(out[0].post().is_none(), "上辺は大梁が受ける");
@@ -350,7 +368,11 @@ fn 負担率を明示すれば上辺のみ梁際スリットの非要素壁版�
     add_plate(&mut m, 0, [0, 1, 2, 3], [1.0, 0.0, 0.0, 0.0]);
     m.wall_plates[0].slit.beam_face = [false, true];
 
-    let out = edge_shares_with(&m, &m.wall_plates[0]);
+    let out = edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].support, SupportMemberId::Primary(ElemId(2)));
     assert!(out[0].post().is_none(), "下辺は大梁が受ける");
@@ -379,7 +401,12 @@ fn 未指定や不正な負担率は配らず診断する() {
         let mut m = split_by_post();
         m.wall_plates[0].self_weight_shares = shares;
         assert_eq!(wall_plates_without_load_path(&m), vec![WallPlateId(0)]);
-        assert!(edge_shares_with(&m, &m.wall_plates[0]).is_empty());
+        assert!(edge_shares_with(
+            &m,
+            &m.wall_plates[0],
+            crate::cascade::SelfWeightBasis::Design
+        )
+        .is_empty());
     }
 }
 
@@ -417,7 +444,11 @@ fn 支持区間が重複しても割当領域の支持部材へ配る() {
     );
 
     assert!(wall_plates_without_load_path(&m).is_empty());
-    let out = edge_shares_with(&m, &m.wall_plates[0]);
+    let out = edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].support,
@@ -595,7 +626,11 @@ fn 間柱端が梁中間にある壁版も割当領域の支持部材へ自重�
     }
 
     // 支持先は割当領域の SupportBoundary（間柱）と一致する。
-    let shares = edge_shares_with(&m, &m.wall_plates[0]);
+    let shares = edge_shares_with(
+        &m,
+        &m.wall_plates[0],
+        crate::cascade::SelfWeightBasis::Design,
+    );
     assert_eq!(shares.len(), 1);
     assert_eq!(
         shares[0].support,
