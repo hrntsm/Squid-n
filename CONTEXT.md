@@ -182,6 +182,12 @@ RC・S・SRC などの区分。
 **物理質量**:
 質量行列・動的解析に用いる質量。鋼材は物理質量密度 7.85 t/m³ で、設計重量とは一致しない。数量積算の 7.85 t/m³ とは用途が独立（[ADR-0033](dev_docs/adr/0033-steel-design-weight-vs-physical-mass.md)）。
 
+**物理質量相当重量**:
+地震用重量（設計重量）とは別に、質量行列・動的解析へ用いる物理質量を重量の単位 [N] で表したもの。階生成が節点へ配分し、階ごとに層の動的質量（`Story::dynamic_mass`）へ集計する。質点系解析の層質量はこれを用いる（[ADR-0034](dev_docs/adr/0034-lumped-mass-physical-mass.md)）。
+
+**層の動的質量（StoryDynamicMass）**:
+階生成が節点の物理質量相当重量 `node_mass_equiv` の全量（質量方式に依らない）から算定して `Story` に保存する、質点系解析用の層質量データ。物理質量相当重量・質量重心・質量重心まわりの回転慣性 J を持つ。未算定は `None` で、質点系解析は設計重量へフォールバックせずエラーとする（[ADR-0034](dev_docs/adr/0034-lumped-mass-physical-mass.md)）。
+
 **断面質量特性（SectionMassProperties）**:
 整合質量が用いる、線材断面の材料領域から積分した単位長さ当たり質量と、断面 y 軸・z 軸まわりの単位長さ当たり質量二次モーメント。Lumped は従来どおり Beam の density×a_mass、Fiber の density×ΣAf を質量源とする。
 
