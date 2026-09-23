@@ -2,8 +2,28 @@
 
 use crate::error::RebarGeometryError;
 use crate::section_shape::{
-    BarSet, RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar, RebarPoint, ShearBar,
+    one_bar_area, BarSet, RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar, RebarPoint,
+    ShearBar,
 };
+
+/// 一面の主筋諸元（本数・面積・縁からの重心距離・有効せい）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SteelSide {
+    pub count: usize,
+    /// 主筋面積 [mm²]。
+    pub area_mm2: f64,
+    /// その面側の縁から重心までの距離 dt [mm]。
+    pub centroid_from_edge_mm: f64,
+    /// 対向縁から重心までの距離（有効せい）[mm]。
+    pub effective_depth_mm: f64,
+}
+
+/// 梁の曲げ検討用。指定した引張側とその反対側（圧縮側）の諸元。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeamBendingSteel {
+    pub tension: SteelSide,
+    pub compression: SteelSide,
+}
 
 /// 隣接主筋のあき k' [mm]（`max(25, 1.5・dia)`）。
 fn clear_mm(dia: f64) -> f64 {
@@ -13,6 +33,40 @@ fn clear_mm(dia: f64) -> f64 {
 /// 隣接主筋中心間の最小距離 s = dia + k' [mm]。
 fn center_spacing_mm(dia: f64) -> f64 {
     dia + clear_mm(dia)
+}
+
+/// 段別本数の面積 [mm²]。未入力なら空。
+fn layer_areas(counts: &[u32], main_dia: f64) -> Vec<f64> {
+    let area = one_bar_area(main_dia);
+    counts.iter().map(|&c| c as f64 * area).collect()
+}
+
+/// 段別本数を重みとした縁からの重心距離 [mm]。主筋がなければ 0。
+fn centroid_from_edge(counts: &[u32], main_dia: f64, cover: f64, stirrup_dia: f64) -> f64 {
+    let total: u32 = counts.iter().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let k0 = cover + stirrup_dia + main_dia / 2.0;
+    let s = center_spacing_mm(main_dia);
+    let weighted: f64 = counts
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| c as f64 * (k0 + i as f64 * s))
+        .sum();
+    weighted / total as f64
+}
+
+/// 段別本数から一面の主筋諸元を作る。
+fn beam_side(counts: &[u32], main_dia: f64, cover: f64, stirrup_dia: f64, d: f64) -> SteelSide {
+    let count: usize = counts.iter().map(|&c| c as usize).sum();
+    let centroid_from_edge_mm = centroid_from_edge(counts, main_dia, cover, stirrup_dia);
+    SteelSide {
+        count,
+        area_mm2: count as f64 * one_bar_area(main_dia),
+        centroid_from_edge_mm,
+        effective_depth_mm: d - centroid_from_edge_mm,
+    }
 }
 
 /// 多段配筋の段間あき k' [mm]（`max(25, 1.5・dia)`）。
@@ -273,6 +327,89 @@ impl RcBeamRebar {
     }
 }
 
+impl RcBeamRebar {
+    /// 上端筋の段別面積 [mm²]。未入力なら空。
+    pub fn layer_areas_top(&self) -> Vec<f64> {
+        layer_areas(&self.top, self.main_dia)
+    }
+
+    /// 下端筋の段別面積 [mm²]。未入力なら空。
+    pub fn layer_areas_bottom(&self) -> Vec<f64> {
+        layer_areas(&self.bottom, self.main_dia)
+    }
+
+    /// 上端筋の総面積 [mm²]。
+    pub fn top_area(&self) -> f64 {
+        self.layer_areas_top().iter().sum()
+    }
+
+    /// 下端筋の総面積 [mm²]。
+    pub fn bottom_area(&self) -> f64 {
+        self.layer_areas_bottom().iter().sum()
+    }
+
+    /// 上端筋の縁からの重心距離 dt [mm]。主筋がなければ 0。
+    pub fn top_centroid_from_edge(&self) -> f64 {
+        centroid_from_edge(&self.top, self.main_dia, self.cover, self.stirrup.dia)
+    }
+
+    /// 下端筋の縁からの重心距離 dt [mm]。主筋がなければ 0。
+    pub fn bottom_centroid_from_edge(&self) -> f64 {
+        centroid_from_edge(&self.bottom, self.main_dia, self.cover, self.stirrup.dia)
+    }
+
+    /// 上端筋側の有効せい d − dt [mm]。
+    pub fn top_effective_depth(&self, d: f64) -> f64 {
+        d - self.top_centroid_from_edge()
+    }
+
+    /// 下端筋側の有効せい d − dt [mm]。
+    pub fn bottom_effective_depth(&self, d: f64) -> f64 {
+        d - self.bottom_centroid_from_edge()
+    }
+
+    /// 上下主筋の総面積 [mm²]。
+    pub fn total_main_area(&self) -> f64 {
+        let count: usize = self
+            .top
+            .iter()
+            .chain(self.bottom.iter())
+            .map(|&c| c as usize)
+            .sum();
+        count as f64 * one_bar_area(self.main_dia)
+    }
+
+    /// 指定した引張側の曲げ検討用諸元。`tension_is_top=true` は上端側を引張とする。
+    pub fn bending_steel(&self, d: f64, tension_is_top: bool) -> BeamBendingSteel {
+        let top = beam_side(&self.top, self.main_dia, self.cover, self.stirrup.dia, d);
+        let bottom = beam_side(&self.bottom, self.main_dia, self.cover, self.stirrup.dia, d);
+        if tension_is_top {
+            BeamBendingSteel {
+                tension: top,
+                compression: bottom,
+            }
+        } else {
+            BeamBendingSteel {
+                tension: bottom,
+                compression: top,
+            }
+        }
+    }
+
+    /// あばら筋 1 組（`legs` 本）の断面積 Aw [mm²]。
+    pub fn aw_mm2(&self) -> f64 {
+        self.stirrup.legs as f64 * one_bar_area(self.stirrup.dia)
+    }
+
+    /// あばら筋比 pw。`pitch<=0` または `b<=0` のときは 0。
+    pub fn pw(&self, b: f64) -> f64 {
+        if self.stirrup.pitch <= 0.0 || b <= 0.0 {
+            return 0.0;
+        }
+        self.aw_mm2() / (b * self.stirrup.pitch)
+    }
+}
+
 impl RcRectColumnRebar {
     /// 実鉄筋座標 [mm] を生成する。未入力（`is_unset`）なら空。
     ///
@@ -397,6 +534,28 @@ impl RcRectColumnRebar {
     }
 }
 
+impl RcRectColumnRebar {
+    /// 重複のない実鉄筋本数を主筋総面積へ換算した値 [mm²]。未入力なら 0。
+    pub fn total_main_area(&self) -> f64 {
+        let nx = self.x.len();
+        let ny = self.y.len();
+        let sx: usize = self.x.iter().map(|&c| c as usize).sum();
+        let sy: usize = self.y.iter().map(|&c| c as usize).sum();
+        let unique = (2 * sx + 2 * sy).saturating_sub(4 * nx * ny);
+        unique as f64 * one_bar_area(self.main_dia)
+    }
+
+    /// X 方向の帯筋 1 組（`legs_x` 本）の断面積 Aw [mm²]。
+    pub fn aw_x_mm2(&self) -> f64 {
+        self.hoop.legs_x as f64 * one_bar_area(self.hoop.dia)
+    }
+
+    /// Y 方向の帯筋 1 組（`legs_y` 本）の断面積 Aw [mm²]。
+    pub fn aw_y_mm2(&self) -> f64 {
+        self.hoop.legs_y as f64 * one_bar_area(self.hoop.dia)
+    }
+}
+
 impl RcCircleColumnRebar {
     /// 実鉄筋座標 [mm] を生成する。未入力（`is_unset`）なら空。
     ///
@@ -441,6 +600,18 @@ impl RcCircleColumnRebar {
             });
         }
         Ok(points)
+    }
+}
+
+impl RcCircleColumnRebar {
+    /// 主筋総本数 [本]。
+    pub fn main_count(&self) -> u32 {
+        self.count
+    }
+
+    /// 主筋総面積 [mm²]。
+    pub fn total_main_area(&self) -> f64 {
+        self.count as f64 * one_bar_area(self.main_dia)
     }
 }
 
@@ -794,5 +965,116 @@ mod tests {
         assert!(ci.is_unset());
         assert_eq!(ci.validate(600.0), Ok(()));
         assert!(ci.bar_positions(600.0).unwrap().is_empty());
+    }
+
+    /// 梁: 段別面積・総面積・重心・有効せい・Aw・pw。
+    #[test]
+    fn test_beam_section_properties() {
+        let r = beam(vec![4, 2], vec![3, 2]);
+        let a22 = one_bar_area(22.0);
+        let a10 = one_bar_area(10.0);
+        // k0 = 40 + 10 + 11 = 61、s = 22 + 33 = 55。
+        assert_eq!(r.layer_areas_top(), vec![4.0 * a22, 2.0 * a22]);
+        assert_eq!(r.layer_areas_bottom(), vec![3.0 * a22, 2.0 * a22]);
+        assert!((r.top_area() - 6.0 * a22).abs() < 1e-9);
+        assert!((r.bottom_area() - 5.0 * a22).abs() < 1e-9);
+        assert!((r.total_main_area() - 11.0 * a22).abs() < 1e-9);
+
+        let top_centroid = 61.0 + (2.0 / 6.0) * 55.0;
+        let bottom_centroid = 61.0 + (2.0 / 5.0) * 55.0;
+        assert!((r.top_centroid_from_edge() - top_centroid).abs() < 1e-9);
+        assert!((r.bottom_centroid_from_edge() - bottom_centroid).abs() < 1e-9);
+        assert!((r.top_effective_depth(600.0) - (600.0 - top_centroid)).abs() < 1e-9);
+        assert!((r.bottom_effective_depth(600.0) - (600.0 - bottom_centroid)).abs() < 1e-9);
+
+        assert!((r.aw_mm2() - 2.0 * a10).abs() < 1e-12);
+        assert!((r.pw(400.0) - 2.0 * a10 / (400.0 * 100.0)).abs() < 1e-15);
+        assert_eq!(r.pw(0.0), 0.0);
+    }
+
+    /// 梁: 引張側を明示した tension / compression 諸元。
+    #[test]
+    fn test_beam_bending_steel() {
+        let r = beam(vec![4, 2], vec![3, 2]);
+
+        let top = r.bending_steel(600.0, true);
+        assert_eq!(top.tension.count, 6);
+        assert_eq!(top.compression.count, 5);
+        assert!((top.tension.area_mm2 - r.top_area()).abs() < 1e-9);
+        assert!((top.compression.area_mm2 - r.bottom_area()).abs() < 1e-9);
+        assert!((top.tension.effective_depth_mm - r.top_effective_depth(600.0)).abs() < 1e-9);
+        assert!(
+            (top.compression.effective_depth_mm - r.bottom_effective_depth(600.0)).abs() < 1e-9
+        );
+
+        let bottom = r.bending_steel(600.0, false);
+        assert_eq!(bottom.tension.count, 5);
+        assert_eq!(bottom.compression.count, 6);
+        assert!((bottom.tension.area_mm2 - r.bottom_area()).abs() < 1e-9);
+        assert!((bottom.compression.area_mm2 - r.top_area()).abs() < 1e-9);
+    }
+
+    /// 矩形柱: 交点を二重計上しない総面積と、X/Y 脚数別の Aw。
+    #[test]
+    fn test_rect_column_section_properties() {
+        let hoop = || RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 3,
+        };
+        let r = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![3],
+            cover: 40.0,
+            hoop: hoop(),
+        };
+        let a22 = one_bar_area(22.0);
+        let a10 = one_bar_area(10.0);
+        // 2*3 + 2*3 - 4*1*1 = 8。
+        assert!((r.total_main_area() - 8.0 * a22).abs() < 1e-9);
+        assert!((r.aw_x_mm2() - 2.0 * a10).abs() < 1e-12);
+        assert!((r.aw_y_mm2() - 3.0 * a10).abs() < 1e-12);
+
+        let multi = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![4],
+            cover: 40.0,
+            hoop: hoop(),
+        };
+        // 2*(4+2) + 2*4 - 4*2*1 = 12。
+        assert!((multi.total_main_area() - 12.0 * a22).abs() < 1e-9);
+    }
+
+    /// 円形柱: 総本数と総面積。
+    #[test]
+    fn test_circle_section_properties() {
+        let r = circle(8);
+        assert_eq!(r.main_count(), 8);
+        assert!((r.total_main_area() - 8.0 * one_bar_area(22.0)).abs() < 1e-9);
+    }
+
+    /// 未入力の各型: 諸元 API が 0 または空を返す。
+    #[test]
+    fn test_real_rebar_unset_section_properties() {
+        let b = beam(vec![], vec![]);
+        assert!(b.layer_areas_top().is_empty());
+        assert!(b.layer_areas_bottom().is_empty());
+        assert_eq!(b.top_area(), 0.0);
+        assert_eq!(b.bottom_area(), 0.0);
+        assert_eq!(b.top_centroid_from_edge(), 0.0);
+        assert_eq!(b.bottom_centroid_from_edge(), 0.0);
+        assert_eq!(b.total_main_area(), 0.0);
+        assert_eq!(b.bending_steel(600.0, true).tension.count, 0);
+        assert_eq!(b.bending_steel(600.0, false).compression.count, 0);
+
+        let c = rect_column(vec![], vec![]);
+        assert_eq!(c.total_main_area(), 0.0);
+
+        let ci = circle(0);
+        assert_eq!(ci.main_count(), 0);
+        assert_eq!(ci.total_main_area(), 0.0);
     }
 }
