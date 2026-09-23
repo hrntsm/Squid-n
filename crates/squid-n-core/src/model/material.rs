@@ -78,6 +78,32 @@ impl Material {
             self.density * crate::units::GRAVITY_MM_S2
         }
     }
+
+    /// CFT 充填コンクリートの単位体積重量 [kN/m³]（無筋 `ConcreteComposition::Plain`）。
+    /// `fc` 未設定または 0 以下なら 0。
+    fn cft_filling_unit_weight_kn_m3(&self) -> f64 {
+        self.fc.filter(|fc| *fc > 0.0).map_or(0.0, |fc| {
+            crate::units::concrete_unit_weight_kn_m3(
+                fc,
+                self.concrete_class,
+                crate::units::ConcreteComposition::Plain,
+            )
+        })
+    }
+
+    /// CFT 充填コンクリート部の設計用単位体積重量 [N/mm³]（γC）。
+    /// `fc` 未設定または 0 以下なら 0。
+    pub fn cft_core_design_unit_weight_n_per_mm3(&self) -> f64 {
+        crate::units::to_internal::unit_weight_kn_per_m3(self.cft_filling_unit_weight_kn_m3())
+    }
+
+    /// CFT 充填コンクリート部の物理質量密度 [t/mm³]（γC を質量密度へ換算）。
+    /// `fc` 未設定または 0 以下なら 0。
+    pub fn cft_core_mass_density(&self) -> f64 {
+        crate::units::to_internal::mass_density_from_unit_weight_kn_m3(
+            self.cft_filling_unit_weight_kn_m3(),
+        )
+    }
 }
 
 #[cfg(test)]
