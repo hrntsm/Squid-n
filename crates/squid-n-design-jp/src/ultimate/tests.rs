@@ -826,3 +826,33 @@ fn test_ultimate_beam_rect_tension_side_affects_mu() {
     // 上端筋 6 本 > 下端筋 5 本のため上端引張の Mu が大きい。
     assert!(mu_top > mu_bottom, "mu_top={mu_top} mu_bottom={mu_bottom}");
 }
+
+/// 新型 RC 梁の付着検定では、上端引張のとき上端筋低減（αt）を反映する。
+/// 上端筋 6 本 > 下端筋 5 本でも、αt 低減により上端引張の Qbu が下端引張より小さくなる。
+#[test]
+fn test_ultimate_beam_rect_top_tension_reduces_qbu() {
+    let opts = UltimateShearOptions::default();
+    let model = single_shape_model(beam_rect_shape(), 400.0, 600.0, true);
+
+    let top_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: -1.0e8,
+            ..Default::default()
+        },
+    )];
+    let bottom_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: 1.0e8,
+            ..Default::default()
+        },
+    )];
+    let qbu_top = collect_rc_ultimate_checks(&model, &top_demand, &opts).unwrap()[0].qbu;
+    let qbu_bottom = collect_rc_ultimate_checks(&model, &bottom_demand, &opts).unwrap()[0].qbu;
+    assert!(qbu_top > 0.0 && qbu_bottom > 0.0);
+    assert!(
+        qbu_top < qbu_bottom,
+        "上端引張 Qbu={qbu_top} は下端引張 Qbu={qbu_bottom} より小さいはず（αt 低減）"
+    );
+}

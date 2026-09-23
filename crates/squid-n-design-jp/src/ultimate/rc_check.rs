@@ -171,7 +171,7 @@ fn check_member(
             hoop_area: p.shear_legs as f64 * one_bar_area(p.shear_dia),
             hoop_pitch: p.shear_pitch,
             pw,
-            top_bar: false,
+            top_bar: p.top_bar,
         });
         let sum_phi = p.n_tension as f64 * std::f64::consts::PI * p.main_dia;
         let qbu = match opts.shear_method {

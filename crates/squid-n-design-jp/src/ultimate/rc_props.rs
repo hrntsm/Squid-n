@@ -22,8 +22,9 @@ pub(super) enum RcDirection {
 ///
 /// `b_dir`・`d_dir` は検討方向の幅・せい [mm]、`at`・`ag` は引張側・全主筋断面積 [mm²]、
 /// `dt` は引張縁〜引張鉄筋重心 [mm]、`d_eff` は有効せい [mm]、`pw` は検討方向の
-/// せん断補強筋比。`be`・`n_s` は靭性指針式のトラス機構有効幅 [mm]・中子筋本数で、
-/// 不要時は 0。
+/// せん断補強筋比。`top_bar` は梁の上端主筋を引張側とする場合 true で、付着検定の
+/// 上端筋低減（`αt`）に用いる。`be`・`n_s` は靭性指針式のトラス機構有効幅 [mm]・
+/// 中子筋本数で、不要時は 0。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct RcBarProps {
     pub b_dir: f64,
@@ -39,6 +40,7 @@ pub(super) struct RcBarProps {
     pub shear_pitch: f64,
     pub shear_legs: u32,
     pub pw: f64,
+    pub top_bar: bool,
     pub be: f64,
     pub n_s: u32,
 }
@@ -169,6 +171,7 @@ fn rc_rect_props(
         shear_pitch: rebar.shear.pitch,
         shear_legs: rebar.shear.legs,
         pw: pw_ratio(&rebar.shear, b_dir),
+        top_bar: false,
         be,
         n_s,
     })
@@ -214,6 +217,7 @@ fn rc_beam_rect_props(
         shear_pitch: rebar.stirrup.pitch,
         shear_legs: rebar.stirrup.legs,
         pw: rebar.pw(b),
+        top_bar: tension_is_top,
         be,
         n_s,
     })
@@ -264,6 +268,7 @@ fn rc_column_rect_props(
         shear_pitch: rebar.hoop.pitch,
         shear_legs,
         pw: pw_from_aw(aw, b_dir, rebar.hoop.pitch),
+        top_bar: false,
         be,
         n_s,
     })
@@ -306,6 +311,7 @@ fn rc_column_circle_props(
         shear_pitch: rebar.hoop.pitch,
         shear_legs: 0,
         pw: 0.0,
+        top_bar: false,
         be,
         n_s,
     })
@@ -409,6 +415,7 @@ mod tests {
         assert!((p.pw - 2.0 * a10 / (400.0 * 100.0)).abs() < 1e-15);
         assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 2);
+        assert!(!p.top_bar);
         assert_eq!(p.be, 0.0);
         assert_eq!(p.n_s, 0);
     }
@@ -440,6 +447,7 @@ mod tests {
         assert!((p.dt - (61.0 + 2.0 / 6.0 * 55.0)).abs() < 1e-9);
         assert!((p.ag - 11.0 * a1).abs() < 1e-9);
         assert_eq!(p.n_tension, 6);
+        assert!(p.top_bar);
     }
 
     #[test]
@@ -449,6 +457,7 @@ mod tests {
         assert!((p.at - 5.0 * a1).abs() < 1e-9);
         assert!((p.dt - (61.0 + 2.0 / 5.0 * 55.0)).abs() < 1e-9);
         assert_eq!(p.n_tension, 5);
+        assert!(!p.top_bar);
     }
 
     #[test]
@@ -468,6 +477,7 @@ mod tests {
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 2);
+        assert!(!p.top_bar);
         assert!((p.pw - 2.0 * a10 / (600.0 * 100.0)).abs() < 1e-15);
     }
 
@@ -500,6 +510,7 @@ mod tests {
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 2);
         assert_eq!(p.shear_legs, 0);
+        assert!(!p.top_bar);
         assert_eq!(p.pw, 0.0);
         let weak = rc_bar_props(&column_circle_shape(), RcDirection::Weak, false, false).unwrap();
         assert_eq!(p, weak);
