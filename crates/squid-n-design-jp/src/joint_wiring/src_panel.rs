@@ -16,19 +16,37 @@ pub(super) fn check_src_panel(
     out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let src_col = cols.iter().find(|c| {
-        matches!(c.sec.shape, Some(SectionShape::SrcRect { .. })) && c.mat.fc.unwrap_or(0.0) > 0.0
+        matches!(
+            c.sec.shape,
+            Some(SectionShape::SrcRect { .. }) | Some(SectionShape::SrcColumnRect { .. })
+        ) && c.mat.fc.unwrap_or(0.0) > 0.0
     });
     if let Some(col) = src_col {
-        if let Some(SectionShape::SrcRect {
-            ref rebar,
-            steel_height,
-            steel_web_thick,
-            steel_flange_thick,
-            ..
-        }) = col.sec.shape
-        {
+        let col_steel = match col.sec.shape {
+            Some(SectionShape::SrcRect {
+                steel_height,
+                steel_web_thick,
+                steel_flange_thick,
+                ref rebar,
+                ..
+            }) => Some((steel_height, steel_web_thick, steel_flange_thick, rc_dt(rebar))),
+            Some(SectionShape::SrcColumnRect {
+                steel_height,
+                steel_web_thick,
+                steel_flange_thick,
+                ref rebar,
+                ..
+            }) => Some((
+                steel_height,
+                steel_web_thick,
+                steel_flange_thick,
+                rebar.cover + rebar.hoop.dia + rebar.main_dia / 2.0,
+            )),
+            _ => None,
+        };
+        if let Some((steel_height, steel_web_thick, steel_flange_thick, col_dt)) = col_steel {
             let fc = col.mat.fc.unwrap_or(0.0);
-            let m_cd = (col.sec.width - 2.0 * rc_dt(rebar)).max(0.0);
+            let m_cd = (col.sec.width - 2.0 * col_dt).max(0.0);
             let s_cd = (steel_height - steel_flange_thick).max(0.0);
             let j_tw = steel_web_thick;
 
@@ -47,6 +65,15 @@ pub(super) fn check_src_panel(
                     | Some(SectionShape::SrcRect { ref rebar, .. }) => {
                         (beam0.sec.depth - 2.0 * rc_dt(rebar)).max(0.0)
                     }
+                    Some(SectionShape::RcBeamRect { ref rebar, .. })
+                    | Some(SectionShape::SrcBeamRect { ref rebar, .. }) => (beam0.sec.depth
+                        - rebar.top_centroid_from_edge()
+                        - rebar.bottom_centroid_from_edge())
+                    .max(0.0),
+                    Some(SectionShape::RcColumnRect { ref rebar, .. })
+                    | Some(SectionShape::SrcColumnRect { ref rebar, .. }) => (beam0.sec.depth
+                        - 2.0 * (rebar.cover + rebar.hoop.dia + rebar.main_dia / 2.0))
+                    .max(0.0),
                     _ => 0.8 * beam0.sec.depth,
                 }
             };

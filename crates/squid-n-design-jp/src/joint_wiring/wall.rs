@@ -122,12 +122,26 @@ pub(super) fn check_walls(
                 continue;
             }
             let steel_shear = match m.sec.shape {
-                Some(SectionShape::SrcRect {
-                    steel_height,
-                    steel_web_thick,
-                    steel_flange_thick,
-                    ..
-                }) => {
+                Some(
+                    SectionShape::SrcRect {
+                        steel_height,
+                        steel_web_thick,
+                        steel_flange_thick,
+                        ..
+                    }
+                    | SectionShape::SrcBeamRect {
+                        steel_height,
+                        steel_web_thick,
+                        steel_flange_thick,
+                        ..
+                    }
+                    | SectionShape::SrcColumnRect {
+                        steel_height,
+                        steel_web_thick,
+                        steel_flange_thick,
+                        ..
+                    },
+                ) => {
                     let as_web =
                         (steel_web_thick * (steel_height - 2.0 * steel_flange_thick)).max(0.0);
                     let steel_name = m.steel_mat.map(|mm| mm.name.as_str()).unwrap_or("");
@@ -140,14 +154,9 @@ pub(super) fn check_walls(
                 }
                 _ => 0.0,
             };
-            let bd_rebar = match m.sec.shape {
-                Some(SectionShape::RcRect { b, d, ref rebar }) => Some((b, d, rebar)),
-                Some(SectionShape::SrcRect {
-                    b, d, ref rebar, ..
-                }) => Some((b, d, rebar)),
-                _ => None,
-            };
-            let Some((b, d, rebar)) = bd_rebar else {
+            let Some((b, d, d_eff, pw, main_area)) =
+                wall_side_column_props(m.sec.shape.as_ref())
+            else {
                 continue;
             };
             if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(m.shear_mat)
@@ -161,11 +170,9 @@ pub(super) fn check_walls(
                 ));
                 continue 'walls;
             }
-            let dt = rc_dt(rebar);
-            let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
             side_columns.push(WallSideColumn {
                 b,
-                d_eff: d - dt,
+                d_eff,
                 pw,
                 w_ft: crate::rc::rebar_allowable_shear(
                     m.shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),
@@ -176,8 +183,6 @@ pub(super) fn check_walls(
             sum_col_depth += d;
             col_gross_area += b * d;
             dc_max = dc_max.max(d);
-            let main_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
             col_main_area_max = col_main_area_max.max(main_area);
         }
         let l_clear = (l - sum_col_depth / 2.0).max(0.1 * l);
@@ -276,5 +281,43 @@ pub(super) fn check_walls(
                 }),
             ));
         }
+    }
+}
+
+/// 壁側柱の RC 諸元 `(b, d, d_eff, pw, 主筋総面積)` を形状から引く。
+///
+/// 旧 `RcRect`/`SrcRect` は方向別総本数から、新実配筋モデルは各配筋型の API から
+/// 算定する。円形柱は等価正方形断面として扱う。対象外形状は `None`。
+fn wall_side_column_props(shape: Option<&SectionShape>) -> Option<(f64, f64, f64, f64, f64)> {
+    match shape? {
+        SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => {
+            let dt = rc_dt(rebar);
+            let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, *b);
+            let main_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
+                + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
+            Some((*b, *d, *d - dt, pw, main_area))
+        }
+        SectionShape::RcColumnRect { b, d, rebar }
+        | SectionShape::SrcColumnRect { b, d, rebar, .. } => {
+            let dt = rebar.cover + rebar.hoop.dia + rebar.main_dia / 2.0;
+            let pw = if *b > 0.0 && rebar.hoop.pitch > 0.0 {
+                rebar.aw_x_mm2() / (*b * rebar.hoop.pitch)
+            } else {
+                0.0
+            };
+            Some((*b, *d, *d - dt, pw, rebar.total_main_area()))
+        }
+        SectionShape::RcColumnCircle { d, rebar } => {
+            let side = rebar.equivalent_square_side_mm(*d);
+            let d_eff = rebar.equivalent_effective_depth_mm(*d);
+            Some((side, side, d_eff, 0.0, rebar.total_main_area()))
+        }
+        SectionShape::RcBeamRect { b, d, rebar } | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+            let dt = rebar
+                .top_centroid_from_edge()
+                .max(rebar.bottom_centroid_from_edge());
+            Some((*b, *d, *d - dt, rebar.pw(*b), rebar.total_main_area()))
+        }
+        _ => None,
     }
 }
