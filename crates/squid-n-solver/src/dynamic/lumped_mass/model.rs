@@ -346,6 +346,12 @@ pub fn build_lumped_mass_model(
             SolveError::InvalidInput(format!("層 {:?} の動的質量が未算定です", layer.bottom))
         })?;
         let mass = dynamic_mass.mass_equiv_weight_n / GRAVITY_MM_S2;
+        if !mass.is_finite() || mass <= 0.0 {
+            return Err(SolveError::InvalidInput(format!(
+                "層 {:?} の質量が 0 以下です（物理質量相当重量が 0 以下）",
+                layer.bottom
+            )));
+        }
 
         sticks.push(StoryStick {
             story: layer.bottom,

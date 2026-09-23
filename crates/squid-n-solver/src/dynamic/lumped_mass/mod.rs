@@ -329,6 +329,64 @@ mod tests {
         assert!(err.to_string().contains("動的質量が未算定"), "{err}");
     }
 
+    /// 層の質量が 0 以下（または非有限）なら `build_lumped_mass_model` はエラーを返す。
+    /// 非線形経路（`Planar`/`Spatial` + nonlinear）は線形側と違い、この検証が無いと
+    /// 質量 0 が素通りするため、共通の入口で弾く。
+    #[test]
+    fn test_build_lumped_mass_model_rejects_non_positive_mass() {
+        use squid_n_core::model::{Model, Story, StoryDynamicMass};
+
+        let base_story = |id: u32, z: f64| Story {
+            id: StoryId(id),
+            name: format!("{}F", id + 1),
+            elevation: z,
+            node_ids: Vec::new(),
+            seismic_weight: None,
+            weight_override: None,
+            level_kind: Default::default(),
+            structure: Default::default(),
+            dynamic_mass: None,
+        };
+        let pushover = crate::nonlinear::pushover::PushoverResult {
+            steps: Vec::new(),
+            capacity_curve: Vec::new(),
+            hinges: Vec::new(),
+            shear_yields: Vec::new(),
+            mechanism: crate::nonlinear::pushover::MechanismType::Overall,
+            qu: 0.0,
+            member_response: Vec::new(),
+            control: crate::nonlinear::pushover::PushoverControl::default(),
+            member_history: Vec::new(),
+            fiber_states: Vec::new(),
+            termination: crate::nonlinear::pushover::PushoverTermination::TargetReached,
+        };
+
+        // 質量 0・負値・非有限（NaN）をそれぞれ検証する。
+        for weight in [0.0, -1.0, f64::NAN] {
+            let mut top = base_story(1, 3000.0);
+            top.dynamic_mass = Some(StoryDynamicMass {
+                mass_equiv_weight_n: weight,
+                center_xy_mm: [0.0, 0.0],
+                inertia_t_mm2: 0.0,
+            });
+            let model = Model {
+                stories: vec![base_story(0, 0.0), top],
+                ..Default::default()
+            };
+            let err =
+                build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75)
+                    .unwrap_err();
+            assert!(matches!(
+                err,
+                squid_n_math::solver::SolveError::InvalidInput(_)
+            ));
+            assert!(
+                err.to_string().contains("質量が 0 以下"),
+                "weight={weight}: {err}"
+            );
+        }
+    }
+
     #[test]
     fn test_fundamental_omega_sdof() {
         // 1 質点: ω1=√(k/m)。
