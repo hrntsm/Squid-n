@@ -132,13 +132,8 @@ fn build_spatial(inp: LumpedMassBuildInput<'_>) -> JobResult<LumpedMassModel> {
         })?;
         let com = dm.center_xy_mm;
         let kr = eccentricity(&cols, com, cor).kr;
+        // 質量 0 は `layer_mass` が J の判定より前に止める（J も 0 になるため誤診断を避ける）。
         let mass = layer_mass(layer)?;
-        if mass <= 0.0 {
-            return Err(JobError::InvalidInput(format!(
-                "階 {} の質量が 0 以下です（物理質量相当重量が 0 以下）",
-                layer.name
-            )));
-        }
         let j = layer_inertia(layer)?;
         if j <= 0.0 {
             return Err(JobError::InvalidInput(format!(
@@ -246,7 +241,7 @@ fn pushover_of<'a>(
     })
 }
 
-/// 層の質量 [t]（物理質量相当重量 / g）。未算定（`None`）はエラー。
+/// 層の質量 [t]（物理質量相当重量 / g）。未算定（`None`）と質量 0 はエラー。
 fn layer_mass(layer: &Layer) -> JobResult<f64> {
     let dm = layer.dynamic_mass.ok_or_else(|| {
         JobError::InvalidInput(format!(
@@ -254,7 +249,14 @@ fn layer_mass(layer: &Layer) -> JobResult<f64> {
             layer.name
         ))
     })?;
-    Ok(dm.mass_equiv_weight_n / GRAVITY_MM_S2)
+    let mass = dm.mass_equiv_weight_n / GRAVITY_MM_S2;
+    if mass <= 0.0 {
+        return Err(JobError::InvalidInput(format!(
+            "階 {} の質量が 0 以下です（物理質量相当重量が 0 以下）",
+            layer.name
+        )));
+    }
+    Ok(mass)
 }
 
 /// 層の質量重心まわりの回転慣性 J [t·mm²]。未算定（`None`）はエラー。

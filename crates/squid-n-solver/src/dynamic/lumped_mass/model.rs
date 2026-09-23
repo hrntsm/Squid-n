@@ -57,7 +57,7 @@ impl LumpedStiffnessSource {
 /// 3 次元質点の層データ（剛心・ねじり・方向別骨格）。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StorySpatial {
-    /// 回転慣性 J [t·mm²]（剛床マスターの RZ 質量）。
+    /// 回転慣性 J [t·mm²]（質量重心まわり。物理質量分布から直接算定）。
     pub j: f64,
     /// 質量重心 (x, y) [mm]。
     pub mass_xy: [f64; 2],
