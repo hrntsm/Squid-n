@@ -433,6 +433,28 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     }
 
     {
+        let cft_secondary = model
+            .joists()
+            .chain(model.posts())
+            .filter(|sm| {
+                sm.section
+                    .and_then(|sid| model.sections.get(sid.index()))
+                    .and_then(|s| s.shape.as_ref())
+                    .is_some_and(|sh| {
+                        matches!(
+                            sh,
+                            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
+                        )
+                    })
+            })
+            .count();
+        if cft_secondary != 0 {
+            issues.push(ModelIssue::model(format!(
+                "二次部材（小梁・間柱）に CFT 断面が割り当てられています（{cft_secondary} 本）。\
+                 CFT は柱専用で二次部材には使用できません。\
+                 断面を鋼材または RC に変更してください。"
+            )));
+        }
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
         if n != 0 {
             issues.push(ModelIssue::model(format!(

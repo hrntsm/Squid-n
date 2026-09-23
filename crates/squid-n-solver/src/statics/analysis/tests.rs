@@ -1535,6 +1535,73 @@ fn test_model_issues_warns_unassigned_joist() {
     );
 }
 
+/// 二次部材（小梁・間柱）に CFT 断面が割り当てられていると、解析前チェックでエラーにする。
+/// CFT は柱専用で、二次部材の自重式は充填コンクリートを扱わないため危険側になる。
+#[test]
+fn test_model_issues_errors_cft_secondary_section() {
+    use super::precheck::precheck_model;
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(cft_shape());
+    model.materials[0].fc = Some(24.0);
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Cantilever {
+            support: SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [0.0, 1000.0],
+        },
+        section: Some(SectionId(0)),
+        name: "CFT小梁".into(),
+    });
+
+    let err = precheck_model(&model).expect_err("CFT 断面の二次部材はエラーにする");
+    assert!(
+        err.to_string().contains("CFT") && err.to_string().contains("二次部材"),
+        "{err}"
+    );
+}
+
+/// 通常の鋼材断面の二次部材はエラーにせず、解析前チェックを通す。
+#[test]
+fn test_model_issues_allows_steel_secondary_section() {
+    use super::precheck::precheck_model;
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let mut model = make_cantilever_model();
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Cantilever {
+            support: SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [0.0, 1000.0],
+        },
+        section: Some(SectionId(0)),
+        name: "S小梁".into(),
+    });
+
+    assert!(
+        precheck_model(&model).is_ok(),
+        "鋼材断面の二次部材は解析前チェックを通す: {:?}",
+        precheck_model(&model)
+    );
+}
+
 /// 支持部材アンカーへ解決できない二次部材は不安定としてエラーにする。
 #[test]
 fn test_model_issues_errors_unresolved_secondary() {

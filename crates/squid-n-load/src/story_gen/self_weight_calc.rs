@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use squid_n_core::section_shape::SectionShape;
+
 use super::geom::{dist3, is_vertical_pair, polygon_area_3d};
 use super::*;
 
@@ -116,12 +118,12 @@ pub(crate) enum SelfWeightItem {
     ///   柱以外・S 柱・下階柱ありは 0）。
     /// - `mass_equiv` は通常部の物理質量相当の重量 [N]。躯体分は解析の質量行列と同じ
     ///   幾何（総断面・節点間長）で物理密度（×g）により算定し、鉄骨重量割増 `factor` を
-    ///   乗じる。付加重量（仕上げ・付加線重量）はそのまま残す。
+    ///   乗じる。CFT は鋼管部に `factor` を乗じ、充填コンクリート部（γC）には乗じない。
+    ///   付加重量（仕上げ・付加線重量）はそのまま残す。
     /// - `extra_bottom_mass_equiv` は `extra_bottom_load` に対応する物理質量相当 [N]。
     /// - `matrix_mass_equiv` は通常部のうち解析の質量行列（部材密度質量）が受け持つ分 [N]。
-    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分の割増増分
-    ///   (`matrix_mass_equiv × (factor−1)`) と付加重量が `mass_equiv − matrix_mass_equiv`
-    ///   に残る。
+    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分（CFT は鋼管部）
+    ///   の割増増分と付加重量が `mass_equiv − matrix_mass_equiv` に残る。
     /// - `is_column` は 2 節点の鉛直 `ElementKind::Beam`（ブレースは false）。
     Line {
         elem_idx: usize,
@@ -177,7 +179,8 @@ pub(crate) enum SelfWeightItem {
 ///   下階柱ありは 0。ブレースは柱とみなさない）。総重量は `w·(L+Dmax)` で保存する。
 ///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を
 ///   設計重量と物理質量の両方の躯体分に乗じ（物理質量では増分も物理密度ベース）、
-///   `load_cfg.extra_line_weight`（耐火被覆等の付加線重量 [N/mm]）・
+///   CFT は鋼管部を鋼材と同じ扱いとして `factor` を乗じ、充填コンクリート部は γC で
+///   `factor` を乗じない。`load_cfg.extra_line_weight`（耐火被覆等の付加線重量 [N/mm]）・
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
 ///   あれば自重算定長を掛けて加算する。
 /// - 壁・シェル（`ElementKind::Wall`/`Shell`, 節点数3以上）: 設計重量（設計躯体＋
@@ -252,6 +255,10 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let is_column =
                     elem.kind == ElementKind::Beam && elem.nodes.len() == 2 && is_vertical;
                 let is_concrete = mat.fc.is_some();
+                let is_cft = matches!(
+                    sec.shape.as_ref(),
+                    Some(SectionShape::CftBox { .. } | SectionShape::CftPipe { .. })
+                );
                 let eff_len = if is_concrete && !is_vertical {
                     let [fi, fj] = faces[elem_idx];
                     (len - fi - fj).max(0.0)
@@ -305,10 +312,10 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     }
                 }
 
-                let factor = if is_concrete {
-                    1.0
-                } else {
+                let factor = if is_cft || !is_concrete {
                     load_cfg.effective_steel_factor()
+                } else {
+                    1.0
                 };
                 let self_weight_area = if is_concrete
                     && !is_vertical
@@ -319,6 +326,11 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 } else {
                     sec.area
                 };
+                let core_area = sec
+                    .shape
+                    .as_ref()
+                    .and_then(|s| s.cft_core_props())
+                    .map_or(0.0, |c| c.area);
                 let mut extras_per_length = 0.0;
                 if let Some(&(_, lw)) = load_cfg
                     .extra_line_weight
@@ -337,12 +349,29 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 }
                 let design_per_length =
                     mat.design_unit_weight_n_per_mm3() * self_weight_area * factor
+                        + mat.cft_core_design_unit_weight_n_per_mm3() * core_area
                         + extras_per_length;
-                let physical_per_length =
-                    mat.density * self_weight_area * GRAVITY_MM_S2 * factor + extras_per_length;
                 let load = design_per_length * eff_len;
-                let matrix_mass_equiv = analysis_mass_per_length(model, elem) * len * GRAVITY_MM_S2;
-                let mass_equiv = matrix_mass_equiv * factor + extras_per_length * eff_len;
+                let matrix_mass_per_length = analysis_mass_per_length(model, elem);
+                let matrix_mass_equiv = matrix_mass_per_length * len * GRAVITY_MM_S2;
+                let (mass_equiv, physical_per_length) = if is_cft {
+                    let core_mass_per_length = mat.cft_core_mass_density() * core_area;
+                    let steel_mass_per_length =
+                        (matrix_mass_per_length - core_mass_per_length).max(0.0);
+                    let mass = (steel_mass_per_length * factor + core_mass_per_length)
+                        * len
+                        * GRAVITY_MM_S2
+                        + extras_per_length * eff_len;
+                    let physical = (mat.density * self_weight_area * factor + core_mass_per_length)
+                        * GRAVITY_MM_S2
+                        + extras_per_length;
+                    (mass, physical)
+                } else {
+                    let mass = matrix_mass_equiv * factor + extras_per_length * eff_len;
+                    let physical =
+                        mat.density * self_weight_area * GRAVITY_MM_S2 * factor + extras_per_length;
+                    (mass, physical)
+                };
 
                 let extra_bottom_load = design_per_length * max_depth;
                 let extra_bottom_mass_equiv = physical_per_length * max_depth;
