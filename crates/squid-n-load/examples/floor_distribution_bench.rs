@@ -1,5 +1,5 @@
-//! 床荷重分配の所要時間を現行方式と基準資料方式で比較する（Release 実行用）。
-//! 基準方式（一辺 100mm 以下の最近接辺格子・等距離等分）は本 example 内に自己完結で再現する。
+//! 床荷重分配の所要時間を現行方式と有限線分拡張方式で比較する（Release 実行用）。
+//! 有限線分拡張方式（一辺 100mm 以下の最近接辺格子・等距離等分・有限線分距離）は本 example 内に自己完結で再現する。
 
 use std::time::Instant;
 
@@ -8,7 +8,7 @@ use squid_n_core::ids::NodeId;
 use squid_n_core::model::{AreaLoad, DistributionMethod, Model, Node, Slab, SlabPlate};
 use squid_n_load::floor::distribute_slab;
 
-/// 基準資料方式の格子の最大辺長 [mm]。
+/// 有限線分拡張方式の格子の最大辺長 [mm]。
 const MAX_CELL_MM: f64 = 100.0;
 
 /// 等距離とみなす許容差の、セル寸法に対する相対値。
@@ -51,7 +51,7 @@ fn enclosed_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) -
     (model, slab)
 }
 
-/// 基準資料方式の各辺負担面積 [mm²] と格子内総面積 [mm²]。
+/// 有限線分拡張方式の各辺負担面積 [mm²] と格子内総面積 [mm²]。
 fn reference_edge_areas(coords: &[[f64; 3]]) -> (Vec<f64>, f64) {
     let n = coords.len();
     let mut areas = vec![0.0_f64; n];
@@ -160,7 +160,7 @@ fn main() {
     ];
 
     println!("床荷重分配の所要時間（中央値, 各{iters}回, 面荷重 w={w}）");
-    println!("ケース                       現行[ms]     基準[ms]   基準/現行");
+    println!("ケース                       現行[ms]   有限線分拡張[ms]   拡張/現行");
     for case in &cases {
         let (model, slab) = enclosed_slab_model(&case.pts, DistributionMethod::TriTrapezoid, w);
         let coords = slab
