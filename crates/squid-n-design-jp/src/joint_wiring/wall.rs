@@ -190,6 +190,7 @@ pub(super) fn check_walls(
             l,
             l_clear,
             fc,
+            concrete_class: mat.concrete_class,
             ps,
             w_ft: crate::rc::rebar_allowable_shear(
                 wall_shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),

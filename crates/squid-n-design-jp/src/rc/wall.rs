@@ -8,6 +8,7 @@
 //! 準拠する規準: 日本建築学会「鉄筋コンクリート構造計算規準・同解説」18条
 
 use crate::{CheckComponent, CheckKind, CheckResult};
+use squid_n_core::units::ConcreteClass;
 
 /// 耐震壁の側柱（壁の両側または片側に取り付く柱）の諸元。
 pub struct WallSideColumn {
@@ -36,6 +37,8 @@ pub struct RcWallInput {
     pub l_clear: f64,
     /// コンクリート設計基準強度 Fc [N/mm²]。
     pub fc: f64,
+    /// コンクリート種類（軽量1種・2種は許容せん断応力度を 0.9 倍）。
+    pub concrete_class: ConcreteClass,
     /// 壁筋比（直交2方向のうち小さい方）ps。
     pub ps: f64,
     /// 壁筋の短期許容引張応力度 [N/mm²]。
@@ -68,7 +71,7 @@ pub struct RcWallInput {
 /// - 短期: `Qa = max(Q1, Q2)`
 /// - 検定比 = `|QD| / Qa`（1.0 以下で OK）
 pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
-    let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
+    let fs = crate::rc::concrete_allowable_shear_class(inp.fc, inp.concrete_class, inp.long_term);
 
     let r = squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(inp.opening);
 
@@ -124,6 +127,7 @@ mod tests {
             l: 4000.0,
             l_clear: 3600.0,
             fc: 24.0,
+            concrete_class: ConcreteClass::Normal,
             ps: 0.006,
             w_ft: 195.0,
             side_columns: vec![
@@ -218,6 +222,29 @@ mod tests {
         let qa = q1.max(q2);
         let expected_ratio = inp.q_design.abs() / qa;
         assert!((res.ratio() - expected_ratio).abs() < 1e-6);
+    }
+
+    /// 軽量コンクリート1種では壁の許容せん断応力度が普通コンクリートの
+    /// 0.9 倍になり、長期（`Qa = Q1` で `fs` に比例）の検定比は 1/0.9 倍に
+    /// なることを確認する。
+    #[test]
+    fn rc_wall_lightweight_reduces_shear_capacity() {
+        let fs_n = crate::rc::concrete_allowable_shear_class(24.0, ConcreteClass::Normal, true);
+        let fs_l =
+            crate::rc::concrete_allowable_shear_class(24.0, ConcreteClass::Lightweight1, true);
+        assert!((fs_l - fs_n * 0.9).abs() < 1e-12);
+
+        let mut normal = base_wall_input();
+        normal.long_term = true;
+        normal.side_columns.clear();
+        let mut light = base_wall_input();
+        light.long_term = true;
+        light.side_columns.clear();
+        light.concrete_class = ConcreteClass::Lightweight1;
+
+        let res_n = rc_wall_shear_check(&normal);
+        let res_l = rc_wall_shear_check(&light);
+        assert!((res_l.ratio() / res_n.ratio() - 1.0 / 0.9).abs() < 1e-9);
     }
 
     // ------------------------------------------------------------------

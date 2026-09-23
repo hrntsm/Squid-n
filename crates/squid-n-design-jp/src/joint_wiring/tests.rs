@@ -341,6 +341,7 @@ fn wall_opening_dimension_paths_are_reflected() {
         l,
         l_clear: l,
         fc: 24.0,
+        concrete_class: Default::default(),
         ps: 0.006,
         w_ft: crate::rc::rebar_allowable_shear("SD345", false),
         side_columns: vec![],

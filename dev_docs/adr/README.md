@@ -37,7 +37,8 @@ Squid-n の重要な設計判断の正本。用語の意味はルートの [CONT
 | [0029](0029-live-load-four-purposes.md) | accepted | 積載荷重を床用・小梁用・大梁用・地震力用の 4 区分とする |
 | [0030](0030-cft-steel-allowable-stress-fixed-young.md) | accepted | CFT の鋼管部分の許容応力度は固定ヤング係数 E_STEEL で算定する |
 | [0031](0031-withdraw-high-strength-shear-reinforcement.md) | accepted | 高強度せん断補強筋の製品別対応を撤回する |
-| [0032](0032-steel-design-weight-vs-physical-mass.md) | accepted | 鋼材の設計重量（78.5 kN/m³）と物理質量（7.85 t/m³）を分離する |
+| [0032](0032-concrete-allowable-stress-basis.md) | accepted | コンクリートの許容圧縮・せん断応力度は基準資料（表2.1.1-2）を正とする |
+| [0033](0033-steel-design-weight-vs-physical-mass.md) | accepted | 鋼材の設計重量（78.5 kN/m³）と物理質量（7.85 t/m³）を分離する |
 
 ## 規約
 

@@ -321,8 +321,8 @@ fn test_column_safety_check_excludes_alpha() {
 
     // 柱の「安全確保のための検討」式は α を含まない。普通強度せん断補強筋で、
     // 手計算の期待値 b・j・(fs + 0.5・w_ft・(pw − 0.002)) と照合する。
-    // fs = min(24/30, 0.49+24/100)×1.5 = 1.095、pw ≈ 0.003927。
-    let fs = 1.095;
+    // fs = min(24/30, 0.5+24/100)×1.5 = 1.11、pw ≈ 0.003927。
+    let fs = 1.11;
     let pw = props.pw;
     assert!(pw > 0.002, "テストの前提として pw > 0.002 が必要: pw={pw}");
     let b_j = props.b * props.j;
