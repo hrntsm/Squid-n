@@ -116,6 +116,33 @@ impl DesignCheck for RcDesign {
             };
         }
 
+        if matches!(shape, SectionShape::RcBeamRect { .. }) && ctx.kind == MemberKind::Column {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 梁用断面を柱部材に割り当てています（用途不一致）".to_string(),
+            };
+        }
+        if matches!(
+            shape,
+            SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }
+        ) && matches!(ctx.kind, MemberKind::Beam | MemberKind::Brace)
+        {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 柱用断面を梁部材に割り当てています（用途不一致）".to_string(),
+            };
+        }
+
+        let rebar_issue = match shape {
+            SectionShape::RcBeamRect { b, d, rebar } => rebar.validate(*b, *d).err(),
+            SectionShape::RcColumnRect { b, d, rebar } => rebar.validate(*b, *d).err(),
+            SectionShape::RcColumnCircle { d, rebar } => rebar.validate(*d).err(),
+            _ => None,
+        };
+        if let Some(e) = rebar_issue {
+            return CheckOutcome::Skipped {
+                reason: format!("RC 検定: 配筋が不整合です（{e}）"),
+            };
+        }
+
         let cr = if matches!(shape, SectionShape::RcBeamRect { .. }) {
             beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
         } else if matches!(

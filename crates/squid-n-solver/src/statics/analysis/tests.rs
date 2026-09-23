@@ -221,6 +221,78 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
+/// 梁用断面を柱部材へ、柱用断面を梁部材へ割り当てた誤りを解析前チェックが止める。
+#[test]
+fn test_model_issues_detects_rc_shape_purpose_mismatch() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
+    };
+
+    fn beam_shape() -> SectionShape {
+        SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+    fn column_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+    }
+
+    // 梁用断面を鉛直材（柱）へ割り当てる。
+    let mut model = make_cantilever_model();
+    model.nodes[1].coord = [0.0, 0.0, 3000.0];
+    model.sections[0].shape = Some(beam_shape());
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("梁用断面を柱部材")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+
+    // 柱用断面を水平材（梁）へ割り当てる。
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(column_shape());
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("柱用断面を梁部材")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+}
+
 /// 診断用の SRC 断面（内蔵 H 形鉄骨付き）。
 fn src_shape() -> squid_n_core::section_shape::SectionShape {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};

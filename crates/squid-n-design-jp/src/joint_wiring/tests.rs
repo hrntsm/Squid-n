@@ -910,7 +910,7 @@ fn rc_cross_joint_new_types_emits_checks() {
         rebar: RcRectColumnRebar {
             main_dia: 25.0,
             x: vec![4, 2],
-            y: vec![3],
+            y: vec![4],
             cover: 40.0,
             hoop: RectColumnHoop {
                 dia: 10.0,
@@ -977,7 +977,7 @@ fn src_cross_panel_new_types_emits_check() {
         rebar: RcRectColumnRebar {
             main_dia: 25.0,
             x: vec![4, 2],
-            y: vec![3],
+            y: vec![4],
             cover: 40.0,
             hoop: RectColumnHoop {
                 dia: 10.0,

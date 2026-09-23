@@ -805,3 +805,83 @@ fn test_rc_beam_rect_unset_rebar_skipped() {
         CheckOutcome::Checked(_) => panic!("配筋未入力は検定不能(Skipped)のはず"),
     }
 }
+
+/// 実配筋が幾何的に成立しない新モデル断面は、諸元算定の expect で panic せず
+/// Skipped（配筋が不整合）を返す。
+#[test]
+fn test_rc_inconsistent_column_rebar_skipped() {
+    let shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        },
+    };
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: -100_000.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 10_000_000.0,
+    };
+    match RcDesign.check(&forces, &sec, &mat, &ctx_column(LoadTerm::Short)) {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("配筋が不整合"), "{reason}"),
+        CheckOutcome::Checked(_) => panic!("配筋不整合は検定不能(Skipped)のはず"),
+    }
+}
+
+/// 梁用断面を柱部材へ割り当てた場合は用途不一致として検定不能。
+#[test]
+fn test_rc_beam_shape_on_column_skipped() {
+    let sec = make_section(rc_beam_rect_shape());
+    let mat = make_material(24.0, "SD345");
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: -100_000.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 10_000_000.0,
+    };
+    match RcDesign.check(&forces, &sec, &mat, &ctx_column(LoadTerm::Short)) {
+        CheckOutcome::Skipped { reason } => {
+            assert!(reason.contains("用途不一致"), "{reason}");
+            assert!(reason.contains("梁用断面"), "{reason}");
+        }
+        CheckOutcome::Checked(_) => panic!("用途不一致は検定不能(Skipped)のはず"),
+    }
+}
+
+/// 柱用断面を梁部材へ割り当てた場合は用途不一致として検定不能。
+#[test]
+fn test_rc_column_shape_on_beam_skipped() {
+    let sec = make_section(rc_column_rect_shape());
+    let mat = make_material(24.0, "SD345");
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 10_000_000.0,
+    };
+    match RcDesign.check(&forces, &sec, &mat, &ctx_beam(LoadTerm::Short)) {
+        CheckOutcome::Skipped { reason } => {
+            assert!(reason.contains("用途不一致"), "{reason}");
+            assert!(reason.contains("柱用断面"), "{reason}");
+        }
+        CheckOutcome::Checked(_) => panic!("用途不一致は検定不能(Skipped)のはず"),
+    }
+}

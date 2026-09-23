@@ -1125,7 +1125,7 @@ mod tests {
         let r = RcRectColumnRebar {
             main_dia: 22.0,
             x: vec![4, 2],
-            y: vec![3],
+            y: vec![4],
             cover: 40.0,
             hoop: RectColumnHoop {
                 dia: 10.0,
@@ -1136,7 +1136,7 @@ mod tests {
         };
         let a1 = one_bar_area(22.0);
         assert!((r.x_direction_area_mm2() - 12.0 * a1).abs() < 1e-9);
-        assert!((r.y_direction_area_mm2() - 6.0 * a1).abs() < 1e-9);
+        assert!((r.y_direction_area_mm2() - 8.0 * a1).abs() < 1e-9);
     }
 
     /// 矩形柱: 未入力の方向別主筋総面積は 0。
@@ -1161,7 +1161,7 @@ mod tests {
         let r = RcRectColumnRebar {
             main_dia: 22.0,
             x: vec![4, 2],
-            y: vec![3],
+            y: vec![4],
             cover: 40.0,
             hoop: RectColumnHoop {
                 dia: 10.0,
@@ -1179,8 +1179,8 @@ mod tests {
         assert!((top.effective_depth_mm - 639.0).abs() < 1e-9);
 
         let left = r.edge_steel(RectEdge::Left, 600.0, 700.0);
-        assert_eq!(left.count, 3);
-        assert!((left.area_mm2 - 3.0 * a1).abs() < 1e-9);
+        assert_eq!(left.count, 4);
+        assert!((left.area_mm2 - 4.0 * a1).abs() < 1e-9);
         assert!((left.centroid_from_edge_mm - 61.0).abs() < 1e-9);
         assert!((left.effective_depth_mm - 539.0).abs() < 1e-9);
 

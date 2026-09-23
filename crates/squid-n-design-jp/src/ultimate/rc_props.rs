@@ -48,7 +48,8 @@ pub(crate) struct RcBarProps {
 
 /// 断面形状から、指定方向・指定引張側の RC 諸元を返す。
 ///
-/// 対象外（RC 以外・対応しない形状）・未入力・有効せいが 0 以下なら `None`。
+/// 対象外（RC 以外・対応しない形状）・未入力・実配筋を生成できない配筋・
+/// 有効せいが 0 以下なら `None`。
 /// `tension_is_top` は梁の曲げ引張側で、柱・円形柱では無視する。
 /// `shear_method_needs_be` が true のときのみ靭性指針式の `be`・`n_s` を算定する。
 pub(crate) fn rc_bar_props(
@@ -194,6 +195,7 @@ fn rc_beam_rect_props(
     if b <= 0.0 || d <= 0.0 || rebar.is_unset() || rebar.main_dia <= 0.0 {
         return None;
     }
+    rebar.validate(b, d).ok()?;
     let bending = rebar.bending_steel(d, tension_is_top);
     let steel = bending.tension;
     if steel.effective_depth_mm <= 0.0 {
@@ -239,6 +241,7 @@ fn rc_column_rect_props(
     if b <= 0.0 || d <= 0.0 || rebar.is_unset() || rebar.main_dia <= 0.0 {
         return None;
     }
+    rebar.validate(b, d).ok()?;
     let (b_dir, d_dir, edge, aw, shear_legs) = match direction {
         RcDirection::Strong => (
             b,
@@ -290,6 +293,7 @@ fn rc_column_circle_props(
     if d <= 0.0 || rebar.is_unset() || rebar.main_dia <= 0.0 {
         return None;
     }
+    rebar.validate(d).ok()?;
     let side = rebar.equivalent_square_side_mm(d);
     let d_eff = rebar.equivalent_effective_depth_mm(d);
     if side <= 0.0 || d_eff <= 0.0 {
@@ -380,7 +384,7 @@ mod tests {
             rebar: RcRectColumnRebar {
                 main_dia: 22.0,
                 x: vec![4, 2],
-                y: vec![3],
+                y: vec![4],
                 cover: 40.0,
                 hoop: RectColumnHoop {
                     dia: 10.0,
@@ -482,7 +486,7 @@ mod tests {
         assert!((p.b_dir - 600.0).abs() < 1e-9);
         assert!((p.d_dir - 700.0).abs() < 1e-9);
         assert!((p.at - 4.0 * a1).abs() < 1e-9);
-        assert!((p.ag - 10.0 * a1).abs() < 1e-9);
+        assert!((p.ag - 12.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 2);
@@ -498,11 +502,11 @@ mod tests {
         // 旧 RcRect と同じく弱軸は b_dir=d, d_dir=b に入れ替える。
         assert!((p.b_dir - 700.0).abs() < 1e-9);
         assert!((p.d_dir - 600.0).abs() < 1e-9);
-        assert!((p.at - 3.0 * a1).abs() < 1e-9);
-        assert!((p.ag - 10.0 * a1).abs() < 1e-9);
+        assert!((p.at - 4.0 * a1).abs() < 1e-9);
+        assert!((p.ag - 12.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert!((p.d_eff - 539.0).abs() < 1e-9);
-        assert_eq!(p.n_tension, 3);
+        assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 3);
         assert!((p.pw - 3.0 * a10 / (700.0 * 100.0)).abs() < 1e-15);
     }
@@ -575,6 +579,29 @@ mod tests {
             },
         };
         assert!(rc_bar_props(&circle, RcDirection::Strong, true, false).is_none());
+    }
+
+    /// 実配筋が幾何的に成立しない矩形柱は諸元を生成しない。
+    #[test]
+    fn test_rc_props_inconsistent_column_none() {
+        let column = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 3,
+                },
+            },
+        };
+        assert!(rc_bar_props(&column, RcDirection::Strong, true, false).is_none());
+        assert!(rc_bar_props(&column, RcDirection::Weak, true, false).is_none());
     }
 
     #[test]

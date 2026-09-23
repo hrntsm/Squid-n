@@ -768,6 +768,31 @@ fn test_ultimate_check_new_rc_shapes_supported() {
     assert!(checks[0].axial.is_some());
 }
 
+/// 実配筋が幾何的に成立しない新モデル断面は、終局検定の対象外（結果に含めない）。
+#[test]
+fn test_ultimate_inconsistent_rebar_skipped() {
+    let opts = UltimateShearOptions::default();
+    let shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        },
+    };
+    let model = single_shape_model(shape, 600.0, 700.0, false);
+    let checks = collect_rc_ultimate_checks(&model, &[], &opts).unwrap();
+    assert!(checks.is_empty(), "{checks:?}");
+}
+
 /// 矩形柱・円形柱の Mu が軸力 0 の手計算（0.8·at·σy·D）に一致する。
 #[test]
 fn test_ultimate_new_columns_mu_matches_handcalc() {

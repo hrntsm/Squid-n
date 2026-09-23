@@ -99,7 +99,8 @@ pub(crate) fn circle_axis_props(d_full: f64, rebar: &RcRebar) -> AxisProps {
 
 /// 断面形状から検討方向 1 軸分の断面諸元を引く。
 ///
-/// 中立型 [`rc_bar_props`] に委譲し、未対応形状・未入力・有効せい 0 以下なら `None`。
+/// 中立型 [`rc_bar_props`] に委譲し、未対応形状・未入力・実配筋を生成できない配筋・
+/// 有効せい 0 以下なら `None`。
 /// 旧 `RcCircle` は [`rc_bar_props`] 非対応のため [`circle_axis_props`] で扱う。
 /// `tension_is_top` は梁の曲げ引張側（柱・円形柱では無視）。`j = 7d/8`。
 pub(crate) fn axis_props_from_shape(
@@ -151,7 +152,7 @@ pub(crate) struct RcRebarInfo {
 
 /// 断面形状から鉄筋情報を返す。`tension_is_top` は梁の引張側（付着・段数）。
 /// 旧 RcRect / RcCircle / RcBeamRect / RcColumnRect / RcColumnCircle を対象とし、
-/// 対象外・未入力は None。
+/// 対象外・未入力・実配筋を生成できない配筋は None。
 pub(crate) fn rebar_info_from_shape(
     shape: &SectionShape,
     tension_is_top: bool,
@@ -189,10 +190,11 @@ pub(crate) fn rebar_info_from_shape(
             shear_legs: rebar.shear.legs,
             is_circle: true,
         }),
-        SectionShape::RcBeamRect { rebar, .. } => {
+        SectionShape::RcBeamRect { b, d, rebar } => {
             if rebar.is_unset() {
                 return None;
             }
+            rebar.validate(*b, *d).ok()?;
             let top_count: u32 = rebar.top.iter().sum();
             let bottom_count: u32 = rebar.bottom.iter().sum();
             let (tension_count, tension_layers, first_layer_count) = if tension_is_top {
@@ -224,10 +226,11 @@ pub(crate) fn rebar_info_from_shape(
                 is_circle: false,
             })
         }
-        SectionShape::RcColumnRect { rebar, .. } => {
+        SectionShape::RcColumnRect { b, d, rebar } => {
             if rebar.is_unset() {
                 return None;
             }
+            rebar.validate(*b, *d).ok()?;
             let nx = rebar.x.len() as u32;
             let ny = rebar.y.len() as u32;
             let sx: u32 = rebar.x.iter().sum();
@@ -249,10 +252,11 @@ pub(crate) fn rebar_info_from_shape(
                 is_circle: false,
             })
         }
-        SectionShape::RcColumnCircle { rebar, .. } => {
+        SectionShape::RcColumnCircle { d, rebar } => {
             if rebar.is_unset() {
                 return None;
             }
+            rebar.validate(*d).ok()?;
             Some(RcRebarInfo {
                 cover: rebar.cover,
                 main_dia: rebar.main_dia,
@@ -343,7 +347,7 @@ mod tests {
             rebar: RcRectColumnRebar {
                 main_dia: 22.0,
                 x: vec![4, 2],
-                y: vec![3],
+                y: vec![4],
                 cover: 40.0,
                 hoop: RectColumnHoop {
                     dia: 10.0,
@@ -437,7 +441,7 @@ mod tests {
         let weak = axis_props_from_shape(&column_rect_shape(), RcDirection::Weak, true).unwrap();
         assert!((weak.b - 700.0).abs() < 1e-9);
         assert!((weak.d_full - 600.0).abs() < 1e-9);
-        assert!((weak.at - 3.0 * a1).abs() < 1e-9);
+        assert!((weak.at - 4.0 * a1).abs() < 1e-9);
     }
 
     #[test]
@@ -566,11 +570,11 @@ mod tests {
     #[test]
     fn test_rebar_info_from_shape_column_rect() {
         let info = rebar_info_from_shape(&column_rect_shape(), true).unwrap();
-        assert_eq!(info.main_count, 10);
+        assert_eq!(info.main_count, 12);
         assert_eq!(info.main_count_per_side, 4);
-        assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
-        assert_eq!(info.tension_first_layer_count, 10.0);
-        assert_eq!(info.tension_count_1991, 10.0);
+        assert!((info.main_area - 12.0 * one_bar_area(22.0)).abs() < 1e-9);
+        assert_eq!(info.tension_first_layer_count, 12.0);
+        assert_eq!(info.tension_count_1991, 12.0);
         assert_eq!(info.shear_legs, 3);
         assert!(!info.is_circle);
     }
@@ -656,5 +660,29 @@ mod tests {
             },
         };
         assert!(rebar_info_from_shape(&unset_circle, true).is_none());
+    }
+
+    /// 実配筋が幾何的に成立しない矩形柱は、諸元・鉄筋情報とも `None`。
+    #[test]
+    fn test_inconsistent_column_rebar_none() {
+        let shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 3,
+                },
+            },
+        };
+        assert!(axis_props_from_shape(&shape, RcDirection::Strong, true).is_none());
+        assert!(axis_props_from_shape(&shape, RcDirection::Weak, true).is_none());
+        assert!(rebar_info_from_shape(&shape, true).is_none());
     }
 }
