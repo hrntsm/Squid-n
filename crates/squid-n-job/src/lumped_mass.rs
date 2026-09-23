@@ -133,10 +133,16 @@ fn build_spatial(inp: LumpedMassBuildInput<'_>) -> JobResult<LumpedMassModel> {
         let com = dm.center_xy_mm;
         let kr = eccentricity(&cols, com, cor).kr;
         let mass = layer_mass(layer)?;
+        if mass <= 0.0 {
+            return Err(JobError::InvalidInput(format!(
+                "階 {} の質量が 0 以下です（物理質量相当重量が 0 以下）",
+                layer.name
+            )));
+        }
         let j = layer_inertia(layer)?;
         if j <= 0.0 {
             return Err(JobError::InvalidInput(format!(
-                "階 {} の回転慣性 J が未設定です。剛床のある階で 3 次元質点系を実行してください",
+                "階 {} の回転慣性 J が 0 以下のため 3 次元質点系を生成できません",
                 layer.name
             )));
         }
@@ -604,6 +610,83 @@ mod tests {
         res.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let mut inp = input(&model, StickDim::Planar, SeismicDir::X, false);
         inp.res_x = Some(&res);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("動的質量が未算定"), "{err}");
+    }
+
+    fn empty_pushover() -> PushoverResult {
+        PushoverResult {
+            steps: Vec::new(),
+            capacity_curve: Vec::new(),
+            hinges: Vec::new(),
+            shear_yields: Vec::new(),
+            mechanism: squid_n_solver::nonlinear::pushover::MechanismType::Overall,
+            qu: 0.0,
+            member_response: Vec::new(),
+            control: Default::default(),
+            member_history: Vec::new(),
+            fiber_states: Vec::new(),
+            termination: Default::default(),
+        }
+    }
+
+    /// 3次元（線形）でも動的質量が未算定（`None`）なら未算定エラーで止まること。
+    #[test]
+    fn spatial_linear_requires_dynamic_mass() {
+        let mut model = two_story_column_model();
+        model.stories[1].dynamic_mass = None;
+        let mut res_x = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        let mut res_y = static_with_column_qy(3, &[(0, 80.0), (1, 30.0)]);
+        res_x.disp[1] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_x.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[1] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[2] = [0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+        let mut inp = input(&model, StickDim::Spatial, SeismicDir::X, false);
+        inp.source = LumpedStiffnessSource::ColumnKi;
+        inp.res_x = Some(&res_x);
+        inp.res_y = Some(&res_y);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("動的質量が未算定"), "{err}");
+    }
+
+    /// 質量 0 の階は、J の誤診断（未設定・剛床要求）ではなく質量 0 エラーで止まること。
+    /// J は質量分布から算定されるため、質量 0 では J も 0 になる。
+    #[test]
+    fn spatial_rejects_zero_mass_before_inertia_check() {
+        let mut model = two_story_column_model();
+        model.stories[1].dynamic_mass = Some(squid_n_core::model::StoryDynamicMass {
+            mass_equiv_weight_n: 0.0,
+            center_xy_mm: [0.0, 0.0],
+            inertia_t_mm2: 0.0,
+        });
+        let mut res_x = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        let mut res_y = static_with_column_qy(3, &[(0, 80.0), (1, 30.0)]);
+        res_x.disp[1] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_x.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[1] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[2] = [0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+        let mut inp = input(&model, StickDim::Spatial, SeismicDir::X, false);
+        inp.source = LumpedStiffnessSource::ColumnKi;
+        inp.res_x = Some(&res_x);
+        inp.res_y = Some(&res_y);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("質量が 0 以下"), "{err}");
+        assert!(!err.to_string().contains("回転慣性"), "{err}");
+    }
+
+    /// 3次元（非線形）でも動的質量が未算定（`None`）なら未算定エラーで止まること。
+    #[test]
+    fn spatial_nonlinear_requires_dynamic_mass() {
+        let mut model = two_story_column_model();
+        model.stories[1].dynamic_mass = None;
+        let res_x = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        let res_y = static_with_column_qy(3, &[(0, 80.0), (1, 30.0)]);
+        let po = empty_pushover();
+        let mut inp = input(&model, StickDim::Spatial, SeismicDir::X, true);
+        inp.res_x = Some(&res_x);
+        inp.res_y = Some(&res_y);
+        inp.po_x = Some(&po);
+        inp.po_y = Some(&po);
         let err = build_lumped_mass(inp).unwrap_err();
         assert!(err.to_string().contains("動的質量が未算定"), "{err}");
     }
