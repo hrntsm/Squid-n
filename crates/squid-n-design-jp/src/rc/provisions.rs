@@ -270,7 +270,7 @@ pub(crate) fn beam_deflection_component(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::section_shape::{BarSet, ShearBar};
+    use squid_n_core::section_shape::{one_bar_area, BarSet, ShearBar};
 
     fn sample_rebar(cover: f64, pitch: f64, dia: f64, count: u32) -> RcRebar {
         RcRebar {
@@ -299,6 +299,7 @@ mod tests {
             main_dia: dia,
             main_count: count,
             main_count_per_side: count,
+            main_area: count as f64 * one_bar_area(dia),
             tension_count: count,
             tension_layers: 1,
             shear_dia: 10.0,

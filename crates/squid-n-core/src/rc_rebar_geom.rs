@@ -554,6 +554,16 @@ impl RcRectColumnRebar {
         unique as f64 * one_bar_area(self.main_dia)
     }
 
+    /// X 方向段に載る主筋の総面積 [mm²]（`2・Σx・A1`）。未入力なら 0。
+    pub fn x_direction_area_mm2(&self) -> f64 {
+        2.0 * self.x.iter().map(|&c| c as f64).sum::<f64>() * one_bar_area(self.main_dia)
+    }
+
+    /// Y 方向段に載る主筋の総面積 [mm²]（`2・Σy・A1`）。未入力なら 0。
+    pub fn y_direction_area_mm2(&self) -> f64 {
+        2.0 * self.y.iter().map(|&c| c as f64).sum::<f64>() * one_bar_area(self.main_dia)
+    }
+
     /// X 方向の帯筋 1 組（`legs_x` 本）の断面積 Aw [mm²]。
     pub fn aw_x_mm2(&self) -> f64 {
         self.hoop.legs_x as f64 * one_bar_area(self.hoop.dia)
@@ -1107,6 +1117,34 @@ mod tests {
         };
         // 2*(4+2) + 2*4 - 4*2*1 = 12。
         assert!((multi.total_main_area() - 12.0 * a22).abs() < 1e-9);
+    }
+
+    /// 矩形柱: 方向別主筋総面積は交点を控除しない `2・Σ` の値。
+    #[test]
+    fn test_rect_column_direction_areas() {
+        let r = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        };
+        let a1 = one_bar_area(22.0);
+        assert!((r.x_direction_area_mm2() - 12.0 * a1).abs() < 1e-9);
+        assert!((r.y_direction_area_mm2() - 6.0 * a1).abs() < 1e-9);
+    }
+
+    /// 矩形柱: 未入力の方向別主筋総面積は 0。
+    #[test]
+    fn test_rect_column_direction_areas_unset() {
+        let r = rect_column(vec![], vec![]);
+        assert_eq!(r.x_direction_area_mm2(), 0.0);
+        assert_eq!(r.y_direction_area_mm2(), 0.0);
     }
 
     /// 円形柱: 総本数と総面積。

@@ -685,3 +685,39 @@ fn test_rc_circle_beam_bending_matches_circle_axis_props() {
         "bend={bend}, expected={expected}"
     );
 }
+
+/// 新型 `RcBeamRect` の配筋が未入力なら、諸元算定の expect で panic せず
+/// Skipped（配筋が未入力）を返す。
+#[test]
+fn test_rc_beam_rect_unset_rebar_skipped() {
+    let shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 600.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![],
+            bottom: vec![],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_beam(LoadTerm::Short);
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 10_000_000.0,
+    };
+    match RcDesign.check(&forces, &sec, &mat, &ctx) {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("配筋が未入力"), "{reason}"),
+        CheckOutcome::Checked(_) => panic!("配筋未入力は検定不能(Skipped)のはず"),
+    }
+}

@@ -133,6 +133,8 @@ pub(crate) struct RcRebarInfo {
     pub main_count: u32,
     /// 片側 1 列あたりの本数（円形柱は ng/4+1 相当）。表示・付着の補助。
     pub main_count_per_side: u32,
+    /// 全主筋断面積 [mm²]。
+    pub main_area: f64,
     /// 検定方向の引張側主筋本数（付着検定の本数）。
     pub tension_count: u32,
     /// 検定方向の引張側の段数（付着検定の `layers`。多段で 0.6 低減に用いる）。
@@ -156,6 +158,7 @@ pub(crate) fn rebar_info_from_shape(
             main_dia: rebar.main_x.dia,
             main_count: rebar.main_x.count + rebar.main_y.count,
             main_count_per_side: rebar.main_x.count,
+            main_area: bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y),
             tension_count: rebar.main_x.count,
             tension_layers: rebar.main_x.layers.max(1),
             shear_dia: rebar.shear.dia,
@@ -168,6 +171,7 @@ pub(crate) fn rebar_info_from_shape(
             main_dia: rebar.main_x.dia,
             main_count: rebar.main_x.count,
             main_count_per_side: rebar.main_x.count / 4 + 1,
+            main_area: bar_set_area(&rebar.main_x),
             tension_count: rebar.main_x.count,
             tension_layers: rebar.main_x.layers.max(1),
             shear_dia: rebar.shear.dia,
@@ -191,6 +195,7 @@ pub(crate) fn rebar_info_from_shape(
                 main_dia: rebar.main_dia,
                 main_count: top_count + bottom_count,
                 main_count_per_side: tension_count,
+                main_area: rebar.total_main_area(),
                 tension_count,
                 tension_layers,
                 shear_dia: rebar.stirrup.dia,
@@ -213,6 +218,7 @@ pub(crate) fn rebar_info_from_shape(
                 main_dia: rebar.main_dia,
                 main_count,
                 main_count_per_side: rebar.x.first().copied().unwrap_or(0),
+                main_area: rebar.total_main_area(),
                 tension_count: main_count,
                 tension_layers: 1,
                 shear_dia: rebar.hoop.dia,
@@ -230,6 +236,7 @@ pub(crate) fn rebar_info_from_shape(
                 main_dia: rebar.main_dia,
                 main_count: rebar.count,
                 main_count_per_side: rebar.count / 4 + 1,
+                main_area: rebar.total_main_area(),
                 tension_count: rebar.count,
                 tension_layers: 1,
                 shear_dia: rebar.hoop.dia,
@@ -504,6 +511,7 @@ mod tests {
         assert!((info.main_dia - 22.0).abs() < 1e-9);
         assert_eq!(info.main_count, 10);
         assert_eq!(info.main_count_per_side, 6);
+        assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 6);
         assert_eq!(info.tension_layers, 2);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);
@@ -514,11 +522,13 @@ mod tests {
     fn test_rebar_info_from_shape_beam() {
         let top = rebar_info_from_shape(&beam_shape(), true).unwrap();
         assert_eq!(top.main_count, 11);
+        assert!((top.main_area - 11.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(top.tension_count, 6);
         assert_eq!(top.tension_layers, 2);
 
         let bottom = rebar_info_from_shape(&beam_shape(), false).unwrap();
         assert_eq!(bottom.main_count, 11);
+        assert!((bottom.main_area - 11.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(bottom.tension_count, 5);
         assert_eq!(bottom.tension_layers, 2);
     }
@@ -528,6 +538,7 @@ mod tests {
         let info = rebar_info_from_shape(&column_rect_shape(), true).unwrap();
         assert_eq!(info.main_count, 10);
         assert_eq!(info.main_count_per_side, 4);
+        assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.shear_legs, 3);
         assert!(!info.is_circle);
     }
@@ -537,6 +548,7 @@ mod tests {
         let info = rebar_info_from_shape(&column_circle_shape(), true).unwrap();
         assert_eq!(info.main_count, 8);
         assert_eq!(info.main_count_per_side, 3);
+        assert!((info.main_area - 8.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 8);
         assert!(info.is_circle);
     }
@@ -551,6 +563,7 @@ mod tests {
         assert!((info.main_dia - 22.0).abs() < 1e-9);
         assert_eq!(info.main_count, 6);
         assert_eq!(info.main_count_per_side, 2);
+        assert!((info.main_area - 6.0 * one_bar_area(22.0)).abs() < 1e-9);
         assert_eq!(info.tension_count, 6);
         assert_eq!(info.tension_layers, 1);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);

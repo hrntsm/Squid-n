@@ -65,6 +65,18 @@ impl DesignCheck for RcDesign {
             };
         }
 
+        let new_rebar_unset = match &sec.shape {
+            Some(SectionShape::RcBeamRect { rebar, .. }) => rebar.is_unset(),
+            Some(SectionShape::RcColumnRect { rebar, .. }) => rebar.is_unset(),
+            Some(SectionShape::RcColumnCircle { rebar, .. }) => rebar.is_unset(),
+            _ => false,
+        };
+        if new_rebar_unset {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 配筋が未入力です".to_string(),
+            };
+        }
+
         let shape = match &sec.shape {
             Some(
                 s @ (SectionShape::RcRect { .. }
