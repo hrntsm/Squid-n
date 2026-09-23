@@ -21,7 +21,7 @@ Beam と Fiber の整合質量は、断面の材料領域から求めた `Sectio
 ## 影響
 
 - `MassOption::Lumped` は Beam の `density × a_mass × L`、Fiber の `density × Σfiber.area × L` という既存契約を維持する。`SectionMassProperties` は `MassOption::Consistent` のみに使う。
-- 自重は主材料の密度（RC/SRC は標準 γ、CFT は鋼管と充填コンクリート）から算定し、床版自重も整合質量の resolver とは分離する。ただし鋼材の固定荷重は設計用単位体積重量 78.5 kN/m³ を用い、物理質量密度 7.85 t/m³ とは分離する（[ADR-0032](0032-steel-design-weight-vs-physical-mass.md)）。
+- 自重は主材料の密度（RC/SRC は標準 γ、CFT は鋼管と充填コンクリート）から算定し、床版自重も整合質量の resolver とは分離する。ただし鋼材の固定荷重は設計用単位体積重量 78.5 kN/m³ を用い、物理質量密度 7.85 t/m³ とは分離する（[ADR-0033](0033-steel-design-weight-vs-physical-mass.md)）。
 - `MassOption::Consistent` を使う固有値解析・時刻歴解析では、Beam と Fiber の質量行列および材軸回転慣性が変わる。
 - 端部解放の質量縮約は Beam/Fiber で共通化し、Fiber は塑性状態の接線剛性を使わない。
 - `Kbb` が特異な端部解放では、解放なし質量へフォールバックせず、Beam/Fiber とも明示的に失敗する。

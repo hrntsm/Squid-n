@@ -13,7 +13,7 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
 - 数量積算: 7.85 t/m³（不変。物理質量と値は同じだが用途は独立）
 - 動的質量は `Σ mass_equiv / g` に一致し、地震用重量/g とは一致しない
 
-設計判断は [ADR-0032](../adr/0032-steel-design-weight-vs-physical-mass.md) を正とする。
+設計判断は [ADR-0033](../adr/0033-steel-design-weight-vs-physical-mass.md) を正とする。
 
 ## 実装の要点
 
