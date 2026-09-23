@@ -5,13 +5,27 @@ use squid_n_core::ids::*;
 use squid_n_core::model::{
     EndSupport, SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
 };
+use squid_n_core::section_shape::SectionShape;
 use std::collections::HashSet;
 
 fn secondary_member_ok(model: &Model, sm: &SecondaryMember) -> bool {
     crate::refs::section_ref_ok(model, sm.section)
+        && !cft_section(model, sm.section)
         && model
             .secondary_member_axis(sm)
             .is_some_and(|(_, _, len)| len > 1e-9)
+}
+
+/// 指定断面が CFT（角形・円形）か。CFT は柱専用のため二次部材には割り当てない。
+fn cft_section(model: &Model, id: Option<SectionId>) -> bool {
+    id.and_then(|sid| model.sections.get(sid.index()))
+        .and_then(|s| s.shape.as_ref())
+        .is_some_and(|sh| {
+            matches!(
+                sh,
+                SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }
+            )
+        })
 }
 
 fn joists_ok(joists: &[SecondaryMember]) -> bool {
@@ -244,6 +258,7 @@ impl EditCommand for SetFloorRegionSecondaryJoists {
         }
         if !joists_ok(&self.joists)
             || !self.joists.iter().all(|sm| secondary_member_ok(model, sm))
+            || !self.joists.iter().all(|sm| !cft_section(model, sm.section))
             || !unique_ids(&self.joists)
         {
             return Box::new(Noop);
@@ -291,7 +306,7 @@ impl EditCommand for SetFloorRegionJoistSection {
         if self.index >= model.floor_regions[ri].secondary_joists.len() {
             return Box::new(Noop);
         }
-        if !crate::refs::section_ref_ok(model, self.section) {
+        if !crate::refs::section_ref_ok(model, self.section) || cft_section(model, self.section) {
             return Box::new(Noop);
         }
         let old = model.floor_regions[ri].secondary_joists[self.index].section;
@@ -378,6 +393,7 @@ impl EditCommand for SetWallRegionPosts {
         }
         if !posts_ok(&self.posts)
             || !self.posts.iter().all(|sm| secondary_member_ok(model, sm))
+            || !self.posts.iter().all(|sm| !cft_section(model, sm.section))
             || !unique_ids(&self.posts)
         {
             return Box::new(Noop);
@@ -422,7 +438,7 @@ impl EditCommand for SetWallRegionPostSection {
         if self.index >= model.wall_regions[ri].posts.len() {
             return Box::new(Noop);
         }
-        if !crate::refs::section_ref_ok(model, self.section) {
+        if !crate::refs::section_ref_ok(model, self.section) || cft_section(model, self.section) {
             return Box::new(Noop);
         }
         let old = model.wall_regions[ri].posts[self.index].section;
@@ -658,7 +674,10 @@ pub struct PlaceSecondaryMember {
 
 impl EditCommand for PlaceSecondaryMember {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if !self.parent.accepts(self.kind) || !crate::refs::section_ref_ok(model, self.section) {
+        if !self.parent.accepts(self.kind)
+            || !crate::refs::section_ref_ok(model, self.section)
+            || cft_section(model, self.section)
+        {
             return Box::new(Noop);
         }
         let candidate = SecondaryMember {
