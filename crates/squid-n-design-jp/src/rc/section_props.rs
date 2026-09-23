@@ -6,6 +6,8 @@
 //! [`rect_axis_props_strong`] — 強軸曲げ（mz）用の断面諸元。
 //! [`rect_axis_props_weak`] — 弱軸曲げ（my）用の断面諸元。
 //! [`circle_axis_props`] — 円形柱の等価矩形断面諸元。
+//! [`RcRebarInfo`] — 構造規定・付着検定用の鉄筋情報（中立型）。
+//! [`rebar_info_from_shape`] — 断面形状から鉄筋情報を引く。
 //!
 //! 主筋断面積・dt・pw は [`squid_n_core::rc_rebar_geom`] /
 //! [`squid_n_core::section_shape::{one_bar_area, bar_set_area}`] を単一情報源とする。
@@ -116,6 +118,113 @@ pub(crate) fn axis_props_from_shape(
         j: 7.0 * p.d_eff / 8.0,
         pw: p.pw,
     })
+}
+
+/// 構造規定・付着検定が必要とする鉄筋情報（旧 RcRebar 経路と新実モデルの共通化）。
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RcRebarInfo {
+    pub cover: f64,
+    pub main_dia: f64,
+    /// 全主筋本数（柱の最小本数規定・主筋比に用いる）。
+    pub main_count: u32,
+    /// 片側 1 列あたりの本数（円形柱は ng/4+1 相当）。表示・付着の補助。
+    pub main_count_per_side: u32,
+    /// 検定方向の引張側主筋本数（付着検定の本数）。
+    pub tension_count: u32,
+    /// 検定方向の引張側の段数（付着検定の `layers`。多段で 0.6 低減に用いる）。
+    pub tension_layers: u32,
+    pub shear_dia: f64,
+    pub shear_pitch: f64,
+    pub shear_legs: u32,
+    pub is_circle: bool,
+}
+
+/// 断面形状から鉄筋情報を返す。`tension_is_top` は梁の引張側（付着・段数）。
+/// 旧 RcRect / RcBeamRect / RcColumnRect / RcColumnCircle を対象とし、対象外・未入力は None。
+#[allow(dead_code)]
+pub(crate) fn rebar_info_from_shape(
+    shape: &SectionShape,
+    tension_is_top: bool,
+) -> Option<RcRebarInfo> {
+    match shape {
+        SectionShape::RcRect { rebar, .. } => Some(RcRebarInfo {
+            cover: rebar.cover,
+            main_dia: rebar.main_x.dia,
+            main_count: rebar.main_x.count + rebar.main_y.count,
+            main_count_per_side: rebar.main_x.count,
+            tension_count: rebar.main_x.count,
+            tension_layers: rebar.main_x.layers.max(1),
+            shear_dia: rebar.shear.dia,
+            shear_pitch: rebar.shear.pitch,
+            shear_legs: rebar.shear.legs,
+            is_circle: false,
+        }),
+        SectionShape::RcBeamRect { rebar, .. } => {
+            if rebar.is_unset() {
+                return None;
+            }
+            let top_count: u32 = rebar.top.iter().sum();
+            let bottom_count: u32 = rebar.bottom.iter().sum();
+            let (tension_count, tension_layers) = if tension_is_top {
+                (top_count, rebar.top.len().max(1) as u32)
+            } else {
+                (bottom_count, rebar.bottom.len().max(1) as u32)
+            };
+            Some(RcRebarInfo {
+                cover: rebar.cover,
+                main_dia: rebar.main_dia,
+                main_count: top_count + bottom_count,
+                main_count_per_side: tension_count,
+                tension_count,
+                tension_layers,
+                shear_dia: rebar.stirrup.dia,
+                shear_pitch: rebar.stirrup.pitch,
+                shear_legs: rebar.stirrup.legs,
+                is_circle: false,
+            })
+        }
+        SectionShape::RcColumnRect { rebar, .. } => {
+            if rebar.is_unset() {
+                return None;
+            }
+            let nx = rebar.x.len() as u32;
+            let ny = rebar.y.len() as u32;
+            let sx: u32 = rebar.x.iter().sum();
+            let sy: u32 = rebar.y.iter().sum();
+            let main_count = (2 * sx + 2 * sy).saturating_sub(4 * nx * ny);
+            Some(RcRebarInfo {
+                cover: rebar.cover,
+                main_dia: rebar.main_dia,
+                main_count,
+                main_count_per_side: rebar.x.first().copied().unwrap_or(0),
+                tension_count: main_count,
+                tension_layers: 1,
+                shear_dia: rebar.hoop.dia,
+                shear_pitch: rebar.hoop.pitch,
+                shear_legs: rebar.hoop.legs_x.max(rebar.hoop.legs_y),
+                is_circle: false,
+            })
+        }
+        SectionShape::RcColumnCircle { rebar, .. } => {
+            if rebar.is_unset() {
+                return None;
+            }
+            Some(RcRebarInfo {
+                cover: rebar.cover,
+                main_dia: rebar.main_dia,
+                main_count: rebar.count,
+                main_count_per_side: rebar.count / 4 + 1,
+                tension_count: rebar.count,
+                tension_layers: 1,
+                shear_dia: rebar.hoop.dia,
+                shear_pitch: rebar.hoop.pitch,
+                shear_legs: 0,
+                is_circle: true,
+            })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -328,5 +437,131 @@ mod tests {
             flange_thick: 16.0,
         };
         assert!(axis_props_from_shape(&steel, RcDirection::Strong, true).is_none());
+    }
+
+    fn old_rect_layered_shape() -> SectionShape {
+        SectionShape::RcRect {
+            b: 300.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 6,
+                    dia: 22.0,
+                    layers: 2,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn test_rebar_info_from_shape_old_rect() {
+        let info = rebar_info_from_shape(&old_rect_layered_shape(), true).unwrap();
+        assert!((info.main_dia - 22.0).abs() < 1e-9);
+        assert_eq!(info.main_count, 10);
+        assert_eq!(info.main_count_per_side, 6);
+        assert_eq!(info.tension_count, 6);
+        assert_eq!(info.tension_layers, 2);
+        assert!((info.shear_pitch - 100.0).abs() < 1e-9);
+        assert!(!info.is_circle);
+    }
+
+    #[test]
+    fn test_rebar_info_from_shape_beam() {
+        let top = rebar_info_from_shape(&beam_shape(), true).unwrap();
+        assert_eq!(top.main_count, 11);
+        assert_eq!(top.tension_count, 6);
+        assert_eq!(top.tension_layers, 2);
+
+        let bottom = rebar_info_from_shape(&beam_shape(), false).unwrap();
+        assert_eq!(bottom.main_count, 11);
+        assert_eq!(bottom.tension_count, 5);
+        assert_eq!(bottom.tension_layers, 2);
+    }
+
+    #[test]
+    fn test_rebar_info_from_shape_column_rect() {
+        let info = rebar_info_from_shape(&column_rect_shape(), true).unwrap();
+        assert_eq!(info.main_count, 10);
+        assert_eq!(info.main_count_per_side, 4);
+        assert_eq!(info.shear_legs, 3);
+        assert!(!info.is_circle);
+    }
+
+    #[test]
+    fn test_rebar_info_from_shape_column_circle() {
+        let info = rebar_info_from_shape(&column_circle_shape(), true).unwrap();
+        assert_eq!(info.main_count, 8);
+        assert_eq!(info.main_count_per_side, 3);
+        assert_eq!(info.tension_count, 8);
+        assert!(info.is_circle);
+    }
+
+    #[test]
+    fn test_rebar_info_from_shape_none() {
+        let circle = SectionShape::RcCircle {
+            d: 600.0,
+            rebar: old_rect_rebar(),
+        };
+        assert!(rebar_info_from_shape(&circle, true).is_none());
+
+        let unset_beam = SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![],
+                bottom: vec![],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+        assert!(rebar_info_from_shape(&unset_beam, true).is_none());
+
+        let unset_column = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![],
+                y: vec![],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 3,
+                },
+            },
+        };
+        assert!(rebar_info_from_shape(&unset_column, true).is_none());
+
+        let unset_circle = SectionShape::RcColumnCircle {
+            d: 600.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 0,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
+        };
+        assert!(rebar_info_from_shape(&unset_circle, true).is_none());
     }
 }
