@@ -66,7 +66,8 @@ mod reactions;
 mod self_weight_calc;
 
 pub use generate::{
-    generate_stories, generate_stories_multi, generate_stories_with_opts, StoryGenResult,
+    generate_stories, generate_stories_multi, generate_stories_with_opts,
+    generate_stories_with_synced_self_weight, StoryGenResult,
 };
 pub(crate) use self_weight_calc::{enumerate_self_weight, SelfWeightItem};
 

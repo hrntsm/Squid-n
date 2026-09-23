@@ -1041,7 +1041,8 @@ fn test_damper_device_weight_is_common_and_support_is_separated() {
     );
 }
 
-/// 自重同期ケース（false 経路）と密度直接算入（true 経路）で動的質量が一致する。
+/// 自重同期ケース（[`generate_stories_with_synced_self_weight`]）と密度直接算入
+/// （[`generate_stories_with_opts`] の `true`。密度経路）で動的質量が一致する。
 ///
 /// 質点のみ方式で比較する。補正質点方式は鋼材のみのモデルでは両経路とも質点質量が
 /// 0（`None`）になり、両経路の差を検出できないため。
@@ -1059,7 +1060,7 @@ fn test_self_weight_via_case_matches_density_for_mass() {
     });
     let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
     let by_case =
-        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
             .unwrap();
     let mut any_positive = false;
     for (a, b) in by_density.rep_nodes.iter().zip(by_case.rep_nodes.iter()) {
@@ -1077,9 +1078,10 @@ fn test_self_weight_via_case_matches_density_for_mass() {
     );
 }
 
-/// 壁エレメント（仕上げ・開口あり）でも、密度直接算入（true）と自重ケース（false）の
-/// 2 経路で動的質量（質点のみ方式）が一致する。壁の質量行列分は
-/// [`Model::element_mass_properties`] からは求まらないため、ここでは経路間の一致を見る。
+/// 壁エレメント（仕上げ・開口あり）でも、密度直接算入（密度経路）と自重同期ケース
+/// （[`generate_stories_with_synced_self_weight`]）の 2 経路で動的質量（質点のみ方式）が
+/// 一致する。壁の質量行列分は [`Model::element_mass_properties`] からは求まらないため、
+/// ここでは経路間の一致を見る。
 #[test]
 fn test_wall_mass_consistent_between_density_and_case_paths() {
     use squid_n_core::model::AreaLoad;
@@ -1104,7 +1106,7 @@ fn test_wall_mass_consistent_between_density_and_case_paths() {
         member,
     });
     let by_case =
-        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
             .unwrap();
 
     let masses = |gen: &StoryGenResult| {
@@ -2103,7 +2105,8 @@ fn test_generate_stories_multi_sums_multiple_gravity_cases_and_dedupes() {
 }
 
 /// `generate_stories_with_opts` の自重算入方法:
-/// - `include_density_self_weight = false` では密度からの自重直接算入を行わない。
+/// - `include_density_self_weight = false`（GravityCasesOnly）では密度からの自重
+///   直接算入を行わず、重力ケースの内容だけを階重量へ算入する。
 /// - 自重同期ケース（`self_weight_case_content`）を重力ケースとして渡した場合の
 ///   階重量が、密度直接算入（従来）の階重量と一致する
 ///   （自重の単一ソースオブトゥルース＝「DL」経由でも二重計上・欠落がない）。
@@ -2149,6 +2152,168 @@ fn test_generate_stories_with_opts_self_weight_via_case_matches_density() {
         (doubled.stories[0].seismic_weight.unwrap() - 2.0 * w1).abs() < 1e-6 * w1,
         "自重をケースと密度の両方から算入すると 2 倍になるはず"
     );
+}
+
+/// `include_density_self_weight = false`（GravityCasesOnly）は重力ケースの内容だけを
+/// 質点質量とし、モデル自重の置換も質量行列分の控除もしない。
+#[test]
+fn test_gravity_cases_only_uses_case_content_without_replacement() {
+    let model = two_columns_with_dl_model();
+
+    // 重力ケースなし: 質点質量は 0（None）。負の質量を作らない。
+    for mm in [MassMethod::CorrectedLumped, MassMethod::LumpedOnly] {
+        let gen = generate_stories_with_opts(&model, &[], false, mm).unwrap();
+        for rep in &gen.rep_nodes {
+            assert!(
+                rep.mass.is_none_or(|m| m[0] >= 0.0),
+                "重力ケースが無いのに質点質量が生じた: {:?}",
+                rep.mass
+            );
+        }
+        for s in &gen.stories {
+            assert_eq!(s.seismic_weight, Some(0.0));
+        }
+    }
+
+    // 手入力の DL 節点荷重のみ（自重を含まない）: 質点質量はそのケース分のみ。
+    // 設計自重の置換（`node_weight − design_sw + physical_sw`）を行えば設計自重 > 物理質量
+    // のため大幅に小さくなるが、GravityCasesOnly はその置換をしない。
+    let gen = generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+        .unwrap();
+    let top = gen.rep_nodes[1].mass.expect("DL 節点荷重分の質点質量");
+    let expected = 400000.0 / GRAVITY_MM_S2;
+    assert!(
+        (top[0] - expected).abs() < 1e-9 * expected,
+        "モデル自重が差し引かれた: mt={} expected={}",
+        top[0],
+        expected
+    );
+    for rep in &gen.rep_nodes {
+        if let Some(m) = rep.mass {
+            assert!(m[0] >= 0.0, "負の質点質量: {}", m[0]);
+        }
+    }
+}
+
+/// 名前が「DL」で種別が固定荷重でも、内容が手入力（自動荷重による自重同期でない）なら
+/// GravityCasesOnly は置換しない（ケース名・種別で自重を判別しない）。
+#[test]
+fn test_gravity_cases_only_does_not_replace_manual_dl_named_case() {
+    let mut model = two_columns_with_dl_model();
+    model.load_cases[0].kind = LoadCaseKind::Dead;
+    model.load_cases[0].name = "DL".into();
+
+    let gen = generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+        .unwrap();
+    let top = gen.rep_nodes[1].mass.expect("手入力節点荷重分の質点質量");
+    let expected = 400000.0 / GRAVITY_MM_S2;
+    assert!(
+        (top[0] - expected).abs() < 1e-9 * expected,
+        "名前だけ DL の手動ケースが置換された: mt={} expected={}",
+        top[0],
+        expected
+    );
+}
+
+/// 自重同期済み DL（`self_weight_case_content`）を渡すと、両 MassMethod の総動的質量が
+/// 一致する（CorrectedLumped は質点質量＋質量行列総和、LumpedOnly は質点質量合計）。
+#[test]
+fn test_synced_self_weight_mass_methods_agree() {
+    let mut model = two_story_model();
+    model.load_cases.clear();
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let corrected = generate_stories_with_synced_self_weight(
+        &model,
+        &[LoadCaseId(0)],
+        MassMethod::CorrectedLumped,
+    )
+    .unwrap();
+    let lumped =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+    let sum_mass = |gen: &StoryGenResult| {
+        gen.rep_nodes
+            .iter()
+            .filter_map(|n| n.mass)
+            .map(|m| m[0])
+            .sum::<f64>()
+    };
+    let matrix = main_frame_matrix_mass_equiv(&model) / GRAVITY_MM_S2;
+    let corrected_total = sum_mass(&corrected) + matrix;
+    let lumped_total = sum_mass(&lumped);
+    assert!(
+        (corrected_total - lumped_total).abs() < 1e-9 * lumped_total.max(1.0),
+        "両方式の総動的質量が一致しない: corrected={corrected_total} lumped={lumped_total}"
+    );
+}
+
+/// 自重同期済み DL を渡した LumpedOnly の質点質量は物理密度 7.85 t/m³ ベースになり、
+/// 設計重量 78.5 kN/m³ ベースの地震用重量/g とは一致しない。
+#[test]
+fn test_synced_self_weight_steel_mass_is_physical() {
+    let (len, area) = (4000.0, 90000.0);
+    let mut model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let gen =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+    // 上端節点の質点質量は物理質量の上端半分（7.85 t/m³ ベース）。
+    let physical_half = 7.85e-9 * area * len * GRAVITY_MM_S2 / 2.0;
+    let m = gen.rep_nodes[1].mass.expect("自重同期済み DL の質点質量");
+    assert!(
+        (m[0] - physical_half / GRAVITY_MM_S2).abs() < 1e-9 * (physical_half / GRAVITY_MM_S2),
+        "動的質量が 7.85 ベースでない: {}",
+        m[0]
+    );
+    // 地震用重量（設計 78.5 ベース）は物理質量より大きい。
+    assert!(
+        gen.stories[1].seismic_weight.unwrap() / GRAVITY_MM_S2 > m[0],
+        "設計重量ベースの地震用重量が物理質量を下回らない"
+    );
+}
+
+/// 自重を含まない重力ケース（空・手入力のみ）を SyncedGravityCases へ渡すと、
+/// 置換量（設計自重）が含まれないためエラーになる（clamp で隠さない）。
+#[test]
+fn test_synced_self_weight_rejects_case_without_self_weight() {
+    let mut model = two_columns_with_dl_model();
+    // 自重を含まない（荷重が空の）DL ケース。
+    model.load_cases.clear();
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal: vec![],
+        member: vec![],
+    });
+
+    for mm in [MassMethod::CorrectedLumped, MassMethod::LumpedOnly] {
+        let err =
+            generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], mm).unwrap_err();
+        assert!(
+            err.contains("重力ケースに想定した自重が含まれていません"),
+            "{err}"
+        );
+    }
+
+    // 空の gravity_lcs でも置換量が含まれないためエラーになる。
+    assert!(generate_stories_with_synced_self_weight(&model, &[], MassMethod::LumpedOnly).is_err());
 }
 
 /// DL が無く密度から直接算入する経路でも、取り付く壁版の自重が階重量へ入る

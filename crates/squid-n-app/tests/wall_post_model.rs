@@ -528,7 +528,9 @@ fn test_wall_weight_reaches_column_axial_force() {
 fn 明示負担率で密度直接集計とdl集計の階重量が一致する() {
     use squid_n_core::ids::LoadCaseId;
     use squid_n_core::model::{LoadCase, LoadCaseKind, MassMethod};
-    use squid_n_load::story_gen::generate_stories_with_opts;
+    use squid_n_load::story_gen::{
+        generate_stories_with_opts, generate_stories_with_synced_self_weight,
+    };
 
     for bottom_ratio in [0.0, 0.25, 1.0] {
         let mut model = wall_post_model();
@@ -552,7 +554,8 @@ fn 明示負担率で密度直接集計とdl集計の階重量が一致する() 
             member: dl.member,
         }];
         let from_dl =
-            generate_stories_with_opts(&model, &[id], false, MassMethod::LumpedOnly).unwrap();
+            generate_stories_with_synced_self_weight(&model, &[id], MassMethod::LumpedOnly)
+                .unwrap();
         for (a, b) in direct.stories.iter().zip(&from_dl.stories) {
             assert!(
                 (a.seismic_weight.unwrap_or(0.0) - b.seismic_weight.unwrap_or(0.0)).abs() < 1e-6,

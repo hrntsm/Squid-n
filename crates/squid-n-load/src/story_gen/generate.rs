@@ -48,8 +48,8 @@ pub struct StoryGenResult {
 ///   （固定荷重＋地震用積載荷重など複数ケースの合算に対応する下準備）。
 ///
 /// 自重が「DL」ケースへ自動同期されるモデル（標準構成）では、密度からの
-/// 自重直接算入と二重計上になるため [`generate_stories_with_opts`] を
-/// `include_density_self_weight = false` で使うこと。
+/// 自重直接算入と二重計上になるため [`generate_stories_with_synced_self_weight`] を
+/// 使うこと。
 pub fn generate_stories_multi(
     model: &Model,
     gravity_lcs: &[LoadCaseId],
@@ -88,13 +88,65 @@ fn master_restraint(
     m
 }
 
+/// 自重の算入方法。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelfWeightMode {
+    /// 密度から直接算入する（重力ケースに自重が含まれないモデル）。
+    Density,
+    /// `gravity_lcs` のケース内容だけを算入する。モデル自重の置換もしない。
+    GravityCasesOnly,
+    /// `gravity_lcs` に自重同期済みの設計自重が含まれる前提で、質量のみ物理質量へ
+    /// 置換する。置換量（設計自重）が `gravity_lcs` に含まれないモデルではエラー。
+    SyncedGravityCases,
+}
+
 /// [`generate_stories_multi`] の自重算入方法を選べる版。
-/// `include_density_self_weight=false` は密度からの直接算入を行わず、
-/// `gravity_lcs` のケース内容だけを算入する（直接算入すると二重計上になる）。
+///
+/// `include_density_self_weight = true` は密度から直接算入し
+/// （[`generate_stories_multi`] と同じ）、`false` は密度からの直接算入を行わず
+/// `gravity_lcs` のケース内容だけを算入する。`false` は質量も重力ケースの内容のみ
+/// とし、モデル自重の置換・質量行列分の控除をしない。
+/// 重力ケースへ自重を同期済みの標準構成で質量を物理質量へ置換する場合は
+/// [`generate_stories_with_synced_self_weight`] を使う。
 pub fn generate_stories_with_opts(
     model: &Model,
     gravity_lcs: &[LoadCaseId],
     include_density_self_weight: bool,
+    mass_method: MassMethod,
+) -> Result<StoryGenResult, String> {
+    let mode = if include_density_self_weight {
+        SelfWeightMode::Density
+    } else {
+        SelfWeightMode::GravityCasesOnly
+    };
+    generate_stories_impl(model, gravity_lcs, mode, mass_method)
+}
+
+/// `gravity_lcs` に自重同期済みの DL（`compute_gravity_auto_load_cases` が生成した
+/// 自動荷重）が含まれることを呼び出し側が保証すること。含まれない場合はエラー。
+///
+/// `gravity_lcs` のケース内容だけを階の設計地震用重量へ算入し、そのうち自重相当分を
+/// 物理質量へ置換して質点質量を算定する（質量行列に計上される分は控除する）。
+pub fn generate_stories_with_synced_self_weight(
+    model: &Model,
+    gravity_lcs: &[LoadCaseId],
+    mass_method: MassMethod,
+) -> Result<StoryGenResult, String> {
+    generate_stories_impl(
+        model,
+        gravity_lcs,
+        SelfWeightMode::SyncedGravityCases,
+        mass_method,
+    )
+}
+
+/// [`generate_stories_multi`]・[`generate_stories_with_opts`]・
+/// [`generate_stories_with_synced_self_weight`] の共通実装。自重の集計方法だけを
+/// [`SelfWeightMode`] で切り替える。
+fn generate_stories_impl(
+    model: &Model,
+    gravity_lcs: &[LoadCaseId],
+    mode: SelfWeightMode,
     mass_method: MassMethod,
 ) -> Result<StoryGenResult, String> {
     if model.nodes.is_empty() {
@@ -191,7 +243,11 @@ pub fn generate_stories_with_opts(
             }
         };
 
-    let self_weight_items = enumerate_self_weight(model, &load_cfg);
+    let self_weight_items = if mode == SelfWeightMode::GravityCasesOnly {
+        Vec::new()
+    } else {
+        enumerate_self_weight(model, &load_cfg)
+    };
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Basis {
@@ -265,7 +321,7 @@ pub fn generate_stories_with_opts(
     let mut node_mass_equiv = vec![0.0f64; model.nodes.len()];
     let mut node_matrix_mass_equiv = vec![0.0f64; model.nodes.len()];
 
-    if include_density_self_weight {
+    if mode == SelfWeightMode::Density {
         for item in &self_weight_items {
             distribute(&mut node_weight, item, Basis::Load);
             distribute(&mut node_mass_equiv, item, Basis::MassEquiv);
@@ -337,30 +393,54 @@ pub fn generate_stories_with_opts(
     for i in 0..model.nodes.len() {
         node_weight[i] += gravity_weight[i];
     }
-    if include_density_self_weight {
-        // 設計荷重ケースの鉛直荷重は物理質量としてもそのまま質点へ算入する。
-        for i in 0..model.nodes.len() {
-            node_mass_equiv[i] += gravity_weight[i];
+    match mode {
+        SelfWeightMode::Density => {
+            // 設計荷重ケースの鉛直荷重は物理質量としてもそのまま質点へ算入する。
+            for i in 0..model.nodes.len() {
+                node_mass_equiv[i] += gravity_weight[i];
+            }
         }
-    } else {
-        // DL に含まれる設計自重を物理質量相当へ置換する。DL の設計自重と自重列挙が
-        // 返す設計自重が一致することを前提とする（`design_sw` がその置換量）。
-        let mut design_sw = vec![0.0f64; model.nodes.len()];
-        let mut physical_sw = vec![0.0f64; model.nodes.len()];
-        for item in &self_weight_items {
-            distribute(&mut design_sw, item, Basis::Load);
-            distribute(&mut physical_sw, item, Basis::MassEquiv);
-            distribute(&mut node_matrix_mass_equiv, item, Basis::Matrix);
+        SelfWeightMode::GravityCasesOnly => {
+            // 重力ケースの内容だけを質点質量とする。モデル自重の置換もしない。
+            node_mass_equiv.copy_from_slice(&gravity_weight);
         }
-        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut design_sw);
-        crate::wall_attached::accumulate_attached_wall_mass_equiv(model, &mut physical_sw);
-        crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight(
-            model,
-            &mut design_sw,
-        )?;
-        crate::wall_plate_load::accumulate_wall_and_secondary_mass_equiv(model, &mut physical_sw)?;
-        for i in 0..model.nodes.len() {
-            node_mass_equiv[i] = node_weight[i] - design_sw[i] + physical_sw[i];
+        SelfWeightMode::SyncedGravityCases => {
+            // 重力ケースに含まれる設計自重（`design_sw`）を物理質量相当（`physical_sw`）
+            // へ置換する。重力ケースに設計自重が含まれないモデルでは置換後の質量が
+            // 負になるため、clamp で隠さずエラーにする（質量の欠落・過小評価の防止）。
+            let mut design_sw = vec![0.0f64; model.nodes.len()];
+            let mut physical_sw = vec![0.0f64; model.nodes.len()];
+            for item in &self_weight_items {
+                distribute(&mut design_sw, item, Basis::Load);
+                distribute(&mut physical_sw, item, Basis::MassEquiv);
+                distribute(&mut node_matrix_mass_equiv, item, Basis::Matrix);
+            }
+            crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut design_sw);
+            crate::wall_attached::accumulate_attached_wall_mass_equiv(model, &mut physical_sw);
+            crate::wall_plate_load::accumulate_wall_and_secondary_seismic_weight_resolved(
+                model,
+                &mut design_sw,
+            )?;
+            crate::wall_plate_load::accumulate_wall_and_secondary_mass_equiv_resolved(
+                model,
+                &mut physical_sw,
+            )?;
+            for i in 0..model.nodes.len() {
+                node_mass_equiv[i] = node_weight[i] - design_sw[i] + physical_sw[i];
+            }
+            let tol = |i: usize| {
+                1e-9 * (node_weight[i].abs() + design_sw[i].abs() + physical_sw[i].abs()).max(1.0)
+            };
+            if let Some(i) = (0..model.nodes.len())
+                .find(|&i| !node_mass_equiv[i].is_finite() || node_mass_equiv[i] < -tol(i))
+            {
+                return Err(format!(
+                    "重力ケースに想定した自重が含まれていません（節点 {} の質量相当重量が {} に \
+                     なります）",
+                    model.nodes[i].id.index(),
+                    node_mass_equiv[i]
+                ));
+            }
         }
     }
 

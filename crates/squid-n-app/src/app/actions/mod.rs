@@ -236,9 +236,10 @@ impl App {
     /// 先頭ケース）の荷重ケースの鉛直下向き荷重を用いる。
     /// 先立ってスラブ荷重・躯体自重を「DL」等の標準ケースへ同期する
     /// ため、面荷重・自重も地震用重量に反映される
-    /// （DL に自重が含まれるため、密度からの自重直接算入は DL がない場合のみ。
-    /// `density_self_weight_for_stories`）。主要構造種別は各階の柱・梁の断面形状
-    /// から自動判定される（`story_gen`）。
+    /// （`density_self_weight_for_stories`）。DL がないモデルでは密度から自重を
+    /// 直接算入し、DL があるモデルでは同期済みの設計自重を物理質量へ置換する
+    /// （`generate_stories_with_synced_self_weight`）。主要構造種別は各階の柱・梁の
+    /// 断面形状から自動判定される（`story_gen`）。
     ///
     /// 階そのもの（階名・階レベル・階種別・地震用重量の手入力）は利用者が定義する
     /// データであり、再生成では書き換えない（`story_gen` が既存の階定義から
@@ -271,12 +272,24 @@ impl App {
         let gravity_lcs = gravity_cases_for_seismic_weight(&self.core.model);
         let include_density = density_self_weight_for_stories(&self.core.model);
         let mass_method = self.core.analysis_cfg.mass_method;
-        match squid_n_load::story_gen::generate_stories_with_opts(
-            &self.core.model,
-            &gravity_lcs,
-            include_density,
-            mass_method,
-        ) {
+        let result = if include_density {
+            // DL が無いモデル: 密度から自重を直接算入する。
+            squid_n_load::story_gen::generate_stories_with_opts(
+                &self.core.model,
+                &gravity_lcs,
+                true,
+                mass_method,
+            )
+        } else {
+            // DL があるモデル: 直前に `sync_gravity_load_cases_action` で DL へ
+            // 自重を自動同期済み。DL の設計自重を物理質量へ置換する。
+            squid_n_load::story_gen::generate_stories_with_synced_self_weight(
+                &self.core.model,
+                &gravity_lcs,
+                mass_method,
+            )
+        };
+        match result {
             Ok(gen) => {
                 if !story_gen_changes_model(&self.core.model, &gen, mass_method) {
                     // 階は既に最新。荷重の同期だけ冪等に確認して終える。

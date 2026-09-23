@@ -8,7 +8,9 @@ use std::collections::HashMap;
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::{NodeId, SecondaryMemberId, WallPlateId};
-use squid_n_core::model::{MemberLoadKind, Model, SupportMemberId, WallPlate, WallPlateShape};
+use squid_n_core::model::{
+    MemberLoadKind, Model, NodalLoad, SupportMemberId, WallPlate, WallPlateShape,
+};
 
 use crate::cascade::SecondaryKey;
 
@@ -314,6 +316,7 @@ pub fn accumulate_wall_and_secondary_seismic_weight(
         model,
         node_weight,
         crate::cascade::SelfWeightBasis::Design,
+        false,
     )
 }
 
@@ -328,6 +331,38 @@ pub fn accumulate_wall_and_secondary_mass_equiv(
         model,
         node_mass,
         crate::cascade::SelfWeightBasis::MassEquiv,
+        false,
+    )
+}
+
+/// [`accumulate_wall_and_secondary_seismic_weight`] の、二次部材端の反力を重力ケースと
+/// 同じく主架構へ解決してから集計する版（自重同期済み DL の置換量 [N] の算定用）。
+///
+/// 重力ケース（`compute_gravity_auto_load_cases`）は要素が接続しない節点の荷重を
+/// `resolve_nodal_to_primary` で大梁の中間集中荷重へ変換する。置換量を重力ケースと
+/// 同じ帰属で求めることで、質量置換後の節点質量が負になるのを防ぐ。
+pub(crate) fn accumulate_wall_and_secondary_seismic_weight_resolved(
+    model: &Model,
+    node_weight: &mut [f64],
+) -> Result<(), String> {
+    accumulate_wall_and_secondary_with_basis(
+        model,
+        node_weight,
+        crate::cascade::SelfWeightBasis::Design,
+        true,
+    )
+}
+
+/// [`accumulate_wall_and_secondary_mass_equiv`] の解決版（物理質量相当）。
+pub(crate) fn accumulate_wall_and_secondary_mass_equiv_resolved(
+    model: &Model,
+    node_mass: &mut [f64],
+) -> Result<(), String> {
+    accumulate_wall_and_secondary_with_basis(
+        model,
+        node_mass,
+        crate::cascade::SelfWeightBasis::MassEquiv,
+        true,
     )
 }
 
@@ -335,6 +370,7 @@ fn accumulate_wall_and_secondary_with_basis(
     model: &Model,
     node_weight: &mut [f64],
     basis: crate::cascade::SelfWeightBasis,
+    resolve_to_primary: bool,
 ) -> Result<(), String> {
     if !wall_plates_without_load_path(model).is_empty() {
         return Err("壁版の自重支持辺が未指定・不正、または支持先へ荷重を伝えられません".into());
@@ -380,8 +416,25 @@ fn accumulate_wall_and_secondary_with_basis(
         }
     }
     let (nodal, member) = transfer.primary_loads(model);
-    for (node, weight) in nodal {
-        node_weight[node.index()] += weight;
+    if resolve_to_primary {
+        // 重力ケースと同じ帰属にするため、要素が接続しない節点の反力を
+        // 主架構の梁中間集中荷重へ変換してから節点重量へ加算する。
+        let loads: Vec<NodalLoad> = nodal
+            .into_iter()
+            .map(|(node, w)| NodalLoad::auto(node, [0.0, 0.0, -w, 0.0, 0.0, 0.0]))
+            .collect();
+        let (nodal, resolved_member) =
+            crate::secondary::resolve_nodal_to_primary(model, loads, crate::secondary::SPAN_TOL_MM);
+        for nl in &nodal {
+            node_weight[nl.node.index()] += -nl.values[2];
+        }
+        for load in resolved_member {
+            add_point_load_reactions(model, node_weight, load.elem, &load.kind);
+        }
+    } else {
+        for (node, weight) in nodal {
+            node_weight[node.index()] += weight;
+        }
     }
     for load in member {
         let Some(elem) = model.element(load.elem) else {
@@ -398,6 +451,24 @@ fn accumulate_wall_and_secondary_with_basis(
         node_weight[elem.nodes[1].index()] += rj;
     }
     Ok(())
+}
+
+/// 主架構梁へ載る部材荷重を単純梁の静定反力として両端節点へ加算する。
+fn add_point_load_reactions(
+    model: &Model,
+    node_weight: &mut [f64],
+    elem: squid_n_core::ids::ElemId,
+    kind: &MemberLoadKind,
+) {
+    let Some(element) = model.element(elem) else {
+        return;
+    };
+    if element.nodes.len() != 2 {
+        return;
+    }
+    let (ri, rj) = crate::floor::simple_reactions(kind, model.member_length(element));
+    node_weight[element.nodes[0].index()] += ri;
+    node_weight[element.nodes[1].index()] += rj;
 }
 
 /// 自重を持つ非要素の囲まれた壁版のうち、支持先へ伝達できないものを返す。負担率の
