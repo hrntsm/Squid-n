@@ -1594,7 +1594,9 @@ fn test_face_reduction_applies_only_to_concrete() {
         rc.stories[0].seismic_weight.unwrap()
     );
 
-    let s_model = single_beam_model(len, density, area, None, rz, None);
+    // 鋼材は標準の物理質量密度。設計用単位体積重量はこれに比例し、標準密度で 78.5 kN/m³。
+    let steel_density = 7.85e-9;
+    let s_model = single_beam_model(len, steel_density, area, None, rz, None);
     let s = generate_stories(&s_model, None).unwrap();
     let expected_s = 78.5e-6 * area * len / 2.0;
     assert!(
