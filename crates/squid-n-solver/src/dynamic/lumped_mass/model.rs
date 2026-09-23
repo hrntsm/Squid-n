@@ -14,6 +14,7 @@ use crate::statics::analysis::SeismicDir;
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::Model;
 use squid_n_core::units::GRAVITY_MM_S2;
+use squid_n_math::solver::SolveError;
 
 /// 質点系の次元。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -56,7 +57,7 @@ impl LumpedStiffnessSource {
 /// 3 次元質点の層データ（剛心・ねじり・方向別骨格）。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StorySpatial {
-    /// 回転慣性 J [t·mm²]（剛床マスターの RZ 質量）。
+    /// 回転慣性 J [t·mm²]（質量重心まわり。物理質量分布から直接算定）。
     pub j: f64,
     /// 質量重心 (x, y) [mm]。
     pub mass_xy: [f64; 2],
@@ -129,7 +130,7 @@ impl StoryTrilinear {
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StoryStick {
     pub story: StoryId,
-    /// 質量 [t]（= 地震重量 W / g）。
+    /// 質量 [t]（= 物理質量相当重量 / g）。
     pub mass: f64,
     /// 階高 [mm]。
     pub height: f64,
@@ -306,12 +307,15 @@ pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTril
 
 /// プッシュオーバー結果から串団子モデル（層ごとの質点・復元力特性）を生成する。
 /// `secant_ratio`: 第1折点判定の割線剛性比（既定 0.75 程度）。
+///
+/// 層質量は各層の上端床の [`squid_n_core::model::Story::dynamic_mass`]（物理質量相当）から採る。
+/// 未算定（`None`）は [`SolveError::InvalidInput`] を返す（設計用地震重量へのフォールバックはしない）。
 pub fn build_lumped_mass_model(
     model: &Model,
     pushover: &PushoverResult,
     model_type: LumpedMassType,
     secant_ratio: f64,
-) -> LumpedMassModel {
+) -> Result<LumpedMassModel, SolveError> {
     let layers = model.layers();
     let mut sticks = Vec::with_capacity(layers.len());
     for layer in &layers {
@@ -338,16 +342,16 @@ pub fn build_lumped_mass_model(
             .collect();
         let skeleton = fit_story_trilinear(&curve, secant_ratio);
 
-        let mass = match layer.weight {
-            Some(w) if w > 0.0 => w / GRAVITY_MM_S2,
-            _ => layer
-                .node_ids
-                .iter()
-                .filter_map(|nid| model.nodes.get(nid.index()))
-                .filter_map(|n| n.mass)
-                .map(|m| m[0].max(m[1]))
-                .sum(),
-        };
+        let dynamic_mass = layer.dynamic_mass.ok_or_else(|| {
+            SolveError::InvalidInput(format!("層 {:?} の動的質量が未算定です", layer.bottom))
+        })?;
+        let mass = dynamic_mass.mass_equiv_weight_n / GRAVITY_MM_S2;
+        if !mass.is_finite() || mass <= 0.0 {
+            return Err(SolveError::InvalidInput(format!(
+                "層 {:?} の質量が 0 以下です（物理質量相当重量が 0 以下）",
+                layer.bottom
+            )));
+        }
 
         sticks.push(StoryStick {
             story: layer.bottom,
@@ -356,5 +360,5 @@ pub fn build_lumped_mass_model(
             skeleton,
         });
     }
-    LumpedMassModel::from_stories(model_type, sticks)
+    Ok(LumpedMassModel::from_stories(model_type, sticks))
 }

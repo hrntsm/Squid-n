@@ -387,7 +387,7 @@ impl App {
                 &[
                     Col::label("階"),
                     Col::num("質量[t]"),
-                    Col::num("J[t·mm²]").hover("回転慣性（剛床マスターの RZ 質量）"),
+                    Col::num("J[t·mm²]").hover("回転慣性（質量重心まわり）"),
                     Col::num("Kx[kN/mm]"),
                     Col::num("Ky[kN/mm]"),
                     Col::num("KR[N·mm/rad]").hover("剛心まわりのねじり剛性"),

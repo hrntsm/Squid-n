@@ -1789,6 +1789,7 @@ fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
         node_ids: vec![],
         seismic_weight: weight,
         weight_override: None,
+        dynamic_mass: None,
     }
 }
 
@@ -1910,6 +1911,7 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
             node_ids: vec![NodeId(0), NodeId(1)],
             seismic_weight: Some(1000.0),
             weight_override: None,
+            dynamic_mass: None,
         }],
         node_story: vec![Some(StoryId(0)), Some(StoryId(0))],
         constraints: vec![Constraint::rigid_diaphragm(
@@ -3967,6 +3969,7 @@ fn story_edit_model(zs: &[f64], levels: &[(&str, f64)]) -> Model {
                 weight_override: None,
                 structure: Default::default(),
                 level_kind: Default::default(),
+                dynamic_mass: None,
             })
             .collect(),
         ..Default::default()

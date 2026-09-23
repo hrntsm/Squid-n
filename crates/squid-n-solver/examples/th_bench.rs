@@ -118,6 +118,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
             node_ids,
             seismic_weight: None,
             weight_override: None,
+            dynamic_mass: None,
         });
     }
 

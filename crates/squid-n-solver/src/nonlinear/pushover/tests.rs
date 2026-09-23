@@ -20,6 +20,7 @@ fn base_story(node_ids: Vec<NodeId>) -> Story {
         node_ids,
         seismic_weight: None,
         weight_override: None,
+        dynamic_mass: None,
     }
 }
 
@@ -104,6 +105,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(1)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -422,6 +424,7 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
                 node_ids: vec![NodeId(1)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -756,6 +759,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(1)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -766,6 +770,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(2)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -936,6 +941,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
                 node_ids: vec![NodeId(1), NodeId(2)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -1179,6 +1185,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(1), NodeId(2)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         constraints: vec![Constraint::rigid_diaphragm(
@@ -3432,6 +3439,7 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(2), NodeId(3)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         constraints: vec![Constraint::rigid_diaphragm(

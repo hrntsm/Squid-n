@@ -6403,6 +6403,7 @@ fn test_rigid_floor_beam_has_forces_and_checks() {
         node_ids: vec![NodeId(1), NodeId(2)],
         seismic_weight: None,
         weight_override: None,
+        dynamic_mass: None,
     });
 
     let mut app = App::default();
