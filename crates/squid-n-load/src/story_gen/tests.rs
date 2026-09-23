@@ -1,10 +1,11 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, SectionId, WallPlateId, WallRegionId};
+use squid_n_core::ids::{ElemId, FloorRegionId, MaterialId, SectionId, WallPlateId, WallRegionId};
 use squid_n_core::model::{
-    DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg,
-    LoadTransfer, LocalAxis, Material, MaterialCategory, MemberLoad, NodalLoad, Node, RigidZone,
-    SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape, WallRegion,
+    DamperSpec, ElementData, EndCondition, FloorRegion, ForceRegime, LoadCase, LoadCaseKind,
+    LoadCfg, LoadTransfer, LocalAxis, Material, MaterialCategory, MemberLoad, NodalLoad, Node,
+    RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape,
+    WallRegion,
 };
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
@@ -770,17 +771,39 @@ fn test_steel_line_design_weight_and_physical_mass_are_separated() {
     assert!((corrected.stories[1].seismic_weight.unwrap() / GRAVITY_MM_S2 - m[0]).abs() > 1e-6);
 }
 
-/// 両 MassMethod の公称並進総動的質量が一致する（鋼材を含むモデル）。
-/// CorrectedLumped は「質点＋質量行列の部材密度質量」、LumpedOnly は「質点のみ」で
-/// 総和が等しくなる。
-#[test]
-fn test_both_mass_methods_have_equal_total_dynamic_mass() {
-    let (len, area) = (4000.0, 90000.0);
-    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
-    let corrected =
-        generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
-    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+/// `model` の主架構線材（ダンパー要素を除く）が解析の質量行列へ与える総質量相当の
+/// 重量 [N]。実装（`analysis_mass_per_length`）と同じ [`Model::element_mass_properties`]
+/// から求める。
+fn main_frame_matrix_mass_equiv(model: &Model) -> f64 {
+    let load_cfg = model.load_cfg.clone().unwrap_or_default();
+    model
+        .elements
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, ElementKind::Beam | ElementKind::Brace { .. })
+                && e.nodes.len() >= 2
+                && !load_cfg.dampers.iter().any(|d| d.elem == e.id)
+                && model.element_section(e).is_some()
+                && model.element_material(e).is_some()
+        })
+        .map(|e| {
+            model.element_mass_properties(e).map_or(0.0, |p| {
+                p.total_mass(model.member_length(e)) * GRAVITY_MM_S2
+            })
+        })
+        .sum()
+}
 
+/// 両 MassMethod の公称並進総動的質量が一致することを確認する。
+/// `CorrectedLumped` は「質点質量合計＋主架構の質量行列総和」、`LumpedOnly` は
+/// 「質点質量合計」で総和が等しくなる。質量行列総和は実装と同じ
+/// [`Model::element_mass_properties`] から求める。合計が一致することは、各節点で
+/// クランプ `max(0, mass_equiv − matrix)` が発生していないことも意味する
+/// （負の差が 1 つでもあれば合計は一致しない）。
+fn assert_mass_methods_consistent(model: &Model) {
+    let corrected =
+        generate_stories_with_opts(model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let lumped = generate_stories_with_opts(model, &[], true, MassMethod::LumpedOnly).unwrap();
     let sum_mass = |gen: &StoryGenResult| {
         gen.rep_nodes
             .iter()
@@ -788,14 +811,162 @@ fn test_both_mass_methods_have_equal_total_dynamic_mass() {
             .map(|m| m[0])
             .sum::<f64>()
     };
-    // CorrectedLumped は質量行列の部材密度質量（物理躯体分）を足して総動的質量を評価する。
-    let body_physical = 7.85e-9 * area * len * GRAVITY_MM_S2;
-    let total_corrected = sum_mass(&corrected) + body_physical / GRAVITY_MM_S2;
-    let total_lumped = sum_mass(&lumped);
+    let matrix = main_frame_matrix_mass_equiv(model) / GRAVITY_MM_S2;
+    let corrected_total = sum_mass(&corrected) + matrix;
+    let lumped_total = sum_mass(&lumped);
     assert!(
-        (total_corrected - total_lumped).abs() < 1e-9 * total_lumped.max(1.0),
-        "両方式の総動的質量が一致しない: corrected={total_corrected} lumped={total_lumped}"
+        (corrected_total - lumped_total).abs() < 1e-9 * lumped_total.max(1.0),
+        "両方式の総動的質量が一致しない: corrected={corrected_total} lumped={lumped_total}"
     );
+}
+
+/// 両 MassMethod の公称並進総動的質量が一致する（鋼材線材のモデル）。
+#[test]
+fn test_both_mass_methods_have_equal_total_dynamic_mass() {
+    let (len, area) = (4000.0, 90000.0);
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+    assert_mass_methods_consistent(&model);
+}
+
+/// 水平 RC 梁 1 本（スラブ厚控除が効く）と自重ゼロの RC 柱 2 本を持つ 1 層モデル。
+fn rc_beam_with_slab_model() -> Model {
+    let len = 6000.0;
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [len, 0.0, 0.0],
+        [0.0, 0.0, 3000.0],
+        [len, 0.0, 3000.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if c[2] == 0.0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 梁断面（b=400, D=700, A=280000）。スラブ厚 150 の控除で設計重量の断面積は 220000。
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "RC梁".into(),
+        area: 400.0 * 700.0,
+        iy: 1.0e9,
+        iz: 1.0e9,
+        j: 1.0e9,
+        depth: 700.0,
+        width: 400.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    // 自重ゼロ（A=0）の柱断面。せい 800 で水平梁のフェイス控除 400×2 を作る。
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "RC柱(重量なし)".into(),
+        area: 0.0,
+        iy: 1.0e9,
+        iz: 1.0e9,
+        j: 1.0e9,
+        depth: 800.0,
+        width: 800.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    for (id, a, b, sec, ref_vector) in [
+        (0u32, 0u32, 2u32, 1u32, [1.0, 0.0, 0.0]),
+        (1, 1, 3, 1, [1.0, 0.0, 0.0]),
+        (2, 2, 3, 0, [0.0, 0.0, 1.0]),
+    ] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(sec)),
+            local_axis: LocalAxis { ref_vector },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.slab_thickness = 150.0;
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(2), NodeId(3)],
+    ));
+    model
+}
+
+/// RC 梁のスラブ厚控除があっても、物理質量相当は質量行列と同じ総断面・節点間長で
+/// 算定されるため両方式が一致する。
+#[test]
+fn test_both_mass_methods_equal_for_rc_beam_with_slab_deduction() {
+    assert_mass_methods_consistent(&rc_beam_with_slab_model());
+}
+
+/// 二次部材（質量行列に算入されない）とダンパー（断面自重を置換する）を含むモデルでも
+/// 両方式の総動的質量が一致する。
+#[test]
+fn test_both_mass_methods_equal_with_secondary_member_and_damper() {
+    assert_mass_methods_consistent(&secondary_joist_model());
+
+    let damper = DamperSpec {
+        elem: ElemId(0),
+        device_weight: 20000.0,
+        device_length: 1000.0,
+        support_area: 5000.0,
+    };
+    let cfg = LoadCfg {
+        dampers: vec![damper],
+        ..Default::default()
+    };
+    let model = single_beam_model(
+        4000.0,
+        7.85e-9,
+        90000.0,
+        None,
+        RigidZone::default(),
+        Some(cfg),
+    );
+    assert_mass_methods_consistent(&model);
 }
 
 /// 仕上げ・付加線重量は質量行列に対応物がないため、CorrectedLumped でも質点に残る。
@@ -871,6 +1042,9 @@ fn test_damper_device_weight_is_common_and_support_is_separated() {
 }
 
 /// 自重同期ケース（false 経路）と密度直接算入（true 経路）で動的質量が一致する。
+///
+/// 質点のみ方式で比較する。補正質点方式は鋼材のみのモデルでは両経路とも質点質量が
+/// 0（`None`）になり、両経路の差を検出できないため。
 #[test]
 fn test_self_weight_via_case_matches_density_for_mass() {
     let mut model = two_story_model();
@@ -883,15 +1057,73 @@ fn test_self_weight_via_case_matches_density_for_mass() {
         nodal,
         member,
     });
-    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::default()).unwrap();
+    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
     let by_case =
-        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::default()).unwrap();
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+            .unwrap();
+    let mut any_positive = false;
     for (a, b) in by_density.rep_nodes.iter().zip(by_case.rep_nodes.iter()) {
         let ma = a.mass.map(|m| m[0]).unwrap_or(0.0);
         let mb = b.mass.map(|m| m[0]).unwrap_or(0.0);
+        any_positive |= ma > 0.0;
         assert!(
             (ma - mb).abs() < 1e-9 * ma.max(1.0),
             "true/false 経路で動的質量が一致しない: density={ma} case={mb}"
+        );
+    }
+    assert!(
+        any_positive,
+        "質点質量が 0 のままでは密度直接算入と自重ケースの差を検出できない"
+    );
+}
+
+/// 壁エレメント（仕上げ・開口あり）でも、密度直接算入（true）と自重ケース（false）の
+/// 2 経路で動的質量（質点のみ方式）が一致する。壁の質量行列分は
+/// [`Model::element_mass_properties`] からは求まらないため、ここでは経路間の一致を見る。
+#[test]
+fn test_wall_mass_consistent_between_density_and_case_paths() {
+    use squid_n_core::model::AreaLoad;
+
+    let mut model = wall_model();
+    model.wall_plates[0].loads = vec![AreaLoad {
+        kind: "増打ち".into(),
+        value: 5.0e-4,
+    }];
+    model.wall_plates[0].opening_area = 500_000.0;
+    model.wall_plates[0].opening_weight = 3000.0;
+
+    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.clear();
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+    let by_case =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], false, MassMethod::LumpedOnly)
+            .unwrap();
+
+    let masses = |gen: &StoryGenResult| {
+        gen.rep_nodes
+            .iter()
+            .map(|n| n.mass.map(|m| m[0]).unwrap_or(0.0))
+            .collect::<Vec<_>>()
+    };
+    let a = masses(&by_density);
+    let b = masses(&by_case);
+    assert_eq!(a.len(), b.len());
+    assert!(
+        a.iter().any(|m| *m > 0.0),
+        "壁の動的質量が質点に残っていない"
+    );
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        assert!(
+            (x - y).abs() < 1e-9 * x.max(1.0),
+            "node {i}: density={x} case={y}"
         );
     }
 }

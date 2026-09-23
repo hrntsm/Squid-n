@@ -8,8 +8,6 @@
 
 use std::collections::HashMap;
 
-use squid_n_core::section_shape::SectionShape;
-
 use super::geom::{dist3, is_vertical_pair, polygon_area_3d};
 use super::*;
 
@@ -116,11 +114,14 @@ pub(crate) enum SelfWeightItem {
     ///   付加線重量・仕上げを含む。
     /// - `extra_bottom_load` は下端節点だけへ加算する設計重量 [N]（通常部の外側。
     ///   柱以外・S 柱・下階柱ありは 0）。
-    /// - `mass_equiv` は通常部の物理質量相当の重量 [N]。躯体分だけを設計単位体積重量から
-    ///   物理密度（×g）へ置換し、付加重量（仕上げ・付加線重量・割増増分）はそのまま残す。
+    /// - `mass_equiv` は通常部の物理質量相当の重量 [N]。躯体分は解析の質量行列と同じ
+    ///   幾何（総断面・節点間長）で物理密度（×g）により算定し、付加重量（仕上げ・
+    ///   付加線重量・割増増分）はそのまま残す。
     /// - `extra_bottom_mass_equiv` は `extra_bottom_load` に対応する物理質量相当 [N]。
     /// - `matrix_mass_equiv` は通常部のうち解析の質量行列（部材密度質量）が受け持つ分 [N]。
-    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。
+    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分が
+    ///   `mass_equiv` の躯体分と一致するため `mass_equiv − matrix_mass_equiv` は
+    ///   付加重量・割増増分だけになる。
     /// - `is_column` は 2 節点の鉛直 `ElementKind::Beam`（ブレースは false）。
     Line {
         elem_idx: usize,
@@ -157,8 +158,8 @@ pub(crate) enum SelfWeightItem {
 /// モデル全要素の自重を列挙する（§柱梁自重・§壁自重・§ダンパー自重）。
 ///
 /// - 線材（柱・梁・ブレース, `ElementKind::Beam`/`Brace`）: 設計重量（設計単位体積
-///   重量×A×L。付加線重量・仕上げを含む）と物理質量相当（物理密度×A×L×g に付加重量を
-///   足したもの）を別々に持つ。
+///   重量×A×L。付加線重量・仕上げを含む）と物理質量相当（質量行列と同じ総断面・
+///   節点間長で物理密度×g を算定し、付加重量を足したもの）を別々に持つ。
 ///   §1.8: 自重算定長 L は、コンクリート材（`mat.fc` あり = RC/SRC）の水平材（梁）は
 ///   柱面間距離（`len` から両端の柱フェース距離を引いた、負にならない範囲）、鉛直材（柱）は
 ///   床上面から床上面まで（＝節点間距離。フェイス控除しない）、鋼材（S 梁・柱）は
@@ -340,15 +341,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let load = design_per_length * eff_len;
                 let body_design = mat.design_unit_weight_n_per_mm3() * self_weight_area * eff_len;
                 let matrix_mass_equiv = analysis_mass_per_length(model, elem) * len * GRAVITY_MM_S2;
-                let is_cft = matches!(
-                    sec.shape,
-                    Some(SectionShape::CftBox { .. } | SectionShape::CftPipe { .. })
-                );
-                let body_physical = if is_cft {
-                    matrix_mass_equiv
-                } else {
-                    mat.density * self_weight_area * eff_len * GRAVITY_MM_S2
-                };
+                let body_physical = matrix_mass_equiv;
                 let mass_equiv = load - body_design + body_physical;
 
                 let extra_bottom_load = design_per_length * max_depth;
