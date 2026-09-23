@@ -291,11 +291,20 @@ fn test_simple_reactions_and_moment_point_load() {
     assert!((simple_beam_moment_at(&loads, l, x3) - expected_after).abs() / expected_after < 1e-9);
 }
 
-fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
+pub(super) fn make_square_slab_model(
+    side: f64,
+    method: DistributionMethod,
+    w: f64,
+) -> (Model, Slab) {
     make_rect_slab_model(side, side, method, w)
 }
 
-fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
+pub(super) fn make_rect_slab_model(
+    lx: f64,
+    ly: f64,
+    method: DistributionMethod,
+    w: f64,
+) -> (Model, Slab) {
     use squid_n_core::ids::NodeId;
     use squid_n_core::model::{AreaLoad, Node};
     let mk = |id: u32, x: f64, y: f64| Node {
@@ -332,7 +341,7 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
     (model, slab)
 }
 
-fn total_load(loads: &[BeamLoad]) -> f64 {
+pub(super) fn total_load(loads: &[BeamLoad]) -> f64 {
     // 鉛直釣合いより、各梁の総荷重 = 端せん断の和 q_i + q_j。
     loads.iter().map(|l| l.cmq.q_i + l.cmq.q_j).sum()
 }
@@ -440,7 +449,11 @@ fn mk_node(id: u32, x: f64, y: f64) -> squid_n_core::model::Node {
     }
 }
 
-fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) -> (Model, Slab) {
+pub(super) fn polygon_slab_model(
+    pts: &[(f64, f64)],
+    method: DistributionMethod,
+    w: f64,
+) -> (Model, Slab) {
     use squid_n_core::ids::NodeId;
     use squid_n_core::model::AreaLoad;
     let nodes: Vec<_> = pts
