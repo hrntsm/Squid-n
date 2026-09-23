@@ -34,15 +34,35 @@ impl SectionShape {
     /// SrcRect 以外、または ec≤0 では None（呼び出し側は `to_section` の
     /// 既定値=N_S_EQ 固定へフォールバックする）。
     pub fn src_equivalent_props(&self, ec: f64, nu_c: f64) -> Option<CompositeProps> {
-        let SectionShape::SrcRect {
-            b,
-            d,
-            steel_height: sh,
-            steel_width: sw,
-            steel_web_thick: tw,
-            steel_flange_thick: tf,
-            ..
-        } = *self
+        let (
+            SectionShape::SrcRect {
+                b,
+                d,
+                steel_height: sh,
+                steel_width: sw,
+                steel_web_thick: tw,
+                steel_flange_thick: tf,
+                ..
+            }
+            | SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height: sh,
+                steel_width: sw,
+                steel_web_thick: tw,
+                steel_flange_thick: tf,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
+                b,
+                d,
+                steel_height: sh,
+                steel_width: sw,
+                steel_web_thick: tw,
+                steel_flange_thick: tf,
+                ..
+            }
+        ) = *self
         else {
             return None;
         };

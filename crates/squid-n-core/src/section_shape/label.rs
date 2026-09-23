@@ -23,10 +23,11 @@ fn dims(vs: &[f64]) -> String {
 }
 
 impl SectionShape {
-    /// 形状と各寸法を表す表記（例 `H-500x250x9x16`・`BD-300x600`）。
+    /// 形状と各寸法を表す表記（例 `H-500x250x9x16`・`RCB-300x600`）。
     ///
     /// 記号は ASCII のみで、断面の種別が接頭辞から一意に読み取れるようにしている。
-    /// 円形は用途で記号を分ける（鋼管 `P-`、中実丸鋼 `RB-`、RC 円形 `RD-`）。
+    /// RC・SRC は用途で記号を分ける（梁 `RCB-`/`SRCB-`、矩形柱 `RCC-`/`SRCC-`、
+    /// 円形柱 `RD-`）。円形は用途で記号を分ける（鋼管 `P-`、中実丸鋼 `RB-`）。
     /// SRC は内蔵鉄骨の寸法まで含める（外形が同じで内蔵鉄骨だけが違う断面を
     /// 表記で見分けられるようにするため）。
     pub fn dimension_label(&self) -> String {
@@ -103,6 +104,45 @@ impl SectionShape {
                 ..
             } => format!(
                 "SRC-{}+H-{}",
+                dims(&[*b, *d]),
+                dims(&[
+                    *steel_height,
+                    *steel_width,
+                    *steel_web_thick,
+                    *steel_flange_thick,
+                ])
+            ),
+            SectionShape::RcBeamRect { b, d, .. } => format!("RCB-{}", dims(&[*b, *d])),
+            SectionShape::RcColumnRect { b, d, .. } => format!("RCC-{}", dims(&[*b, *d])),
+            SectionShape::RcColumnCircle { d, .. } => format!("RD-{}", dim(*d)),
+            SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            } => format!(
+                "SRCB-{}+H-{}",
+                dims(&[*b, *d]),
+                dims(&[
+                    *steel_height,
+                    *steel_width,
+                    *steel_web_thick,
+                    *steel_flange_thick,
+                ])
+            ),
+            SectionShape::SrcColumnRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            } => format!(
+                "SRCC-{}+H-{}",
                 dims(&[*b, *d]),
                 dims(&[
                     *steel_height,

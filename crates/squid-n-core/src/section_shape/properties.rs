@@ -77,6 +77,11 @@ impl SectionShape {
             SectionShape::RcRect { b, d, .. } => b * d,
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d * d / 4.0,
             SectionShape::SrcRect { b, d, .. } => b * d,
+            SectionShape::RcBeamRect { b, d, .. }
+            | SectionShape::RcColumnRect { b, d, .. }
+            | SectionShape::SrcBeamRect { b, d, .. }
+            | SectionShape::SrcColumnRect { b, d, .. } => b * d,
+            SectionShape::RcColumnCircle { d, .. } => std::f64::consts::PI * d * d / 4.0,
             SectionShape::CftBox {
                 height,
                 width,
@@ -301,6 +306,24 @@ impl SectionShape {
                 steel_web_thick,
                 steel_flange_thick,
                 ..
+            }
+            | SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
             } => {
                 let i_c = b * d.powi(3) / 12.0;
                 let hw = steel_height - 2.0 * steel_flange_thick;
@@ -309,6 +332,10 @@ impl SectionShape {
                     / 12.0;
                 i_c + (N_S_EQ - 1.0) * i_s
             }
+            SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
+                b * d.powi(3) / 12.0
+            }
+            SectionShape::RcColumnCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 64.0,
             SectionShape::CftBox {
                 height,
                 width,
@@ -436,6 +463,24 @@ impl SectionShape {
                 steel_web_thick,
                 steel_flange_thick,
                 ..
+            }
+            | SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
             } => {
                 let i_c = d * b.powi(3) / 12.0;
                 let hw = steel_height - 2.0 * steel_flange_thick;
@@ -444,6 +489,10 @@ impl SectionShape {
                     / 12.0;
                 i_c + (N_S_EQ - 1.0) * i_s
             }
+            SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
+                d * b.powi(3) / 12.0
+            }
+            SectionShape::RcColumnCircle { .. } => self.calc_iy(),
             SectionShape::CftBox {
                 height,
                 width,
@@ -534,6 +583,11 @@ impl SectionShape {
             SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
             SectionShape::SrcRect { b, d, .. } => rect_torsion_j(b, d),
+            SectionShape::RcBeamRect { b, d, .. }
+            | SectionShape::RcColumnRect { b, d, .. }
+            | SectionShape::SrcBeamRect { b, d, .. }
+            | SectionShape::SrcColumnRect { b, d, .. } => rect_torsion_j(b, d),
+            SectionShape::RcColumnCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
             SectionShape::CftBox {
                 height,
                 width,
@@ -563,6 +617,24 @@ impl SectionShape {
     pub fn calc_axial_stiffness_area(&self) -> f64 {
         match *self {
             SectionShape::SrcRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
                 b,
                 d,
                 steel_height,

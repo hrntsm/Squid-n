@@ -51,9 +51,22 @@ pub fn plate_thickness(sec: &Section) -> f64 {
                 steel_web_thick,
                 steel_flange_thick,
                 ..
+            }
+            | SectionShape::SrcBeamRect {
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
+                steel_web_thick,
+                steel_flange_thick,
+                ..
             } => return steel_web_thick.max(steel_flange_thick),
             SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
+            | SectionShape::RcBeamRect { .. }
+            | SectionShape::RcColumnRect { .. }
+            | SectionShape::RcColumnCircle { .. }
             | SectionShape::RcWall { .. }
             | SectionShape::RcSlab { .. } => {}
         }

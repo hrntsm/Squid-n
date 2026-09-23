@@ -1,6 +1,6 @@
 //! 断面形状から全塑性計算用のファイバ/バネ配置を生成する。
 
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+use squid_n_core::section_shape::{one_bar_area, BarSet, RcRebar, RebarPoint, SectionShape};
 
 use super::types::{concrete_young, FiberRegion, PlasticFiber, StrengthParams, YieldModelKind};
 
@@ -178,7 +178,6 @@ fn rebar_fibers_rect(
     young: f64,
 ) {
     use squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge;
-    use squid_n_core::section_shape::one_bar_area;
 
     let bar = |set: &BarSet| -> f64 { one_bar_area(set.dia) };
 
@@ -269,6 +268,29 @@ fn rebar_fibers_circle(
     }
 }
 
+/// 実配筋座標 `RebarPoint{x,y}` をファイバ `PlasticFiber{y,z}` へ写して追加する
+/// （`fiber.y = point.x`, `fiber.z = point.y`）。
+fn rebar_fibers_from_points(
+    fibers: &mut Vec<PlasticFiber>,
+    points: &[RebarPoint],
+    main_dia: f64,
+    fy: f64,
+    young: f64,
+) {
+    let a = one_bar_area(main_dia);
+    for p in points {
+        fibers.push(PlasticFiber {
+            y: p.x,
+            z: p.y,
+            area: a,
+            sigma_t: fy,
+            sigma_c: -fy,
+            young,
+            region: FiberRegion::Rebar,
+        });
+    }
+}
+
 /// 断面形状からファイバ/バネ配置を生成する。
 /// `kind` により解像度が変わる（細分割と粗い配置）。
 pub fn plastic_fibers(
@@ -319,6 +341,11 @@ pub fn max_dimension(shape: &SectionShape) -> f64 {
         SectionShape::RcRect { b, d, .. } => b.max(d),
         SectionShape::RcCircle { d, .. } => d,
         SectionShape::SrcRect { b, d, .. } => b.max(d),
+        SectionShape::RcBeamRect { b, d, .. }
+        | SectionShape::RcColumnRect { b, d, .. }
+        | SectionShape::SrcBeamRect { b, d, .. }
+        | SectionShape::SrcColumnRect { b, d, .. } => b.max(d),
+        SectionShape::RcColumnCircle { d, .. } => d,
         SectionShape::CftBox { height, width, .. } => height.max(width),
         SectionShape::CftPipe { outer_dia, .. } => outer_dia,
         SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
@@ -577,6 +604,100 @@ pub fn plastic_fibers_at(
                 rebar,
                 b,
                 d,
+                strength.rebar_fy,
+                strength.steel_e,
+            );
+            mesh_h_plates(
+                &mut fibers,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                target,
+                steel,
+            );
+        }
+        SectionShape::RcBeamRect { b, d, ref rebar } => {
+            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
+            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
+            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            rebar_fibers_from_points(
+                &mut fibers,
+                &positions,
+                rebar.main_dia,
+                strength.rebar_fy,
+                strength.steel_e,
+            );
+        }
+        SectionShape::RcColumnRect { b, d, ref rebar } => {
+            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
+            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
+            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            rebar_fibers_from_points(
+                &mut fibers,
+                &positions,
+                rebar.main_dia,
+                strength.rebar_fy,
+                strength.steel_e,
+            );
+        }
+        SectionShape::RcColumnCircle { d, ref rebar } => {
+            mesh_annulus(&mut fibers, d, d / 2.0, ring.n_theta, ring.n_r_solid, conc);
+            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
+            let positions = rebar.bar_positions(d).unwrap_or_default();
+            rebar_fibers_from_points(
+                &mut fibers,
+                &positions,
+                rebar.main_dia,
+                strength.rebar_fy,
+                strength.steel_e,
+            );
+        }
+        SectionShape::SrcBeamRect {
+            b,
+            d,
+            ref rebar,
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+        } => {
+            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
+            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
+            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            rebar_fibers_from_points(
+                &mut fibers,
+                &positions,
+                rebar.main_dia,
+                strength.rebar_fy,
+                strength.steel_e,
+            );
+            mesh_h_plates(
+                &mut fibers,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                target,
+                steel,
+            );
+        }
+        SectionShape::SrcColumnRect {
+            b,
+            d,
+            ref rebar,
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+        } => {
+            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
+            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
+            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            rebar_fibers_from_points(
+                &mut fibers,
+                &positions,
+                rebar.main_dia,
                 strength.rebar_fy,
                 strength.steel_e,
             );

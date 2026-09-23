@@ -126,6 +126,32 @@ pub enum SectionShape {
         steel_web_thick: f64,
         steel_flange_thick: f64,
     },
+    /// RC 梁（実配筋）。`b`: 幅 [mm], `d`: せい [mm]。
+    RcBeamRect { b: f64, d: f64, rebar: RcBeamRebar },
+    /// RC 矩形柱（実配筋）。
+    RcColumnRect { b: f64, d: f64, rebar: RcRectColumnRebar },
+    /// RC 円形柱（実配筋）。
+    RcColumnCircle { d: f64, rebar: RcCircleColumnRebar },
+    /// SRC 梁（RC 梁 + 内蔵 H 形鉄骨）。
+    SrcBeamRect {
+        b: f64,
+        d: f64,
+        rebar: RcBeamRebar,
+        steel_height: f64,
+        steel_width: f64,
+        steel_web_thick: f64,
+        steel_flange_thick: f64,
+    },
+    /// SRC 矩形柱（RC 矩形柱 + 内蔵 H 形鉄骨）。
+    SrcColumnRect {
+        b: f64,
+        d: f64,
+        rebar: RcRectColumnRebar,
+        steel_height: f64,
+        steel_width: f64,
+        steel_web_thick: f64,
+        steel_flange_thick: f64,
+    },
     /// CFT 角形（角形鋼管 + 充填コンクリート）。検定では `Material.fc` の充填コンクリート強度を用いる。
     CftBox { height: f64, width: f64, thick: f64 },
     /// CFT 円形（円形鋼管 + 充填コンクリート）。
@@ -153,6 +179,33 @@ impl SectionShape {
         }
     }
 
+    /// 梁の実配筋を持つ形状はその参照を返す。
+    pub fn beam_rebar(&self) -> Option<&RcBeamRebar> {
+        match self {
+            SectionShape::RcBeamRect { rebar, .. } | SectionShape::SrcBeamRect { rebar, .. } => {
+                Some(rebar)
+            }
+            _ => None,
+        }
+    }
+
+    /// 矩形柱の実配筋を持つ形状はその参照を返す。
+    pub fn rect_column_rebar(&self) -> Option<&RcRectColumnRebar> {
+        match self {
+            SectionShape::RcColumnRect { rebar, .. }
+            | SectionShape::SrcColumnRect { rebar, .. } => Some(rebar),
+            _ => None,
+        }
+    }
+
+    /// 円形柱の実配筋を持つ形状はその参照を返す。
+    pub fn circle_column_rebar(&self) -> Option<&RcCircleColumnRebar> {
+        match self {
+            SectionShape::RcColumnCircle { rebar, .. } => Some(rebar),
+            _ => None,
+        }
+    }
+
     /// コンクリート系（RC / SRC / CFT）の断面形状か。
     pub fn is_concrete_like(&self) -> bool {
         matches!(
@@ -160,6 +213,11 @@ impl SectionShape {
             SectionShape::RcRect { .. }
                 | SectionShape::RcCircle { .. }
                 | SectionShape::SrcRect { .. }
+                | SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
                 | SectionShape::CftBox { .. }
                 | SectionShape::CftPipe { .. }
                 | SectionShape::RcWall { .. }

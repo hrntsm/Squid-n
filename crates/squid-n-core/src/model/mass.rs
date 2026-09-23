@@ -392,10 +392,15 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
             relation("lip > thick", *lip > *thick)?;
             relation("height > lip + thick", *height > *lip + *thick)?;
         }
-        SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. } => {
+        SectionShape::RcRect { b, d, .. }
+        | SectionShape::SrcRect { b, d, .. }
+        | SectionShape::RcBeamRect { b, d, .. }
+        | SectionShape::RcColumnRect { b, d, .. }
+        | SectionShape::SrcBeamRect { b, d, .. }
+        | SectionShape::SrcColumnRect { b, d, .. } => {
             dimensions.extend([("b", *b), ("d", *d)]);
         }
-        SectionShape::RcCircle { d, .. } => {
+        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
             dimensions.push(("d", *d));
         }
         SectionShape::RcWall { thickness, ps } => {

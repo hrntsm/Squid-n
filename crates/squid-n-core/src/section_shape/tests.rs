@@ -550,6 +550,50 @@ fn no_rebar() -> RcRebar {
     }
 }
 
+/// 空の梁配筋（表記は配筋に依存しないため寸法だけを見る）。
+fn no_beam_rebar() -> RcBeamRebar {
+    RcBeamRebar {
+        main_dia: 0.0,
+        top: vec![],
+        bottom: vec![],
+        cover: 0.0,
+        stirrup: BeamStirrup {
+            dia: 0.0,
+            pitch: 0.0,
+            legs: 0,
+        },
+    }
+}
+
+/// 空の矩形柱配筋。
+fn no_rect_column_rebar() -> RcRectColumnRebar {
+    RcRectColumnRebar {
+        main_dia: 0.0,
+        x: vec![],
+        y: vec![],
+        cover: 0.0,
+        hoop: RectColumnHoop {
+            dia: 0.0,
+            pitch: 0.0,
+            legs_x: 0,
+            legs_y: 0,
+        },
+    }
+}
+
+/// 空の円形柱配筋。
+fn no_circle_column_rebar() -> RcCircleColumnRebar {
+    RcCircleColumnRebar {
+        main_dia: 0.0,
+        count: 0,
+        cover: 0.0,
+        hoop: CircleColumnHoop {
+            dia: 0.0,
+            pitch: 0.0,
+        },
+    }
+}
+
 /// 全形状の寸法表記が、ドキュメントに記載した接頭辞・寸法順と一致する。
 /// 整数の寸法は小数点以下を落とし、端数のある寸法はそのまま出す。
 /// 丸めで別寸法が同じ表記になると断面を見分けられなくなるため、小数は 3 桁まで残す。
@@ -684,6 +728,53 @@ fn test_dimension_label_covers_all_shapes() {
                 steel_flange_thick: 13.0,
             },
             "SRC-500x800+H-400x200x8x13",
+        ),
+        (
+            SectionShape::RcBeamRect {
+                b: 300.0,
+                d: 600.0,
+                rebar: no_beam_rebar(),
+            },
+            "RCB-300x600",
+        ),
+        (
+            SectionShape::RcColumnRect {
+                b: 600.0,
+                d: 600.0,
+                rebar: no_rect_column_rebar(),
+            },
+            "RCC-600x600",
+        ),
+        (
+            SectionShape::RcColumnCircle {
+                d: 600.0,
+                rebar: no_circle_column_rebar(),
+            },
+            "RD-600",
+        ),
+        (
+            SectionShape::SrcBeamRect {
+                b: 500.0,
+                d: 800.0,
+                rebar: no_beam_rebar(),
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 8.0,
+                steel_flange_thick: 13.0,
+            },
+            "SRCB-500x800+H-400x200x8x13",
+        ),
+        (
+            SectionShape::SrcColumnRect {
+                b: 500.0,
+                d: 800.0,
+                rebar: no_rect_column_rebar(),
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 8.0,
+                steel_flange_thick: 13.0,
+            },
+            "SRCC-500x800+H-400x200x8x13",
         ),
         (
             SectionShape::CftBox {

@@ -91,6 +91,11 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
             SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
             | SectionShape::SrcRect { .. }
+            | SectionShape::RcBeamRect { .. }
+            | SectionShape::RcColumnRect { .. }
+            | SectionShape::RcColumnCircle { .. }
+            | SectionShape::SrcBeamRect { .. }
+            | SectionShape::SrcColumnRect { .. }
             | SectionShape::RcWall { .. }
             | SectionShape::RcSlab { .. } => return (ShapeCategory::Other, 0.0, 0.0),
         }
