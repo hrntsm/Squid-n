@@ -2,10 +2,11 @@
 //! 強軸曲げ（`mz`）とそれに対のせん断（`qy`）のみを検定する。
 
 use super::{
-    circle_axis_props, main_rebar_grade, rc_allow, rc_beam_bond_check, rc_beam_bond_check_1991,
-    rebar_allowable_tension, rebar_sigma_y_of, rect_axis_props_strong, seismic_design_shear,
+    axis_props_from_shape, main_rebar_grade, rc_allow, rc_beam_bond_check, rc_beam_bond_check_1991,
+    rebar_allowable_tension, rebar_info_from_shape, rebar_sigma_y_of, seismic_design_shear,
     shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
 };
+use crate::ultimate::rc_props::RcDirection;
 use crate::{
     BondMethod, CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt,
 };
@@ -69,17 +70,12 @@ pub(crate) fn beam_moment_capacity(
 /// 梁の断面検定（RC 規準 13条）。強軸曲げ mz とそれに対のせん断 qy のみを扱う。
 pub(crate) fn beam_check(
     forces: &MemberForcesAt,
-    sec: &Section,
+    _sec: &Section,
     mat: &Material,
     ctx: &DesignCtx,
     shape: &SectionShape,
     fc_raw: f64,
 ) -> CheckResult {
-    let rebar = match shape {
-        SectionShape::RcRect { rebar, .. } => rebar,
-        SectionShape::RcCircle { rebar, .. } => rebar,
-        _ => unreachable!(),
-    };
     let long_term = ctx.term == LoadTerm::Long;
     let grade = main_rebar_grade(ctx.rebar_material.as_ref());
     let allow = rc_allow(
@@ -89,12 +85,24 @@ pub(crate) fn beam_check(
         long_term,
     );
 
-    let props = if let SectionShape::RcCircle { d, .. } = shape {
-        circle_axis_props(*d, rebar)
+    let tension_is_top = if forces.mz < 0.0 {
+        true
+    } else if forces.mz > 0.0 {
+        false
     } else {
-        rect_axis_props_strong(sec, rebar)
+        let at_top = axis_props_from_shape(shape, RcDirection::Strong, true).map(|p| p.at);
+        let at_bottom = axis_props_from_shape(shape, RcDirection::Strong, false).map(|p| p.at);
+        match (at_top, at_bottom) {
+            (Some(t), Some(b)) => t < b,
+            (Some(_), None) => true,
+            _ => false,
+        }
     };
-    let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
+    let props = axis_props_from_shape(shape, RcDirection::Strong, tension_is_top)
+        .expect("梁の断面諸元を算定できる形状のみ来る");
+    let info =
+        rebar_info_from_shape(shape, tension_is_top).expect("梁の鉄筋情報を算定できる形状のみ来る");
+    let ft = rebar_allowable_tension(grade, info.main_dia, long_term);
 
     let at_mid = (forces.pos - 0.5).abs() < 1e-6;
     let bm = beam_moment_capacity(&props, ft, allow.fc, allow.n_ratio);
@@ -136,8 +144,7 @@ pub(crate) fn beam_check(
                 props.j,
                 props.at,
                 forces.mz.abs(),
-                &rebar.main_x,
-                rebar,
+                &info,
                 fc_raw,
                 long_term,
             );
@@ -163,8 +170,8 @@ pub(crate) fn beam_check(
             (ratio, detail)
         }
         BondMethod::Rc1991 => {
-            let n_t = ((rebar.main_x.count as f64) / 2.0).max(1.0);
-            let phi = n_t * std::f64::consts::PI * rebar.main_x.dia;
+            let n_t = ((info.tension_count as f64) / 2.0).max(1.0);
+            let phi = n_t * std::f64::consts::PI * info.main_dia;
             let is_end = !(0.25 < forces.pos && forces.pos < 0.75);
             let bond = rc_beam_bond_check_1991(q_design, props.j, phi, fc_raw, is_end, long_term);
             let ratio = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
@@ -249,7 +256,7 @@ pub(crate) fn beam_check(
         let prov = super::provisions::beam_provisions(
             props.d_full,
             &props,
-            rebar,
+            &info,
             long_term,
             mz_for_at,
             ft,

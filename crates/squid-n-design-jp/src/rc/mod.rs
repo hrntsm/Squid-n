@@ -24,7 +24,8 @@ mod design_shear;
 pub(crate) mod section_props;
 mod shear_capacity;
 
-pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
+pub(crate) use bond::rc_beam_bond_check;
+pub use bond::{rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
 pub use column_mechanism::{
     compute_column_mechanism_sum_my, design_axial_for_mechanism, resolve_column_end_hinge,
     sum_my_from_end_hinges, ColumnEndHinge,
@@ -65,13 +66,23 @@ impl DesignCheck for RcDesign {
         }
 
         let shape = match &sec.shape {
-            Some(s @ SectionShape::RcRect { .. }) => s,
-            Some(s @ SectionShape::RcCircle { .. }) => s,
+            Some(
+                s @ (SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::RcBeamRect { .. }),
+            ) => s,
+            Some(SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }) => {
+                return CheckOutcome::Skipped {
+                    reason: "RC 検定: 柱の新モデル未対応\
+                             （RcColumnRect/RcColumnCircle は検定対象外です）"
+                        .to_string(),
+                };
+            }
             _ => {
                 return CheckOutcome::Skipped {
-                    reason:
-                        "RC 検定: 配筋情報なし（Section.shape が RcRect/RcCircle ではありません）"
-                            .to_string(),
+                    reason: "RC 検定: 配筋情報なし\
+                             （Section.shape が RcRect/RcCircle/RcBeamRect ではありません）"
+                        .to_string(),
                 };
             }
         };
@@ -97,11 +108,15 @@ impl DesignCheck for RcDesign {
             };
         }
 
-        let cr = match ctx.kind {
-            MemberKind::Beam | MemberKind::Brace => {
-                beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+        let cr = if matches!(shape, SectionShape::RcBeamRect { .. }) {
+            beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+        } else {
+            match ctx.kind {
+                MemberKind::Beam | MemberKind::Brace => {
+                    beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+                }
+                MemberKind::Column => column::column_check(forces, sec, mat, ctx, shape, fc_raw),
             }
-            MemberKind::Column => column::column_check(forces, sec, mat, ctx, shape, fc_raw),
         };
         CheckOutcome::Checked(cr)
     }

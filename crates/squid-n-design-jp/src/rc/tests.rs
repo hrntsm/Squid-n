@@ -1,7 +1,9 @@
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{
+    BarSet, BeamStirrup, RcBeamRebar, RcRebar, SectionShape, ShearBar,
+};
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
     Material {
@@ -561,4 +563,125 @@ fn test_rc_circle_beam_and_column_smoke() {
     let ctx_b = ctx_beam(LoadTerm::Short);
     let r_beam = design.check(&forces, &sec, &mat, &ctx_b).unwrap_checked();
     assert!(r_beam.ratio().is_finite() && r_beam.ratio() >= 0.0);
+}
+
+fn rc_beam_rect_shape() -> SectionShape {
+    SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 600.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 2],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    }
+}
+
+/// 新型 `RcBeamRect` は mz の符号で引張側（上端/下端）が変わり、上下非対称
+/// （上 4+2 / 下 3+2）のため曲げ検定比が変わる。`RcDesign.check` が Checked を返す。
+#[test]
+fn test_rc_beam_rect_bending_depends_on_tension_side() {
+    let sec = make_section(rc_beam_rect_shape());
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_beam(LoadTerm::Short);
+    let forces_pos = MemberForcesAt {
+        pos: 0.0,
+        n: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 40_000_000.0,
+    };
+    let forces_neg = MemberForcesAt {
+        pos: forces_pos.pos,
+        n: forces_pos.n,
+        qy: forces_pos.qy,
+        qz: forces_pos.qz,
+        my: forces_pos.my,
+        mz: -40_000_000.0,
+    };
+    let r_pos = RcDesign
+        .check(&forces_pos, &sec, &mat, &ctx)
+        .unwrap_checked();
+    let r_neg = RcDesign
+        .check(&forces_neg, &sec, &mat, &ctx)
+        .unwrap_checked();
+    let bend = |r: &crate::CheckResult| {
+        r.components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .expect("Bending component")
+            .ratio
+    };
+    assert!(
+        (bend(&r_pos) - bend(&r_neg)).abs() > 1e-9,
+        "mz の符号で引張側が変わり曲げ検定比が変わるはず: pos={}, neg={}",
+        bend(&r_pos),
+        bend(&r_neg)
+    );
+}
+
+/// 旧 `RcCircle` の梁検定は従来どおり `circle_axis_props` の曲げ耐力を用いる。
+#[test]
+fn test_rc_circle_beam_bending_matches_circle_axis_props() {
+    let shape = SectionShape::RcCircle {
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: BarSet {
+                count: 12,
+                dia: 22.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 12,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 1,
+            },
+        },
+    };
+    let rebar = match &shape {
+        SectionShape::RcCircle { rebar, .. } => rebar.clone(),
+        _ => unreachable!(),
+    };
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_beam(LoadTerm::Short);
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: 0.0,
+        qy: 0.0,
+        qz: 0.0,
+        my: 0.0,
+        mz: 20_000_000.0,
+    };
+    let r = RcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    let bend = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::Bending)
+        .expect("Bending component")
+        .ratio;
+
+    let props = circle_axis_props(600.0, &rebar);
+    let ft = rebar_allowable_tension("SD345", rebar.main_x.dia, false);
+    let fc = concrete_allowable_compression(24.0, false);
+    let n_ratio = young_ratio_n(24.0);
+    let bm = super::beam::beam_moment_capacity(&props, ft, fc, n_ratio);
+    let expected = forces.mz.abs() / bm.ma;
+    assert!(
+        (bend - expected).abs() / expected < 1e-9,
+        "bend={bend}, expected={expected}"
+    );
 }

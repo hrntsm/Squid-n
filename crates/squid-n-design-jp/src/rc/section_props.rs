@@ -100,13 +100,16 @@ pub(crate) fn circle_axis_props(d_full: f64, rebar: &RcRebar) -> AxisProps {
 /// 断面形状から検討方向 1 軸分の断面諸元を引く。
 ///
 /// 中立型 [`rc_bar_props`] に委譲し、未対応形状・未入力・有効せい 0 以下なら `None`。
+/// 旧 `RcCircle` は [`rc_bar_props`] 非対応のため [`circle_axis_props`] で扱う。
 /// `tension_is_top` は梁の曲げ引張側（柱・円形柱では無視）。`j = 7d/8`。
-#[allow(dead_code)]
 pub(crate) fn axis_props_from_shape(
     shape: &SectionShape,
     direction: RcDirection,
     tension_is_top: bool,
 ) -> Option<AxisProps> {
+    if let SectionShape::RcCircle { d, rebar } = shape {
+        return Some(circle_axis_props(*d, rebar));
+    }
     let p = rc_bar_props(shape, direction, tension_is_top, false)?;
     Some(AxisProps {
         b: p.b_dir,
@@ -141,8 +144,8 @@ pub(crate) struct RcRebarInfo {
 }
 
 /// 断面形状から鉄筋情報を返す。`tension_is_top` は梁の引張側（付着・段数）。
-/// 旧 RcRect / RcBeamRect / RcColumnRect / RcColumnCircle を対象とし、対象外・未入力は None。
-#[allow(dead_code)]
+/// 旧 RcRect / RcCircle / RcBeamRect / RcColumnRect / RcColumnCircle を対象とし、
+/// 対象外・未入力は None。
 pub(crate) fn rebar_info_from_shape(
     shape: &SectionShape,
     tension_is_top: bool,
@@ -159,6 +162,18 @@ pub(crate) fn rebar_info_from_shape(
             shear_pitch: rebar.shear.pitch,
             shear_legs: rebar.shear.legs,
             is_circle: false,
+        }),
+        SectionShape::RcCircle { rebar, .. } => Some(RcRebarInfo {
+            cover: rebar.cover,
+            main_dia: rebar.main_x.dia,
+            main_count: rebar.main_x.count,
+            main_count_per_side: rebar.main_x.count / 4 + 1,
+            tension_count: rebar.main_x.count,
+            tension_layers: rebar.main_x.layers.max(1),
+            shear_dia: rebar.shear.dia,
+            shear_pitch: rebar.shear.pitch,
+            shear_legs: rebar.shear.legs,
+            is_circle: true,
         }),
         SectionShape::RcBeamRect { rebar, .. } => {
             if rebar.is_unset() {
@@ -411,6 +426,25 @@ mod tests {
     }
 
     #[test]
+    fn test_axis_props_from_shape_old_circle_matches_legacy() {
+        let rebar = old_rect_rebar();
+        let shape = SectionShape::RcCircle {
+            d: 600.0,
+            rebar: rebar.clone(),
+        };
+        let p = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
+        let legacy = circle_axis_props(600.0, &rebar);
+        assert_eq!(p.b, legacy.b);
+        assert_eq!(p.d_full, legacy.d_full);
+        assert_eq!(p.dt, legacy.dt);
+        assert_eq!(p.d, legacy.d);
+        assert_eq!(p.at, legacy.at);
+        assert_eq!(p.ac, legacy.ac);
+        assert_eq!(p.j, legacy.j);
+        assert_eq!(p.pw, legacy.pw);
+    }
+
+    #[test]
     fn test_axis_props_from_shape_none() {
         let unset_beam = SectionShape::RcBeamRect {
             b: 400.0,
@@ -508,13 +542,23 @@ mod tests {
     }
 
     #[test]
-    fn test_rebar_info_from_shape_none() {
+    fn test_rebar_info_from_shape_circle() {
         let circle = SectionShape::RcCircle {
             d: 600.0,
             rebar: old_rect_rebar(),
         };
-        assert!(rebar_info_from_shape(&circle, true).is_none());
+        let info = rebar_info_from_shape(&circle, true).unwrap();
+        assert!((info.main_dia - 22.0).abs() < 1e-9);
+        assert_eq!(info.main_count, 6);
+        assert_eq!(info.main_count_per_side, 2);
+        assert_eq!(info.tension_count, 6);
+        assert_eq!(info.tension_layers, 1);
+        assert!((info.shear_pitch - 100.0).abs() < 1e-9);
+        assert!(info.is_circle);
+    }
 
+    #[test]
+    fn test_rebar_info_from_shape_none() {
         let unset_beam = SectionShape::RcBeamRect {
             b: 400.0,
             d: 600.0,

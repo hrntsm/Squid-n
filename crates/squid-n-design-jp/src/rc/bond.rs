@@ -1,8 +1,8 @@
 //! 鉄筋コンクリート造梁付着の断面検定（RC 規準の梁主筋の付着検討）。
 //! 既定の検定経路は RC 規準1999 方式。
 
+use super::section_props::RcRebarInfo;
 use super::{concrete_allowable_bond, one_bar_area};
-use squid_n_core::section_shape::{BarSet, RcRebar};
 
 /// RC 規準 1991 方式の付着検定結果。
 pub struct Bond1991Result {
@@ -70,7 +70,7 @@ fn one_bar_perimeter(dia: f64) -> f64 {
 /// `lo`: 柱面間距離 Lo [mm]。`lo<=0` の場合は `None` を返す（検定省略）。
 /// `fc_raw`: コンクリート設計基準強度 Fc [N/mm²]。
 #[allow(clippy::too_many_arguments)]
-pub fn rc_beam_bond_check(
+pub(crate) fn rc_beam_bond_check(
     pos: f64,
     lo: f64,
     b: f64,
@@ -78,16 +78,15 @@ pub fn rc_beam_bond_check(
     j: f64,
     at: f64,
     mz_abs: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
+    info: &RcRebarInfo,
     fc_raw: f64,
     long_term: bool,
 ) -> Option<BondCheckResult> {
-    if lo <= 0.0 || main.count == 0 || main.dia <= 0.0 || at <= 0.0 || j <= 0.0 {
+    if lo <= 0.0 || info.tension_count == 0 || info.main_dia <= 0.0 || at <= 0.0 || j <= 0.0 {
         return None;
     }
 
-    let db = main.dia;
+    let db = info.main_dia;
     let is_end = !(0.25 < pos && pos < 0.75);
 
     let ld = if is_end { (lo + d_eff) / 2.0 } else { lo / 2.0 };
@@ -95,19 +94,19 @@ pub fn rc_beam_bond_check(
         return None;
     }
 
-    let layers = (main.layers.max(1)) as f64;
-    let n1 = (main.count as f64 / layers).max(1.0);
+    let layers = (info.tension_layers.max(1)) as f64;
+    let n1 = (info.tension_count as f64 / layers).max(1.0);
 
     let clear_spacing = if n1 <= 1.0 {
         5.0 * db
     } else {
-        (b - 2.0 * (rebar.cover + rebar.shear.dia) - n1 * db) / (n1 - 1.0)
+        (b - 2.0 * (info.cover + info.shear_dia) - n1 * db) / (n1 - 1.0)
     };
-    let c = clear_spacing.min(3.0 * rebar.cover).min(5.0 * db);
+    let c = clear_spacing.min(3.0 * info.cover).min(5.0 * db);
 
-    let ast = squid_n_core::section_shape::shear_legs_area(&rebar.shear);
-    let w = if rebar.shear.pitch > 0.0 {
-        (20.0 * ast / (rebar.shear.pitch * n1)).min(2.5 * db)
+    let ast = info.shear_legs as f64 * one_bar_area(info.shear_dia);
+    let w = if info.shear_pitch > 0.0 {
+        (20.0 * ast / (info.shear_pitch * n1)).min(2.5 * db)
     } else {
         0.0
     };
@@ -125,7 +124,7 @@ pub fn rc_beam_bond_check(
     let fb_other = fc_raw / 60.0 + 0.6;
     let fb_long = if is_end { 0.8 * fb_other } else { fb_other };
     let fb_row1 = if long_term { fb_long } else { fb_long * 1.5 };
-    let fb = if main.layers >= 2 {
+    let fb = if info.tension_layers >= 2 {
         0.6 * fb_row1
     } else {
         fb_row1
@@ -154,7 +153,6 @@ pub fn rc_beam_bond_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::section_shape::ShearBar;
 
     #[test]
     fn test_rc_beam_bond_check_1991_hand_calc() {
@@ -172,28 +170,24 @@ mod tests {
         assert!(rc_beam_bond_check_1991(1.0, 0.0, phi, 24.0, true, true).is_none());
     }
 
-    fn bond_test_rebar() -> (BarSet, RcRebar) {
-        let main = BarSet {
-            count: 6,
-            dia: 22.0,
-            layers: 1,
-        };
-        let rebar = RcRebar {
-            main_x: main.clone(),
-            main_y: main.clone(),
+    fn bond_test_info() -> RcRebarInfo {
+        RcRebarInfo {
             cover: 40.0,
-            shear: ShearBar {
-                dia: 10.0,
-                pitch: 100.0,
-                legs: 2,
-            },
-        };
-        (main, rebar)
+            main_dia: 22.0,
+            main_count: 6,
+            main_count_per_side: 6,
+            tension_count: 6,
+            tension_layers: 1,
+            shear_dia: 10.0,
+            shear_pitch: 100.0,
+            shear_legs: 2,
+            is_circle: false,
+        }
     }
 
     #[test]
     fn test_bond_lo_zero_skips_check() {
-        let (main, rebar) = bond_test_rebar();
+        let info = bond_test_info();
         let result = rc_beam_bond_check(
             0.1,
             0.0,
@@ -202,8 +196,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         );
@@ -212,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_bond_ld_end_vs_middle() {
-        let (main, rebar) = bond_test_rebar();
+        let info = bond_test_info();
         let lo = 3000.0;
         let d_eff = 539.0;
         let end = rc_beam_bond_check(
@@ -223,8 +216,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -237,8 +229,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -251,8 +242,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -269,7 +259,7 @@ mod tests {
     #[test]
     fn test_bond_fb_top_bar_factor_0_8() {
         // 端部（上端筋想定）の fb は中央（下端筋想定）の 0.8 倍。
-        let (main, rebar) = bond_test_rebar();
+        let info = bond_test_info();
         let lo = 3000.0;
         let end = rc_beam_bond_check(
             0.1,
@@ -279,8 +269,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -293,8 +282,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -304,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_bond_c_selects_minimum_of_spacing_cover_5db() {
-        let (main, rebar) = bond_test_rebar();
+        let info = bond_test_info();
         let b = 300.0;
         let n1 = 6.0;
         let db = 22.0;
@@ -320,8 +308,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             true,
         )
@@ -334,20 +321,17 @@ mod tests {
     fn test_bond_k_clamped_at_2_5() {
         // C・W ともに上限（5db・2.5db）近くまで大きくし、K が 2.5 にクランプ
         // されることを確認する。
-        let main = BarSet {
-            count: 2,
-            dia: 10.0,
-            layers: 1,
-        };
-        let rebar = RcRebar {
-            main_x: main.clone(),
-            main_y: main.clone(),
+        let info = RcRebarInfo {
             cover: 100.0,
-            shear: ShearBar {
-                dia: 12.0,
-                pitch: 50.0,
-                legs: 10,
-            },
+            main_dia: 10.0,
+            main_count: 2,
+            main_count_per_side: 2,
+            tension_count: 2,
+            tension_layers: 1,
+            shear_dia: 12.0,
+            shear_pitch: 50.0,
+            shear_legs: 10,
+            is_circle: false,
         };
         let result = rc_beam_bond_check(
             0.1,
@@ -357,8 +341,7 @@ mod tests {
             471.625,
             1140.4,
             30_000_000.0,
-            &main,
-            &rebar,
+            &info,
             24.0,
             false,
         )
@@ -372,17 +355,13 @@ mod tests {
         // 代表して検定。RC 規準1999「1段筋以外は 0.6 を乗じる」）。
         // 1段あたり本数 n1=count/layers を 6 本で揃え、K・W を同一にして
         // fb の低減だけを比較する。
-        let (main1, rebar1) = bond_test_rebar();
-        let main2 = BarSet {
-            count: 12,
-            layers: 2,
-            ..main1.clone()
+        let info1 = bond_test_info();
+        let info2 = RcRebarInfo {
+            tension_count: 12,
+            tension_layers: 2,
+            ..info1
         };
-        let rebar2 = RcRebar {
-            main_x: main2.clone(),
-            ..rebar1.clone()
-        };
-        let run = |main: &BarSet, rebar: &RcRebar| {
+        let run = |info: &RcRebarInfo| {
             rc_beam_bond_check(
                 0.1,
                 3000.0,
@@ -391,15 +370,14 @@ mod tests {
                 471.625,
                 1140.4,
                 30_000_000.0,
-                main,
-                rebar,
+                info,
                 24.0,
                 false,
             )
             .unwrap()
         };
-        let one = run(&main1, &rebar1);
-        let two = run(&main2, &rebar2);
+        let one = run(&info1);
+        let two = run(&info2);
         assert!((two.k - one.k).abs() < 1e-9, "K は同一条件");
         assert!((two.fb - 0.6 * one.fb).abs() < 1e-9, "fb={}", two.fb);
         assert!(
@@ -410,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_bond_ldb_over_ld_handcalc() {
-        let (main, rebar) = bond_test_rebar();
+        let info = bond_test_info();
         let b = 300.0;
         let d_eff = 539.0;
         let j = 471.625;
@@ -420,7 +398,7 @@ mod tests {
         let fc = 24.0;
 
         let result =
-            rc_beam_bond_check(0.1, lo, b, d_eff, j, at, mz_abs, &main, &rebar, fc, false).unwrap();
+            rc_beam_bond_check(0.1, lo, b, d_eff, j, at, mz_abs, &info, fc, false).unwrap();
 
         // 独立に手計算した期待値。
         let n1 = 6.0;
