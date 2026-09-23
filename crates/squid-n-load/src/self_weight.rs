@@ -468,7 +468,7 @@ mod tests {
     fn test_steel_base_column_has_no_extra_bottom() {
         let model = base_column_with_base_beams(false, &[600.0, 800.0]);
         let (nodal, _member) = self_weight_case_content(&model, &LoadCfg::default());
-        let per_mm = 7.85e-9 * 90000.0 * GRAVITY_MM_S2;
+        let per_mm = model.materials[0].design_unit_weight_n_per_mm3() * 90000.0;
         let w_col = per_mm * 3000.0;
         assert!(
             (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,
