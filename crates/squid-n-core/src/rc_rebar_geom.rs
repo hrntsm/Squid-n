@@ -6,6 +6,15 @@ use crate::section_shape::{
     ShearBar,
 };
 
+/// RC 矩形断面の辺。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RectEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
 /// 一面の主筋諸元（本数・面積・縁からの重心距離・有効せい）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SteelSide {
@@ -554,6 +563,33 @@ impl RcRectColumnRebar {
     pub fn aw_y_mm2(&self) -> f64 {
         self.hoop.legs_y as f64 * one_bar_area(self.hoop.dia)
     }
+
+    /// 指定した辺の最外段 1 列の主筋諸元。未入力（`is_unset`）なら全項目 0。
+    ///
+    /// `Top`/`Bottom` は `x` の最外段を `d` で、`Left`/`Right` は `y` の最外段を `b` で評価する。
+    /// 重心距離はかぶり + 帯筋径 + 主筋径/2 [mm]、有効せいは辺長からその距離を引いた値 [mm]。
+    pub fn edge_steel(&self, edge: RectEdge, b: f64, d: f64) -> SteelSide {
+        if self.is_unset() {
+            return SteelSide {
+                count: 0,
+                area_mm2: 0.0,
+                centroid_from_edge_mm: 0.0,
+                effective_depth_mm: 0.0,
+            };
+        }
+        let (counts, depth) = match edge {
+            RectEdge::Top | RectEdge::Bottom => (&self.x, d),
+            RectEdge::Left | RectEdge::Right => (&self.y, b),
+        };
+        let count = counts.first().copied().unwrap_or(0) as usize;
+        let k0 = self.cover + self.hoop.dia + self.main_dia / 2.0;
+        SteelSide {
+            count,
+            area_mm2: count as f64 * one_bar_area(self.main_dia),
+            centroid_from_edge_mm: k0,
+            effective_depth_mm: depth - k0,
+        }
+    }
 }
 
 impl RcCircleColumnRebar {
@@ -612,6 +648,31 @@ impl RcCircleColumnRebar {
     /// 主筋総面積 [mm²]。
     pub fn total_main_area(&self) -> f64 {
         self.count as f64 * one_bar_area(self.main_dia)
+    }
+
+    /// 等価正方形断面の辺長 [mm]（`sqrt(π・d²/4)`）。`d<=0` は 0。
+    pub fn equivalent_square_side_mm(&self, d: f64) -> f64 {
+        if d <= 0.0 {
+            return 0.0;
+        }
+        (std::f64::consts::PI * d * d / 4.0).sqrt()
+    }
+
+    /// 引張側 1 辺の鉄筋量 [mm²]（全主筋量の 1/4）。未入力なら 0。
+    pub fn equivalent_tension_area_mm2(&self) -> f64 {
+        if self.is_unset() {
+            return 0.0;
+        }
+        self.total_main_area() / 4.0
+    }
+
+    /// 等価正方形断面の有効せい [mm]（辺長 − かぶり − 帯筋径 − 主筋径/2）。主筋なし・0 未満は 0。
+    pub fn equivalent_effective_depth_mm(&self, d: f64) -> f64 {
+        if self.is_unset() {
+            return 0.0;
+        }
+        let k0 = self.cover + self.hoop.dia + self.main_dia / 2.0;
+        (self.equivalent_square_side_mm(d) - k0).max(0.0)
     }
 }
 
@@ -1054,6 +1115,77 @@ mod tests {
         let r = circle(8);
         assert_eq!(r.main_count(), 8);
         assert!((r.total_main_area() - 8.0 * one_bar_area(22.0)).abs() < 1e-9);
+    }
+
+    /// 矩形柱: 辺別の最外段 1 列のみを引張側鉄筋量として返す。
+    #[test]
+    fn test_rect_column_edge_steel() {
+        let r = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        };
+        let a1 = one_bar_area(22.0);
+        // k0 = 40 + 10 + 11 = 61。
+        let top = r.edge_steel(RectEdge::Top, 600.0, 700.0);
+        assert_eq!(top.count, 4);
+        assert!((top.area_mm2 - 4.0 * a1).abs() < 1e-9);
+        assert!((top.centroid_from_edge_mm - 61.0).abs() < 1e-9);
+        assert!((top.effective_depth_mm - 639.0).abs() < 1e-9);
+
+        let left = r.edge_steel(RectEdge::Left, 600.0, 700.0);
+        assert_eq!(left.count, 3);
+        assert!((left.area_mm2 - 3.0 * a1).abs() < 1e-9);
+        assert!((left.centroid_from_edge_mm - 61.0).abs() < 1e-9);
+        assert!((left.effective_depth_mm - 539.0).abs() < 1e-9);
+
+        // 中間段 x[1]=2 は最外段の引張側鉄筋量に算入しない。
+        assert_eq!(top.count, r.x[0] as usize);
+        assert_ne!(top.count, (r.x[0] + r.x[1]) as usize);
+    }
+
+    /// 矩形柱: 未入力の辺別諸元はすべて 0。
+    #[test]
+    fn test_rect_column_edge_steel_unset() {
+        let r = rect_column(vec![], vec![]);
+        let side = r.edge_steel(RectEdge::Bottom, 600.0, 700.0);
+        assert_eq!(side.count, 0);
+        assert_eq!(side.area_mm2, 0.0);
+        assert_eq!(side.centroid_from_edge_mm, 0.0);
+        assert_eq!(side.effective_depth_mm, 0.0);
+    }
+
+    /// 円形柱: 等価正方形断面の辺長・引張側鉄筋量・有効せい。
+    #[test]
+    fn test_circle_equivalent_square() {
+        let r = circle(8);
+        let a1 = one_bar_area(22.0);
+        assert!((r.total_main_area() - 8.0 * a1).abs() < 1e-9);
+        assert!((r.equivalent_tension_area_mm2() - 2.0 * a1).abs() < 1e-9);
+
+        let side = (std::f64::consts::PI * 600.0 * 600.0 / 4.0).sqrt();
+        assert!((r.equivalent_square_side_mm(600.0) - side).abs() < 1e-9);
+        assert!(
+            (r.equivalent_square_side_mm(600.0) - 600.0 * std::f64::consts::PI.sqrt() / 2.0).abs()
+                < 1e-9
+        );
+        assert!((r.equivalent_effective_depth_mm(600.0) - (side - 61.0)).abs() < 1e-9);
+        assert_eq!(r.equivalent_square_side_mm(0.0), 0.0);
+    }
+
+    /// 円形柱: 未入力の等価正方形諸元は 0。
+    #[test]
+    fn test_circle_equivalent_square_unset() {
+        let r = circle(0);
+        assert_eq!(r.equivalent_tension_area_mm2(), 0.0);
+        assert_eq!(r.equivalent_effective_depth_mm(600.0), 0.0);
     }
 
     /// 未入力の各型: 諸元 API が 0 または空を返す。
