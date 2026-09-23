@@ -1,17 +1,17 @@
 //! RC 部材の終局強度（曲げ・せん断）ヘルパ群。
 //!
 //! - [`biaxial_margin`] — 2 軸相互作用の余裕度。
-//! - [`column_axis_shear`] — 指定軸方向の柱の Qsu・Qmu（2 軸せん断用）。
+//! - [`column_axis_shear`] — 指定方向の柱の Qsu・Qmu（2 軸せん断用）。
 //! - [`column_mu`] — 柱の曲げ終局強度 Mu（構造規定 at 式）。
 //! - [`member_shear_strength`] — 選択式に応じた終局せん断強度 Qsu/Vu。
 //! - [`ductility_be_ns`] — 靭性指針式のトラス機構有効幅 be・中子筋本数 Ns。
 
 use super::options::{ShearMethod, UltimateShearOptions};
+use super::rc_props::RcBarProps;
 use super::rc_shear::{rc_shear_qsu_plastic, RcPlasticShearInput};
 use super::rc_shear_ductility::{rc_shear_vu_ductility, RcDuctilityShearInput};
 use squid_n_core::rc_capacity::{rc_column_mu_simple, RcCapacityInput};
-use squid_n_core::rc_rebar_geom::{pw_ratio, tension_dt};
-use squid_n_core::section_shape::{bar_set_area, BarSet, RcRebar};
+use squid_n_core::section_shape::{one_bar_area, RcRebar};
 
 /// 2 軸相互作用の余裕度 `1/((rx)^α + (ry)^α)^(1/α)`（採用応力）。
 ///
@@ -32,43 +32,33 @@ pub fn biaxial_margin(rx: f64, ry: f64, alpha: f64) -> f64 {
     }
 }
 
-/// 指定方向（`b_dir`=幅, `d_dir`=せい, `main`=当該方向主筋）の柱の終局せん断強度
-/// `Qsu`（塑性理論式）と両端ヒンジ時せん断力 `Qmu` を算定する（2 軸せん断用）。
-#[allow(clippy::too_many_arguments)]
+/// 指定方向の諸元 `props` から柱の終局せん断強度 `Qsu`（塑性理論式）と両端ヒンジ時
+/// せん断力 `Qmu` を算定する（2 軸せん断用）。有効せいが 0 以下なら `(0.0, 0.0)`。
 pub(super) fn column_axis_shear(
-    b_dir: f64,
-    d_dir: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
+    props: &RcBarProps,
     fc: f64,
     sigma_y: f64,
-    ag: f64,
     n_axial: f64,
     l_clear: f64,
     opts: &UltimateShearOptions,
 ) -> (f64, f64) {
-    let dt = tension_dt(rebar.cover, rebar.shear.dia, main);
-    let d_eff = d_dir - dt;
-    if d_eff <= 0.0 {
+    if props.d_eff <= 0.0 {
         return (0.0, 0.0);
     }
-    let jt = 7.0 * d_eff / 8.0;
-    let at = bar_set_area(main) / 2.0;
-    let pw = pw_ratio(&rebar.shear, b_dir);
-    let qsu = member_shear_strength(b_dir, d_dir, jt, pw, rebar, fc, n_axial, l_clear, opts);
     let cap = RcCapacityInput {
-        b: b_dir,
-        d: d_dir,
-        at,
-        d_eff,
+        b: props.b_dir,
+        d: props.d_dir,
+        at: props.at,
+        d_eff: props.d_eff,
         sigma_y,
         fc,
-        pw,
+        pw: props.pw,
         sigma_wy: opts.sigma_wy,
         clear_span: l_clear.max(1.0),
         sigma_0: 0.0,
     };
-    let mu = rc_column_mu_simple(&cap, ag, n_axial);
+    let qsu = member_shear_strength(props, fc, n_axial, l_clear, opts);
+    let mu = rc_column_mu_simple(&cap, props.ag, n_axial);
     let qmu = if l_clear > 0.0 {
         opts.upper_strength_factor * 2.0 * mu / l_clear
     } else {
@@ -105,33 +95,29 @@ pub(super) fn column_mu(
     rc_column_mu_simple(&cap, ag, n_axial)
 }
 
-/// 靭性指針式による終局せん断信頼強度 `Vu` [N]（[`rc_shear_ductility`]）を断面諸元から
-/// 算定する。`b_dir`=幅, `d_dir`=せい, `je`=トラス機構有効せい（`jt` を用いる）。
-#[allow(clippy::too_many_arguments)]
+/// 靭性指針式による終局せん断信頼強度 `Vu` [N]（[`rc_shear_ductility`]）を
+/// 指定方向の諸元 `props` から算定する。`je` はトラス機構有効せい（`jt` を用いる）。
 fn member_vu_ductility(
-    b_dir: f64,
-    d_dir: f64,
+    props: &RcBarProps,
     je: f64,
-    rebar: &RcRebar,
     fc: f64,
     n_axial: f64,
     l_clear: f64,
     sigma_wy: f64,
     opts: &UltimateShearOptions,
 ) -> f64 {
-    let (be, n_s) = ductility_be_ns(b_dir, rebar);
-    let s = rebar.shear.pitch;
-    let aw = squid_n_core::section_shape::shear_legs_area(&rebar.shear);
-    let pwe = if s > 0.0 { aw / (be * s) } else { 0.0 };
+    let s = props.shear_pitch;
+    let aw = props.shear_legs as f64 * one_bar_area(props.shear_dia);
+    let pwe = if s > 0.0 { aw / (props.be * s) } else { 0.0 };
     rc_shear_vu_ductility(&RcDuctilityShearInput {
-        b: b_dir,
-        d_full: d_dir,
-        be,
+        b: props.b_dir,
+        d_full: props.d_dir,
+        be: props.be,
         je,
         pwe,
         sigma_wy,
         s,
-        n_s,
+        n_s: props.n_s,
         l_clear,
         fc,
         rp: opts.rp,
@@ -142,6 +128,7 @@ fn member_vu_ductility(
 
 /// 靭性指針式のトラス機構有効幅 `be`（外側横補強筋の芯々間隔近似）と中子筋本数 `Ns`
 /// （`legs/2 − 1` 近似）を断面諸元から求める（[`member_vu_ductility`]・Vbu で共用）。
+#[allow(dead_code)]
 pub(super) fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
     let be = (b_dir - 2.0 * (rebar.cover + rebar.shear.dia / 2.0)).max(1.0);
     let n_s = (rebar.shear.legs / 2).saturating_sub(1);
@@ -149,33 +136,34 @@ pub(super) fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
 }
 
 /// 選択された [`ShearMethod`] に応じた終局せん断強度 `Qsu`/`Vu` [N]。
-#[allow(clippy::too_many_arguments)]
 pub(super) fn member_shear_strength(
-    b_dir: f64,
-    d_dir: f64,
-    jt: f64,
-    pw: f64,
-    rebar: &RcRebar,
+    props: &RcBarProps,
     fc: f64,
     n_axial: f64,
     l_clear: f64,
     opts: &UltimateShearOptions,
 ) -> f64 {
-    let sigma_wy = opts.sigma_wy;
+    let jt = 7.0 * props.d_eff / 8.0;
     match opts.shear_method {
         ShearMethod::Plastic => rc_shear_qsu_plastic(&RcPlasticShearInput {
-            b: b_dir,
-            d_full: d_dir,
+            b: props.b_dir,
+            d_full: props.d_dir,
             jt,
-            pw,
-            sigma_wy,
+            pw: props.pw,
+            sigma_wy: opts.sigma_wy,
             l_clear,
             fc,
             rp: opts.rp,
             lightweight: opts.lightweight,
         }),
         ShearMethod::Ductility => member_vu_ductility(
-            b_dir, d_dir, jt, rebar, fc, n_axial, l_clear, sigma_wy, opts,
+            props,
+            jt,
+            fc,
+            n_axial,
+            l_clear,
+            opts.sigma_wy,
+            opts,
         ),
     }
 }
