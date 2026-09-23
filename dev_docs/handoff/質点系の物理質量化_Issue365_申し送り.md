@@ -54,5 +54,6 @@
   GUI/MCP の導線で階生成を必須化するかは別課題。
 - `GravityCasesOnly` は契約どおりケース内容を質量相当値とするため、常に 7.85 t/m³ へ
   補正されるわけではない（本番未使用・テストのみ）。
-- CFT 線材の設計重量（DL・地震用重量）が充填コンクリート分を欠く問題は別課題
-  （[GitHub Issue #364](https://github.com/hrntsm/Squid-n/issues/364)）。
+- CFT の設計重量・物理質量の充填コンクリート対応は Issue #364 / PR #370 で解消済み。
+  質点系の `Story::dynamic_mass` への反映も本 PR の CFT 回帰テスト
+  （`test_cft_dynamic_mass_weight_is_steel_factor_plus_core`）で確認済み。
