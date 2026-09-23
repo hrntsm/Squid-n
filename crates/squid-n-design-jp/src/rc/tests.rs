@@ -2,7 +2,8 @@ use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, RcBeamRebar, RcRebar, SectionShape, ShearBar,
+    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRebar,
+    RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
 };
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
@@ -581,6 +582,89 @@ fn rc_beam_rect_shape() -> SectionShape {
             },
         },
     }
+}
+
+fn rc_column_rect_shape() -> SectionShape {
+    SectionShape::RcColumnRect {
+        b: 400.0,
+        d: 400.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    }
+}
+
+fn rc_column_circle_shape() -> SectionShape {
+    SectionShape::RcColumnCircle {
+        d: 600.0,
+        rebar: RcCircleColumnRebar {
+            main_dia: 22.0,
+            count: 8,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+            },
+        },
+    }
+}
+
+/// 新型 `RcColumnRect` の柱検定は `Checked` を返し、軸力+二軸曲げとせん断の
+/// 内訳を持つ。
+#[test]
+fn test_rc_column_rect_check_components_axial_bending_and_shear() {
+    let sec = make_section(rc_column_rect_shape());
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_column(LoadTerm::Long);
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: -200_000.0,
+        qy: 50_000.0,
+        qz: 30_000.0,
+        my: 10.0e6,
+        mz: 20.0e6,
+    };
+    let result = RcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(result
+        .components
+        .iter()
+        .any(|c| c.kind == crate::CheckKind::AxialBending));
+    assert!(result
+        .components
+        .iter()
+        .any(|c| c.kind == crate::CheckKind::Shear));
+    assert!(result.basis.contains("柱"), "basis={}", result.basis);
+}
+
+/// 新型 `RcColumnCircle` の柱検定は `Checked` を返す。
+#[test]
+fn test_rc_column_circle_check_checked() {
+    let sec = make_section(rc_column_circle_shape());
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_column(LoadTerm::Long);
+    let forces = MemberForcesAt {
+        pos: 0.0,
+        n: -200_000.0,
+        qy: 30_000.0,
+        qz: 20_000.0,
+        my: 10.0e6,
+        mz: 20.0e6,
+    };
+    let result = RcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(result
+        .components
+        .iter()
+        .any(|c| c.kind == crate::CheckKind::AxialBending));
+    assert!(result.basis.contains("円形柱"), "basis={}", result.basis);
 }
 
 /// 新型 `RcBeamRect` は mz の符号で引張側（上端/下端）が変わり、上下非対称

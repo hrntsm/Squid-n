@@ -198,6 +198,83 @@ pub(crate) fn column_provisions(
     ProvisionCheck { errors, warnings }
 }
 
+/// 実配筋モデル柱の構造規定（マニュアル 2.5.3(5)）。
+///
+/// `length` は支点間距離 [mm]。呼び出し側は内法（`DesignCtx.clear_length`）を
+/// 優先して渡す。`pw_min` は検討方向のせん断補強筋比の最小値。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn column_provisions_info(
+    info: &RcRebarInfo,
+    d_min: f64,
+    length: f64,
+    concrete_class: ConcreteClass,
+    long_term: bool,
+    ag: f64,
+    as_total: f64,
+    n_short_comp: f64,
+    fc_raw: f64,
+    pw_min: f64,
+) -> ProvisionCheck {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if info.cover + 1e-9 < 30.0 {
+        errors.push(format!(
+            "かぶり厚 {:.0} mm < 30 mm（入力エラー）",
+            info.cover
+        ));
+    }
+
+    let min_bars = if info.is_circle { 8u32 } else { 4u32 };
+    if info.main_count < min_bars {
+        errors.push(format!(
+            "主筋全本数 {} < 最小 {min_bars}（入力エラー）",
+            info.main_count
+        ));
+    }
+
+    if info.shear_pitch > 100.0 + 1e-9 {
+        errors.push(format!(
+            "帯筋間隔 {:.0} mm > 100 mm（入力エラー）",
+            info.shear_pitch
+        ));
+    }
+
+    if d_min > 0.0 && length > 0.0 {
+        let ratio = d_min / length;
+        let lim = match concrete_class {
+            ConcreteClass::Normal => 1.0 / 15.0,
+            ConcreteClass::Lightweight1 | ConcreteClass::Lightweight2 => 1.0 / 10.0,
+        };
+        if ratio + 1e-12 < lim {
+            warnings.push(format!("最小径/支点間距離={:.4} < {:.4}", ratio, lim));
+        }
+    }
+
+    if ag > 0.0 {
+        let pg = as_total / ag;
+        if pg + 1e-12 < 0.008 {
+            warnings.push(format!("主筋比 pg={:.3}% < 0.8%", pg * 100.0));
+        }
+        if !long_term && fc_raw > 0.0 && n_short_comp > 0.0 {
+            let sigma = n_short_comp / ag;
+            let lim = fc_raw / 3.0;
+            if sigma + 1e-9 < lim {
+                warnings.push(format!("短期軸応力度 {:.2} < Fc/3={:.2} N/mm²", sigma, lim));
+            }
+        }
+    }
+
+    if pw_min + 1e-12 < 0.002 {
+        warnings.push(format!(
+            "pw={:.4} < 0.2%（ルート未連動・下限 0.2%）",
+            pw_min
+        ));
+    }
+
+    ProvisionCheck { errors, warnings }
+}
+
 /// 矩形梁の長期たわみ δ [mm]（マニュアル略算・鋼梁と同形）。
 ///
 /// \\( M_0 = |M_c| + (|M_i|+|M_j|)/2 \\) とし、

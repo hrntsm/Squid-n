@@ -81,19 +81,15 @@ impl DesignCheck for RcDesign {
             Some(
                 s @ (SectionShape::RcRect { .. }
                 | SectionShape::RcCircle { .. }
-                | SectionShape::RcBeamRect { .. }),
+                | SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }),
             ) => s,
-            Some(SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }) => {
-                return CheckOutcome::Skipped {
-                    reason: "RC 検定: 柱の新モデル未対応\
-                             （RcColumnRect/RcColumnCircle は検定対象外です）"
-                        .to_string(),
-                };
-            }
             _ => {
                 return CheckOutcome::Skipped {
                     reason: "RC 検定: 配筋情報なし\
-                             （Section.shape が RcRect/RcCircle/RcBeamRect ではありません）"
+                             （Section.shape が RcRect/RcCircle/RcBeamRect/\
+                             RcColumnRect/RcColumnCircle ではありません）"
                         .to_string(),
                 };
             }
@@ -122,6 +118,11 @@ impl DesignCheck for RcDesign {
 
         let cr = if matches!(shape, SectionShape::RcBeamRect { .. }) {
             beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+        } else if matches!(
+            shape,
+            SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }
+        ) {
+            column::column_check(forces, sec, mat, ctx, shape, fc_raw)
         } else {
             match ctx.kind {
                 MemberKind::Beam | MemberKind::Brace => {
