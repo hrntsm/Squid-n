@@ -132,15 +132,10 @@ fn build_spatial(inp: LumpedMassBuildInput<'_>) -> JobResult<LumpedMassModel> {
         })?;
         let com = dm.center_xy_mm;
         let kr = eccentricity(&cols, com, cor).kr;
-        // 質量 0 は `layer_mass` が J の判定より前に止める（J も 0 になるため誤診断を避ける）。
+        // 質量 0・J 0 以下はそれぞれ `layer_mass`・`layer_inertia` が弾く。
+        // 質量を先に判定し、J も 0 になる質量 0 の階を J の誤診断にしない。
         let mass = layer_mass(layer)?;
         let j = layer_inertia(layer)?;
-        if j <= 0.0 {
-            return Err(JobError::InvalidInput(format!(
-                "階 {} の回転慣性 J が 0 以下のため 3 次元質点系を生成できません",
-                layer.name
-            )));
-        }
         let (kxi, kyi) = match inp.source {
             LumpedStiffnessSource::ColumnKi => {
                 let sx: f64 = cols.iter().map(|c| c.dx).sum();
@@ -250,7 +245,7 @@ fn layer_mass(layer: &Layer) -> JobResult<f64> {
         ))
     })?;
     let mass = dm.mass_equiv_weight_n / GRAVITY_MM_S2;
-    if mass <= 0.0 {
+    if !mass.is_finite() || mass <= 0.0 {
         return Err(JobError::InvalidInput(format!(
             "階 {} の質量が 0 以下です（物理質量相当重量が 0 以下）",
             layer.name
@@ -259,7 +254,7 @@ fn layer_mass(layer: &Layer) -> JobResult<f64> {
     Ok(mass)
 }
 
-/// 層の質量重心まわりの回転慣性 J [t·mm²]。未算定（`None`）はエラー。
+/// 層の質量重心まわりの回転慣性 J [t·mm²]。未算定（`None`）と 0 以下・非有限はエラー。
 fn layer_inertia(layer: &Layer) -> JobResult<f64> {
     let dm = layer.dynamic_mass.ok_or_else(|| {
         JobError::InvalidInput(format!(
@@ -267,7 +262,14 @@ fn layer_inertia(layer: &Layer) -> JobResult<f64> {
             layer.name
         ))
     })?;
-    Ok(dm.inertia_t_mm2)
+    let j = dm.inertia_t_mm2;
+    if !j.is_finite() || j <= 0.0 {
+        return Err(JobError::InvalidInput(format!(
+            "階 {} の回転慣性 J が 0 以下のため 3 次元質点系を生成できません",
+            layer.name
+        )));
+    }
+    Ok(j)
 }
 
 fn story_stiffness(
@@ -674,6 +676,73 @@ mod tests {
         let err = build_lumped_mass(inp).unwrap_err();
         assert!(err.to_string().contains("質量が 0 以下"), "{err}");
         assert!(!err.to_string().contains("回転慣性"), "{err}");
+    }
+
+    /// 線形 2D でも質量が非有限（`NaN`）ならエラーになること
+    /// （`NaN <= 0.0` は false のため、`is_finite` の検証が要る）。
+    #[test]
+    fn planar_linear_rejects_non_finite_mass() {
+        let mut model = two_story_column_model();
+        model.stories[1].dynamic_mass = Some(squid_n_core::model::StoryDynamicMass {
+            mass_equiv_weight_n: f64::NAN,
+            center_xy_mm: [0.0, 0.0],
+            inertia_t_mm2: 1000.0,
+        });
+        let mut res = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        res.disp[1] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut inp = input(&model, StickDim::Planar, SeismicDir::X, false);
+        inp.res_x = Some(&res);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("質量が 0 以下"), "{err}");
+    }
+
+    /// 線形 3D でも質量が非有限（`NaN`）ならエラーになること。
+    #[test]
+    fn spatial_linear_rejects_non_finite_mass() {
+        let mut model = two_story_column_model();
+        model.stories[1].dynamic_mass = Some(squid_n_core::model::StoryDynamicMass {
+            mass_equiv_weight_n: f64::NAN,
+            center_xy_mm: [0.0, 0.0],
+            inertia_t_mm2: 1000.0,
+        });
+        let mut res_x = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        let mut res_y = static_with_column_qy(3, &[(0, 80.0), (1, 30.0)]);
+        res_x.disp[1] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_x.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[1] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[2] = [0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+        let mut inp = input(&model, StickDim::Spatial, SeismicDir::X, false);
+        inp.source = LumpedStiffnessSource::ColumnKi;
+        inp.res_x = Some(&res_x);
+        inp.res_y = Some(&res_y);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("質量が 0 以下"), "{err}");
+    }
+
+    /// 3D で回転慣性 J が非有限（`NaN`）ならエラーになること
+    /// （`NaN <= 0.0` は false のため、`is_finite` の検証が要る）。
+    #[test]
+    fn spatial_linear_rejects_non_finite_inertia() {
+        let mut model = two_story_column_model();
+        // 質量は正・J のみ NaN にして、J 側の検証だけを見る。
+        model.stories[1].dynamic_mass = Some(squid_n_core::model::StoryDynamicMass {
+            mass_equiv_weight_n: 10.0 * GRAVITY_MM_S2,
+            center_xy_mm: [0.0, 0.0],
+            inertia_t_mm2: f64::NAN,
+        });
+        let mut res_x = static_with_column_qz(3, &[(0, 100.0), (1, 40.0)]);
+        let mut res_y = static_with_column_qy(3, &[(0, 80.0), (1, 30.0)]);
+        res_x.disp[1] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_x.disp[2] = [2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[1] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        res_y.disp[2] = [0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+        let mut inp = input(&model, StickDim::Spatial, SeismicDir::X, false);
+        inp.source = LumpedStiffnessSource::ColumnKi;
+        inp.res_x = Some(&res_x);
+        inp.res_y = Some(&res_y);
+        let err = build_lumped_mass(inp).unwrap_err();
+        assert!(err.to_string().contains("回転慣性 J が 0 以下"), "{err}");
     }
 
     /// 3次元（非線形）でも動的質量が未算定（`None`）なら未算定エラーで止まること。
