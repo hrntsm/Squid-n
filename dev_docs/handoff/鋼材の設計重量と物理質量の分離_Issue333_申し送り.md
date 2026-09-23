@@ -22,8 +22,10 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
   独立定数として維持。
 - `Material::design_unit_weight_n_per_mm3`: 材料区分から設計単位体積重量を解決
   （`Steel`→78.5、その他→密度×g）。`fc.is_some()` では判定しない。鉄筋は Steel に含めない。
-- `SelfWeightItem`: `Line { load, mass_equiv, matrix_mass_equiv }`、
-  `Damper { load, mass_equiv }`、`Panel { load_shares, mass_shares }`。
+- `SelfWeightItem`: `Line { load, mass_equiv, matrix_mass_equiv, extra_bottom_load,
+  extra_bottom_mass_equiv, is_column }`、`Damper { load, mass_equiv }`、
+  `Panel { load_shares, mass_equiv_shares, matrix_shares }`。`Line` の `mass_equiv` の
+  躯体分は質量行列と同じ幾何（総断面・節点間長）で物理密度から算定する。
 - `generate.rs`: 節点ごとに設計地震用重量 `node_weight`、物理質量相当 `node_mass_equiv`、
   質量行列に入る分 `node_matrix_mass_equiv` を別配列で集計。
   `CorrectedLumped` は `net = mass_equiv − matrix`、`LumpedOnly` は `net = mass_equiv`。
@@ -47,4 +49,9 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
   [残課題一覧](../handoff/残課題一覧.md) に記載。
 - 二次部材・取り付く壁版の物理質量相当は、壁版がコンクリートで設計＝物理のため
   設計値と同値。二次部材（鋼）は物理質量で流す。
-- RC 梁のスラブ厚控除と質量行列の断面積不一致など、本件と無関係な既存挙動は変更していない。
+- RC/SRC 梁の設計重量（DL・地震用重量）は従来どおりスラブ厚を控除した断面積で算定する。
+  物理質量相当は質量行列と同じ総断面・節点間長へ統一したため、`CorrectedLumped` の
+  クランプ（`max(0, mass_equiv − matrix)`）は発生せず両方式が一致する。
+- **CFT**: 線材の設計重量（DL・地震用重量）は鋼管断面×78.5 のみで、充填コンクリート分を
+  欠く（質量行列は `element_mass_properties` でコアを含むため両方式が一致しない）。
+  **危険側**。要検討。[残課題一覧](../handoff/残課題一覧.md) に記載。
