@@ -1146,6 +1146,7 @@ mod tests {
                 weight_override: None,
                 structure: Default::default(),
                 level_kind: Default::default(),
+                dynamic_mass: None,
             });
         }
         let p = WallPlate {

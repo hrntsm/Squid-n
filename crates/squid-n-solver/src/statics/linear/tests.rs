@@ -715,6 +715,7 @@ fn test_shell_rigid_floor_membrane_off() {
             node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             seismic_weight: None,
             weight_override: None,
+            dynamic_mass: None,
         }],
         constraints: vec![Constraint::rigid_diaphragm(
             StoryId(0),
@@ -1690,6 +1691,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             node_ids: vec![NodeId(2), NodeId(3)],
             seismic_weight: None,
             weight_override: None,
+            dynamic_mass: None,
         });
     }
     model

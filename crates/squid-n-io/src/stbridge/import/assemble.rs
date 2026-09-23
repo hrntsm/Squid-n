@@ -306,6 +306,7 @@ fn build_nodes_and_stories(
             node_ids,
             seismic_weight: None,
             weight_override: None,
+            dynamic_mass: None,
         });
     }
 

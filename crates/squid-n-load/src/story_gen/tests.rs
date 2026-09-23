@@ -771,6 +771,192 @@ fn test_steel_line_design_weight_and_physical_mass_are_separated() {
     assert!((corrected.stories[1].seismic_weight.unwrap() / GRAVITY_MM_S2 - m[0]).abs() > 1e-6);
 }
 
+// ------------------------------------------------------------------
+// §層の動的質量（物理質量相当）`Story::dynamic_mass`
+// ------------------------------------------------------------------
+
+/// 鋼材モデルでは、階の動的質量（物理質量相当重量）が設計地震用重量より小さい
+/// （設計重量は鋼材 78.5 kN/m³、物理質量は 7.85 t/m³ ベース）。
+#[test]
+fn test_dynamic_mass_weight_is_physical_not_design() {
+    let (len, area) = (4000.0, 90000.0);
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+
+    let dm = gen.stories[1]
+        .dynamic_mass
+        .expect("階生成が動的質量を埋める");
+    let design = gen.stories[1].seismic_weight.unwrap();
+    assert!(dm.mass_equiv_weight_n > 0.0);
+    assert!(
+        dm.mass_equiv_weight_n < design,
+        "物理質量相当重量が設計重量を下回っていない: mass={} design={}",
+        dm.mass_equiv_weight_n,
+        design
+    );
+    // 物理質量相当重量は 7.85 t/m³ ベースの上端半分。
+    let physical = 7.85e-9 * area * len * GRAVITY_MM_S2 / 2.0;
+    assert!(
+        (dm.mass_equiv_weight_n - physical).abs() < 1e-9 * physical,
+        "物理質量相当重量が 7.85 ベースでない: {}",
+        dm.mass_equiv_weight_n
+    );
+}
+
+/// 層の動的質量は質量方式（[`MassMethod::CorrectedLumped`] / [`MassMethod::LumpedOnly`]）に
+/// 依らず一致する（串団子は部材分布質量を持たず全量を使うため）。
+#[test]
+fn test_dynamic_mass_is_independent_of_mass_method() {
+    let model = two_story_model();
+    let corrected =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::CorrectedLumped)
+            .unwrap();
+    let lumped =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::LumpedOnly).unwrap();
+
+    assert_eq!(corrected.stories.len(), lumped.stories.len());
+    for (c, l) in corrected.stories.iter().zip(lumped.stories.iter()) {
+        assert!(c.dynamic_mass.is_some(), "動的質量が未算定");
+        assert_eq!(
+            c.dynamic_mass, l.dynamic_mass,
+            "質量方式で動的質量が変わっている: {:?} vs {:?}",
+            c.dynamic_mass, l.dynamic_mass
+        );
+    }
+}
+
+/// 密度直接算入（[`generate_stories_with_opts`] の `true`）と自重同期
+/// （[`generate_stories_with_synced_self_weight`]）の 2 経路で層の動的質量が一致する。
+#[test]
+fn test_dynamic_mass_matches_between_density_and_synced_paths() {
+    let mut model = two_story_model();
+    model.load_cases.clear();
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let by_case =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+
+    let mut any_positive = false;
+    for (d, c) in by_density.stories.iter().zip(by_case.stories.iter()) {
+        let dm = d.dynamic_mass.expect("動的質量");
+        any_positive |= dm.mass_equiv_weight_n > 0.0;
+        assert_eq!(
+            d.dynamic_mass, c.dynamic_mass,
+            "密度経路と自重同期経路で動的質量が一致しない"
+        );
+    }
+    assert!(
+        any_positive,
+        "動的質量が 0 のままでは 2 経路の差を検出できない"
+    );
+}
+
+/// 手入力の地震用重量 `Story::weight_override` は設計地震力だけを変え、
+/// 物理質量（動的質量）は変えない。
+#[test]
+fn test_weight_override_does_not_change_dynamic_mass() {
+    let mut model = two_story_model();
+    let before = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let before_dm: Vec<_> = before.stories.iter().map(|s| s.dynamic_mass).collect();
+
+    model.stories = before.stories.clone();
+    let override_value = 1.0e9;
+    model.stories[1].weight_override = Some(override_value);
+    let after = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+
+    assert_eq!(after.stories[1].seismic_weight, Some(override_value));
+    assert_ne!(
+        before_dm[1].map(|m| m.mass_equiv_weight_n),
+        Some(override_value)
+    );
+    for (b, a) in before_dm.iter().zip(after.stories.iter()) {
+        assert_eq!(
+            *b, a.dynamic_mass,
+            "weight_override が物理質量（動的質量）へ影響している"
+        );
+    }
+}
+
+/// 3 次元配置の回転慣性 J が質量重心まわりで直接算定されていることを、
+/// 2 節点の既知配置で手計算と照合する。
+#[test]
+fn test_dynamic_mass_inertia_about_mass_center_3d() {
+    let mut model = Model::default();
+    // 基部の床 2 節点 + 上の床 2 節点。y 方向にもずらして 3 次元配置にする。
+    let coords = [
+        [0.0, 0.0, 0.0],
+        [4000.0, 2000.0, 0.0],
+        [0.0, 0.0, 3000.0],
+        [4000.0, 2000.0, 3000.0],
+    ];
+    for (i, c) in coords.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i < 2 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let w = [100000.0, 300000.0];
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal: vec![
+            NodalLoad::manual(NodeId(2), [0.0, 0.0, -w[0], 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [0.0, 0.0, -w[1], 0.0, 0.0, 0.0]),
+        ],
+        member: vec![],
+    });
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let dm = gen.stories[1].dynamic_mass.expect("動的質量");
+
+    let w_sum = w[0] + w[1];
+    assert!(
+        (dm.mass_equiv_weight_n - w_sum).abs() < 1e-6,
+        "w_sum={}",
+        dm.mass_equiv_weight_n
+    );
+    let gx = (w[0] * coords[2][0] + w[1] * coords[3][0]) / w_sum;
+    let gy = (w[0] * coords[2][1] + w[1] * coords[3][1]) / w_sum;
+    assert!(
+        (dm.center_xy_mm[0] - gx).abs() < 1e-6,
+        "gx={}",
+        dm.center_xy_mm[0]
+    );
+    assert!(
+        (dm.center_xy_mm[1] - gy).abs() < 1e-6,
+        "gy={}",
+        dm.center_xy_mm[1]
+    );
+    // J = Σ (w/g)·((x−gx)² + (y−gy)²)。重心まわりで直接算定する。
+    let j = (w[0] * ((coords[2][0] - gx).powi(2) + (coords[2][1] - gy).powi(2))
+        + w[1] * ((coords[3][0] - gx).powi(2) + (coords[3][1] - gy).powi(2)))
+        / GRAVITY_MM_S2;
+    assert!(
+        (dm.inertia_t_mm2 - j).abs() < 1e-9 * j,
+        "J={} expected={}",
+        dm.inertia_t_mm2,
+        j
+    );
+}
+
 /// `model` の主架構線材（ダンパー要素を除く）が解析の質量行列へ与える総質量相当の
 /// 重量 [N]。実装（`analysis_mass_per_length`）と同じ [`Model::element_mass_properties`]
 /// から求める。
@@ -4011,6 +4197,7 @@ fn split_column_model() -> Model {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
     model
 }
@@ -4057,6 +4244,7 @@ fn test_predefined_stories_drive_the_assignment() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
@@ -4086,6 +4274,7 @@ fn test_story_without_floor_nodes_gets_no_diaphragm() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
     // レベル 10500 には節点がない（区間 (3500, 10500] には z=7000 の節点が入る）。
     model.stories.push(Story {
@@ -4097,6 +4286,7 @@ fn test_story_without_floor_nodes_gets_no_diaphragm() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
@@ -4140,6 +4330,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
         Story {
             id: StoryId(1),
@@ -4150,6 +4341,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
     ];
 
@@ -4165,6 +4357,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
         legacy.stories[0].clone(),
         legacy.stories[1].clone(),

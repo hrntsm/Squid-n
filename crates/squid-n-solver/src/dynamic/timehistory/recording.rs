@@ -629,6 +629,7 @@ mod tests {
                     node_ids: vec![NodeId(0)],
                     seismic_weight: None,
                     weight_override: None,
+                    dynamic_mass: None,
                 },
                 Story {
                     level_kind: Default::default(),
@@ -639,6 +640,7 @@ mod tests {
                     node_ids: vec![NodeId(1)],
                     seismic_weight: Some(1000.0),
                     weight_override: None,
+                    dynamic_mass: None,
                 },
                 Story {
                     level_kind: Default::default(),
@@ -649,6 +651,7 @@ mod tests {
                     node_ids: vec![NodeId(2)],
                     seismic_weight: Some(1000.0),
                     weight_override: None,
+                    dynamic_mass: None,
                 },
             ],
             ..Default::default()

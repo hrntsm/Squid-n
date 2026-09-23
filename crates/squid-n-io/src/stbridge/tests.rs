@@ -58,6 +58,7 @@ fn representative_model() -> Model {
         node_ids: vec![NodeId(2), NodeId(3)],
         seismic_weight: None,
         weight_override: None,
+        dynamic_mass: None,
     });
     m.materials.push(sn400b(0));
     // 柱用・梁用で別断面（共有断面の分割を避け、意味的往復を単純化）。

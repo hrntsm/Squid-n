@@ -200,6 +200,7 @@ fn story_frame_includes_columns_below() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let f = build_frame(&m, FrameTarget::Story(story)).expect("構面");

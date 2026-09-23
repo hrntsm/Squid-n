@@ -249,6 +249,7 @@ mod tests {
             weight_override: None,
             structure: squid_n_core::model::StoryStructure::default(),
             level_kind: squid_n_core::model::StoryLevelKind::default(),
+            dynamic_mass: None,
         }
     }
 
