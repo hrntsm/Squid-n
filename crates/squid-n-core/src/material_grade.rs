@@ -33,17 +33,6 @@ fn bucket2(t: f64, le40: f64, gt40: f64) -> f64 {
     }
 }
 
-/// 板厚 3 区分（`t<=40` / `40<t<=75` / `75<t<=100`）の F 値を返す（SM520 用）。
-fn bucket3(t: f64, le40: f64, le75: f64, gt75: f64) -> f64 {
-    if t <= 40.0 {
-        le40
-    } else if t <= 75.0 {
-        le75
-    } else {
-        gt75
-    }
-}
-
 /// 鋼材グレード一覧（前方一致の探索対象。`SN490B` のような接尾辞付き名称を
 /// 解決するため、[`steel_f_value_prefix`] は最長一致のグレードを選ぶ）。
 pub const STEEL_GRADES: &[&str] = &[
@@ -54,8 +43,7 @@ pub const STEEL_GRADES: &[&str] = &[
 
 /// 鋼材の基準強度 F [N/mm²]（完全一致、板厚 [mm] 区分対応。H12 建告第2464号ほか）。
 ///
-/// JIS 規格品は厚さ 40mm 以下 / 40mm 超 100mm 以下の 2 区分
-/// （SM520 のみ 40/75/100mm の 3 区分）。大臣認定品（BCR/BCP・TMCP・SA440・LY）は
+/// JIS 規格品は厚さ 40mm 以下 / 40mm 超の 2 区分（SM520 を含む）。大臣認定品（BCR/BCP・TMCP・SA440・LY）は
 /// 板厚区分を持たない。100mm を超える板厚は規定がないため最終区分値を
 /// そのまま用いる（非保守的になり得るため実運用では要確認）。
 ///
@@ -69,7 +57,7 @@ pub fn steel_f_value(grade: &str, thickness: f64) -> Option<f64> {
         "SM490" | "SN490" | "STK490" | "STKN490" | "STKR490" | "SNR490" => {
             Some(bucket2(thickness, 325.0, 295.0))
         }
-        "SM520" => Some(bucket3(thickness, 355.0, 335.0, 325.0)),
+        "SM520" => Some(bucket2(thickness, 355.0, 335.0)),
         "BCR295" => Some(295.0),
         "BCR235" => Some(235.0),
         "BCP235" => Some(235.0),
@@ -491,7 +479,7 @@ mod tests {
     }
 
     /// 板厚 40mm 超の低減（JIS 規格品）と、TMCP・SA440・LY・BCR/BCP が
-    /// 板厚によらず一定であることを確認する。
+    /// 板厚によらず一定であることを確認する。SM520 は 40mm 超が板厚によらず 335 であること。
     #[test]
     fn test_steel_f_value_gt40() {
         assert_eq!(steel_f_value("SS400", 41.0), Some(215.0));
@@ -499,7 +487,8 @@ mod tests {
         assert_eq!(steel_f_value("SN490", 41.0), Some(295.0));
         assert_eq!(steel_f_value("SM520", 41.0), Some(335.0));
         assert_eq!(steel_f_value("SM520", 75.0), Some(335.0));
-        assert_eq!(steel_f_value("SM520", 76.0), Some(325.0));
+        assert_eq!(steel_f_value("SM520", 76.0), Some(335.0));
+        assert_eq!(steel_f_value("SM520", 100.0), Some(335.0));
         for g in [
             "TMCP325", "TMCP355", "TMCP385", "TMCP440", "SA440", "BCR295", "LY225",
         ] {
