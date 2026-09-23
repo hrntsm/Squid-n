@@ -231,8 +231,10 @@ fn rc_column_rect_props(
     if b <= 0.0 || d <= 0.0 || rebar.is_unset() || rebar.main_dia <= 0.0 {
         return None;
     }
-    let (edge, aw, shear_legs) = match direction {
+    let (b_dir, d_dir, edge, aw, shear_legs) = match direction {
         RcDirection::Strong => (
+            b,
+            d,
             if tension_is_top {
                 RectEdge::Top
             } else {
@@ -241,16 +243,16 @@ fn rc_column_rect_props(
             rebar.aw_x_mm2(),
             rebar.hoop.legs_x,
         ),
-        RcDirection::Weak => (RectEdge::Left, rebar.aw_y_mm2(), rebar.hoop.legs_y),
+        RcDirection::Weak => (d, b, RectEdge::Left, rebar.aw_y_mm2(), rebar.hoop.legs_y),
     };
     let steel = rebar.edge_steel(edge, b, d);
     if steel.effective_depth_mm <= 0.0 {
         return None;
     }
-    let (be, n_s) = ductility_be_ns_from(b, rebar.cover, rebar.hoop.dia, shear_legs, needs_be);
+    let (be, n_s) = ductility_be_ns_from(b_dir, rebar.cover, rebar.hoop.dia, shear_legs, needs_be);
     Some(RcBarProps {
-        b_dir: b,
-        d_dir: d,
+        b_dir,
+        d_dir,
         at: steel.area_mm2,
         ag: rebar.total_main_area(),
         d_eff: steel.effective_depth_mm,
@@ -261,7 +263,7 @@ fn rc_column_rect_props(
         shear_dia: rebar.hoop.dia,
         shear_pitch: rebar.hoop.pitch,
         shear_legs,
-        pw: pw_from_aw(aw, b, rebar.hoop.pitch),
+        pw: pw_from_aw(aw, b_dir, rebar.hoop.pitch),
         be,
         n_s,
     })
@@ -458,11 +460,15 @@ mod tests {
     fn test_rc_column_rect_strong_props() {
         let p = rc_bar_props(&column_rect_shape(), RcDirection::Strong, true, false).unwrap();
         let a1 = one_bar_area(22.0);
+        let a10 = one_bar_area(10.0);
+        assert!((p.b_dir - 600.0).abs() < 1e-9);
+        assert!((p.d_dir - 700.0).abs() < 1e-9);
         assert!((p.at - 4.0 * a1).abs() < 1e-9);
         assert!((p.ag - 10.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 2);
+        assert!((p.pw - 2.0 * a10 / (600.0 * 100.0)).abs() < 1e-15);
     }
 
     #[test]
@@ -470,10 +476,16 @@ mod tests {
         let p = rc_bar_props(&column_rect_shape(), RcDirection::Weak, true, false).unwrap();
         let a1 = one_bar_area(22.0);
         let a10 = one_bar_area(10.0);
+        // 旧 RcRect と同じく弱軸は b_dir=d, d_dir=b に入れ替える。
+        assert!((p.b_dir - 700.0).abs() < 1e-9);
+        assert!((p.d_dir - 600.0).abs() < 1e-9);
         assert!((p.at - 3.0 * a1).abs() < 1e-9);
+        assert!((p.ag - 10.0 * a1).abs() < 1e-9);
+        assert!((p.dt - 61.0).abs() < 1e-9);
+        assert!((p.d_eff - 539.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 3);
         assert_eq!(p.shear_legs, 3);
-        assert!((p.pw - 3.0 * a10 / (600.0 * 100.0)).abs() < 1e-15);
+        assert!((p.pw - 3.0 * a10 / (700.0 * 100.0)).abs() < 1e-15);
     }
 
     #[test]
