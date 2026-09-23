@@ -36,6 +36,7 @@ use time_history::{fundamental_omega, solve_tridiagonal};
 mod tests {
     use super::*;
     use crate::statics::analysis::SeismicDir;
+    use squid_n_core::units::GRAVITY_MM_S2;
 
     #[test]
     fn test_fit_trilinear_equal_area_and_endpoints() {
@@ -185,7 +186,11 @@ mod tests {
                     weight_override: None,
                     level_kind: Default::default(),
                     structure: Default::default(),
-                    dynamic_mass: None,
+                    dynamic_mass: Some(squid_n_core::model::StoryDynamicMass {
+                        mass_equiv_weight_n: 1.0e6,
+                        center_xy_mm: [0.0, 0.0],
+                        inertia_t_mm2: 0.0,
+                    }),
                 },
             ],
             ..Default::default()
@@ -252,13 +257,76 @@ mod tests {
             termination: crate::nonlinear::pushover::PushoverTermination::TargetReached,
         };
 
-        let lm = build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75);
+        let lm = build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75)
+            .expect("動的質量が算定済みなら成功する");
         assert_eq!(lm.stories.len(), 1);
         let k1 = lm.stories[0].skeleton.k1;
         assert!(
             (k1 - 100_000.0).abs() < 1.0,
             "長期のみ載荷点の残留変形を原点補正した純粋な弾性剛性になっていること: k1={k1}"
         );
+        // 層質量は物理質量相当重量 / g。
+        let expected = 1.0e6 / GRAVITY_MM_S2;
+        assert!(
+            (lm.stories[0].mass - expected).abs() < 1e-9 * expected,
+            "mass={}",
+            lm.stories[0].mass
+        );
+    }
+
+    /// 層の動的質量が未算定（`None`）なら `build_lumped_mass_model` はエラーを返す
+    /// （設計用地震重量へのフォールバックはしない）。
+    #[test]
+    fn test_build_lumped_mass_model_rejects_unset_dynamic_mass() {
+        use squid_n_core::model::{Model, Story};
+
+        let model = Model {
+            stories: vec![
+                Story {
+                    id: StoryId(0),
+                    name: "1F".to_string(),
+                    elevation: 0.0,
+                    node_ids: Vec::new(),
+                    seismic_weight: None,
+                    weight_override: None,
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                    dynamic_mass: None,
+                },
+                Story {
+                    id: StoryId(1),
+                    name: "2F".to_string(),
+                    elevation: 3000.0,
+                    node_ids: Vec::new(),
+                    seismic_weight: Some(1.0e6),
+                    weight_override: None,
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                    dynamic_mass: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let pushover = crate::nonlinear::pushover::PushoverResult {
+            steps: Vec::new(),
+            capacity_curve: Vec::new(),
+            hinges: Vec::new(),
+            shear_yields: Vec::new(),
+            mechanism: crate::nonlinear::pushover::MechanismType::Overall,
+            qu: 0.0,
+            member_response: Vec::new(),
+            control: crate::nonlinear::pushover::PushoverControl::default(),
+            member_history: Vec::new(),
+            fiber_states: Vec::new(),
+            termination: crate::nonlinear::pushover::PushoverTermination::TargetReached,
+        };
+        let err = build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            squid_n_math::solver::SolveError::InvalidInput(_)
+        ));
+        assert!(err.to_string().contains("動的質量が未算定"), "{err}");
     }
 
     #[test]
