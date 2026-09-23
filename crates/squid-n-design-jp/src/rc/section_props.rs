@@ -13,7 +13,9 @@
 use squid_n_core::model::Section;
 pub(crate) use squid_n_core::rc_rebar_geom::{pw_ratio, tension_dt};
 pub(crate) use squid_n_core::section_shape::{bar_set_area, one_bar_area};
-use squid_n_core::section_shape::{BarSet, RcRebar};
+use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+
+use crate::ultimate::rc_props::{rc_bar_props, RcDirection};
 
 /// 検討方向 1 軸分の断面諸元。
 #[derive(Clone, Copy)]
@@ -90,5 +92,241 @@ pub(crate) fn circle_axis_props(d_full: f64, rebar: &RcRebar) -> AxisProps {
         ac: at,
         j: 7.0 * d / 8.0,
         pw: pw_ratio(&rebar.shear, b),
+    }
+}
+
+/// 断面形状から検討方向 1 軸分の断面諸元を引く。
+///
+/// 中立型 [`rc_bar_props`] に委譲し、未対応形状・未入力・有効せい 0 以下なら `None`。
+/// `tension_is_top` は梁の曲げ引張側（柱・円形柱では無視）。`j = 7d/8`。
+#[allow(dead_code)]
+pub(crate) fn axis_props_from_shape(
+    shape: &SectionShape,
+    direction: RcDirection,
+    tension_is_top: bool,
+) -> Option<AxisProps> {
+    let p = rc_bar_props(shape, direction, tension_is_top, false)?;
+    Some(AxisProps {
+        b: p.b_dir,
+        d_full: p.d_dir,
+        dt: p.dt,
+        d: p.d_eff,
+        at: p.at,
+        ac: p.ac,
+        j: 7.0 * p.d_eff / 8.0,
+        pw: p.pw,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::{
+        BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+        RectColumnHoop, ShearBar,
+    };
+
+    fn old_rect_rebar() -> RcRebar {
+        RcRebar {
+            main_x: BarSet {
+                count: 6,
+                dia: 22.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        }
+    }
+
+    fn old_rect_shape() -> SectionShape {
+        SectionShape::RcRect {
+            b: 300.0,
+            d: 600.0,
+            rebar: old_rect_rebar(),
+        }
+    }
+
+    fn old_rect_section() -> Section {
+        let mut sec = Section::zero(SectionId(0), "test".to_string());
+        sec.width = 300.0;
+        sec.depth = 600.0;
+        sec
+    }
+
+    fn beam_shape() -> SectionShape {
+        SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4, 2],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+
+    fn column_rect_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 3,
+                },
+            },
+        }
+    }
+
+    fn column_circle_shape() -> SectionShape {
+        SectionShape::RcColumnCircle {
+            d: 600.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 8,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn test_axis_props_from_shape_old_rect_matches_legacy() {
+        let shape = old_rect_shape();
+        let rebar = old_rect_rebar();
+        let sec = old_rect_section();
+        let a1 = one_bar_area(22.0);
+        let a10 = one_bar_area(10.0);
+
+        let strong = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
+        assert!((strong.b - 300.0).abs() < 1e-9);
+        assert!((strong.d_full - 600.0).abs() < 1e-9);
+        assert!((strong.dt - 61.0).abs() < 1e-9);
+        assert!((strong.d - 539.0).abs() < 1e-9);
+        assert!((strong.at - 3.0 * a1).abs() < 1e-9);
+        assert!((strong.ac - 3.0 * a1).abs() < 1e-9);
+        assert!((strong.j - 7.0 * 539.0 / 8.0).abs() < 1e-9);
+        assert!((strong.pw - 2.0 * a10 / (300.0 * 100.0)).abs() < 1e-15);
+        let legacy_strong = rect_axis_props_strong(&sec, &rebar);
+        assert_eq!(strong.b, legacy_strong.b);
+        assert_eq!(strong.d_full, legacy_strong.d_full);
+        assert_eq!(strong.dt, legacy_strong.dt);
+        assert_eq!(strong.d, legacy_strong.d);
+        assert_eq!(strong.at, legacy_strong.at);
+        assert_eq!(strong.ac, legacy_strong.ac);
+        assert_eq!(strong.j, legacy_strong.j);
+        assert_eq!(strong.pw, legacy_strong.pw);
+
+        let weak = axis_props_from_shape(&shape, RcDirection::Weak, true).unwrap();
+        assert!((weak.b - 600.0).abs() < 1e-9);
+        assert!((weak.d_full - 300.0).abs() < 1e-9);
+        assert!((weak.dt - 61.0).abs() < 1e-9);
+        assert!((weak.d - 239.0).abs() < 1e-9);
+        assert!((weak.at - 2.0 * a1).abs() < 1e-9);
+        assert!((weak.ac - 2.0 * a1).abs() < 1e-9);
+        let legacy_weak = rect_axis_props_weak(&sec, &rebar);
+        assert_eq!(weak.b, legacy_weak.b);
+        assert_eq!(weak.d_full, legacy_weak.d_full);
+        assert_eq!(weak.dt, legacy_weak.dt);
+        assert_eq!(weak.d, legacy_weak.d);
+        assert_eq!(weak.at, legacy_weak.at);
+        assert_eq!(weak.ac, legacy_weak.ac);
+        assert_eq!(weak.j, legacy_weak.j);
+        assert_eq!(weak.pw, legacy_weak.pw);
+    }
+
+    #[test]
+    fn test_axis_props_from_shape_beam_top_tension() {
+        let p = axis_props_from_shape(&beam_shape(), RcDirection::Strong, true).unwrap();
+        let a1 = one_bar_area(22.0);
+        let dt = 61.0 + 2.0 / 6.0 * 55.0;
+        assert!((p.at - 6.0 * a1).abs() < 1e-9);
+        assert!((p.ac - 5.0 * a1).abs() < 1e-9);
+        assert!((p.dt - dt).abs() < 1e-9);
+        assert!((p.d - (600.0 - dt)).abs() < 1e-9);
+        assert!((p.j - 7.0 * (600.0 - dt) / 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_axis_props_from_shape_column_rect() {
+        let a1 = one_bar_area(22.0);
+        let strong = axis_props_from_shape(&column_rect_shape(), RcDirection::Strong, true).unwrap();
+        assert!((strong.at - 4.0 * a1).abs() < 1e-9);
+        assert!((strong.ac - 4.0 * a1).abs() < 1e-9);
+
+        let weak = axis_props_from_shape(&column_rect_shape(), RcDirection::Weak, true).unwrap();
+        assert!((weak.b - 700.0).abs() < 1e-9);
+        assert!((weak.d_full - 600.0).abs() < 1e-9);
+        assert!((weak.at - 3.0 * a1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_axis_props_from_shape_circle_matches_props() {
+        let shape = column_circle_shape();
+        let p = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
+        let r = rc_bar_props(&shape, RcDirection::Strong, true, false).unwrap();
+        let side = (600.0 / 2.0) * std::f64::consts::PI.sqrt();
+        assert!((p.b - side).abs() < 1e-9);
+        assert!((p.b - r.b_dir).abs() < 1e-12);
+        assert!((p.d_full - r.d_dir).abs() < 1e-12);
+        assert!((p.dt - r.dt).abs() < 1e-12);
+        assert!((p.d - r.d_eff).abs() < 1e-12);
+        assert!((p.at - r.at).abs() < 1e-12);
+        assert!((p.ac - r.ac).abs() < 1e-12);
+        assert!((p.pw - r.pw).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_axis_props_from_shape_none() {
+        let unset_beam = SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![],
+                bottom: vec![],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+        assert!(axis_props_from_shape(&unset_beam, RcDirection::Strong, true).is_none());
+        assert!(axis_props_from_shape(&unset_beam, RcDirection::Weak, true).is_none());
+
+        let steel = SectionShape::SteelH {
+            height: 500.0,
+            width: 200.0,
+            web_thick: 9.0,
+            flange_thick: 16.0,
+        };
+        assert!(axis_props_from_shape(&steel, RcDirection::Strong, true).is_none());
     }
 }

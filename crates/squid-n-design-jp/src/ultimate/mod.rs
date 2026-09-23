@@ -24,7 +24,7 @@ mod geometry;
 mod options;
 mod rc_check;
 #[allow(dead_code)]
-mod rc_props;
+pub(crate) mod rc_props;
 mod rc_strength;
 
 pub use cft::{

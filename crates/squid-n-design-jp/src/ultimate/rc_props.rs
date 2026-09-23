@@ -11,7 +11,7 @@ use squid_n_core::section_shape::{
 
 /// RC 検定の検討方向。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum RcDirection {
+pub(crate) enum RcDirection {
     /// 強軸方向。
     Strong,
     /// 弱軸方向。
@@ -20,16 +20,17 @@ pub(super) enum RcDirection {
 
 /// RC 検定方向の諸元。旧 RcRebar 経路と新実配筋モデル経路を共通化する。
 ///
-/// `b_dir`・`d_dir` は検討方向の幅・せい [mm]、`at`・`ag` は引張側・全主筋断面積 [mm²]、
-/// `dt` は引張縁〜引張鉄筋重心 [mm]、`d_eff` は有効せい [mm]、`pw` は検討方向の
-/// せん断補強筋比。`top_bar` は梁の上端主筋を引張側とする場合 true で、付着検定の
-/// 上端筋低減（`αt`）に用いる。`be`・`n_s` は靭性指針式のトラス機構有効幅 [mm]・
+/// `b_dir`・`d_dir` は検討方向の幅・せい [mm]、`at`・`ac`・`ag` は引張側・圧縮側・
+/// 全主筋断面積 [mm²]、`dt` は引張縁〜引張鉄筋重心 [mm]、`d_eff` は有効せい [mm]、
+/// `pw` は検討方向のせん断補強筋比。`top_bar` は梁の上端主筋を引張側とする場合 true で、
+/// 付着検定の上端筋低減（`αt`）に用いる。`be`・`n_s` は靭性指針式のトラス機構有効幅 [mm]・
 /// 中子筋本数で、不要時は 0。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct RcBarProps {
+pub(crate) struct RcBarProps {
     pub b_dir: f64,
     pub d_dir: f64,
     pub at: f64,
+    pub ac: f64,
     pub ag: f64,
     pub d_eff: f64,
     pub dt: f64,
@@ -50,7 +51,7 @@ pub(super) struct RcBarProps {
 /// 対象外（RC 以外・対応しない形状）・未入力・有効せいが 0 以下なら `None`。
 /// `tension_is_top` は梁の曲げ引張側で、柱・円形柱では無視する。
 /// `shear_method_needs_be` が true のときのみ靭性指針式の `be`・`n_s` を算定する。
-pub(super) fn rc_bar_props(
+pub(crate) fn rc_bar_props(
     shape: &SectionShape,
     direction: RcDirection,
     tension_is_top: bool,
@@ -161,6 +162,7 @@ fn rc_rect_props(
         b_dir,
         d_dir,
         at,
+        ac: at,
         ag,
         d_eff,
         dt,
@@ -192,7 +194,8 @@ fn rc_beam_rect_props(
     if b <= 0.0 || d <= 0.0 || rebar.is_unset() || rebar.main_dia <= 0.0 {
         return None;
     }
-    let steel = rebar.bending_steel(d, tension_is_top).tension;
+    let bending = rebar.bending_steel(d, tension_is_top);
+    let steel = bending.tension;
     if steel.effective_depth_mm <= 0.0 {
         return None;
     }
@@ -207,6 +210,7 @@ fn rc_beam_rect_props(
         b_dir: b,
         d_dir: d,
         at: steel.area_mm2,
+        ac: bending.compression.area_mm2,
         ag: rebar.total_main_area(),
         d_eff: steel.effective_depth_mm,
         dt: steel.centroid_from_edge_mm,
@@ -258,6 +262,7 @@ fn rc_column_rect_props(
         b_dir,
         d_dir,
         at: steel.area_mm2,
+        ac: steel.area_mm2,
         ag: rebar.total_main_area(),
         d_eff: steel.effective_depth_mm,
         dt: steel.centroid_from_edge_mm,
@@ -301,6 +306,7 @@ fn rc_column_circle_props(
         b_dir: side,
         d_dir: side,
         at,
+        ac: at,
         ag: rebar.total_main_area(),
         d_eff,
         dt,
@@ -409,6 +415,7 @@ mod tests {
         assert!((p.b_dir - 400.0).abs() < 1e-9);
         assert!((p.d_dir - 600.0).abs() < 1e-9);
         assert!((p.at - 4.0 * a1).abs() < 1e-9);
+        assert!((p.ac - 4.0 * a1).abs() < 1e-9);
         assert!((p.ag - 12.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert!((p.d_eff - 539.0).abs() < 1e-9);
@@ -444,6 +451,7 @@ mod tests {
         let p = rc_bar_props(&beam_shape(), RcDirection::Strong, true, false).unwrap();
         let a1 = one_bar_area(22.0);
         assert!((p.at - 6.0 * a1).abs() < 1e-9);
+        assert!((p.ac - 5.0 * a1).abs() < 1e-9);
         assert!((p.dt - (61.0 + 2.0 / 6.0 * 55.0)).abs() < 1e-9);
         assert!((p.ag - 11.0 * a1).abs() < 1e-9);
         assert_eq!(p.n_tension, 6);
@@ -455,6 +463,7 @@ mod tests {
         let p = rc_bar_props(&beam_shape(), RcDirection::Strong, false, false).unwrap();
         let a1 = one_bar_area(22.0);
         assert!((p.at - 5.0 * a1).abs() < 1e-9);
+        assert!((p.ac - 6.0 * a1).abs() < 1e-9);
         assert!((p.dt - (61.0 + 2.0 / 5.0 * 55.0)).abs() < 1e-9);
         assert_eq!(p.n_tension, 5);
         assert!(!p.top_bar);
