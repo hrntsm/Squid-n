@@ -7,6 +7,7 @@ use squid_n_core::model::{
     RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape,
     WallRegion,
 };
+use squid_n_core::section_shape::SectionShape;
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
 fn two_story_model() -> Model {
@@ -1218,6 +1219,294 @@ fn test_both_mass_methods_equal_with_steel_weight_factor() {
         (m[0] - physical_half / GRAVITY_MM_S2).abs() < 1e-9 * (physical_half / GRAVITY_MM_S2),
         "動的質量に factor が物理ベースで掛かっていない: {}",
         m[0]
+    );
+}
+
+/// 基部 z=0・上端 z=3000 の CFT 柱 1 本（鋼管 400×400×16、充填 Fc36）。
+/// 主材料は鋼材区分＋ `fc`。質量行列は鋼管と充填コンクリートを別領域で計上する。
+fn cft_column_model() -> Model {
+    let shape = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    };
+    let mut section = shape.to_section(SectionId(0), "CFT".into());
+    section.material = Some(MaterialId(0));
+    let mut model = Model::default();
+    for (id, z, restraint) in [(0u32, 0.0, Dof6Mask::FIXED), (1, 3000.0, Dof6Mask::FREE)] {
+        model.nodes.push(Node {
+            id: NodeId(id),
+            coord: [0.0, 0.0, z],
+            restraint,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(section);
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "CFT".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: Some(36.0),
+        fy: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model
+}
+
+/// CFT 柱でも両 MassMethod の公称並進総動的質量が一致し、物理質量を二重計上しない
+/// （`mass_equiv` の躯体分は質量行列の鋼管＋充填に factor を掛けた値になる）。
+#[test]
+fn test_both_mass_methods_equal_for_cft_column() {
+    assert_mass_methods_consistent(&cft_column_model());
+}
+
+/// CFT 柱の物理質量は鋼管部に鉄骨重量割増を掛け、充填コンクリート部（γC）には
+/// 掛けない。factor=1.3 で LumpedOnly の質点質量が期待値に一致する。
+#[test]
+fn test_cft_steel_weight_factor_applies_to_steel_mass_only() {
+    let mut model = cft_column_model();
+    model.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+    assert_mass_methods_consistent(&model);
+
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let m = lumped.rep_nodes[1].mass.expect("質点質量");
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let expected = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 / 2.0;
+    assert!(
+        (m[0] - expected).abs() < 1e-9 * expected,
+        "質点質量={} expected={expected}",
+        m[0]
+    );
+}
+
+/// CFT 柱の質点系用の物理質量相当重量（`Story::dynamic_mass.mass_equiv_weight_n`）も、
+/// 鋼管部に鉄骨重量割増を掛け充填コンクリート部（γC）には掛けない値になること。
+/// 質量方式に依らず全量を階ごとに集計する（[ADR-0034]）。
+#[test]
+fn test_cft_dynamic_mass_weight_is_steel_factor_plus_core() {
+    let mut model = cft_column_model();
+    model.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let dm = gen.stories[1].dynamic_mass.expect("階の動的質量");
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    // 柱は上下節点へ 1/2 ずつ配分する。躯体分は鋼管部×factor ＋ 充填コンクリート部。
+    let expected = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 * GRAVITY_MM_S2 / 2.0;
+    assert!(
+        (dm.mass_equiv_weight_n - expected).abs() < 1e-9 * expected,
+        "物理質量相当重量={} expected={expected}",
+        dm.mass_equiv_weight_n
+    );
+}
+
+/// 自重同期済み DL（[`generate_stories_with_synced_self_weight`]）でも、CFT 柱の質点質量が
+/// `node_weight − design_sw + physical_sw` の置換で「鋼管部×factor ＋ 充填コンクリート部」
+/// の物理質量になる。
+#[test]
+fn test_synced_self_weight_cft_column_mass_excludes_core_from_factor() {
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let mut model = cft_column_model();
+    model.load_cfg = Some(cfg.clone());
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &cfg);
+    model.load_cases.clear();
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let gen =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let physical_half = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 / 2.0;
+    let m = gen.rep_nodes[1].mass.expect("自重同期済み DL の質点質量");
+    assert!(
+        (m[0] - physical_half).abs() < 1e-9 * physical_half,
+        "質点質量={} expected={}",
+        m[0],
+        physical_half
+    );
+}
+
+/// 水平 CFT 梁 1 本（節点 2-3, z=3000, 700×400×16, 充填 Fc36）と自重ゼロの柱 2 本を持つ
+/// 1 層モデル。柱せい 800 で梁のフェイス控除 400×2、スラブ厚 50 で梁のスラブ厚控除を
+/// 生じさせる。
+fn horizontal_cft_beam_model() -> Model {
+    let len = 6000.0;
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [len, 0.0, 0.0],
+        [0.0, 0.0, 3000.0],
+        [len, 0.0, 3000.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if c[2] == 0.0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut beam = SectionShape::CftBox {
+        height: 700.0,
+        width: 400.0,
+        thick: 16.0,
+    }
+    .to_section(SectionId(0), "CFT梁".into());
+    beam.material = Some(MaterialId(0));
+    model.sections.push(beam);
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "柱(重量なし)".into(),
+        area: 0.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 800.0,
+        width: 800.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "CFT".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: Some(36.0),
+        fy: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(2), NodeId(3)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    for (id, a, b) in [(1u32, 0u32, 2u32), (2, 1, 3)] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(1)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.slab_thickness = 50.0;
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(2), NodeId(3)],
+    ));
+    model
+}
+
+/// 水平 CFT 梁でも、設計重量はスラブ厚控除後の鋼管部×factor ＋ 充填部をフェイス間長で、
+/// 物理質量は節点間長で「鋼管部×factor ＋ 充填部」を算定する（二重計上しない）。
+#[test]
+fn test_horizontal_cft_beam_self_weight_with_face_and_slab_deduction() {
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let mut model = horizontal_cft_beam_model();
+    model.load_cfg = Some(cfg);
+
+    let as_area: f64 = 400.0 * 700.0 - 368.0 * 668.0;
+    let ac_area: f64 = 368.0 * 668.0;
+    let self_weight_area = as_area - 400.0 * 50.0;
+    let eff_len = 6000.0 - 400.0 - 400.0;
+    let design = (78.5e-6 * self_weight_area * 1.3 + 23.0e-6 * ac_area) * eff_len;
+    let gen = generate_stories(&model, None).unwrap();
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - design).abs() < 1e-9 * design,
+        "地震用重量={} expected={design}",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let mass_equiv = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 6000.0 * GRAVITY_MM_S2;
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let total_mass: f64 = lumped
+        .rep_nodes
+        .iter()
+        .filter_map(|n| n.mass)
+        .map(|m| m[0])
+        .sum();
+    assert!(
+        (total_mass - mass_equiv / GRAVITY_MM_S2).abs() < 1e-9 * (mass_equiv / GRAVITY_MM_S2),
+        "総動的質量={total_mass} expected={}",
+        mass_equiv / GRAVITY_MM_S2
     );
 }
 
