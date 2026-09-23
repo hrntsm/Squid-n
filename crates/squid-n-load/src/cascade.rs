@@ -367,7 +367,7 @@ fn reactions_of(load: &MemberLoadKind, span: f64, end_shares: Option<[f64; 2]>) 
 pub enum SelfWeightBasis {
     /// 設計重量（DL・地震用重量）。鋼材は 78.5 kN/m³、鉄骨割増を掛ける。
     Design,
-    /// 物理質量相当（質量行列・動的解析）。物理密度で算定し、割増を掛けない。
+    /// 物理質量相当（質量行列・動的解析）。物理密度に鉄骨割増を掛ける。
     MassEquiv,
 }
 

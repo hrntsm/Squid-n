@@ -577,7 +577,7 @@ pub fn joist_self_weight_udl(
 }
 
 /// 二次部材小梁の物理質量相当の自重 [N/mm]（質量行列・動的解析用）。
-/// 物理密度（`Material::density` × g）で算定し、鉄骨割増は掛けない。
+/// 物理密度（`Material::density` × g）に鉄骨割増を掛ける（主架構線材と同じ規則）。
 /// 断面または材料が無ければ `None`。
 pub fn joist_mass_equiv_udl(
     model: &Model,
@@ -585,7 +585,16 @@ pub fn joist_mass_equiv_udl(
 ) -> Option<f64> {
     let mat = model.secondary_material(sm)?;
     let sec = model.sections.get(sm.section?.index())?;
-    let w = mat.density * sec.area * GRAVITY_MM_S2;
+    let factor = if mat.fc.is_some() {
+        1.0
+    } else {
+        model
+            .load_cfg
+            .as_ref()
+            .map(|c| c.effective_steel_factor())
+            .unwrap_or(1.0)
+    };
+    let w = mat.density * sec.area * GRAVITY_MM_S2 * factor;
     (w > 0.0).then_some(w)
 }
 

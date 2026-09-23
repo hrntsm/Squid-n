@@ -991,8 +991,10 @@ fn test_line_finish_and_extra_weight_survive_corrected_lumped() {
 }
 
 /// 鉄骨重量割増の増分（factor−1 相当）も質量行列に対応物がないため質点に残る。
+/// 増分は設計重量 78.5 ベースではなく、質量行列（物理密度 7.85）に同じ factor を
+/// 掛けた増分として残る。
 #[test]
-fn test_steel_weight_factor_increment_survives_corrected_lumped() {
+fn test_steel_weight_factor_increment_is_physical_based_in_corrected_lumped() {
     let (len, area) = (4000.0, 90000.0);
     let cfg = LoadCfg {
         steel_weight_factor: 1.3,
@@ -1001,12 +1003,35 @@ fn test_steel_weight_factor_increment_survives_corrected_lumped() {
     let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), Some(cfg));
     let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
     let top = gen.rep_nodes[1].mass.expect("割増増分が質点に残る");
-    let body_design = 78.5e-6 * area * len;
-    let increment = body_design * (1.3 - 1.0) / 2.0;
+    // 質点 = 質量行列（物理密度×g）× (factor − 1) の上端半分。
+    let body_physical = 7.85e-9 * area * len * GRAVITY_MM_S2;
+    let increment = body_physical * (1.3 - 1.0) / 2.0;
     assert!(
         (top[0] - increment / GRAVITY_MM_S2).abs() < 1e-9 * (increment / GRAVITY_MM_S2),
-        "割増増分が質点から消えた: {}",
+        "割増増分が物理質量ベースでない: {}",
         top[0]
+    );
+}
+
+/// 鉄骨重量割増を掛けても両 MassMethod の総動的質量が一致し、`mass_equiv` が
+/// 質量行列×factor（物理質量 7.85 ベース）になる。
+#[test]
+fn test_both_mass_methods_equal_with_steel_weight_factor() {
+    let (len, area) = (4000.0, 90000.0);
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), Some(cfg));
+    assert_mass_methods_consistent(&model);
+
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let m = lumped.rep_nodes[1].mass.expect("質点質量");
+    let physical_half = 7.85e-9 * area * len * GRAVITY_MM_S2 * 1.3 / 2.0;
+    assert!(
+        (m[0] - physical_half / GRAVITY_MM_S2).abs() < 1e-9 * (physical_half / GRAVITY_MM_S2),
+        "動的質量に factor が物理ベースで掛かっていない: {}",
+        m[0]
     );
 }
 
@@ -1231,6 +1256,123 @@ fn test_master_mass_corrected_lumped_does_not_deduct_secondary_member_self_weigh
         "mt={} expected={}",
         mass[0],
         expected_mt
+    );
+}
+
+/// 二次部材（鋼小梁）の設計重量・物理質量の両方に、主架構線材と同じ鉄骨重量割増が
+/// 掛かる。設計は 78.5 kN/m³ ベース、物理質量は物理密度 7.85 t/m³ ベースで、同じ
+/// `factor` を共有する。密度直接算入（story_gen）の経路で確認する。
+///
+/// 小梁の自重だけを見るため、支持柱は断面積 0（自重ゼロ）とする。
+#[test]
+fn test_secondary_joist_steel_weight_factor_applies_to_design_and_mass() {
+    let mut model = Model::default();
+    for (i, c) in [[0.0, 0.0, 0.0], [0.0, 0.0, 3000.0], [2000.0, 0.0, 3000.0]]
+        .iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i == 0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mk_section = |id: SectionId, name: &str, area: f64| Section {
+        id,
+        name: name.into(),
+        area,
+        iy: 1.0e7,
+        iz: 1.0e7,
+        j: 1.0e7,
+        depth: 200.0,
+        width: 100.0,
+        as_y: 4000.0,
+        as_z: 4000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    };
+    model
+        .sections
+        .push(mk_section(SectionId(0), "JOIST", 5000.0));
+    model.sections.push(mk_section(SectionId(1), "ZERO", 0.0));
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "S".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: None,
+    });
+    for (id, a, b) in [(0u32, 0u32, 1u32), (1, 0, 2)] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(1)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(1),
+        kind: SecondaryMemberKind::Joist,
+        ends: squid_n_core::model::SecondaryMemberEnds::Detached([
+            model.nodes[1].coord,
+            model.nodes[2].coord,
+        ]),
+        section: Some(SectionId(0)),
+        name: "J".into(),
+    });
+    model.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+
+    let (area, span, factor) = (5000.0, 2000.0, 1.3);
+    let sm = &model.unassigned_joists[0];
+    let design_udl = crate::floor::joist_self_weight_udl(&model, sm).expect("設計自重");
+    let mass_udl = crate::floor::joist_mass_equiv_udl(&model, sm).expect("物理質量相当");
+    assert!((design_udl - 78.5e-6 * area * factor).abs() < 1e-9 * design_udl);
+    assert!((mass_udl - 7.85e-9 * area * GRAVITY_MM_S2 * factor).abs() < 1e-9 * mass_udl);
+
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let design = 78.5e-6 * area * factor * span;
+    let sw = gen.stories[1].seismic_weight.expect("地震用重量");
+    assert!(
+        (sw - design).abs() < 1e-6 * design,
+        "設計重量に factor が掛かっていない: {sw} expected={design}"
+    );
+    let physical_mass = 7.85e-9 * area * factor * span;
+    let m = gen.rep_nodes[1].mass.expect("質点質量");
+    assert!(
+        (m[0] - physical_mass).abs() < 1e-9 * physical_mass,
+        "物理質量に factor が掛かっていない: {} expected={physical_mass}",
+        m[0]
     );
 }
 

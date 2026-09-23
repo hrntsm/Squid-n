@@ -115,13 +115,13 @@ pub(crate) enum SelfWeightItem {
     /// - `extra_bottom_load` は下端節点だけへ加算する設計重量 [N]（通常部の外側。
     ///   柱以外・S 柱・下階柱ありは 0）。
     /// - `mass_equiv` は通常部の物理質量相当の重量 [N]。躯体分は解析の質量行列と同じ
-    ///   幾何（総断面・節点間長）で物理密度（×g）により算定し、付加重量（仕上げ・
-    ///   付加線重量・割増増分）はそのまま残す。
+    ///   幾何（総断面・節点間長）で物理密度（×g）により算定し、鉄骨重量割増 `factor` を
+    ///   乗じる。付加重量（仕上げ・付加線重量）はそのまま残す。
     /// - `extra_bottom_mass_equiv` は `extra_bottom_load` に対応する物理質量相当 [N]。
     /// - `matrix_mass_equiv` は通常部のうち解析の質量行列（部材密度質量）が受け持つ分 [N]。
-    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分が
-    ///   `mass_equiv` の躯体分と一致するため `mass_equiv − matrix_mass_equiv` は
-    ///   付加重量・割増増分だけになる。
+    ///   付加重量・下端付加分は質量行列に対応物がないため含めない。躯体分の割増増分
+    ///   (`matrix_mass_equiv × (factor−1)`) と付加重量が `mass_equiv − matrix_mass_equiv`
+    ///   に残る。
     /// - `is_column` は 2 節点の鉛直 `ElementKind::Beam`（ブレースは false）。
     Line {
         elem_idx: usize,
@@ -159,7 +159,8 @@ pub(crate) enum SelfWeightItem {
 ///
 /// - 線材（柱・梁・ブレース, `ElementKind::Beam`/`Brace`）: 設計重量（設計単位体積
 ///   重量×A×L。付加線重量・仕上げを含む）と物理質量相当（質量行列と同じ総断面・
-///   節点間長で物理密度×g を算定し、付加重量を足したもの）を別々に持つ。
+///   節点間長で物理密度×g を算定し、鉄骨重量割増を掛けて付加重量を足したもの）を
+///   別々に持つ。
 ///   §1.8: 自重算定長 L は、コンクリート材（`mat.fc` あり = RC/SRC）の水平材（梁）は
 ///   柱面間距離（`len` から両端の柱フェース距離を引いた、負にならない範囲）、鉛直材（柱）は
 ///   床上面から床上面まで（＝節点間距離。フェイス控除しない）、鋼材（S 梁・柱）は
@@ -174,7 +175,8 @@ pub(crate) enum SelfWeightItem {
 ///   非鉛直 Beam の最大せい [mm] に相当する重量を
 ///   追加自重として下端節点だけへ加算する（通常自重は上下へ 1/2 ずつ。柱以外・S 柱・
 ///   下階柱ありは 0。ブレースは柱とみなさない）。総重量は `w·(L+Dmax)` で保存する。
-///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を乗じ、
+///   ギャップ対応: 鋼材のみ `load_cfg.effective_steel_factor()`（鉄骨重量割増率）を
+///   設計重量と物理質量の両方の躯体分に乗じ（物理質量では増分も物理密度ベース）、
 ///   `load_cfg.extra_line_weight`（耐火被覆等の付加線重量 [N/mm]）・
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
 ///   あれば自重算定長を掛けて加算する。
@@ -317,17 +319,13 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 } else {
                     sec.area
                 };
-                let mut design_per_length =
-                    mat.design_unit_weight_n_per_mm3() * self_weight_area * factor;
-                let mut physical_per_length =
-                    mat.density * self_weight_area * GRAVITY_MM_S2 * factor;
+                let mut extras_per_length = 0.0;
                 if let Some(&(_, lw)) = load_cfg
                     .extra_line_weight
                     .iter()
                     .find(|(id, _)| *id == elem.id)
                 {
-                    design_per_length += lw;
-                    physical_per_length += lw;
+                    extras_per_length += lw;
                 }
                 if let Some(&(_, wf)) = load_cfg
                     .finish_area_weight
@@ -335,14 +333,16 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     .find(|(id, _)| *id == elem.id)
                 {
                     let phi = finish_perimeter(sec.width, sec.depth, is_vertical);
-                    design_per_length += wf * phi;
-                    physical_per_length += wf * phi;
+                    extras_per_length += wf * phi;
                 }
+                let design_per_length =
+                    mat.design_unit_weight_n_per_mm3() * self_weight_area * factor
+                        + extras_per_length;
+                let physical_per_length =
+                    mat.density * self_weight_area * GRAVITY_MM_S2 * factor + extras_per_length;
                 let load = design_per_length * eff_len;
-                let body_design = mat.design_unit_weight_n_per_mm3() * self_weight_area * eff_len;
                 let matrix_mass_equiv = analysis_mass_per_length(model, elem) * len * GRAVITY_MM_S2;
-                let body_physical = matrix_mass_equiv;
-                let mass_equiv = load - body_design + body_physical;
+                let mass_equiv = matrix_mass_equiv * factor + extras_per_length * eff_len;
 
                 let extra_bottom_load = design_per_length * max_depth;
                 let extra_bottom_mass_equiv = physical_per_length * max_depth;

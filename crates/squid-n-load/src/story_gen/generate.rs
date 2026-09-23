@@ -95,8 +95,9 @@ enum SelfWeightMode {
     Density,
     /// `gravity_lcs` のケース内容だけを算入する。モデル自重の置換もしない。
     GravityCasesOnly,
-    /// `gravity_lcs` に自重同期済みの設計自重が含まれる前提で、質量のみ物理質量へ
-    /// 置換する。置換量（設計自重）が `gravity_lcs` に含まれないモデルではエラー。
+    /// 呼び出し側が `gravity_lcs` に自重同期済み DL（`compute_gravity_auto_load_cases` が
+    /// 生成した自動荷重）を含むことを保証する前提で、質量のみ物理質量へ置換する。
+    /// 不整合により置換後の質量相当重量が負になる場合はエラー。
     SyncedGravityCases,
 }
 
@@ -122,8 +123,9 @@ pub fn generate_stories_with_opts(
     generate_stories_impl(model, gravity_lcs, mode, mass_method)
 }
 
-/// `gravity_lcs` に自重同期済みの DL（`compute_gravity_auto_load_cases` が生成した
-/// 自動荷重）が含まれることを呼び出し側が保証すること。含まれない場合はエラー。
+/// 呼び出し側が `gravity_lcs` に自重同期済みの DL（`compute_gravity_auto_load_cases` が
+/// 生成した自動荷重）を含むことを保証すること。不整合により置換後の質量相当重量が
+/// 負になる場合はエラー。
 ///
 /// `gravity_lcs` のケース内容だけを階の設計地震用重量へ算入し、そのうち自重相当分を
 /// 物理質量へ置換して質点質量を算定する（質量行列に計上される分は控除する）。

@@ -8,8 +8,8 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    Node, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LoadCfg, LocalAxis, Material,
+    MaterialCategory, Node, Section,
 };
 
 /// 設計用単位体積重量 [N/mm³]（テストの期待値算定用。鋼材 78.5 kN/m³）。
@@ -143,6 +143,53 @@ fn joist_on_girders_terminates_at_primary() {
     assert!(t.unresolved.is_empty());
     assert!(t.cyclic.is_empty());
     assert!(super::secondary_crossings(&m).is_empty());
+}
+
+/// 物理質量基準（[`SelfWeightBasis::MassEquiv`]）でも、二次部材（鋼）の自重に
+/// 設計重量と同じ鉄骨重量割増が掛かる（主架構線材と同じ規則）。
+#[test]
+fn joist_mass_equiv_applies_steel_weight_factor() {
+    let mut m = base_model();
+    m.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [0.0, 4000.0, 0.0],
+        [6000.0, 4000.0, 0.0],
+        [3000.0, 0.0, 0.0],
+        [3000.0, 4000.0, 0.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.elements.push(beam(1, 2, 3));
+    m.unassigned_joists.push(joist(&m, 4, 5, "SB1"));
+    m.anchorize_secondary_members();
+
+    let design = solve_with_basis(&m, |_| 0.0, true, SelfWeightBasis::Design);
+    let mass = solve_with_basis(&m, |_| 0.0, true, SelfWeightBasis::MassEquiv);
+    let key = squid_n_core::ids::SecondaryMemberId(4);
+    let rd = design.members.get(&key).expect("設計の小梁").reactions;
+    let rm = mass.members.get(&key).expect("物理質量の小梁").reactions;
+    let factor = 1.3;
+    let expect_d = DESIGN_UNIT_WEIGHT_N_PER_MM3 * AREA * factor * 4000.0 / 2.0;
+    let expect_m = DENSITY * AREA * squid_n_core::units::GRAVITY_MM_S2 * factor * 4000.0 / 2.0;
+    assert!(
+        (rd[0] - expect_d).abs() / expect_d < 1e-9,
+        "設計反力 {}",
+        rd[0]
+    );
+    assert!(
+        (rm[0] - expect_m).abs() / expect_m < 1e-9,
+        "物理反力 {}",
+        rm[0]
+    );
 }
 
 /// 小梁 B の端点が小梁 A の内部に載るとき、B の反力は A の集中荷重として渡り、
