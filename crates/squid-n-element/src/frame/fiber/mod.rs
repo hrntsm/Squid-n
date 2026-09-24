@@ -110,9 +110,17 @@ pub(crate) fn resolve_fiber_yield(
     let rebar =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(data));
     let steel = match model.element_section(data).and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::SrcRect {
-            steel_flange_thick, ..
-        }) => {
+        Some(
+            SectionShape::SrcRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcBeamRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcColumnRect {
+                steel_flange_thick, ..
+            },
+        ) => {
             let thick = *steel_flange_thick;
             model.element_steel_material(data).and_then(|m| {
                 squid_n_core::material_grade::steel_f_value_prefix(&m.name, thick).or(m.fy)
@@ -131,8 +139,14 @@ pub(crate) fn fiber_yield_covers_shape(shape: Option<&SectionShape>, yield_: &Fi
     let rebar = yield_.rebar.or(yield_.main).is_some_and(|fy| fy > 0.0);
     let steel = yield_.steel.is_some_and(|fy| fy > 0.0);
     match shape {
-        Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcCircle { .. }) => rebar,
-        Some(SectionShape::SrcRect { .. }) => rebar && steel,
+        Some(SectionShape::RcRect { .. })
+        | Some(SectionShape::RcCircle { .. })
+        | Some(SectionShape::RcBeamRect { .. })
+        | Some(SectionShape::RcColumnRect { .. })
+        | Some(SectionShape::RcColumnCircle { .. }) => rebar,
+        Some(SectionShape::SrcRect { .. })
+        | Some(SectionShape::SrcBeamRect { .. })
+        | Some(SectionShape::SrcColumnRect { .. }) => rebar && steel,
         Some(SectionShape::CftBox { .. }) | Some(SectionShape::CftPipe { .. }) => steel,
         Some(SectionShape::RcWall { .. }) | None => true,
         Some(SectionShape::RcSlab { .. }) => true,
@@ -149,6 +163,21 @@ pub(crate) fn fiber_strength_params(
     fiber_strength_params_from_yield(data, model, basis, resolve_fiber_yield(model, data))
 }
 
+fn fiber_steel_material<'a>(
+    data: &squid_n_core::model::ElementData,
+    model: &'a squid_n_core::model::Model,
+) -> Option<&'a squid_n_core::model::Material> {
+    let main = model.element_material(data);
+    match model.element_section(data).and_then(|s| s.shape.as_ref()) {
+        Some(
+            SectionShape::SrcRect { .. }
+            | SectionShape::SrcBeamRect { .. }
+            | SectionShape::SrcColumnRect { .. },
+        ) => model.element_steel_material(data).or(main),
+        _ => main,
+    }
+}
+
 /// 解決済みの [`FiberYield`] を渡す内部版。呼び出し元が [`resolve_fiber_yield`] を
 /// 再実行せずに [`fiber_strength_params`] と同じ値を得るために用いる。
 fn fiber_strength_params_from_yield(
@@ -158,12 +187,13 @@ fn fiber_strength_params_from_yield(
     yield_: FiberYield,
 ) -> StrengthParams {
     let mat_ref = model.element_material(data);
+    let steel_mat_ref = fiber_steel_material(data, model);
     let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
     let fc = mat_ref.and_then(|m| m.fc);
     let rebar_fy = yield_.rebar.or(yield_.main);
     let steel_fy = yield_.steel;
     StrengthParams {
-        steel_fy: steel_fy.unwrap_or(235.0) * basis.steel_factor(mat_ref),
+        steel_fy: steel_fy.unwrap_or(235.0) * basis.steel_factor(steel_mat_ref),
         rebar_fy: rebar_fy.unwrap_or(345.0) * basis.rebar_factor(mat_ref),
         concrete_fc: fc.unwrap_or(24.0),
         steel_e: e,
@@ -176,9 +206,17 @@ pub(crate) fn resolve_steel_fiber_fy(
     mat_fy: Option<f64>,
 ) -> Option<f64> {
     match shape {
-        Some(SectionShape::SrcRect {
-            steel_flange_thick, ..
-        }) => steel_mat
+        Some(
+            SectionShape::SrcRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcBeamRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcColumnRect {
+                steel_flange_thick, ..
+            },
+        ) => steel_mat
             .and_then(|m| {
                 squid_n_core::material_grade::steel_f_value_prefix(&m.name, *steel_flange_thick)
                     .or(m.fy)
@@ -209,7 +247,7 @@ pub(crate) fn build_gauss_fiber_pair(
     let fc = mat_ref.and_then(|m| m.fc);
     let yield_ = resolve_fiber_yield(model, data);
     let strength = fiber_strength_params_from_yield(data, model, basis, yield_);
-    let steel_factor = basis.steel_factor(mat_ref);
+    let steel_factor = basis.steel_factor(fiber_steel_material(data, model));
     let rebar_factor = basis.rebar_factor(mat_ref);
     let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
     let build = || {

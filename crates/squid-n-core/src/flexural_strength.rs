@@ -36,7 +36,7 @@ pub fn section_elastic_modulus(sec: &Section) -> f64 {
 
 /// 部材の曲げ降伏（終局）モーメント My [N·mm]。
 ///
-/// - RC 配筋形状（`RcRect` / `RcCircle`）: `0.9·at·σy·j`（[`rc_mu_simple`]）
+/// - RC 配筋形状: `0.9·at·σy·j`（[`rc_mu_simple`]）
 /// - 塑性断面係数を持つ形状: `Zp·σy`（全塑性 Mp）
 /// - それ以外: `σy·Ze`（弾性断面係数フォールバック）
 pub fn member_flexural_yield_moment(
@@ -49,9 +49,77 @@ pub fn member_flexural_yield_moment(
     let ze = sec.map(section_elastic_modulus).unwrap_or(0.0);
     let fy = mat.and_then(|m| m.fy);
     match sec.and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
-            rc_flexural_yield_moment(elem, model, mat, rebar, *d, ze, factors.rebar)
+        Some(SectionShape::RcRect { rebar, d, .. })
+        | Some(SectionShape::SrcRect { rebar, d, .. }) => rc_flexural_yield_moment(
+            elem,
+            model,
+            mat,
+            bar_set_area(&rebar.main_x) / 2.0,
+            rebar_effective_depth(*d, rebar),
+            *d,
+            ze,
+            factors.rebar,
+        ),
+        Some(SectionShape::RcCircle { rebar, d }) => rc_flexural_yield_moment(
+            elem,
+            model,
+            mat,
+            bar_set_area(&rebar.main_x) / 2.0,
+            rebar_effective_depth(*d, rebar),
+            *d,
+            ze,
+            factors.rebar,
+        ),
+        Some(SectionShape::RcBeamRect { b: _, d, rebar })
+        | Some(SectionShape::SrcBeamRect { b: _, d, rebar, .. }) => {
+            let bottom = rebar.bending_steel(*d, false);
+            let top = rebar.bending_steel(*d, true);
+            let my_bottom = rc_flexural_yield_moment(
+                elem,
+                model,
+                mat,
+                bottom.tension.area_mm2,
+                bottom.tension.effective_depth_mm,
+                *d,
+                ze,
+                factors.rebar,
+            );
+            let my_top = rc_flexural_yield_moment(
+                elem,
+                model,
+                mat,
+                top.tension.area_mm2,
+                top.tension.effective_depth_mm,
+                *d,
+                ze,
+                factors.rebar,
+            );
+            my_bottom.min(my_top)
         }
+        Some(SectionShape::RcColumnRect { b, d, rebar })
+        | Some(SectionShape::SrcColumnRect { b, d, rebar, .. }) => {
+            let side = rebar.edge_steel(crate::rc_rebar_geom::RectEdge::Top, *b, *d);
+            rc_flexural_yield_moment(
+                elem,
+                model,
+                mat,
+                side.area_mm2,
+                side.effective_depth_mm,
+                *d,
+                ze,
+                factors.rebar,
+            )
+        }
+        Some(SectionShape::RcColumnCircle { d, rebar }) => rc_flexural_yield_moment(
+            elem,
+            model,
+            mat,
+            rebar.equivalent_tension_area_mm2(),
+            rebar.equivalent_effective_depth_mm(*d),
+            *d,
+            ze,
+            factors.rebar,
+        ),
         Some(shape) => {
             let sy = fy.unwrap_or(235.0) * factors.steel;
             match shape.plastic_modulus_strong() {
@@ -63,11 +131,13 @@ pub fn member_flexural_yield_moment(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rc_flexural_yield_moment(
     elem: &ElementData,
     model: &Model,
     mat: Option<&Material>,
-    rebar: &crate::section_shape::RcRebar,
+    at: f64,
+    d_eff: f64,
     d: f64,
     ze: f64,
     rebar_factor: f64,
@@ -78,8 +148,6 @@ fn rc_flexural_yield_moment(
         .unwrap_or(345.0)
         * rebar_factor;
     let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
-    let at = bar_set_area(&rebar.main_x) / 2.0;
-    let d_eff = rebar_effective_depth(d, rebar);
     let my = rc_mu_simple(&RcCapacityInput {
         b: 1.0,
         d,

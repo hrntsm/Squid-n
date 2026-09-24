@@ -310,7 +310,7 @@ fn wall_side_column_props(shape: Option<&SectionShape>) -> Option<(f64, f64, f64
         SectionShape::RcColumnCircle { d, rebar } => {
             let side = rebar.equivalent_square_side_mm(*d);
             let d_eff = rebar.equivalent_effective_depth_mm(*d);
-            Some((side, side, d_eff, 0.0, rebar.total_main_area()))
+            Some((side, side, d_eff, rebar.pw(side), rebar.total_main_area()))
         }
         SectionShape::RcBeamRect { b, d, rebar } | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
             let dt = rebar
@@ -319,5 +319,34 @@ fn wall_side_column_props(shape: Option<&SectionShape>) -> Option<(f64, f64, f64
             Some((*b, *d, *d - dt, rebar.pw(*b), rebar.total_main_area()))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wall_side_column_props;
+    use squid_n_core::section_shape::{CircleColumnHoop, RcCircleColumnRebar, SectionShape};
+
+    #[test]
+    fn wall_side_circle_column_uses_hoop_ratio() {
+        let rebar = RcCircleColumnRebar {
+            count: 8,
+            main_dia: 22.0,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+            },
+        };
+        let shape = SectionShape::RcColumnCircle { d: 600.0, rebar };
+        let (_, _, _, pw, _) = wall_side_column_props(Some(&shape)).expect("円形側柱諸元");
+        let side = shape
+            .circle_column_rebar()
+            .expect("円形柱配筋")
+            .equivalent_square_side_mm(600.0);
+        let expected = shape.circle_column_rebar().expect("円形柱配筋").pw(side);
+
+        assert!(pw > 0.0);
+        assert_eq!(pw, expected);
     }
 }

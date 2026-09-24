@@ -263,6 +263,86 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
 }
 
 #[test]
+fn srcファイバーは内蔵鋼材のstrength_factorを使う() {
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let mut model = build_test_model(Some(78846.15));
+    model.sections[0].shape = Some(SectionShape::SrcRect {
+        b: 500.0,
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 2,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 150.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 10.0,
+        steel_flange_thick: 16.0,
+    });
+    model.sections[0].rebar_material = Some(MaterialId(1));
+    model.sections[0].steel_material = Some(MaterialId(2));
+    model.materials[0].category = MaterialCategory::Concrete;
+    model.materials[0].fc = Some(24.0);
+    model.materials[0].strength_factor = Some(1.2);
+    model.materials[0].young = 25000.0;
+    model.materials.push(Material {
+        category: MaterialCategory::Rebar,
+        young: 200000.0,
+        fy: Some(400.0),
+        ..model.materials[0].clone()
+    });
+    model.materials.push(Material {
+        name: "SS400".to_string(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        fy: Some(325.0),
+        strength_factor: Some(1.05),
+        ..model.materials[0].clone()
+    });
+
+    let strength = fiber_strength_params(
+        &model.elements[0],
+        &model,
+        StrengthBasis::MaterialStrength,
+    );
+    assert_eq!(strength.steel_fy, 235.0 * 1.05);
+
+    let [(section, mats), _] = build_gauss_fiber_pair(
+        &model.elements[0],
+        &model,
+        StrengthBasis::MaterialStrength,
+        AnalysisKind::Incremental,
+        500.0,
+        600.0,
+        12,
+        20,
+    )
+    .expect("SRCファイバー");
+    let steel_fy = mats
+        .iter()
+        .zip(section.fibers.iter())
+        .find(|(_, fiber)| fiber.material == 2)
+        .expect("内蔵鋼材ファイバー")
+        .0
+        .reference_stress();
+    assert_eq!(steel_fy, 235.0 * 1.05);
+}
+
+#[test]
 fn 非対称断面のbeamとfiberは各曲げブロックが一致する() {
     let density = 2.4e-9;
     let mut model = build_test_model(Some(78846.15));

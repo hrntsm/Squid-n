@@ -1573,6 +1573,94 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
     );
 }
 
+#[test]
+fn test_compute_shear_yield_qy_real_rebar_beam_uses_both_directions_and_steel_factor() {
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
+
+    let concrete = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "FC24".to_string(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 0.0,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    };
+    let rebar = RcBeamRebar {
+        main_dia: 25.0,
+        top: vec![4],
+        bottom: vec![4],
+        cover: 40.0,
+        stirrup: BeamStirrup {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+        },
+    };
+    let rc_shape = SectionShape::RcBeamRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: rebar.clone(),
+    };
+    let src_shape = SectionShape::SrcBeamRect {
+        b: 600.0,
+        d: 700.0,
+        rebar,
+        steel_height: 450.0,
+        steel_width: 200.0,
+        steel_web_thick: 8.0,
+        steel_flange_thick: 13.0,
+    };
+    let rc_sec = rc_shape.to_section(SectionId(0), "rc-beam".into());
+    let src_sec = src_shape.to_section(SectionId(1), "src-beam".into());
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        fy: Some(345.0),
+        fc: None,
+        ..concrete.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".to_string(),
+        category: MaterialCategory::Rebar,
+        fy: Some(295.0),
+        fc: None,
+        ..rebar_mat.clone()
+    };
+    let steel_mat = Material {
+        id: MaterialId(3),
+        name: "SN400B".to_string(),
+        category: MaterialCategory::Steel,
+        fy: Some(235.0),
+        strength_factor: Some(1.25),
+        fc: None,
+        ..rebar_mat.clone()
+    };
+    let mats = SecMaterials {
+        material: Some(&concrete),
+        rebar_mat: Some(&rebar_mat),
+        shear_mat: Some(&shear_mat),
+        steel_mat: Some(&steel_mat),
+    };
+
+    for dir in [ShearDir::Y, ShearDir::Z] {
+        let qy_rc = compute_shear_yield_qy(1.0, mats, Some(&rc_sec), dir, 3000.0);
+        let qy_src = compute_shear_yield_qy(1.0, mats, Some(&src_sec), dir, 3000.0);
+        let steel_y = match dir {
+            ShearDir::Y => 8.0 * (450.0 - 2.0 * 13.0) * 235.0 * 1.25 / 3.0_f64.sqrt(),
+            ShearDir::Z => 2.0 * 200.0 * 13.0 * 235.0 * 1.25 / 3.0_f64.sqrt(),
+        };
+        assert!(qy_rc.is_finite() && qy_rc > 0.0);
+        assert!((qy_src - qy_rc - steel_y).abs() < 1e-6);
+    }
+}
+
 /// RC 矩形断面（`SectionShape::RcRect`）+ 配筋情報がある場合、Qy は荒川式
 /// （`rc_qsu_simple`）による方向別算定値に一致すること。
 /// 要素座標系はせい方向＝ローカル y のため、y 方向（強軸・main_x）、

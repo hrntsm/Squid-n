@@ -199,15 +199,33 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
         return DEFAULT_ALPHA_Y;
     }
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-    let Some(SectionShape::RcRect { b, d, rebar }) = sec.and_then(|s| s.shape.as_ref()) else {
+    let Some(shape) = sec.and_then(|s| s.shape.as_ref()) else {
         return DEFAULT_ALPHA_Y;
     };
-    if *b <= 0.0 || *d <= 0.0 {
+    let (b, d, at, d_eff) = match shape {
+        SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => (
+            *b,
+            *d,
+            squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0,
+            squid_n_core::rc_rebar_geom::rebar_effective_depth(*d, rebar),
+        ),
+        SectionShape::RcBeamRect { b, d, rebar }
+        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+            let bottom = rebar.bending_steel(*d, false).tension;
+            let top = rebar.bending_steel(*d, true).tension;
+            let steel = if bottom.area_mm2 <= top.area_mm2 {
+                bottom
+            } else {
+                top
+            };
+            (*b, *d, steel.area_mm2, steel.effective_depth_mm)
+        }
+        _ => return DEFAULT_ALPHA_Y,
+    };
+    if b <= 0.0 || d <= 0.0 {
         return DEFAULT_ALPHA_Y;
     }
-    let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
     let pt = at / (b * d);
-    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(*d, rebar);
     let ec = model.element_material(data).map(|m| m.young).unwrap_or(0.0);
     let n = if ec > 0.0 {
         squid_n_core::section_shape::E_STEEL / ec
