@@ -1832,10 +1832,16 @@ fn test_standard_roundtrip_cft_pipe() {
 #[test]
 fn test_standard_roundtrip_src_column() {
     let mut m = frame_nodes();
-    let shape = SectionShape::SrcRect {
+    let shape = SectionShape::SrcColumnRect {
         b: 800.0,
         d: 800.0,
-        rebar: rebar_distinct(),
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4],
+            y: vec![3],
+            cover: 45.0,
+            hoop: RectColumnHoop { dia: 13.0, pitch: 150.0, legs_x: 4, legs_y: 4 },
+        },
         steel_height: 400.0,
         steel_width: 200.0,
         steel_web_thick: 8.0,
@@ -1851,6 +1857,8 @@ fn test_standard_roundtrip_src_column() {
         "鋼種が書き出される"
     );
     assert!(xml.contains("<StbSecRoll-H "), "内蔵鉄骨の形鋼ライブラリ");
+    assert!(xml.contains("N_main_X_1st=\"4\""), "X 方向の段別本数: {xml}");
+    assert!(xml.contains("N_main_Y_1st=\"3\""), "Y 方向の本数: {xml}");
     let back = import_stbridge(&xml).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
     assert_eq!(
@@ -1863,10 +1871,16 @@ fn test_standard_roundtrip_src_column() {
 #[test]
 fn test_standard_roundtrip_src_beam() {
     let mut m = frame_nodes();
-    let shape = SectionShape::SrcRect {
+    let shape = SectionShape::SrcBeamRect {
         b: 500.0,
         d: 800.0,
-        rebar: rebar_distinct(),
+        rebar: RcBeamRebar {
+            main_dia: 25.0,
+            top: vec![4],
+            bottom: vec![3],
+            cover: 45.0,
+            stirrup: BeamStirrup { dia: 13.0, pitch: 150.0, legs: 4 },
+        },
         steel_height: 450.0,
         steel_width: 200.0,
         steel_web_thick: 9.0,
@@ -1877,6 +1891,8 @@ fn test_standard_roundtrip_src_beam() {
 
     let xml = export_stbridge(&m).unwrap();
     assert!(xml.contains("<StbSecBeam_SRC "), "SRC 梁要素: {xml}");
+    assert!(xml.contains("N_main_top_1st=\"4\""), "上端筋本数: {xml}");
+    assert!(xml.contains("N_main_bottom_1st=\"3\""), "下端筋本数: {xml}");
     let back = import_stbridge(&xml).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
     assert_eq!(back.sections[0].shape, m.sections[0].shape, "SRC 梁が往復");

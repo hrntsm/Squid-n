@@ -1,6 +1,7 @@
 //! パース済み中間表現から内部モデルを組み立てる（Import の後段）。
 
 use super::super::StbError;
+use super::parser::SrcRebarData;
 use super::parser::{RawSlabSection, StbParser};
 use super::{
     material_std, ImportReport, PendingMember, PendingMemberKind, PendingSec, PendingSecKind,
@@ -1501,14 +1502,26 @@ fn build_sections(
                     ));
                 }
                 let (sh, sw, sweb, sfl) = steel_dims.unwrap_or((0.0, 0.0, 0.0, 0.0));
-                SectionShape::SrcRect {
-                    b,
-                    d,
-                    rebar,
-                    steel_height: sh,
-                    steel_width: sw,
-                    steel_web_thick: sweb,
-                    steel_flange_thick: sfl,
+                let steel = (sh, sw, sweb, sfl);
+                match rebar {
+                    SrcRebarData::Beam(rebar) => SectionShape::SrcBeamRect {
+                        b,
+                        d,
+                        rebar,
+                        steel_height: steel.0,
+                        steel_width: steel.1,
+                        steel_web_thick: steel.2,
+                        steel_flange_thick: steel.3,
+                    },
+                    SrcRebarData::Column(rebar) => SectionShape::SrcColumnRect {
+                        b,
+                        d,
+                        rebar,
+                        steel_height: steel.0,
+                        steel_width: steel.1,
+                        steel_web_thick: steel.2,
+                        steel_flange_thick: steel.3,
+                    },
                 }
                 .to_section(new_id, ps.name)
             }

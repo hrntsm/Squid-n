@@ -19,7 +19,7 @@
 
 use super::StbError;
 use squid_n_core::model::{EndCondition, Model};
-use squid_n_core::section_shape::{RcRebar, SectionShape};
+use squid_n_core::section_shape::SectionShape;
 
 mod assemble;
 mod material_std;
@@ -83,7 +83,7 @@ enum PendingSecKind {
     SrcRef {
         b: f64,
         d: f64,
-        rebar: RcRebar,
+        rebar: parser::SrcRebarData,
         steel_name: Option<String>,
     },
 }

@@ -2,8 +2,8 @@
 
 use super::xml::Attrs;
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
-    RcRebar, RectColumnHoop, ShearBar,
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop,
 };
 
 /// 配筋属性に現れる材質のグレード名（主筋・せん断補強筋）。
@@ -14,27 +14,6 @@ use squid_n_core::section_shape::{
 pub(super) struct RebarGrades {
     pub main: Option<String>,
     pub shear: Option<String>,
-}
-
-/// ST-Bridge 標準断面（幾何のみ）から復元する RC 断面の既定配筋（無筋相当）。
-/// 弾性断面性能は b・d のみで決まり配筋に依存しないため、往復での剛性は保たれる。
-/// 配筋検定を要する場合は取り込み後に別途入力する必要がある。
-pub(super) fn default_rebar() -> RcRebar {
-    let zero = BarSet {
-        count: 0,
-        dia: 0.0,
-        layers: 0,
-    };
-    RcRebar {
-        main_x: zero.clone(),
-        main_y: zero,
-        cover: 0.0,
-        shear: ShearBar {
-            dia: 0.0,
-            pitch: 0.0,
-            legs: 0,
-        },
-    }
 }
 
 /// 幾何のみの RC 梁断面に用いる既定配筋（無筋相当）。
@@ -247,91 +226,6 @@ fn parse_grades(a: &Attrs) -> RebarGrades {
     }
 }
 
-/// `StbSecBarArrangement*` の子要素の属性から [`RcRebar`] を復元する（SRC 用）。
-/// Squid-n の書き出し属性（`count_main_X`・`dia_main_X` 等）を優先しつつ、実 ST-Bridge で
-/// 使われる名前（`D_main`・`N_main_X_1st`・`D_band` 等）や呼び名径（`D22`）も best-effort で
-/// 拾う。欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
-/// 配筋の欠落・近似は往復での剛性に影響しない。
-pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
-    let f = |keys: &[&str]| -> f64 { attr_f64(a, keys) };
-    let dia = |keys: &[&str]| -> f64 { attr_dia(a, keys) };
-    let u = |keys: &[&str]| -> u32 { attr_u32(a, keys) };
-    let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
-        for k in totals {
-            if let Some(x) = a.get(k).and_then(|v| v.parse::<u32>().ok()) {
-                let l = a
-                    .get(layer_attr)
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .filter(|&l| l > 0)
-                    .unwrap_or(1);
-                return (x, l);
-            }
-        }
-        let mut sum = 0u32;
-        let mut nonzero_stages = 0u32;
-        for stage in stages {
-            if let Some(x) = stage
-                .iter()
-                .find_map(|k| a.get(k).and_then(|v| v.parse::<u32>().ok()))
-            {
-                if x > 0 {
-                    sum += x;
-                    nonzero_stages += 1;
-                }
-            }
-        }
-        let layers = a
-            .get(layer_attr)
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|&l| l > 0)
-            .unwrap_or_else(|| nonzero_stages.max(1));
-        (sum, layers)
-    };
-    let (count_x, layers_x) = count_and_layers(
-        &["count_main_X", "count_main_top"],
-        &[
-            &["N_main_X_1st", "N_main_top_1st", "N_main_top"],
-            &["N_main_X_2nd", "N_main_top_2nd"],
-            &["N_main_X_3rd", "N_main_top_3rd"],
-        ],
-        "count_main_layers_X",
-    );
-    let (count_y, layers_y) = count_and_layers(
-        &["count_main_Y", "count_main_bottom"],
-        &[
-            &["N_main_Y_1st", "N_main_bottom_1st", "N_main_bottom"],
-            &["N_main_Y_2nd", "N_main_bottom_2nd"],
-            &["N_main_Y_3rd", "N_main_bottom_3rd"],
-        ],
-        "count_main_layers_Y",
-    );
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: count_x,
-            dia: dia(&["dia_main_X", "dia_main", "D_main"]),
-            layers: layers_x,
-        },
-        main_y: BarSet {
-            count: count_y,
-            dia: dia(&["dia_main_Y", "dia_main", "D_main"]),
-            layers: layers_y,
-        },
-        cover: f(&["cover", "kaburi"]),
-        shear: ShearBar {
-            dia: dia(&["D_band", "D_stirrup", "dia_band", "dia_stirrup", "dia_hoop"]),
-            pitch: f(&["pitch_band", "pitch_stirrup", "pitch_hoop"]),
-            legs: u(&[
-                "N_band_direction_X",
-                "N_stirrup",
-                "count_band",
-                "count_stirrup",
-                "count_hoop",
-            ]),
-        },
-    };
-    (rebar, parse_grades(a))
-}
-
 /// `StbSecBarBeam_RC_*` から梁の実配筋を復元する。上端筋・下端筋を段別本数の列
 /// （かぶり側から内側へ）として読む。段数が 3 を超える・主筋径が混在する・独自の
 /// 段間隔属性がある場合は警告を返す（合算や代表径への丸めはしない）。
@@ -350,7 +244,13 @@ pub(super) fn parse_beam_rebar(a: &Attrs) -> (RcBeamRebar, RebarGrades, Vec<Stri
     let rebar = RcBeamRebar {
         main_dia: attr_dia(
             a,
-            &["D_main", "dia_main", "dia_main_X", "dia_main_top", "D_main_top"],
+            &[
+                "D_main",
+                "dia_main",
+                "dia_main_X",
+                "dia_main_top",
+                "D_main_top",
+            ],
         ),
         top,
         bottom,
