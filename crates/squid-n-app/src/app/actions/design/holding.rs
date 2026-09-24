@@ -255,6 +255,29 @@ impl App {
                         let wall_structure = self.core.wall_structure;
                         rc_wall_type(tau_over_fc, wall_structure, brittle)
                     }
+                } else if let Some(SectionShape::RcBeamRect { b, d, rebar }) = sec.shape.as_ref() {
+                    if squid_n_design_jp::MemberKind::of_element(elem, model)
+                        != squid_n_design_jp::MemberKind::Beam
+                    {
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: 新型RC梁断面の用途が梁ではありません",
+                            elem.id, sec.id
+                        ));
+                    }
+                    let Some(resp) = resp_by_elem.get(&elem.id) else {
+                        continue;
+                    };
+                    let geom_len = model.member_length(elem);
+                    let face_sum =
+                        elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
+                    let clear_span = if geom_len - face_sum > 0.0 {
+                        geom_len - face_sum
+                    } else {
+                        geom_len
+                    };
+                    rank_new_rc_beam(
+                        elem.id, sec.id, *b, *d, rebar, mat, rebar_mat, shear_mat, resp, clear_span,
+                    )?
                 } else {
                     let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
                         continue;
@@ -457,5 +480,226 @@ impl App {
         let result =
             check_holding_capacity(po, &qud, &ds_vec, &fes, &rs, &re, &heights, member_ranks);
         Ok((result, story_ranks))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rank_new_rc_beam(
+    elem_id: ElemId,
+    section_id: squid_n_core::ids::SectionId,
+    b: f64,
+    d: f64,
+    rebar: &squid_n_core::section_shape::RcBeamRebar,
+    mat: &squid_n_core::model::Material,
+    rebar_mat: Option<&squid_n_core::model::Material>,
+    shear_mat: Option<&squid_n_core::model::Material>,
+    response: &squid_n_solver::nonlinear::pushover::PushoverMemberResponse,
+    clear_span: f64,
+) -> Result<squid_n_design_jp::secondary::holding_capacity::MemberRank, String> {
+    let error = |message: &str| format!("部材 {:?}・断面 {:?}: {}", elem_id, section_id, message);
+    rebar
+        .validate(b, d)
+        .map_err(|_| error("配筋形状が不正です"))?;
+    let fc = mat
+        .fc
+        .filter(|fc| *fc > 0.0)
+        .ok_or_else(|| error("Fc が未設定または 0 以下です"))?;
+    if clear_span <= 0.0 {
+        return Err(error("内法スパンが 0 以下です"));
+    }
+    let sigma_y = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+        .or(mat.fy)
+        .ok_or_else(|| error("主筋の降伏強度を解決できません"))?;
+    let sigma_wy = squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
+        .ok_or_else(|| error("せん断補強筋の降伏強度を解決できません"))?;
+    if rebar.is_unset() {
+        return Err(error("配筋が未設定です"));
+    }
+    let pw = rebar.pw(b);
+    let (top_rank, _, _) = rank_new_rc_beam_side(
+        b, d, rebar, true, sigma_y, fc, pw, sigma_wy, clear_span, response.axial,
+        response.shear_strong.abs(),
+    );
+    let (bottom_rank, _, _) = rank_new_rc_beam_side(
+        b, d, rebar, false, sigma_y, fc, pw, sigma_wy, clear_span, response.axial,
+        response.shear_strong.abs(),
+    );
+    Ok(worst_rc_beam_rank(top_rank, bottom_rank))
+}
+
+fn worst_rc_beam_rank(
+    top: squid_n_design_jp::secondary::holding_capacity::MemberRank,
+    bottom: squid_n_design_jp::secondary::holding_capacity::MemberRank,
+) -> squid_n_design_jp::secondary::holding_capacity::MemberRank {
+    squid_n_design_jp::secondary::member_rank::worst_rank(&[top, bottom])
+        .expect("上下側のランクは空ではありません")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rank_new_rc_beam_side(
+    b: f64,
+    d: f64,
+    rebar: &squid_n_core::section_shape::RcBeamRebar,
+    tension_is_top: bool,
+    sigma_y: f64,
+    fc: f64,
+    pw: f64,
+    sigma_wy: f64,
+    clear_span: f64,
+    axial: f64,
+    shear: f64,
+) -> (
+    squid_n_design_jp::secondary::holding_capacity::MemberRank,
+    f64,
+    f64,
+) {
+    use squid_n_core::rc_capacity::{rc_qmu_simple, rc_qsu_simple, RcCapacityInput};
+    use squid_n_design_jp::secondary::ds_group::rc_beam_type;
+
+    let bending = rebar.bending_steel(d, tension_is_top);
+    let input = RcCapacityInput {
+        b,
+        d,
+        at: bending.tension.area_mm2,
+        d_eff: bending.tension.effective_depth_mm,
+        sigma_y,
+        fc,
+        pw,
+        sigma_wy,
+        clear_span,
+        sigma_0: axial / (b * d),
+    };
+    let qmu = rc_qmu_simple(&input);
+    let qsu = rc_qsu_simple(&input);
+    let tau_over_fc = (shear / (b * d)) / fc;
+    let brittle = qmu > 0.0 && qsu < qmu;
+    (rc_beam_type(tau_over_fc, brittle), qmu, qsu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar};
+    use squid_n_core::model::Material;
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+
+    fn rebar() -> RcBeamRebar {
+        RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 2],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup { dia: 10.0, pitch: 100.0, legs: 2 },
+        }
+    }
+
+    fn side(top: bool, shear: f64) -> (MemberRank, f64, f64, f64, f64) {
+        let rebar = rebar();
+        let bending = rebar.bending_steel(600.0, top);
+        let (rank, qmu, qsu) = rank_new_rc_beam_side(
+            300.0, 600.0, &rebar, top, 345.0, 24.0, rebar.pw(300.0), 295.0,
+            3000.0, 0.0, shear,
+        );
+        (rank, qmu, qsu, bending.tension.area_mm2, bending.tension.effective_depth_mm)
+    }
+
+    #[test]
+    fn 新型_rc梁の上下引張側を個別評価する() {
+        use squid_n_core::rc_capacity::{rc_qmu_simple, RcCapacityInput};
+
+        let rebar = rebar();
+        let expected = |top| {
+            let bending = rebar.bending_steel(600.0, top);
+            rc_qmu_simple(&RcCapacityInput {
+                b: 300.0, d: 600.0, at: bending.tension.area_mm2,
+                d_eff: bending.tension.effective_depth_mm, sigma_y: 345.0, fc: 24.0,
+                pw: rebar.pw(300.0), sigma_wy: 295.0, clear_span: 3000.0, sigma_0: 0.0,
+            })
+        };
+        let top = side(true, 0.0);
+        let bottom = side(false, 0.0);
+        assert_eq!(top.1, expected(true));
+        assert_eq!(bottom.1, expected(false));
+        assert_ne!((top.3, top.4, top.1), (bottom.3, bottom.4, bottom.1));
+
+        assert_eq!(worst_rc_beam_rank(MemberRank::FA, MemberRank::FD), MemberRank::FD);
+        assert_eq!(worst_rc_beam_rank(MemberRank::FC, MemberRank::FB), MemberRank::FC);
+    }
+
+    fn rank_input() -> (
+        Material,
+        Material,
+        Material,
+        squid_n_solver::nonlinear::pushover::PushoverMemberResponse,
+    ) {
+        let steel = |id, name: &str, fy| Material {
+            id: squid_n_core::ids::MaterialId(id),
+            name: name.into(),
+            category: squid_n_core::model::MaterialCategory::Steel,
+            young: 200_000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(fy),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        };
+        (
+            Material {
+                id: squid_n_core::ids::MaterialId(1), name: "concrete".into(),
+                category: squid_n_core::model::MaterialCategory::Concrete, young: 25_000.0,
+                poisson: 0.2, density: 0.0, shear: None, fc: Some(24.0), fy: None,
+                concrete_class: Default::default(), strength_factor: None,
+            },
+            steel(2, "SD345", 345.0),
+            steel(3, "SD295", 295.0),
+            squid_n_solver::nonlinear::pushover::PushoverMemberResponse {
+                elem: ElemId(3), m_strong: 0.0, m_weak: 0.0, shear_strong: 0.0,
+                shear_weak: 0.0, axial: 0.0, rp: 0.0, horizontal_force: 0.0,
+                wall_shear_signed: None,
+            },
+        )
+    }
+
+    #[test]
+    fn 新型_rc梁の不正入力は識別情報付きで失敗する() {
+        let rebar = rebar();
+        let (mat, main_steel, shear_steel, response) = rank_input();
+        let elem = ElemId(3);
+        let section = squid_n_core::ids::SectionId(4);
+        let unset = RcBeamRebar {
+            main_dia: 0.0,
+            top: vec![],
+            bottom: vec![],
+            cover: 0.0,
+            stirrup: BeamStirrup { dia: 0.0, pitch: 0.0, legs: 0 },
+        };
+        let rank = |rebar: &RcBeamRebar, mat: &Material, rebar_mat, shear_mat, span| {
+            rank_new_rc_beam(elem, section, 300.0, 600.0, rebar, mat, rebar_mat, shear_mat, &response, span)
+        };
+        let valid = rank(&rebar, &mat, Some(&main_steel), Some(&shear_steel), 3000.0);
+        assert!(valid.is_ok(), "正常入力で失敗: {valid:?}");
+        let assert_error = |result: Result<MemberRank, String>, reason: &str| {
+            let error = result.unwrap_err();
+            assert!(error.contains("部材 ElemId(3)"), "{error}");
+            assert!(error.contains("断面 SectionId(4)"), "{error}");
+            assert!(error.contains(reason), "{error}");
+        };
+        let mut invalid = rebar.clone();
+        invalid.top[0] = 0;
+        assert_error(rank(&invalid, &mat, Some(&main_steel), Some(&shear_steel), 3000.0), "配筋形状が不正");
+        assert_error(rank(&unset, &mat, Some(&main_steel), Some(&shear_steel), 3000.0), "配筋が未設定");
+        let mut no_fc = mat.clone();
+        no_fc.fc = None;
+        assert_error(rank(&rebar, &no_fc, Some(&main_steel), Some(&shear_steel), 3000.0), "Fc が未設定");
+        let mut zero_fc = mat.clone();
+        zero_fc.fc = Some(0.0);
+        assert_error(rank(&rebar, &zero_fc, Some(&main_steel), Some(&shear_steel), 3000.0), "Fc が未設定");
+        assert_error(rank(&rebar, &mat, Some(&main_steel), Some(&shear_steel), 0.0), "内法スパン");
+        let mut no_fy = mat.clone();
+        no_fy.fy = None;
+        assert_error(rank(&rebar, &no_fy, None, Some(&shear_steel), 3000.0), "主筋の降伏強度");
+        assert_error(rank(&rebar, &mat, Some(&main_steel), None, 3000.0), "せん断補強筋の降伏強度");
     }
 }
