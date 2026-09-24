@@ -1880,6 +1880,51 @@ fn test_export_and_import_stbridge_roundtrip() {
 }
 
 #[test]
+fn test_export_stbridge_reports_warnings_as_notice() {
+    let dir = test_tmp().join("squid_n_app_test_stbridge_warning");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("warning.stb");
+
+    let mut app = App::default();
+    let mut model = crate::sample::portal_frame();
+    let section_id = model
+        .elements
+        .iter()
+        .find(|element| element.kind == squid_n_core::model::ElementKind::Beam)
+        .and_then(|element| element.section)
+        .expect("梁断面");
+    model.sections[section_id.index()].shape =
+        Some(squid_n_core::section_shape::SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: squid_n_core::section_shape::RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4, 3, 2, 1],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: squid_n_core::section_shape::BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        });
+    app.load_model(model);
+    app.export_stbridge_to(path.clone());
+
+    let notice = app.core.scoped.last_notice.as_deref().unwrap_or("");
+    assert!(notice.contains("ST-Bridge書出: "), "{notice}");
+    assert!(app
+        .core
+        .log
+        .entries
+        .iter()
+        .any(|entry| entry.message == notice));
+    assert!(path.exists());
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn test_combination_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
