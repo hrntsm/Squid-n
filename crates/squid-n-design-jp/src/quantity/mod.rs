@@ -765,8 +765,9 @@ fn push_rect_column_rebar(
 
 /// 新型円形柱（`RcColumnCircle`）の主筋・帯筋数量を追加する。
 ///
-/// 主筋本数は総本数 `count`。帯筋は 1 組 2 本（`RcCircleColumnRebar::aw_mm2()` 相当）
-/// として、一組長さを `2·π·d` で算定する。未入力なら数量 0。
+/// 主筋本数は総本数 `count`。帯筋は 1 リング 1 周分の長さ `π·d` で算定する
+/// （`RcCircleColumnRebar::aw_mm2()` の 2 本はせん断耐力上の脚数であり、
+/// 物理数量の周長ではない）。未入力なら数量 0。
 fn push_circle_column_rebar(
     item: &mut MemberQuantity,
     rebar: &RcCircleColumnRebar,
@@ -787,7 +788,7 @@ fn push_circle_column_rebar(
     }
     let sh = &rebar.hoop;
     if sh.dia > 0.0 && sh.pitch > 0.0 {
-        let set_len = 2.0 * std::f64::consts::PI * d;
+        let set_len = std::f64::consts::PI * d;
         let count = member::shear_bar_count(h, sh.pitch);
         let total_len = set_len * count;
         item.rebar.push(RebarItem {

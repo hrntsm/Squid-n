@@ -206,6 +206,20 @@ impl SectionShape {
         }
     }
 
+    /// 実配筋型（`RcBeamRect`・`RcColumnRect`・`RcColumnCircle`・`SrcBeamRect`・
+    /// `SrcColumnRect`）の幾何検証。実鉄筋座標を生成できない場合は
+    /// [`crate::error::RebarGeometryError`] を返す。旧型・配筋なし形状は `Ok(())`。
+    pub fn validate_rebar(&self) -> Result<(), crate::error::RebarGeometryError> {
+        match self {
+            SectionShape::RcBeamRect { b, d, rebar } => rebar.validate(*b, *d),
+            SectionShape::RcColumnRect { b, d, rebar } => rebar.validate(*b, *d),
+            SectionShape::RcColumnCircle { d, rebar } => rebar.validate(*d),
+            SectionShape::SrcBeamRect { b, d, rebar, .. } => rebar.validate(*b, *d),
+            SectionShape::SrcColumnRect { b, d, rebar, .. } => rebar.validate(*b, *d),
+            _ => Ok(()),
+        }
+    }
+
     /// コンクリート系（RC / SRC / CFT）の断面形状か。
     pub fn is_concrete_like(&self) -> bool {
         matches!(

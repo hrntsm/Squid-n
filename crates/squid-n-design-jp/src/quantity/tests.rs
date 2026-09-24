@@ -923,7 +923,7 @@ fn test_new_rc_rect_column_rebar_uses_layer_counts() {
 }
 
 /// 新型 `RcColumnCircle`（count=8）で、主筋は総本数 8 本、
-/// 帯筋は 1 組 2 本（2πd）として算定される。
+/// 帯筋は 1 リング 1 周分（πd）として算定される。
 #[test]
 fn test_new_rc_circle_column_rebar_uses_total_count() {
     let mut model = rc_portal_model();
@@ -959,13 +959,13 @@ fn test_new_rc_circle_column_rebar_uses_total_count() {
         .sum();
     assert!((main_len - 8.0 * 3.5).abs() < 1e-9);
 
-    // 帯筋: 1 組 2 本 = 2π×700、本数 3500/100=35。
+    // 帯筋: 1 リング 1 周分 = π×700、本数 3500/100=35。
     let hoop = col
         .rebar
         .iter()
         .find(|r| r.usage == RebarUsage::Hoop)
         .unwrap();
-    let expected = 2.0 * std::f64::consts::PI * 700.0 * 35.0 / 1_000.0;
+    let expected = std::f64::consts::PI * 700.0 * 35.0 / 1_000.0;
     assert!((hoop.total_length_m - expected).abs() < 1e-9);
     assert!((hoop.weight_t - expected * 0.995 / 1_000.0).abs() < 1e-9);
 
