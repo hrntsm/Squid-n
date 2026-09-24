@@ -850,6 +850,7 @@ fn design_check_covers_every_member() {
     assert!(!results.slab_checks.is_empty(), "スラブの検定結果が空");
 
     let mut checked = 0usize;
+    let mut skipped = 0usize;
     for mc in &results.member_checks {
         assert!(
             !mc.positions.is_empty(),
@@ -866,10 +867,19 @@ fn design_check_covers_every_member() {
                     p.xi
                 );
                 checked += 1;
+            } else if let squid_n_design_jp::CheckOutcome::Skipped { reason } = &p.outcome {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "Skipped の理由が空: 部材 {:?} 位置 {}",
+                    mc.elem,
+                    p.xi
+                );
+                skipped += 1;
             }
         }
     }
     assert!(checked > 0, "検定が 1 件も実施されていない（全件 Skipped）");
+    eprintln!("full_model member check positions: Checked={checked}, Skipped={skipped}");
 }
 
 // ===================== 8. 二次設計（層指標） =====================
@@ -1698,6 +1708,23 @@ fn snapshot_key_scalars() {
         })
         .fold(0.0_f64, f64::max);
     line("design.max_ratio", sig4(max_ratio));
+    let (checked_positions, skipped_positions) = results
+        .member_checks
+        .iter()
+        .flat_map(|mc| mc.positions.iter())
+        .fold((0usize, 0usize), |(checked, skipped), p| match &p.outcome {
+            squid_n_design_jp::CheckOutcome::Checked(_) => (checked + 1, skipped),
+            squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "Skipped の理由が空: 位置 {}",
+                    p.xi
+                );
+                (checked, skipped + 1)
+            }
+        });
+    line("design.checked_positions", checked_positions.to_string());
+    line("design.skipped_positions", skipped_positions.to_string());
     // 小梁の最大検定比。件数だけでは「どのスラブで検定したか」の変化を捉えられないため、
     // 値そのものも固定する（負担幅・床荷重強度の取り違えはここに現れる）。
     let joist_max_ratio = results
