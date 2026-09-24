@@ -94,14 +94,9 @@ fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f6
 
 /// 側柱断面の主筋総断面積 at [mm²]。RC 耐力式を適用できない形状は `None`。
 ///
-/// 旧形状（`RcRect`/`RcCircle`）は方向別総本数の和、実配筋モデルの形状は
 /// 検証済みの総主筋量を返す。未入力は 0、検証失敗は `None`。
 fn side_column_main_area(shape: &SectionShape) -> Option<f64> {
     match shape {
-        SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. } => Some(
-            squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                + squid_n_core::section_shape::bar_set_area(&rebar.main_y),
-        ),
         SectionShape::RcBeamRect { b, d, rebar } => {
             rebar.validate(*b, *d).ok()?;
             Some(rebar.total_main_area())

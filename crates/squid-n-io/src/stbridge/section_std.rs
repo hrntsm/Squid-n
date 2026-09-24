@@ -22,7 +22,7 @@
 use super::export::{esc, fmt as num};
 use squid_n_core::model::{ElementKind, Model, Section};
 use squid_n_core::section_shape::{
-    RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar, SectionShape,
+    RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar, SectionShape,
 };
 use std::collections::HashMap;
 
@@ -428,14 +428,12 @@ fn steel_beam(id: u32, sec: &Section, figure: &str, strength: &str) -> String {
 /// RC 図形 `StbSecFigureColumn_RC` の中身（矩形／円形）。対応しない形状は `None`。
 fn rc_column_figure(shape: &SectionShape) -> Option<String> {
     match *shape {
-        SectionShape::RcRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
-            Some(format!(
-                "<StbSecColumn_RC_Rect width_X=\"{}\" width_Y=\"{}\"/>",
-                num(b),
-                num(d)
-            ))
-        }
-        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
+        SectionShape::RcColumnRect { b, d, .. } => Some(format!(
+            "<StbSecColumn_RC_Rect width_X=\"{}\" width_Y=\"{}\"/>",
+            num(b),
+            num(d)
+        )),
+        SectionShape::RcColumnCircle { d, .. } => {
             Some(format!("<StbSecColumn_RC_Circle D=\"{}\"/>", num(d)))
         }
         _ => None,
@@ -446,58 +444,12 @@ fn rc_column_figure(shape: &SectionShape) -> Option<String> {
 /// 円形柱用の `RcColumnCircle` は梁に使えないためここでは扱わない。
 fn rc_beam_figure(shape: &SectionShape) -> Option<String> {
     match *shape {
-        SectionShape::RcRect { b, d, .. } | SectionShape::RcBeamRect { b, d, .. } => Some(format!(
+        SectionShape::RcBeamRect { b, d, .. } => Some(format!(
             "<StbSecBeam_RC_Straight width=\"{}\" depth=\"{}\"/>",
             num(b),
             num(d)
         )),
         _ => None,
-    }
-}
-
-/// 配筋（[`RcRebar`]）を配筋子要素（`*_Same`）の属性文字列へ整形する（標準名のみ）。
-/// かぶりは配置コンテナ側に付くため、ここには含めない。
-/// - 柱（`is_beam=false`）: `D_main`・`N_main_X_1st`・`N_main_Y_1st`・帯筋 `D_band`・
-///   `pitch_band`・`N_band_direction_X`/`_Y`・`strength_band`。
-/// - 梁（`is_beam=true`）: `D_main`・`N_main_top_1st`・`N_main_bottom_1st`・あばら筋
-///   `D_stirrup`・`pitch_stirrup`・`N_stirrup`・`strength_stirrup`。
-fn rebar_attrs(r: &RcRebar, grades: BarGrades<'_>, is_beam: bool) -> String {
-    if is_beam {
-        let mut s = format!(
-            "D_main=\"{dm}\" N_main_top_1st=\"{nt}\" N_main_bottom_1st=\"{nb}\" \
-             D_stirrup=\"{ds}\" pitch_stirrup=\"{ps}\" N_stirrup=\"{ns}\"",
-            dm = num(r.main_x.dia),
-            nt = r.main_x.count,
-            nb = r.main_y.count,
-            ds = num(r.shear.dia),
-            ps = num(r.shear.pitch),
-            ns = r.shear.legs,
-        );
-        if let Some(g) = grades.shear {
-            s.push_str(&format!(" strength_stirrup=\"{}\"", esc(g)));
-        }
-        if let Some(g) = grades.main {
-            s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
-        }
-        s
-    } else {
-        let mut s = format!(
-            "D_main=\"{dm}\" N_main_X_1st=\"{nx}\" N_main_Y_1st=\"{ny}\" \
-             D_band=\"{db}\" pitch_band=\"{pb}\" N_band_direction_X=\"{nb}\" N_band_direction_Y=\"{nb}\"",
-            dm = num(r.main_x.dia),
-            nx = r.main_x.count,
-            ny = r.main_y.count,
-            db = num(r.shear.dia),
-            pb = num(r.shear.pitch),
-            nb = r.shear.legs,
-        );
-        if let Some(g) = grades.shear {
-            s.push_str(&format!(" strength_band=\"{}\"", esc(g)));
-        }
-        if let Some(g) = grades.main {
-            s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
-        }
-        s
     }
 }
 
@@ -661,18 +613,6 @@ fn rebar_arrangement_column(
     sec_name: &str,
 ) -> (String, Vec<String>) {
     let (child, cover, attrs, warnings) = match shape {
-        SectionShape::RcRect { rebar, .. } => (
-            "StbSecBarColumn_RC_RectSame",
-            rebar.cover,
-            rebar_attrs(rebar, grades, false),
-            Vec::new(),
-        ),
-        SectionShape::RcCircle { rebar, .. } => (
-            "StbSecBarColumn_RC_CircleSame",
-            rebar.cover,
-            rebar_attrs(rebar, grades, false),
-            Vec::new(),
-        ),
         SectionShape::RcColumnRect { rebar, .. } => {
             let (a, w) = rect_column_rebar_attrs(rebar, grades, sec_name);
             ("StbSecBarColumn_RC_RectSame", rebar.cover, a, w)
@@ -706,9 +646,6 @@ fn rebar_arrangement_beam(
     sec_name: &str,
 ) -> (String, Vec<String>) {
     let (cover, attrs, warnings) = match shape {
-        SectionShape::RcRect { rebar, .. } => {
-            (rebar.cover, rebar_attrs(rebar, grades, true), Vec::new())
-        }
         SectionShape::RcBeamRect { rebar, .. } => {
             let (a, w) = beam_rebar_attrs(rebar, grades, sec_name);
             (rebar.cover, a, w)
@@ -825,14 +762,7 @@ fn cft_column(id: u32, sec: &Section, figure: &str, id_mat: &str) -> String {
 /// SRC 断面の内蔵鉄骨（H 形鋼）図形。`SteelLibrary` に登録し、参照名を返す。SRC 以外は `None`。
 fn src_steel_figure(shape: &SectionShape, steel: &mut SteelLibrary) -> Option<String> {
     match *shape {
-        SectionShape::SrcRect {
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-            ..
-        }
-        | SectionShape::SrcBeamRect {
+        SectionShape::SrcBeamRect {
             steel_height,
             steel_width,
             steel_web_thick,
@@ -872,9 +802,9 @@ fn src_section(
 ) -> (String, Vec<String>) {
     let steel_grade = grades.steel.unwrap_or("");
     let (b, d) = match shape {
-        SectionShape::SrcRect { b, d, .. }
-        | SectionShape::SrcBeamRect { b, d, .. }
-        | SectionShape::SrcColumnRect { b, d, .. } => (*b, *d),
+        SectionShape::SrcBeamRect { b, d, .. } | SectionShape::SrcColumnRect { b, d, .. } => {
+            (*b, *d)
+        }
         _ => return (raw(id, sec), Vec::new()),
     };
     let (rebar_arrangement, warnings) =
@@ -947,9 +877,6 @@ fn rebar_arrangement_generic(
     sec_name: &str,
 ) -> (String, Vec<String>) {
     let (cover, attrs, warnings) = match shape {
-        SectionShape::SrcRect { rebar, .. } => {
-            (rebar.cover, rebar_attrs(rebar, grades, is_beam), Vec::new())
-        }
         SectionShape::SrcBeamRect { rebar, .. } => {
             let (a, w) = beam_rebar_attrs(rebar, grades, sec_name);
             (rebar.cover, a, w)
@@ -1142,11 +1069,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
 
         if matches!(
             sec.shape,
-            Some(
-                SectionShape::SrcRect { .. }
-                    | SectionShape::SrcBeamRect { .. }
-                    | SectionShape::SrcColumnRect { .. }
-            )
+            Some(SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. })
         ) {
             let shape = sec.shape.as_ref().unwrap();
             let steel_fig = src_steel_figure(shape, &mut steel).expect("SRC 内蔵鉄骨図形");

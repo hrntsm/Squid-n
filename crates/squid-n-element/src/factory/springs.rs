@@ -203,13 +203,8 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
         return DEFAULT_ALPHA_Y;
     };
     let (b, d, at, d_eff) = match shape {
-        SectionShape::RcRect { b, d, rebar } => (
-            *b,
-            *d,
-            squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0,
-            squid_n_core::rc_rebar_geom::rebar_effective_depth(*d, rebar),
-        ),
-        SectionShape::RcBeamRect { b, d, rebar } => {
+        SectionShape::RcBeamRect { b, d, rebar }
+        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
             let bottom = rebar.bending_steel(*d, false).tension;
             let top = rebar.bending_steel(*d, true).tension;
             let steel = if bottom.area_mm2 <= top.area_mm2 {

@@ -237,7 +237,7 @@ pub(super) fn breakdown_with(
 ) -> StiffnessBreakdown {
     use squid_n_core::section_shape::SectionShape;
     let slab = match &sec.shape {
-        Some(SectionShape::RcRect { .. } | SectionShape::RcBeamRect { .. }) => {
+        Some(SectionShape::RcBeamRect { .. } | SectionShape::SrcBeamRect { .. }) => {
             slab_stiffness_factor(model, data, sec.width, sec.depth)
         }
         Some(SectionShape::SteelH { .. }) => composite_beam_stiffness_factor(model, data, sec, es),
@@ -303,9 +303,7 @@ pub(super) fn composite_props_with(
 ) -> Option<squid_n_core::section_shape::CompositeProps> {
     use squid_n_core::section_shape::SectionShape;
     match shape {
-        SectionShape::SrcRect { .. }
-        | SectionShape::SrcBeamRect { .. }
-        | SectionShape::SrcColumnRect { .. } => mat
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => mat
             .fc
             .is_some()
             .then(|| shape.src_equivalent_props(mat.young, mat.poisson))

@@ -69,21 +69,12 @@ impl SectionGeometry {
             parts.push((Primitive::Rectangle { y, z }, material));
         };
         match *shape {
-            SectionShape::RcRect { b, d, .. }
-            | SectionShape::RcBeamRect { b, d, .. }
+            SectionShape::RcBeamRect { b, d, .. }
             | SectionShape::RcColumnRect { b, d, .. }
-            | SectionShape::SrcRect { b, d, .. }
             | SectionShape::SrcBeamRect { b, d, .. }
             | SectionShape::SrcColumnRect { b, d, .. } => {
                 rect([-d / 2.0, d / 2.0], [-b / 2.0, b / 2.0], Some(0));
-                if let SectionShape::SrcRect {
-                    steel_height: h,
-                    steel_width: w,
-                    steel_web_thick: tw,
-                    steel_flange_thick: tf,
-                    ..
-                }
-                | SectionShape::SrcBeamRect {
+                if let SectionShape::SrcBeamRect {
                     steel_height: h,
                     steel_width: w,
                     steel_web_thick: tw,
@@ -201,9 +192,7 @@ impl SectionGeometry {
                 rect([h - l, h - t], [w - t, w], Some(0));
                 center_rectangles(&mut parts);
             }
-            SectionShape::RcCircle { d, .. }
-            | SectionShape::RcColumnCircle { d, .. }
-            | SectionShape::SteelRoundBar { dia: d } => {
+            SectionShape::RcColumnCircle { d, .. } | SectionShape::SteelRoundBar { dia: d } => {
                 parts.push((
                     Primitive::Circle {
                         center: [0.0; 2],

@@ -69,9 +69,7 @@ impl WallSection {
                     shear: mat.shear_modulus(),
                 }];
                 match shape {
-                    SectionShape::SrcRect { .. }
-                    | SectionShape::SrcBeamRect { .. }
-                    | SectionShape::SrcColumnRect { .. } => {
+                    SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => {
                         let steel = model
                             .element_steel_material(e)
                             .ok_or("SRC側柱の内蔵鉄骨材料が未指定です")?;

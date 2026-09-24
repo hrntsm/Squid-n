@@ -111,10 +111,7 @@ pub(crate) fn resolve_fiber_yield(
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(data));
     let steel = match model.element_section(data).and_then(|s| s.shape.as_ref()) {
         Some(
-            SectionShape::SrcRect {
-                steel_flange_thick, ..
-            }
-            | SectionShape::SrcBeamRect {
+            SectionShape::SrcBeamRect {
                 steel_flange_thick, ..
             }
             | SectionShape::SrcColumnRect {
@@ -139,14 +136,12 @@ pub(crate) fn fiber_yield_covers_shape(shape: Option<&SectionShape>, yield_: &Fi
     let rebar = yield_.rebar.or(yield_.main).is_some_and(|fy| fy > 0.0);
     let steel = yield_.steel.is_some_and(|fy| fy > 0.0);
     match shape {
-        Some(SectionShape::RcRect { .. })
-        | Some(SectionShape::RcCircle { .. })
-        | Some(SectionShape::RcBeamRect { .. })
+        Some(SectionShape::RcBeamRect { .. })
         | Some(SectionShape::RcColumnRect { .. })
         | Some(SectionShape::RcColumnCircle { .. }) => rebar,
-        Some(SectionShape::SrcRect { .. })
-        | Some(SectionShape::SrcBeamRect { .. })
-        | Some(SectionShape::SrcColumnRect { .. }) => rebar && steel,
+        Some(SectionShape::SrcBeamRect { .. }) | Some(SectionShape::SrcColumnRect { .. }) => {
+            rebar && steel
+        }
         Some(SectionShape::CftBox { .. }) | Some(SectionShape::CftPipe { .. }) => steel,
         Some(SectionShape::RcWall { .. }) | None => true,
         Some(SectionShape::RcSlab { .. }) => true,
@@ -169,11 +164,9 @@ fn fiber_steel_material<'a>(
 ) -> Option<&'a squid_n_core::model::Material> {
     let main = model.element_material(data);
     match model.element_section(data).and_then(|s| s.shape.as_ref()) {
-        Some(
-            SectionShape::SrcRect { .. }
-            | SectionShape::SrcBeamRect { .. }
-            | SectionShape::SrcColumnRect { .. },
-        ) => model.element_steel_material(data).or(main),
+        Some(SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }) => {
+            model.element_steel_material(data).or(main)
+        }
         _ => main,
     }
 }
@@ -207,10 +200,7 @@ pub(crate) fn resolve_steel_fiber_fy(
 ) -> Option<f64> {
     match shape {
         Some(
-            SectionShape::SrcRect {
-                steel_flange_thick, ..
-            }
-            | SectionShape::SrcBeamRect {
+            SectionShape::SrcBeamRect {
                 steel_flange_thick, ..
             }
             | SectionShape::SrcColumnRect {

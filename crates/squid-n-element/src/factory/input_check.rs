@@ -13,9 +13,7 @@ const MAX_LISTED: usize = 5;
 fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
     !matches!(
         shape,
-        SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::RcBeamRect { .. }
+        SectionShape::RcBeamRect { .. }
             | SectionShape::RcColumnRect { .. }
             | SectionShape::RcColumnCircle { .. }
             | SectionShape::RcWall { .. }
@@ -88,9 +86,7 @@ fn category_mismatch_issue(
     let has_rebar = sec.and_then(|s| s.shape.as_ref()).is_some_and(|s| {
         matches!(
             s,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
                 | SectionShape::SrcBeamRect { .. }
@@ -159,8 +155,7 @@ pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option
             Some(_) => {}
         }
         let has_rebar = sec.and_then(|s| s.shape.as_ref()).is_some_and(|s| {
-            s.rebar().is_some()
-                || s.beam_rebar().is_some()
+            s.beam_rebar().is_some()
                 || s.rect_column_rebar().is_some()
                 || s.circle_column_rebar().is_some()
         });

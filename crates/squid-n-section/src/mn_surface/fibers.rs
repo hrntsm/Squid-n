@@ -1,7 +1,7 @@
 //! 断面形状から全塑性計算用のファイバ/バネ配置を生成する。
 
 use squid_n_core::error::RebarGeometryError;
-use squid_n_core::section_shape::{one_bar_area, BarSet, RcRebar, RebarPoint, SectionShape};
+use squid_n_core::section_shape::{one_bar_area, RebarPoint, SectionShape};
 
 use super::types::{concrete_young, FiberRegion, PlasticFiber, StrengthParams, YieldModelKind};
 
@@ -169,106 +169,6 @@ fn mesh_box_plates(
     }
 }
 
-/// 主筋1セット分のバネを追加する。段位置は `rc_rebar_geom` と同一規約。
-fn rebar_fibers_rect(
-    fibers: &mut Vec<PlasticFiber>,
-    rebar: &RcRebar,
-    b: f64,
-    d: f64,
-    fy: f64,
-    young: f64,
-) {
-    use squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge;
-
-    let bar = |set: &BarSet| -> f64 { one_bar_area(set.dia) };
-
-    let set = &rebar.main_x;
-    if set.count > 0 {
-        let a = bar(set);
-        for layer in 0..set.layers.max(1) {
-            let depth = rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
-            let z0 = d / 2.0 - depth;
-            let span = b - 2.0 * rebar.cover;
-            for i in 0..set.count {
-                let y = if set.count == 1 {
-                    0.0
-                } else {
-                    -span / 2.0 + span * i as f64 / (set.count - 1) as f64
-                };
-                for zsign in [1.0, -1.0] {
-                    fibers.push(PlasticFiber {
-                        y,
-                        z: zsign * z0,
-                        area: a,
-                        sigma_t: fy,
-                        sigma_c: -fy,
-                        young,
-                        region: FiberRegion::Rebar,
-                    });
-                }
-            }
-        }
-    }
-
-    let set = &rebar.main_y;
-    if set.count > 0 {
-        let a = bar(set);
-        for layer in 0..set.layers.max(1) {
-            let depth = rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
-            let y0 = b / 2.0 - depth;
-            let span = d - 2.0 * rebar.cover;
-            for i in 0..set.count {
-                let z = -span / 2.0 + span * (i as f64 + 1.0) / (set.count + 1) as f64;
-                for ysign in [1.0, -1.0] {
-                    fibers.push(PlasticFiber {
-                        y: ysign * y0,
-                        z,
-                        area: a,
-                        sigma_t: fy,
-                        sigma_c: -fy,
-                        young,
-                        region: FiberRegion::Rebar,
-                    });
-                }
-            }
-        }
-    }
-}
-
-/// RC 円形断面の主筋バネ（合計本数を円周上へ等配）。
-fn rebar_fibers_circle(
-    fibers: &mut Vec<PlasticFiber>,
-    rebar: &RcRebar,
-    d: f64,
-    fy: f64,
-    young: f64,
-) {
-    let total = (rebar.main_x.count + rebar.main_y.count) as usize;
-    if total == 0 {
-        return;
-    }
-    let dia = if rebar.main_x.count > 0 {
-        rebar.main_x.dia
-    } else {
-        rebar.main_y.dia
-    };
-    let a = squid_n_core::section_shape::one_bar_area(dia);
-    let depth = rebar.cover + rebar.shear.dia + dia / 2.0;
-    let r = (d / 2.0 - depth).max(0.0);
-    for i in 0..total {
-        let th = 2.0 * std::f64::consts::PI * i as f64 / total as f64;
-        fibers.push(PlasticFiber {
-            y: r * th.cos(),
-            z: r * th.sin(),
-            area: a,
-            sigma_t: fy,
-            sigma_c: -fy,
-            young,
-            region: FiberRegion::Rebar,
-        });
-    }
-}
-
 /// 実配筋座標 `RebarPoint{x,y}` をファイバ `PlasticFiber{y,z}` へ写して追加する
 /// （`fiber.y = point.x`, `fiber.z = point.y`）。
 fn rebar_fibers_from_points(
@@ -340,9 +240,6 @@ pub fn max_dimension(shape: &SectionShape) -> f64 {
             lower_width,
             ..
         } => height.max(upper_width).max(lower_width),
-        SectionShape::RcRect { b, d, .. } => b.max(d),
-        SectionShape::RcCircle { d, .. } => d,
-        SectionShape::SrcRect { b, d, .. } => b.max(d),
         SectionShape::RcBeamRect { b, d, .. }
         | SectionShape::RcColumnRect { b, d, .. }
         | SectionShape::SrcBeamRect { b, d, .. }
@@ -572,50 +469,6 @@ pub fn plastic_fibers_at(
                 [0.0, lower_thick + hw / 2.0],
                 web_thick,
                 hw,
-                target,
-                steel,
-            );
-        }
-        SectionShape::RcRect { b, d, ref rebar } => {
-            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            rebar_fibers_rect(
-                &mut fibers,
-                rebar,
-                b,
-                d,
-                strength.rebar_fy,
-                strength.steel_e,
-            );
-        }
-        SectionShape::RcCircle { d, ref rebar } => {
-            mesh_annulus(&mut fibers, d, d / 2.0, ring.n_theta, ring.n_r_solid, conc);
-            rebar_fibers_circle(&mut fibers, rebar, d, strength.rebar_fy, strength.steel_e);
-        }
-        SectionShape::SrcRect {
-            b,
-            d,
-            ref rebar,
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-            ..
-        } => {
-            mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            rebar_fibers_rect(
-                &mut fibers,
-                rebar,
-                b,
-                d,
-                strength.rebar_fy,
-                strength.steel_e,
-            );
-            mesh_h_plates(
-                &mut fibers,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
                 target,
                 steel,
             );

@@ -12,8 +12,8 @@ use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
-use squid_n_core::rc_capacity::{rc_capacity_input_from_rect, rc_qsu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
+use squid_n_core::section_shape::SectionShape;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
 
@@ -68,26 +68,6 @@ pub(crate) enum ShearDir {
     Y,
     /// 局所 z 方向（弱軸曲げ＝My 面に伴うせん断、`Section.as_y`・`RcRebar.main_y` 対応）。
     Z,
-}
-
-/// 指定方向の荒川式用入力一式を組み立てる。
-///
-/// `clear_span` は剛域控除後の内法スパンを渡す。
-#[allow(clippy::too_many_arguments)]
-fn rc_rect_capacity_input(
-    b: f64,
-    d: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
-    mat: &Material,
-    rebar_mat: Option<&Material>,
-    shear_mat: Option<&Material>,
-    clear_span: f64,
-) -> Option<RcCapacityInput> {
-    let mut input =
-        rc_capacity_input_from_rect(b, d, main, rebar, mat, rebar_mat, shear_mat, clear_span)?;
-    input.sigma_y *= rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1);
-    Some(input)
 }
 
 fn real_rebar_capacity_input(
@@ -268,109 +248,6 @@ fn build_dir_threshold(
         if let Some((input, steel_qy)) =
             real_rebar_capacity_input(shape, mat, rebar_mat, shear_mat, steel_mat, dir, clear_span)
         {
-            if rc_qsu_simple(&input) + steel_qy > 0.0 {
-                return DirThreshold::RcArakawa {
-                    gross_area: input.b * input.d,
-                    input,
-                    steel_qy,
-                };
-            }
-        }
-    }
-    if let Some(Section {
-        shape: Some(SectionShape::RcRect { b, d, rebar }),
-        ..
-    }) = section
-    {
-        let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(
-                *b,
-                *d,
-                &rebar.main_x,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-            ShearDir::Z => rc_rect_capacity_input(
-                *d,
-                *b,
-                &rebar.main_y,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-        };
-        if let Some(input) = input {
-            if rc_qsu_simple(&input) > 0.0 {
-                return DirThreshold::RcArakawa {
-                    gross_area: input.b * input.d,
-                    input,
-                    steel_qy: 0.0,
-                };
-            }
-        }
-    }
-    if let Some(Section {
-        shape:
-            Some(SectionShape::SrcRect {
-                b,
-                d,
-                rebar,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-            }),
-        ..
-    }) = section
-    {
-        let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(
-                *b,
-                *d,
-                &rebar.main_x,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-            ShearDir::Z => rc_rect_capacity_input(
-                *d,
-                *b,
-                &rebar.main_y,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-        };
-        let (sh, sb, tw, tf) = (
-            *steel_height,
-            *steel_width,
-            *steel_web_thick,
-            *steel_flange_thick,
-        );
-        let (s_aw, plate_t) = match dir {
-            ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
-            ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
-        };
-        let steel_name = steel_mat.map(|m| m.name.as_str()).unwrap_or("");
-        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_name, plate_t)
-            .or_else(|| steel_mat.and_then(|m| m.fy))
-            .unwrap_or(235.0);
-        let factor = steel_mat
-            .and_then(|m| m.strength_factor)
-            .unwrap_or_else(|| {
-                squid_n_core::material_grade::steel_material_strength_factor(steel_name)
-            });
-        let steel_qy = s_aw * s_f * factor / 3.0_f64.sqrt();
-        if let Some(input) = input {
             if rc_qsu_simple(&input) + steel_qy > 0.0 {
                 return DirThreshold::RcArakawa {
                     gross_area: input.b * input.d,

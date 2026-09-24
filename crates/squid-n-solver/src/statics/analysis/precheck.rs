@@ -202,10 +202,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     let has_rebar = |sh: &SectionShape| {
         matches!(
             sh,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
                 | SectionShape::SrcBeamRect { .. }
@@ -215,9 +212,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     let is_src = |sh: &SectionShape| {
         matches!(
             sh,
-            SectionShape::SrcRect { .. }
-                | SectionShape::SrcBeamRect { .. }
-                | SectionShape::SrcColumnRect { .. }
+            SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }
         )
     };
     let collect_ids =
