@@ -170,7 +170,10 @@ impl App {
                         continue;
                     };
                     rank
-                } else if matches!(sec.shape.as_ref(), Some(SectionShape::SrcRect { .. })) {
+                } else if matches!(
+                    sec.shape.as_ref(),
+                    Some(SectionShape::SrcRect { .. } | SectionShape::SrcColumnRect { .. })
+                ) {
                     use squid_n_design_jp::secondary::src_rank::{
                         src_column_rank, src_column_rank_ratios,
                     };
@@ -185,10 +188,13 @@ impl App {
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
                         continue;
                     };
-                    let shape = sec.shape.as_ref().expect("SrcRect と判定済み");
-                    let Some(rebar_sy) = shape.rebar().and_then(|_| {
+                    let shape = sec.shape.as_ref().expect("SRC 矩形柱と判定済み");
+                    if shape.rebar().is_none() && shape.rect_column_rebar().is_none() {
+                        continue;
+                    }
+                    let Some(rebar_sy) =
                         squid_n_core::material_grade::rebar_yield_strength(rebar_mat).or(mat.fy)
-                    }) else {
+                    else {
                         continue;
                     };
                     let Some((n_n0, smo_m0)) =

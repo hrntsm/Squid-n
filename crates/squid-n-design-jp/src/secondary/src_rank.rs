@@ -5,6 +5,7 @@
 //! - [`src_column_rank_ratios`] — 判定比 N/N0・sM0/M0 の算定
 
 use super::holding_capacity::MemberRank;
+use squid_n_core::rc_rebar_geom::RectEdge;
 use squid_n_core::section_shape::{bar_set_area, SectionShape};
 
 /// SRC 柱の部材種別（表 2.6.6-5）。
@@ -60,7 +61,8 @@ pub fn src_wall_type(shear_failure: bool) -> MemberRank {
 /// - `rebar_sy`: 主筋の降伏強度 σy [N/mm²]（0 以下は算定不能で `None`）。
 /// - `n_ult`: メカニズム時の軸方向力 [N]（**圧縮正**。引張は 0 として扱う）。
 ///
-/// SRC 矩形（[`SectionShape::SrcRect`]）以外の形状は `None`。
+/// SRC 矩形（[`SectionShape::SrcRect`]・[`SectionShape::SrcColumnRect`]）以外の
+/// 形状は `None`。
 pub fn src_column_rank_ratios(
     shape: &SectionShape,
     steel_grade: &str,
@@ -68,27 +70,58 @@ pub fn src_column_rank_ratios(
     rebar_sy: f64,
     n_ult: f64,
 ) -> Option<(f64, f64)> {
-    let SectionShape::SrcRect {
-        b,
-        d,
-        rebar,
-        steel_height,
-        steel_width,
-        steel_web_thick,
-        steel_flange_thick,
-    } = shape
-    else {
-        return None;
+    let (b, d, at, ar_total, dt, (sh, sb, tw, tf)) = match shape {
+        SectionShape::SrcRect {
+            b,
+            d,
+            rebar,
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+        } => (
+            *b,
+            *d,
+            bar_set_area(&rebar.main_x) / 2.0,
+            bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y),
+            crate::rc::tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x),
+            (
+                *steel_height,
+                *steel_width,
+                *steel_web_thick,
+                *steel_flange_thick,
+            ),
+        ),
+        SectionShape::SrcColumnRect {
+            b,
+            d,
+            rebar,
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+        } => {
+            rebar.validate(*b, *d).ok()?;
+            let edge = rebar.edge_steel(RectEdge::Top, *b, *d);
+            (
+                *b,
+                *d,
+                edge.area_mm2,
+                rebar.total_main_area(),
+                edge.centroid_from_edge_mm,
+                (
+                    *steel_height,
+                    *steel_width,
+                    *steel_web_thick,
+                    *steel_flange_thick,
+                ),
+            )
+        }
+        _ => return None,
     };
-    if fc <= 0.0 || rebar_sy <= 0.0 || *b <= 0.0 || *d <= 0.0 {
+    if fc <= 0.0 || rebar_sy <= 0.0 || b <= 0.0 || d <= 0.0 {
         return None;
     }
-    let (sh, sb, tw, tf) = (
-        *steel_height,
-        *steel_width,
-        *steel_web_thick,
-        *steel_flange_thick,
-    );
     if sh <= 0.0 || sb <= 0.0 || tw <= 0.0 || tf <= 0.0 || sh <= 2.0 * tf {
         return None;
     }
@@ -99,16 +132,12 @@ pub fn src_column_rank_ratios(
     let s_zp = sb * tf * (sh - tf) + tw * hw * hw / 4.0;
     let s_m0 = s_zp * s_f;
 
-    let ar_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    let at = bar_set_area(&rebar.main_x) / 2.0;
-
     let ac = (b * d - s_a - ar_total).max(0.0);
     let n0 = ac * fc + s_a * s_f + ar_total * rebar_sy;
     if n0 <= 0.0 {
         return None;
     }
 
-    let dt = crate::rc::tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x);
     let de = (d - dt).max(0.0);
     let r_m0 = 0.9 * at * rebar_sy * de;
     let m0 = s_m0 + r_m0;
@@ -228,5 +257,61 @@ mod tests {
             rebar,
         };
         assert!(src_column_rank_ratios(&rc, "SN400B", 24.0, 345.0, 0.0).is_none());
+    }
+
+    fn sample_src_column_rect_shape() -> SectionShape {
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![3],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 8.0,
+            steel_flange_thick: 13.0,
+        }
+    }
+
+    /// 実配筋 SRC 矩形柱でも判定比が算定でき、非ゼロの比になる。
+    #[test]
+    fn test_src_column_rank_ratios_src_column_rect() {
+        let shape = sample_src_column_rect_shape();
+        let (n_n0, smo_m0) = src_column_rank_ratios(&shape, "SN400B", 24.0, 345.0, 2_000_000.0)
+            .expect("実配筋 SRC 矩形柱は算定可能");
+        assert!(n_n0 > 0.0, "N/N0={n_n0}");
+        assert!(smo_m0 > 0.0 && smo_m0 < 1.0, "sM0/M0={smo_m0}");
+    }
+
+    /// 実配筋 SRC 矩形柱の配筋が幾何的に不整合なら None。
+    #[test]
+    fn test_src_column_rank_ratios_src_column_rect_invalid_rebar() {
+        let SectionShape::SrcColumnRect { rebar, .. } = sample_src_column_rect_shape() else {
+            unreachable!()
+        };
+        let shape = SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: squid_n_core::section_shape::RcRectColumnRebar {
+                x: vec![1],
+                y: vec![1],
+                ..rebar
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 8.0,
+            steel_flange_thick: 13.0,
+        };
+        assert!(src_column_rank_ratios(&shape, "SN400B", 24.0, 345.0, 2_000_000.0).is_none());
     }
 }
