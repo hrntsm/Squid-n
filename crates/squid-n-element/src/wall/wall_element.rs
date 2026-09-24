@@ -92,6 +92,34 @@ fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f6
         })
 }
 
+/// 側柱断面の主筋総断面積 at [mm²]。RC 耐力式を適用できない形状は `None`。
+///
+/// 旧形状（`RcRect`/`RcCircle`）は方向別総本数の和、実配筋モデルの形状は
+/// 検証済みの総主筋量を返す。未入力は 0、検証失敗は `None`。
+fn side_column_main_area(shape: &SectionShape) -> Option<f64> {
+    match shape {
+        SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. } => Some(
+            squid_n_core::section_shape::bar_set_area(&rebar.main_x)
+                + squid_n_core::section_shape::bar_set_area(&rebar.main_y),
+        ),
+        SectionShape::RcBeamRect { b, d, rebar }
+        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+            rebar.validate(*b, *d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        SectionShape::RcColumnRect { b, d, rebar }
+        | SectionShape::SrcColumnRect { b, d, rebar, .. } => {
+            rebar.validate(*b, *d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        SectionShape::RcColumnCircle { d, rebar } => {
+            rebar.validate(*d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        _ => None,
+    }
+}
+
 /// 耐震壁の幾何・配筋・材料。
 struct WallShearGeometry {
     /// コンクリート設計基準強度 Fc [N/mm²]（未設定は `None`）
@@ -523,14 +551,10 @@ impl WallElement {
                 else {
                     return [0.0; 2];
                 };
-                let rebar = match shape {
-                    SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. } => {
-                        rebar
-                    }
-                    _ => return [0.0; 2],
+                let Some(area) = side_column_main_area(shape) else {
+                    return [0.0; 2];
                 };
-                at[side] = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                    + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
+                at[side] = area;
                 if at[side] <= 0.0 {
                     return [0.0; 2];
                 }
@@ -693,10 +717,8 @@ impl WallElement {
             let shape = model
                 .element_section(&model.elements[column.element_index])
                 .and_then(|sec| sec.shape.as_ref());
-            match shape {
-                Some(SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. })
-                    if squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                        + squid_n_core::section_shape::bar_set_area(&rebar.main_y) > 0.0 => {}
+            match shape.and_then(side_column_main_area) {
+                Some(area) if area > 0.0 => {}
                 _ => return Some(format!("耐震壁 ID {} の側柱の終局せん断耐力を算定できません。現在のRC耐力式は主筋を明示したRC矩形・円形側柱に適用します。SRC・CFT・鋼材側柱の弾性断面計算とは適用範囲が異なります。", data.id.0)),
             }
         }
@@ -2362,7 +2384,9 @@ mod capacity_issue_tests {
     use squid_n_core::model::{
         ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{
+        bar_set_area, BarSet, RcRebar, RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
+    };
 
     /// 側柱あり／なし、側柱断面の指定を切り替えて壁モデルを作る。
     fn model_with(side_col_sec: Option<Section>, ps: f64) -> (Model, ElementData) {
@@ -2672,5 +2696,74 @@ mod capacity_issue_tests {
             "{}",
             issue
         );
+    }
+
+    /// 実配筋モデルの矩形柱側柱は、旧 RcRect 側柱と主筋総量が同じなら、
+    /// 実配筋の総主筋量（`total_main_area`）を at として同じ方向別耐力を与える。
+    #[test]
+    fn test_new_rect_column_side_column_uses_total_main_area() {
+        let old_rebar = RcRebar {
+            main_x: BarSet {
+                count: 8,
+                dia: 22.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        };
+        let old_at = bar_set_area(&old_rebar.main_x) + bar_set_area(&old_rebar.main_y);
+        let new_rebar = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![5],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        };
+        assert!(
+            (new_rebar.total_main_area() - old_at).abs() < 1e-9,
+            "テスト前提: 総主筋量が一致すること"
+        );
+
+        let old_shape = SectionShape::RcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: old_rebar,
+        };
+        let new_shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: new_rebar,
+        };
+        let (model_old, wall_old) = model_with(
+            Some(old_shape.to_section(SectionId(1), "C600".into())),
+            0.0025,
+        );
+        let (model_new, wall_new) = model_with(
+            Some(new_shape.to_section(SectionId(1), "C600".into())),
+            0.0025,
+        );
+
+        assert_eq!(
+            WallElement::wall_shear_capacity_issue(&wall_new, &model_new),
+            None
+        );
+        let old_qu = WallElement::directional_shear_capacity_of(&wall_old, &model_old);
+        let new_qu = WallElement::directional_shear_capacity_of(&wall_new, &model_new);
+        assert!(new_qu[0] > 0.0 && new_qu[1] > 0.0, "{new_qu:?}");
+        assert_eq!(old_qu, new_qu);
     }
 }
