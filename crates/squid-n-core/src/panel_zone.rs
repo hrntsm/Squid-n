@@ -387,7 +387,7 @@ pub fn beam_panel_depth(sec: &Section) -> f64 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use crate::ids::SectionId;

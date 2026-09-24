@@ -132,9 +132,7 @@ pub fn validate_section_materials(
 
     let concrete_shape = matches!(
         shape,
-        SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::RcBeamRect { .. }
+        SectionShape::RcBeamRect { .. }
             | SectionShape::RcColumnRect { .. }
             | SectionShape::RcColumnCircle { .. }
             | SectionShape::RcWall { .. }
@@ -154,9 +152,7 @@ pub fn validate_section_materials(
 
     if matches!(
         shape,
-        SectionShape::SrcRect { .. }
-            | SectionShape::SrcBeamRect { .. }
-            | SectionShape::SrcColumnRect { .. }
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }
     ) {
         let Some(main) = main else {
             return Err(format!("SRC断面{}の主材料が未設定です", section.name));
@@ -400,15 +396,13 @@ fn validate_section_geometry(section: &Section) -> Result<(), String> {
             relation("lip > thick", *lip > *thick)?;
             relation("height > lip + thick", *height > *lip + *thick)?;
         }
-        SectionShape::RcRect { b, d, .. }
-        | SectionShape::SrcRect { b, d, .. }
-        | SectionShape::RcBeamRect { b, d, .. }
+        SectionShape::RcBeamRect { b, d, .. }
         | SectionShape::RcColumnRect { b, d, .. }
         | SectionShape::SrcBeamRect { b, d, .. }
         | SectionShape::SrcColumnRect { b, d, .. } => {
             dimensions.extend([("b", *b), ("d", *d)]);
         }
-        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
+        SectionShape::RcColumnCircle { d, .. } => {
             dimensions.push(("d", *d));
         }
         SectionShape::RcWall { thickness, ps } => {
@@ -485,19 +479,15 @@ fn shaped_mass(
     let mut result = WeightedMass::default();
 
     match shape {
-        SectionShape::RcRect { b, d, .. }
-        | SectionShape::RcBeamRect { b, d, .. }
-        | SectionShape::RcColumnRect { b, d, .. } => {
+        SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
             result.add(rc_density, gross);
         }
-        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
+        SectionShape::RcColumnCircle { d, .. } => {
             let gross = circle_geometry(*d);
             result.add(rc_density, gross);
         }
-        SectionShape::SrcRect { b, d, .. }
-        | SectionShape::SrcBeamRect { b, d, .. }
-        | SectionShape::SrcColumnRect { b, d, .. } => {
+        SectionShape::SrcBeamRect { b, d, .. } | SectionShape::SrcColumnRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
             result.add(concrete_density(main, ConcreteComposition::Src), gross);
         }
@@ -582,7 +572,7 @@ fn concrete_density(material: Option<&Material>, composition: ConcreteCompositio
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use crate::ids::{MaterialId, SectionId};

@@ -1,42 +1,5 @@
 //! 断面形状の型定義。
 
-/// RC 配筋の主筋セット（方向別）。
-///
-/// `count`: 本数, `dia`: 径 [mm], `layers`: 段数。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct BarSet {
-    pub count: u32,
-    pub dia: f64,
-    pub layers: u32,
-}
-
-/// RC せん断補強筋。
-///
-/// `dia`: 径 [mm], `pitch`: ピッチ [mm], `legs`: 組数。
-///
-/// 材質は形状ではなく断面が持つ（`crate::model::Section::shear_rebar_material`）。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ShearBar {
-    pub dia: f64,
-    pub pitch: f64,
-    pub legs: u32,
-}
-
-/// RC 配筋情報。
-///
-/// `main_x`: せい方向（X）主筋, `main_y`: 幅方向（Y）主筋,
-/// `cover`: かぶり [mm], `shear`: せん断補強筋。
-///
-/// 材質は形状ではなく断面が持つ（`crate::model::Section::rebar_material`・
-/// `crate::model::Section::shear_rebar_material`）。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct RcRebar {
-    pub main_x: BarSet,
-    pub main_y: BarSet,
-    pub cover: f64,
-    pub shear: ShearBar,
-}
-
 /// Parametric section shape definition.
 ///
 /// Each variant carries the minimal parameters needed to define the geometry.
@@ -110,22 +73,6 @@ pub enum SectionShape {
         lip: f64,
         thick: f64,
     },
-    /// Reinforced concrete rectangle (RC 矩形).
-    RcRect { b: f64, d: f64, rebar: RcRebar },
-    /// Reinforced concrete circle column (RC 円形).
-    RcCircle { d: f64, rebar: RcRebar },
-    /// SRC 矩形断面（RC 矩形 + 内蔵 H 形鉄骨）。
-    ///
-    /// 内蔵鉄骨の鋼種・コンクリート強度・主筋の材質は、いずれも断面が材料として持つ。
-    SrcRect {
-        b: f64,
-        d: f64,
-        rebar: RcRebar,
-        steel_height: f64,
-        steel_width: f64,
-        steel_web_thick: f64,
-        steel_flange_thick: f64,
-    },
     /// RC 梁（実配筋）。`b`: 幅 [mm], `d`: せい [mm]。
     RcBeamRect { b: f64, d: f64, rebar: RcBeamRebar },
     /// RC 矩形柱（実配筋）。
@@ -172,17 +119,6 @@ pub enum SectionShape {
 }
 
 impl SectionShape {
-    /// 配筋情報（主筋・せん断補強筋）を持つ形状はその参照を返す。
-    /// 配筋を持たない形状（鋼断面・CFT・壁）は `None`。
-    pub fn rebar(&self) -> Option<&RcRebar> {
-        match self {
-            SectionShape::RcRect { rebar, .. }
-            | SectionShape::RcCircle { rebar, .. }
-            | SectionShape::SrcRect { rebar, .. } => Some(rebar),
-            _ => None,
-        }
-    }
-
     /// 梁の実配筋を持つ形状はその参照を返す。
     pub fn beam_rebar(&self) -> Option<&RcBeamRebar> {
         match self {
@@ -228,10 +164,7 @@ impl SectionShape {
     pub fn is_concrete_like(&self) -> bool {
         matches!(
             self,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
                 | SectionShape::SrcBeamRect { .. }
@@ -251,15 +184,6 @@ pub fn one_bar_area(dia: f64) -> f64 {
 }
 
 /// 主筋セットの総断面積 [mm²]。
-pub fn bar_set_area(bs: &BarSet) -> f64 {
-    bs.count as f64 * one_bar_area(bs.dia)
-}
-
-/// せん断補強筋 1 組（`legs` 本）の断面積 [mm²]。
-pub fn shear_legs_area(shear: &ShearBar) -> f64 {
-    shear.legs as f64 * one_bar_area(shear.dia)
-}
-
 /// RC 梁の実配筋。
 ///
 /// `main_dia`: 主筋径 [mm]（全段共通）。`top`/`bottom`: 上端筋・下端筋の

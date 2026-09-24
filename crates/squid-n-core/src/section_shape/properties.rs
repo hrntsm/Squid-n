@@ -74,9 +74,6 @@ impl SectionShape {
                 );
                 area
             }
-            SectionShape::RcRect { b, d, .. } => b * d,
-            SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d * d / 4.0,
-            SectionShape::SrcRect { b, d, .. } => b * d,
             SectionShape::RcBeamRect { b, d, .. }
             | SectionShape::RcColumnRect { b, d, .. }
             | SectionShape::SrcBeamRect { b, d, .. }
@@ -296,18 +293,7 @@ impl SectionShape {
                 let i_w = web_thick * hw.powi(3) / 12.0 + a_w * (y_w - y_bar).powi(2);
                 i_uf + i_lf + i_w
             }
-            SectionShape::RcRect { b, d, .. } => b * d.powi(3) / 12.0,
-            SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 64.0,
-            SectionShape::SrcRect {
-                b,
-                d,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-                ..
-            }
-            | SectionShape::SrcBeamRect {
+            SectionShape::SrcBeamRect {
                 b,
                 d,
                 steel_height,
@@ -453,18 +439,7 @@ impl SectionShape {
                     + lower_thick * lower_width.powi(3) / 12.0
                     + hw * web_thick.powi(3) / 12.0
             }
-            SectionShape::RcRect { b, d, .. } => d * b.powi(3) / 12.0,
-            SectionShape::RcCircle { .. } => self.calc_iy(),
-            SectionShape::SrcRect {
-                b,
-                d,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-                ..
-            }
-            | SectionShape::SrcBeamRect {
+            SectionShape::SrcBeamRect {
                 b,
                 d,
                 steel_height,
@@ -580,9 +555,6 @@ impl SectionShape {
                     + hw * web_thick.powi(3))
                     / 3.0
             }
-            SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
-            SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
-            SectionShape::SrcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcBeamRect { b, d, .. }
             | SectionShape::RcColumnRect { b, d, .. }
             | SectionShape::SrcBeamRect { b, d, .. }
@@ -616,16 +588,7 @@ impl SectionShape {
     /// コンクリート全断面）とは区別して用いること。他形状は `calc_area` と同値。
     pub fn calc_axial_stiffness_area(&self) -> f64 {
         match *self {
-            SectionShape::SrcRect {
-                b,
-                d,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-                ..
-            }
-            | SectionShape::SrcBeamRect {
+            SectionShape::SrcBeamRect {
                 b,
                 d,
                 steel_height,

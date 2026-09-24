@@ -3,8 +3,7 @@
 use crate::material_grade::rebar_yield_strength;
 use crate::model::{ElementData, Material, Model, Section};
 use crate::rc_capacity::{rc_mu_simple, RcCapacityInput};
-use crate::rc_rebar_geom::rebar_effective_depth;
-use crate::section_shape::{bar_set_area, SectionShape};
+use crate::section_shape::SectionShape;
 
 /// 曲げ降伏 My 算定に用いる材料強度係数。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,26 +48,6 @@ pub fn member_flexural_yield_moment(
     let ze = sec.map(section_elastic_modulus).unwrap_or(0.0);
     let fy = mat.and_then(|m| m.fy);
     match sec.and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::RcRect { rebar, d, .. }) => rc_flexural_yield_moment(
-            elem,
-            model,
-            mat,
-            bar_set_area(&rebar.main_x) / 2.0,
-            rebar_effective_depth(*d, rebar),
-            *d,
-            ze,
-            factors.rebar,
-        ),
-        Some(SectionShape::RcCircle { rebar, d }) => rc_flexural_yield_moment(
-            elem,
-            model,
-            mat,
-            bar_set_area(&rebar.main_x) / 2.0,
-            rebar_effective_depth(*d, rebar),
-            *d,
-            ze,
-            factors.rebar,
-        ),
         Some(SectionShape::RcBeamRect { b: _, d, rebar }) => {
             let bottom = rebar.bending_steel(*d, false);
             let top = rebar.bending_steel(*d, true);

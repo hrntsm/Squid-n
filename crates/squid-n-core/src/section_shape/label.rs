@@ -92,26 +92,6 @@ impl SectionShape {
                 format!("FB-{}", dims(&[*width, *thick]))
             }
             SectionShape::SteelRoundBar { dia } => format!("RB-{}", dim(*dia)),
-            SectionShape::RcRect { b, d, .. } => format!("BD-{}", dims(&[*b, *d])),
-            SectionShape::RcCircle { d, .. } => format!("RD-{}", dim(*d)),
-            SectionShape::SrcRect {
-                b,
-                d,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-                ..
-            } => format!(
-                "SRC-{}+H-{}",
-                dims(&[*b, *d]),
-                dims(&[
-                    *steel_height,
-                    *steel_width,
-                    *steel_web_thick,
-                    *steel_flange_thick,
-                ])
-            ),
             SectionShape::RcBeamRect { b, d, .. } => format!("RCB-{}", dims(&[*b, *d])),
             SectionShape::RcColumnRect { b, d, .. } => format!("RCC-{}", dims(&[*b, *d])),
             SectionShape::RcColumnCircle { d, .. } => format!("RD-{}", dim(*d)),

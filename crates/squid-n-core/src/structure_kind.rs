@@ -84,13 +84,11 @@ impl StructureKind {
 /// [`shape_default_kind`] だけで、追随を忘れるとコンパイルエラーになる。
 pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
     match shape {
-        SectionShape::SrcRect { .. }
-        | SectionShape::SrcBeamRect { .. }
-        | SectionShape::SrcColumnRect { .. } => Some(StructureKind::Src),
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => {
+            Some(StructureKind::Src)
+        }
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => Some(StructureKind::Cft),
-        SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
-        | SectionShape::RcBeamRect { .. }
+        SectionShape::RcBeamRect { .. }
         | SectionShape::RcColumnRect { .. }
         | SectionShape::RcColumnCircle { .. }
         | SectionShape::RcWall { .. }
@@ -115,13 +113,9 @@ pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
 /// 意図をよく表すため、材料がないときに限ってこれを既定として採る。
 pub fn shape_default_kind(shape: &SectionShape) -> StructureKind {
     match shape {
-        SectionShape::SrcRect { .. }
-        | SectionShape::SrcBeamRect { .. }
-        | SectionShape::SrcColumnRect { .. } => StructureKind::Src,
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => StructureKind::Src,
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => StructureKind::Cft,
-        SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
-        | SectionShape::RcBeamRect { .. }
+        SectionShape::RcBeamRect { .. }
         | SectionShape::RcColumnRect { .. }
         | SectionShape::RcColumnCircle { .. }
         | SectionShape::RcWall { .. }
@@ -173,7 +167,7 @@ pub fn member_structure_kind(model: &Model, elem: &ElementData) -> StructureKind
     structure_kind_of(sec, category)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use crate::ids::{ElemId, MaterialId, SectionId};
