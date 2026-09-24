@@ -102,13 +102,11 @@ fn side_column_main_area(shape: &SectionShape) -> Option<f64> {
             squid_n_core::section_shape::bar_set_area(&rebar.main_x)
                 + squid_n_core::section_shape::bar_set_area(&rebar.main_y),
         ),
-        SectionShape::RcBeamRect { b, d, rebar }
-        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+        SectionShape::RcBeamRect { b, d, rebar } => {
             rebar.validate(*b, *d).ok()?;
             Some(rebar.total_main_area())
         }
-        SectionShape::RcColumnRect { b, d, rebar }
-        | SectionShape::SrcColumnRect { b, d, rebar, .. } => {
+        SectionShape::RcColumnRect { b, d, rebar } => {
             rebar.validate(*b, *d).ok()?;
             Some(rebar.total_main_area())
         }
@@ -2765,5 +2763,96 @@ mod capacity_issue_tests {
         let new_qu = WallElement::directional_shear_capacity_of(&wall_new, &model_new);
         assert!(new_qu[0] > 0.0 && new_qu[1] > 0.0, "{new_qu:?}");
         assert_eq!(old_qu, new_qu);
+    }
+
+    /// SRC 側柱を含む壁モデル。弾性断面を構築できるよう内蔵鉄骨材料まで与える。
+    fn model_with_src_side_column(shape: SectionShape) -> (Model, ElementData) {
+        let (mut model, wall) = model_with(
+            Some(shape.to_section(SectionId(1), "SRC600".into())),
+            0.0025,
+        );
+        model.materials.push(Material {
+            id: MaterialId(1),
+            name: "SN400".into(),
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        });
+        model.sections[1].steel_material = Some(MaterialId(1));
+        (model, wall)
+    }
+
+    /// 新型 SRC 矩形柱側柱は RC 耐力式の適用外として拒否し、代替式で続行しない。
+    #[test]
+    fn test_issue_when_new_src_side_column() {
+        let shape = SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![5],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+            steel_height: 500.0,
+            steel_width: 300.0,
+            steel_web_thick: 12.0,
+            steel_flange_thick: 20.0,
+        };
+        let (model, wall) = model_with_src_side_column(shape);
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("新型SRC側柱はRC耐力式の適用外として拒否する");
+        assert!(issue.contains("SRC"), "{}", issue);
+        assert!(issue.contains("適用範囲"), "{}", issue);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// 旧 SRC 矩形側柱も従来どおり RC 耐力式の適用外として拒否する。
+    #[test]
+    fn test_issue_when_old_src_side_column() {
+        let shape = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 2,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+            steel_height: 500.0,
+            steel_width: 300.0,
+            steel_web_thick: 12.0,
+            steel_flange_thick: 20.0,
+        };
+        let (model, wall) = model_with_src_side_column(shape);
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("旧SRC側柱はRC耐力式の適用外として拒否する");
+        assert!(issue.contains("SRC"), "{}", issue);
+        assert!(issue.contains("適用範囲"), "{}", issue);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 }
