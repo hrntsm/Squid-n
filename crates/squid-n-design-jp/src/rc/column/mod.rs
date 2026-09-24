@@ -16,6 +16,13 @@ mod nm_interaction;
 pub(crate) use nm_interaction::interp_ma;
 use nm_interaction::*;
 
+/// 矩形柱の直交方向主筋総断面積 at_perp [mm²]。
+///
+/// 全主筋 ag から検討方向の引張側・圧縮側最外段 at・ac を除いた残り（負にならない）。
+fn rect_column_at_perp(ag_mm2: f64, at_mm2: f64, ac_mm2: f64) -> f64 {
+    (ag_mm2 - at_mm2 - ac_mm2).max(0.0)
+}
+
 /// 柱の断面検定（RC 規準 14条）。
 pub(crate) fn column_check(
     forces: &MemberForcesAt,
@@ -157,7 +164,7 @@ pub(crate) fn column_check(
         };
     }
 
-    if let SectionShape::RcColumnRect { b, d, rebar } = shape {
+    if let SectionShape::RcColumnRect { b, d, .. } = shape {
         let damage_control = ctx.rc_damage_control;
 
         let props_z = axis_props_from_shape(shape, RcDirection::Strong, true)
@@ -173,8 +180,8 @@ pub(crate) fn column_check(
         let as_total = info.main_area;
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft_z, allow.n_ratio);
 
-        let at_perp_for_z = rebar.y_direction_area_mm2();
-        let at_perp_for_y = rebar.x_direction_area_mm2();
+        let at_perp_for_z = rect_column_at_perp(as_total, props_z.at, props_z.ac);
+        let at_perp_for_y = rect_column_at_perp(as_total, props_y.at, props_y.ac);
 
         let axis_z = ColumnAxis {
             props: props_z,
@@ -600,7 +607,9 @@ pub(crate) fn column_check(
 mod tests {
     use super::*;
     use crate::rc::beam::beam_moment_capacity;
-    use crate::rc::tests::{ctx_column, make_material, make_section, rc_rect_shape};
+    use crate::rc::tests::{
+        ctx_column, make_material, make_section, rc_column_rect_shape, rc_rect_shape,
+    };
     use crate::DesignCheck;
 
     #[test]
@@ -893,6 +902,50 @@ mod tests {
             "旧 RcRect 柱の検定比が axis_props_from_shape 経由と一致しない: {} vs {}",
             r.ratio(),
             expected
+        );
+    }
+
+    /// 新 `RcColumnRect` の許容 N-M 用 at_perp は、全主筋 ag から検討方向の
+    /// 引張側・圧縮側最外段 at・ac を除いた残りであり、交点筋を二重計上しない。
+    #[test]
+    fn test_rc_column_rect_at_perp_excludes_intersection_bars() {
+        let shape = rc_column_rect_shape();
+        let rebar = match &shape {
+            SectionShape::RcColumnRect { rebar, .. } => rebar,
+            _ => unreachable!(),
+        };
+        let ag = rebar.total_main_area();
+        let props_z = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
+        let props_y = axis_props_from_shape(&shape, RcDirection::Weak, true).unwrap();
+
+        let at_perp_z = rect_column_at_perp(ag, props_z.at, props_z.ac);
+        let at_perp_y = rect_column_at_perp(ag, props_y.at, props_y.ac);
+
+        assert!(
+            (props_z.at + props_z.ac + at_perp_z - ag).abs() < 1e-9,
+            "強軸: at+ac+at_perp が全主筋 ag に一致しない: {} + {} + {} != {}",
+            props_z.at,
+            props_z.ac,
+            at_perp_z,
+            ag
+        );
+        assert!(
+            (props_y.at + props_y.ac + at_perp_y - ag).abs() < 1e-9,
+            "弱軸: at+ac+at_perp が全主筋 ag に一致しない: {} + {} + {} != {}",
+            props_y.at,
+            props_y.ac,
+            at_perp_y,
+            ag
+        );
+        assert!(
+            (at_perp_z - rebar.y_direction_area_mm2()).abs() > 1e-9,
+            "強軸 at_perp が Y 方向全筋（交点筋を二重計上）になっている: {}",
+            at_perp_z
+        );
+        assert!(
+            (at_perp_y - rebar.x_direction_area_mm2()).abs() > 1e-9,
+            "弱軸 at_perp が X 方向全筋（交点筋を二重計上）になっている: {}",
+            at_perp_y
         );
     }
 }

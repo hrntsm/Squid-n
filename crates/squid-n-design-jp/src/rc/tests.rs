@@ -584,7 +584,7 @@ fn rc_beam_rect_shape() -> SectionShape {
     }
 }
 
-fn rc_column_rect_shape() -> SectionShape {
+pub(crate) fn rc_column_rect_shape() -> SectionShape {
     SectionShape::RcColumnRect {
         b: 400.0,
         d: 400.0,

@@ -478,15 +478,18 @@ impl DesignCheck for SrcDesign {
                 }
                 let props_z = column_axis_props(*b, *d, rebar, true);
                 let props_y = column_axis_props(*b, *d, rebar, false);
+                let ag = rebar.total_main_area();
+                let at_perp_z = (ag - props_z.at - props_z.ac).max(0.0);
+                let at_perp_y = (ag - props_y.at - props_y.ac).max(0.0);
                 column::src_column_check(
                     forces,
                     mat,
                     ctx,
                     props_z,
                     props_y,
-                    rebar.y_direction_area_mm2(),
-                    rebar.x_direction_area_mm2(),
-                    rebar.total_main_area(),
+                    at_perp_z,
+                    at_perp_y,
+                    ag,
                     rebar.main_dia,
                     rebar.main_dia,
                     *steel_height,

@@ -134,6 +134,9 @@ pub fn validate_section_materials(
         shape,
         SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
+            | SectionShape::RcBeamRect { .. }
+            | SectionShape::RcColumnRect { .. }
+            | SectionShape::RcColumnCircle { .. }
             | SectionShape::RcWall { .. }
             | SectionShape::RcSlab { .. }
     );
@@ -149,7 +152,12 @@ pub fn validate_section_materials(
         ));
     }
 
-    if matches!(shape, SectionShape::SrcRect { .. }) {
+    if matches!(
+        shape,
+        SectionShape::SrcRect { .. }
+            | SectionShape::SrcBeamRect { .. }
+            | SectionShape::SrcColumnRect { .. }
+    ) {
         let Some(main) = main else {
             return Err(format!("SRC断面{}の主材料が未設定です", section.name));
         };
@@ -477,15 +485,19 @@ fn shaped_mass(
     let mut result = WeightedMass::default();
 
     match shape {
-        SectionShape::RcRect { b, d, .. } => {
+        SectionShape::RcRect { b, d, .. }
+        | SectionShape::RcBeamRect { b, d, .. }
+        | SectionShape::RcColumnRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
             result.add(rc_density, gross);
         }
-        SectionShape::RcCircle { d, .. } => {
+        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
             let gross = circle_geometry(*d);
             result.add(rc_density, gross);
         }
-        SectionShape::SrcRect { b, d, .. } => {
+        SectionShape::SrcRect { b, d, .. }
+        | SectionShape::SrcBeamRect { b, d, .. }
+        | SectionShape::SrcColumnRect { b, d, .. } => {
             let gross = rectangle_geometry(*b, *d);
             result.add(concrete_density(main, ConcreteComposition::Src), gross);
         }
@@ -1614,6 +1626,235 @@ mod tests {
                 &section,
                 Some(&concrete),
                 Some(&steel),
+                None,
+                None,
+            )
+            .is_ok());
+        }
+    }
+
+    fn new_column_rebar() -> crate::section_shape::RcRectColumnRebar {
+        use crate::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        }
+    }
+
+    #[test]
+    fn 新型rc柱は同等の旧型断面と同じ標準rc密度を適用する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let old = SectionShape::RcRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+        .to_section(SectionId(0), "旧RC".into());
+        let new = SectionShape::RcColumnRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: new_column_rebar(),
+        }
+        .to_section(SectionId(1), "新RC柱".into());
+
+        let old_mass =
+            SectionMassProperties::try_from_section(&old, Some(&concrete), None, None, None)
+                .unwrap();
+        let new_mass =
+            SectionMassProperties::try_from_section(&new, Some(&concrete), None, None, None)
+                .unwrap();
+        assert_eq!(old_mass, new_mass);
+    }
+
+    #[test]
+    fn 新型src柱は同等の旧型断面と同じsrc密度を適用する() {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+
+        let concrete = material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0));
+        let old = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        }
+        .to_section(SectionId(0), "旧SRC".into());
+        let new = SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: new_column_rebar(),
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        }
+        .to_section(SectionId(1), "新SRC柱".into());
+
+        let old_mass =
+            SectionMassProperties::try_from_section(&old, Some(&concrete), None, None, None)
+                .unwrap();
+        let new_mass =
+            SectionMassProperties::try_from_section(&new, Some(&concrete), None, None, None)
+                .unwrap();
+        assert_eq!(old_mass, new_mass);
+    }
+
+    #[test]
+    fn 新型rcとsrcの材料検証は旧型と同じ() {
+        use crate::section_shape::{
+            BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar,
+        };
+
+        let rc_beam = SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4, 2],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+        let rc_circle_col = SectionShape::RcColumnCircle {
+            d: 600.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 8,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
+        };
+        let rc_col_rect = SectionShape::RcColumnRect {
+            b: 400.0,
+            d: 400.0,
+            rebar: new_column_rebar(),
+        };
+        for (index, shape) in [&rc_beam, &rc_col_rect, &rc_circle_col]
+            .into_iter()
+            .enumerate()
+        {
+            let section = shape.to_section(SectionId(index as u32), "RC新型".into());
+            assert!(
+                SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
+            );
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(0.0))),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Steel, 8.0, None)),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        }
+
+        let src_col = SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: new_column_rebar(),
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        };
+        let src_beam = SectionShape::SrcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: match &rc_beam {
+                SectionShape::RcBeamRect { rebar, .. } => rebar.clone(),
+                _ => unreachable!(),
+            },
+            steel_height: 300.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+        };
+        for (index, shape) in [src_beam, src_col].into_iter().enumerate() {
+            let section = shape.to_section(SectionId(index as u32), "SRC新型".into());
+            assert!(
+                SectionMassProperties::try_from_section(&section, None, None, None, None).is_err()
+            );
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(24.0))),
+                None,
+                None,
+                None,
+            )
+            .is_ok());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Concrete, 2.4e-9, Some(0.0))),
+                None,
+                None,
+                None,
+            )
+            .is_err());
+            assert!(SectionMassProperties::try_from_section(
+                &section,
+                Some(&material(0, MaterialCategory::Steel, 8.0, Some(24.0))),
+                None,
                 None,
                 None,
             )
