@@ -284,7 +284,7 @@ fn rc_column_rect_props(
 
 /// 新 `RcColumnCircle` の諸元。等価正方形断面として扱い、方向によらず同じ値を返す。
 ///
-/// 円形帯筋からは脚数を算定しないため `shear_legs`・`pw` は 0 とする。
+/// 円形帯筋は 1 組 2 本（閉鎖フープ、検討方向あたり 2 本）として `shear_legs`・`pw` を算定する。
 fn rc_column_circle_props(
     d: f64,
     rebar: &RcCircleColumnRebar,
@@ -305,7 +305,7 @@ fn rc_column_circle_props(
     let dt = cover + shear_dia + main_dia / 2.0;
     let at = rebar.equivalent_tension_area_mm2();
     let n_tension = (at / one_bar_area(main_dia)).round() as u32;
-    let (be, n_s) = ductility_be_ns_from(side, cover, shear_dia, 0, needs_be);
+    let (be, n_s) = ductility_be_ns_from(side, cover, shear_dia, 2, needs_be);
     Some(RcBarProps {
         b_dir: side,
         d_dir: side,
@@ -319,8 +319,8 @@ fn rc_column_circle_props(
         cover,
         shear_dia,
         shear_pitch: rebar.hoop.pitch,
-        shear_legs: 0,
-        pw: 0.0,
+        shear_legs: 2,
+        pw: rebar.pw(side),
         top_bar: false,
         be,
         n_s,
@@ -515,6 +515,7 @@ mod tests {
     fn test_rc_column_circle_equivalent_square() {
         let p = rc_bar_props(&column_circle_shape(), RcDirection::Strong, true, false).unwrap();
         let a1 = one_bar_area(22.0);
+        let a10 = one_bar_area(10.0);
         let side = (std::f64::consts::PI * 600.0 * 600.0 / 4.0).sqrt();
         assert!((p.b_dir - side).abs() < 1e-9);
         assert!((p.d_dir - side).abs() < 1e-9);
@@ -522,11 +523,50 @@ mod tests {
         assert!((p.ag - 8.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
         assert_eq!(p.n_tension, 2);
-        assert_eq!(p.shear_legs, 0);
+        assert_eq!(p.shear_legs, 2);
         assert!(!p.top_bar);
-        assert_eq!(p.pw, 0.0);
+        assert!((p.pw - 2.0 * a10 / (side * 100.0)).abs() < 1e-15);
         let weak = rc_bar_props(&column_circle_shape(), RcDirection::Weak, false, false).unwrap();
         assert_eq!(p, weak);
+    }
+
+    /// 円形柱の帯筋（1 組 2 本）が pw に反映され、許容・終局せん断が増える。
+    #[test]
+    fn test_rc_column_circle_hoop_contributes_to_shear() {
+        use crate::rc::{axis_props_from_shape, rc_allow, shear_capacity_for};
+        use crate::ultimate::UltimateShearOptions;
+        use crate::LoadTerm;
+        use squid_n_core::units::ConcreteClass;
+
+        let circle = |pitch: f64| SectionShape::RcColumnCircle {
+            d: 600.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 8,
+                cover: 40.0,
+                hoop: CircleColumnHoop { dia: 10.0, pitch },
+            },
+        };
+        let with_hoop = circle(100.0);
+        let without_hoop = circle(100_000.0);
+
+        let p = rc_bar_props(&with_hoop, RcDirection::Strong, true, false).unwrap();
+        let p0 = rc_bar_props(&without_hoop, RcDirection::Strong, true, false).unwrap();
+        assert!(p.pw > 0.0, "円形柱の pw が正: pw={}", p.pw);
+        assert!(p0.pw < p.pw, "pitch 大では pw が小さい");
+
+        let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
+        let props = axis_props_from_shape(&with_hoop, RcDirection::Strong, true).unwrap();
+        let props0 = axis_props_from_shape(&without_hoop, RcDirection::Strong, true).unwrap();
+        let qa = shear_capacity_for(&props, &allow, 1.5, LoadTerm::Short, true, true);
+        let qa0 = shear_capacity_for(&props0, &allow, 1.5, LoadTerm::Short, true, true);
+        assert!(qa > qa0, "許容せん断: with={qa}, without={qa0}");
+
+        let opts = UltimateShearOptions::default();
+        let qsu = super::super::rc_strength::member_shear_strength(&p, 24.0, 0.0, 3000.0, &opts);
+        let qsu0 =
+            super::super::rc_strength::member_shear_strength(&p0, 24.0, 0.0, 3000.0, &opts);
+        assert!(qsu > qsu0, "終局せん断: with={qsu}, without={qsu0}");
     }
 
     #[test]

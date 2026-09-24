@@ -684,6 +684,22 @@ impl RcCircleColumnRebar {
         let k0 = self.cover + self.hoop.dia + self.main_dia / 2.0;
         (self.equivalent_square_side_mm(d) - k0).max(0.0)
     }
+
+    /// 円形帯筋 1 組（閉鎖フープ、検討方向あたり 2 本）の断面積 Aw [mm²]。未入力なら 0。
+    pub fn aw_mm2(&self) -> f64 {
+        if self.is_unset() {
+            return 0.0;
+        }
+        2.0 * one_bar_area(self.hoop.dia)
+    }
+
+    /// 円形帯筋比 pw = Aw/(等価正方形の幅・ピッチ)。`width_mm<=0` または `pitch<=0`、未入力なら 0。
+    pub fn pw(&self, width_mm: f64) -> f64 {
+        if self.hoop.pitch <= 0.0 || width_mm <= 0.0 {
+            return 0.0;
+        }
+        self.aw_mm2() / (width_mm * self.hoop.pitch)
+    }
 }
 
 #[cfg(test)]
@@ -1224,6 +1240,25 @@ mod tests {
         let r = circle(0);
         assert_eq!(r.equivalent_tension_area_mm2(), 0.0);
         assert_eq!(r.equivalent_effective_depth_mm(600.0), 0.0);
+    }
+
+    /// 円形柱: 帯筋 1 組 2 本の Aw と、等価正方形の幅で算定する pw。
+    #[test]
+    fn test_circle_hoop_aw_and_pw() {
+        let r = circle(8);
+        let a10 = one_bar_area(10.0);
+        let side = r.equivalent_square_side_mm(600.0);
+        assert!((r.aw_mm2() - 2.0 * a10).abs() < 1e-12);
+        assert!((r.pw(side) - 2.0 * a10 / (side * 100.0)).abs() < 1e-15);
+        assert_eq!(r.pw(0.0), 0.0);
+    }
+
+    /// 円形柱: 未入力の Aw・pw は 0。
+    #[test]
+    fn test_circle_hoop_aw_and_pw_unset() {
+        let r = circle(0);
+        assert_eq!(r.aw_mm2(), 0.0);
+        assert_eq!(r.pw(600.0), 0.0);
     }
 
     /// 未入力の各型: 諸元 API が 0 または空を返す。

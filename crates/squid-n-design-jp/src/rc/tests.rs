@@ -667,6 +667,37 @@ fn test_rc_column_circle_check_checked() {
     assert!(result.basis.contains("円形柱"), "basis={}", result.basis);
 }
 
+/// 円形柱の帯筋（1 組 2 本）は構造規定の pw 警告を常時出さない。
+#[test]
+fn test_rc_column_circle_hoop_pw_provision_ok() {
+    use crate::ultimate::rc_props::RcDirection;
+
+    let shape = rc_column_circle_shape();
+    let info = rebar_info_from_shape(&shape, true).unwrap();
+    let props = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
+    let d = 600.0;
+    let gross = std::f64::consts::PI * d * d / 4.0;
+    assert!(props.pw > 0.002, "pw={}", props.pw);
+
+    let prov = super::provisions::column_provisions_info(
+        &info,
+        d,
+        3000.0,
+        ConcreteClass::Normal,
+        false,
+        gross,
+        info.main_area,
+        0.0,
+        24.0,
+        props.pw,
+    );
+    assert!(
+        !prov.warnings.iter().any(|w| w.starts_with("pw=")),
+        "pw 警告が出た: {:?}",
+        prov.warnings
+    );
+}
+
 /// 新型 `RcBeamRect` は mz の符号で引張側（上端/下端）が変わり、上下非対称
 /// （上 4+2 / 下 3+2）のため曲げ検定比が変わる。`RcDesign.check` が Checked を返す。
 #[test]

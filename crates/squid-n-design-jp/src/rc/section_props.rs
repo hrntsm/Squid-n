@@ -269,7 +269,7 @@ pub(crate) fn rebar_info_from_shape(
                 tension_count_1991: rebar.count as f64,
                 shear_dia: rebar.hoop.dia,
                 shear_pitch: rebar.hoop.pitch,
-                shear_legs: 0,
+                shear_legs: 2,
                 is_circle: true,
             })
         }
@@ -588,6 +588,7 @@ mod tests {
         assert_eq!(info.tension_count, 8);
         assert_eq!(info.tension_first_layer_count, 8.0);
         assert_eq!(info.tension_count_1991, 8.0);
+        assert_eq!(info.shear_legs, 2);
         assert!(info.is_circle);
     }
 
