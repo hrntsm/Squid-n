@@ -88,10 +88,7 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
             }
             SectionShape::CftBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::CftPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),
-            SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::SrcRect { .. }
-            | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
             | SectionShape::RcColumnRect { .. }
             | SectionShape::RcColumnCircle { .. }
             | SectionShape::SrcBeamRect { .. }

@@ -347,7 +347,7 @@ mod tests {
         // 軽配筋（1段筋）: MA_t が支配するはず。
         let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let rebar = match &shape {
-            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            SectionShape::RcBeamRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
         let props = super::super::rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
@@ -367,7 +367,7 @@ mod tests {
         // 過大配筋（多段・多本数）: MA_c が MA_t を下回り支配するはず。
         let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
         let rebar = match &shape {
-            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            SectionShape::RcBeamRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
         let props = super::super::rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);

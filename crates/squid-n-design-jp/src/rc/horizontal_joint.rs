@@ -88,8 +88,6 @@ pub fn pca_horizontal_joint_ultimate(
     finish("終局限界", tau_xy, tau_u)
 }
 
-use squid_n_core::rc_rebar_geom::rebar_tension_dt as rc_dt;
-
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
     forces.iter().min_by(|a, b| {
@@ -101,15 +99,9 @@ fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option
 }
 
 /// PCa 水平接合面の算定に用いる断面の幅 b・せい D・有効せい d・引張鉄筋断面積 at。
-/// 旧 `RcRect` と新型 `RcBeamRect`/`RcColumnRect` を対象とし、対象外は `None`。
+/// `RcBeamRect`/`RcColumnRect` を対象とし、対象外は `None`。
 fn pca_section_geometry(shape: &SectionShape) -> Option<(f64, f64, f64, f64)> {
     match shape {
-        SectionShape::RcRect { b, d, rebar } => Some((
-            *b,
-            *d,
-            *d - rc_dt(rebar),
-            squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0,
-        )),
         SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
             let props = axis_props_from_shape(shape, RcDirection::Strong, true)?;
             Some((*b, *d, props.d, props.at))

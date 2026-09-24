@@ -6,10 +6,7 @@ use squid_n_core::rc_capacity::{rc_column_mu_simple, rc_mu_simple, RcCapacityInp
 use squid_n_core::section_shape::SectionShape;
 use squid_n_element::transform::LocalFrame;
 
-use super::section_props::{
-    axis_props_from_shape, bar_set_area, rebar_info_from_shape, rect_axis_props_strong,
-    rect_axis_props_weak, AxisProps,
-};
+use super::section_props::{axis_props_from_shape, rebar_info_from_shape, AxisProps};
 use crate::material_strength::rebar_sigma_y_of;
 use crate::ultimate::rc_props::RcDirection;
 use crate::MemberKind;
@@ -130,7 +127,6 @@ fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
         Some(rc_mu_simple(&inp))
     };
     match shape {
-        SectionShape::RcRect { rebar, .. } => mu_of(rect_axis_props_strong(sec, rebar)),
         SectionShape::RcBeamRect { .. } => {
             let top = axis_props_from_shape(shape, RcDirection::Strong, true)?;
             let bottom = axis_props_from_shape(shape, RcDirection::Strong, false)?;
@@ -148,26 +144,6 @@ fn column_my_at_n(model: &Model, elem: &ElementData, n_axial: f64, strong: bool)
     let fc = mat.fc.filter(|&v| v > 0.0)?;
     let shape = sec.shape.as_ref()?;
     let (props, b, d_full, as_total) = match shape {
-        SectionShape::RcRect { rebar, .. } => {
-            let props = if strong {
-                rect_axis_props_strong(sec, rebar)
-            } else {
-                rect_axis_props_weak(sec, rebar)
-            };
-            let (b, d_full) = if strong {
-                (sec.width, sec.depth)
-            } else {
-                (sec.depth, sec.width)
-            };
-            let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-            (props, b, d_full, as_total)
-        }
-        SectionShape::RcCircle { d, rebar } => {
-            let props = super::section_props::circle_axis_props(*d, rebar);
-            let as_total = bar_set_area(&rebar.main_x);
-            let b_eq = std::f64::consts::PI * d * d / 4.0 / d;
-            (props, b_eq, *d, as_total)
-        }
         SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. } => {
             let direction = if strong {
                 RcDirection::Strong

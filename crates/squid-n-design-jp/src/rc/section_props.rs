@@ -9,13 +9,10 @@
 //! [`RcRebarInfo`] — 構造規定・付着検定用の鉄筋情報（中立型）。
 //! [`rebar_info_from_shape`] — 断面形状から鉄筋情報を引く。
 //!
-//! 主筋断面積・dt・pw は [`squid_n_core::rc_rebar_geom`] /
-//! [`squid_n_core::section_shape::{one_bar_area, bar_set_area}`] を単一情報源とする。
+//! 主筋断面積・dt・pw は [`squid_n_core::rc_rebar_geom`] を単一情報源とする。
 
-use squid_n_core::model::Section;
-pub(crate) use squid_n_core::rc_rebar_geom::{pw_ratio, tension_dt};
-pub(crate) use squid_n_core::section_shape::{bar_set_area, one_bar_area};
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+pub(crate) use squid_n_core::section_shape::one_bar_area;
+use squid_n_core::section_shape::SectionShape;
 
 use crate::ultimate::rc_props::{rc_bar_props, RcDirection};
 
@@ -40,77 +37,16 @@ pub(crate) struct AxisProps {
     pub(crate) pw: f64,
 }
 
-/// 矩形断面 1 軸分の断面諸元を算定する。
-///
-/// `width_dir_b`: 検討方向の幅、`depth_dir_d`: 検討方向のせい、
-/// `main`: 当該方向の主筋（強軸曲げは main_x、弱軸曲げは main_y）。
-pub(crate) fn rect_axis_props(
-    width_dir_b: f64,
-    depth_dir_d: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
-) -> AxisProps {
-    let dt = tension_dt(rebar.cover, rebar.shear.dia, main);
-    let d = depth_dir_d - dt;
-    let at = bar_set_area(main) / 2.0;
-    AxisProps {
-        b: width_dir_b,
-        d_full: depth_dir_d,
-        dt,
-        d,
-        at,
-        ac: at,
-        j: 7.0 * d / 8.0,
-        pw: pw_ratio(&rebar.shear, width_dir_b),
-    }
-}
-
-/// 強軸曲げ（mz）用の断面諸元。b=sec.width, D=sec.depth, 主筋=main_x。
-pub(crate) fn rect_axis_props_strong(sec: &Section, rebar: &RcRebar) -> AxisProps {
-    rect_axis_props(sec.width, sec.depth, &rebar.main_x, rebar)
-}
-
-/// 弱軸曲げ（my）用の断面諸元。b=sec.depth, D=sec.width, 主筋=main_y。
-pub(crate) fn rect_axis_props_weak(sec: &Section, rebar: &RcRebar) -> AxisProps {
-    rect_axis_props(sec.depth, sec.width, &rebar.main_y, rebar)
-}
-
-/// 円形柱の等価矩形断面諸元。b=(D/2)√π、せい=D。
-/// 引張筋本数 nt = ng/4+1（ng = 全主筋本数、`rebar.main_x.count` を採用）。
-/// 対称複筋（at=ac）を仮定する。
-pub(crate) fn circle_axis_props(d_full: f64, rebar: &RcRebar) -> AxisProps {
-    let b = (d_full / 2.0) * std::f64::consts::PI.sqrt();
-    let ng = rebar.main_x.count as f64;
-    let nt = ng / 4.0 + 1.0;
-    let at = nt * one_bar_area(rebar.main_x.dia);
-    let dt = tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x);
-    let d = d_full - dt;
-    AxisProps {
-        b,
-        d_full,
-        dt,
-        d,
-        at,
-        ac: at,
-        j: 7.0 * d / 8.0,
-        pw: pw_ratio(&rebar.shear, b),
-    }
-}
-
 /// 断面形状から検討方向 1 軸分の断面諸元を引く。
 ///
 /// 中立型 [`rc_bar_props`] に委譲し、未対応形状・未入力・実配筋を生成できない配筋・
 /// 有効せい 0 以下なら `None`。
-/// 旧 `RcCircle` は [`rc_bar_props`] 非対応のため [`circle_axis_props`] で扱う。
 /// `tension_is_top` は梁の曲げ引張側（柱・円形柱では無視）。`j = 7d/8`。
 pub(crate) fn axis_props_from_shape(
     shape: &SectionShape,
     direction: RcDirection,
     tension_is_top: bool,
 ) -> Option<AxisProps> {
-    if let SectionShape::RcCircle { d, rebar } = shape {
-        return Some(circle_axis_props(*d, rebar));
-    }
     let p = rc_bar_props(shape, direction, tension_is_top, false)?;
     Some(AxisProps {
         b: p.b_dir,
@@ -158,38 +94,6 @@ pub(crate) fn rebar_info_from_shape(
     tension_is_top: bool,
 ) -> Option<RcRebarInfo> {
     match shape {
-        SectionShape::RcRect { rebar, .. } => Some(RcRebarInfo {
-            cover: rebar.cover,
-            main_dia: rebar.main_x.dia,
-            main_count: rebar.main_x.count + rebar.main_y.count,
-            main_count_per_side: rebar.main_x.count,
-            main_area: bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y),
-            tension_count: rebar.main_x.count,
-            tension_layers: rebar.main_x.layers.max(1),
-            tension_first_layer_count: rebar.main_x.count as f64
-                / rebar.main_x.layers.max(1) as f64,
-            tension_count_1991: (rebar.main_x.count as f64 / 2.0).max(1.0),
-            shear_dia: rebar.shear.dia,
-            shear_pitch: rebar.shear.pitch,
-            shear_legs: rebar.shear.legs,
-            is_circle: false,
-        }),
-        SectionShape::RcCircle { rebar, .. } => Some(RcRebarInfo {
-            cover: rebar.cover,
-            main_dia: rebar.main_x.dia,
-            main_count: rebar.main_x.count,
-            main_count_per_side: rebar.main_x.count / 4 + 1,
-            main_area: bar_set_area(&rebar.main_x),
-            tension_count: rebar.main_x.count,
-            tension_layers: rebar.main_x.layers.max(1),
-            tension_first_layer_count: rebar.main_x.count as f64
-                / rebar.main_x.layers.max(1) as f64,
-            tension_count_1991: (rebar.main_x.count as f64 / 2.0).max(1.0),
-            shear_dia: rebar.shear.dia,
-            shear_pitch: rebar.shear.pitch,
-            shear_legs: rebar.shear.legs,
-            is_circle: true,
-        }),
         SectionShape::RcBeamRect { b, d, rebar } => {
             if rebar.is_unset() {
                 return None;

@@ -7,25 +7,18 @@ use squid_n_core::model::{
     Node, RigidZone, Section,
 };
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRebar,
-    RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
 };
 
 /// テスト用の矩形 RC 断面（b×d, main_x=main_y, 帯筋 D10@pitch）。
 fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitch: f64) -> Section {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: main_count,
-            dia: main_dia,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: main_count,
-            dia: main_dia,
-            layers: 1,
-        },
+    let rebar = RcBeamRebar {
+        main_dia,
+        top: vec![main_count],
+        bottom: vec![main_count],
         cover: 40.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch,
             legs: 2,
@@ -45,7 +38,7 @@ fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitc
         floor: None,
         panel_thickness: None,
         thickness: None,
-        shape: Some(SectionShape::RcRect { b, d, rebar }),
+        shape: Some(SectionShape::RcBeamRect { b, d, rebar }),
         // 材料は断面が持つ。主筋・せん断補強筋も同じ材料（SD345）とする。
         material: Some(MaterialId(0)),
         rebar_material: Some(MaterialId(0)),

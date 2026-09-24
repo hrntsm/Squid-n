@@ -3,10 +3,9 @@
 //! 旧 [`squid_n_core::section_shape::RcRebar`] 経路と新実配筋モデル経路の差異を
 //! [`rc_bar_props`] が吸収し、検定ロジックへ共通の [`RcBarProps`] を渡す。
 
-use squid_n_core::rc_rebar_geom::{pw_ratio, rebar_tension_dt, RectEdge};
+use squid_n_core::rc_rebar_geom::RectEdge;
 use squid_n_core::section_shape::{
-    bar_set_area, one_bar_area, RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar,
-    SectionShape,
+    one_bar_area, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar, SectionShape,
 };
 
 /// RC 検定の検討方向。
@@ -59,9 +58,6 @@ pub(crate) fn rc_bar_props(
     shear_method_needs_be: bool,
 ) -> Option<RcBarProps> {
     match shape {
-        SectionShape::RcRect { b, d, rebar } => {
-            rc_rect_props(*b, *d, rebar, direction, shear_method_needs_be)
-        }
         SectionShape::RcBeamRect { b, d, rebar } => rc_beam_rect_props(
             *b,
             *d,
@@ -110,74 +106,6 @@ fn pw_from_aw(aw: f64, b_dir: f64, pitch: f64) -> f64 {
         return 0.0;
     }
     aw / (b_dir * pitch)
-}
-
-/// 旧 `RcRect`（梁・柱兼用）の諸元。
-fn rc_rect_props(
-    b: f64,
-    d: f64,
-    rebar: &RcRebar,
-    direction: RcDirection,
-    needs_be: bool,
-) -> Option<RcBarProps> {
-    if b <= 0.0 || d <= 0.0 {
-        return None;
-    }
-    let ag = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    let (b_dir, d_dir, dt, at, main_dia, n_tension) = match direction {
-        RcDirection::Strong => {
-            let dt = rebar_tension_dt(rebar);
-            (
-                b,
-                d,
-                dt,
-                bar_set_area(&rebar.main_x) / 2.0,
-                rebar.main_x.dia,
-                (rebar.main_x.count / 2).max(1),
-            )
-        }
-        RcDirection::Weak => {
-            let dt = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
-            (
-                d,
-                b,
-                dt,
-                bar_set_area(&rebar.main_y) / 2.0,
-                rebar.main_y.dia,
-                (rebar.main_y.count / 2).max(1),
-            )
-        }
-    };
-    let d_eff = d_dir - dt;
-    if d_eff <= 0.0 {
-        return None;
-    }
-    let (be, n_s) = ductility_be_ns_from(
-        b_dir,
-        rebar.cover,
-        rebar.shear.dia,
-        rebar.shear.legs,
-        needs_be,
-    );
-    Some(RcBarProps {
-        b_dir,
-        d_dir,
-        at,
-        ac: at,
-        ag,
-        d_eff,
-        dt,
-        main_dia,
-        n_tension,
-        cover: rebar.cover,
-        shear_dia: rebar.shear.dia,
-        shear_pitch: rebar.shear.pitch,
-        shear_legs: rebar.shear.legs,
-        pw: pw_ratio(&rebar.shear, b_dir),
-        top_bar: false,
-        be,
-        n_s,
-    })
 }
 
 /// 新 `RcBeamRect`（強軸のみ）の諸元。弱軸は `None`。
@@ -330,34 +258,7 @@ fn rc_column_circle_props(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::section_shape::{
-        BarSet, BeamStirrup, CircleColumnHoop, RectColumnHoop, ShearBar,
-    };
-
-    fn old_rect() -> SectionShape {
-        SectionShape::RcRect {
-            b: 400.0,
-            d: 600.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                cover: 40.0,
-                shear: ShearBar {
-                    dia: 10.0,
-                    pitch: 100.0,
-                    legs: 2,
-                },
-            },
-        }
-    }
+    use squid_n_core::section_shape::{BeamStirrup, CircleColumnHoop, RectColumnHoop};
 
     fn beam_shape() -> SectionShape {
         SectionShape::RcBeamRect {
@@ -413,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_rc_rect_strong_props() {
-        let p = rc_bar_props(&old_rect(), RcDirection::Strong, true, false).unwrap();
+        let p = rc_bar_props(&column_rect_shape(), RcDirection::Strong, true, false).unwrap();
         let a1 = one_bar_area(22.0);
         let a10 = one_bar_area(10.0);
         assert!((p.b_dir - 400.0).abs() < 1e-9);
@@ -433,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_rc_rect_weak_props() {
-        let p = rc_bar_props(&old_rect(), RcDirection::Weak, true, false).unwrap();
+        let p = rc_bar_props(&column_rect_shape(), RcDirection::Weak, true, false).unwrap();
         let a1 = one_bar_area(22.0);
         assert!((p.b_dir - 600.0).abs() < 1e-9);
         assert!((p.d_dir - 400.0).abs() < 1e-9);
@@ -445,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_rc_rect_ductility_be_ns() {
-        let p = rc_bar_props(&old_rect(), RcDirection::Strong, true, true).unwrap();
+        let p = rc_bar_props(&column_rect_shape(), RcDirection::Strong, true, true).unwrap();
         assert!((p.be - (400.0 - 2.0 * (40.0 + 5.0))).abs() < 1e-9);
         assert_eq!(p.n_s, 0);
     }

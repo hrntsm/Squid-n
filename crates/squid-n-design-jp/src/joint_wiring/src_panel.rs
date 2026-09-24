@@ -1,6 +1,6 @@
 //! SRC 造柱梁接合部（パネルゾーン）の検定配線。
 
-use super::common::{rc_dt, MemberInfo};
+use super::common::MemberInfo;
 use crate::rc::joint::JointShape;
 use crate::srrc::panel_zone::{src_panel_zone_check, SrcPanelInput};
 use crate::{CheckOutcome, LoadTerm};
@@ -16,25 +16,11 @@ pub(super) fn check_src_panel(
     out: &mut Vec<(NodeId, String, CheckOutcome)>,
 ) {
     let src_col = cols.iter().find(|c| {
-        matches!(
-            c.sec.shape,
-            Some(SectionShape::SrcRect { .. }) | Some(SectionShape::SrcColumnRect { .. })
-        ) && c.mat.fc.unwrap_or(0.0) > 0.0
+        matches!(c.sec.shape, Some(SectionShape::SrcColumnRect { .. }))
+            && c.mat.fc.unwrap_or(0.0) > 0.0
     });
     if let Some(col) = src_col {
         let col_steel = match col.sec.shape {
-            Some(SectionShape::SrcRect {
-                steel_height,
-                steel_web_thick,
-                steel_flange_thick,
-                ref rebar,
-                ..
-            }) => Some((
-                steel_height,
-                steel_web_thick,
-                steel_flange_thick,
-                rc_dt(rebar),
-            )),
             Some(SectionShape::SrcColumnRect {
                 steel_height,
                 steel_web_thick,
@@ -66,10 +52,6 @@ pub(super) fn check_src_panel(
                 }
             } else {
                 match beam0.sec.shape {
-                    Some(SectionShape::RcRect { ref rebar, .. })
-                    | Some(SectionShape::SrcRect { ref rebar, .. }) => {
-                        (beam0.sec.depth - 2.0 * rc_dt(rebar)).max(0.0)
-                    }
                     Some(SectionShape::RcBeamRect { ref rebar, .. })
                     | Some(SectionShape::SrcBeamRect { ref rebar, .. }) => (beam0.sec.depth
                         - rebar.top_centroid_from_edge()

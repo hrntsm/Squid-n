@@ -89,7 +89,6 @@ fn check_member(
         SectionShape::RcBeamRect { b, d, .. } => (*b, *d, MemberKind::Beam),
         SectionShape::RcColumnRect { b, d, .. } => (*b, *d, MemberKind::Column),
         SectionShape::RcColumnCircle { d, .. } => (*d, *d, MemberKind::Column),
-        SectionShape::RcRect { b, d, .. } => (*b, *d, MemberKind::of_element(elem, model)),
         _ => return Ok(None),
     };
     let Some(fc) = mat.fc else {
@@ -340,7 +339,7 @@ fn check_member(
 ///   設計用曲げモーメント）。柱の Mu・軸余裕度・2 軸曲げ余裕度に用いる。該当 ID がない
 ///   部材は需要 0（安全側）で評価する。軸力は長期（G+P）静的、曲げ需要は当該組合せの
 ///   応答値を渡すことを想定する。
-/// - 対象外（`RcRect` 以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
+/// - 対象外（RC用途別断面以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
 ///   結果に含めない。
 /// - 検定対象の部材でせん断補強筋に未対応グレードまたは `fy` 未設定がある場合は、
 ///   部材 ID と是正内容を含む理由を `Err` で返す。

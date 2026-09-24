@@ -11,7 +11,7 @@ use super::rc_props::RcBarProps;
 use super::rc_shear::{rc_shear_qsu_plastic, RcPlasticShearInput};
 use super::rc_shear_ductility::{rc_shear_vu_ductility, RcDuctilityShearInput};
 use squid_n_core::rc_capacity::{rc_column_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{one_bar_area, RcRebar};
+use squid_n_core::section_shape::one_bar_area;
 
 /// 2 軸相互作用の余裕度 `1/((rx)^α + (ry)^α)^(1/α)`（採用応力）。
 ///
@@ -124,15 +124,6 @@ fn member_vu_ductility(
         tensile_axial: n_axial < 0.0,
         lightweight: opts.lightweight,
     })
-}
-
-/// 靭性指針式のトラス機構有効幅 `be`（外側横補強筋の芯々間隔近似）と中子筋本数 `Ns`
-/// （`legs/2 − 1` 近似）を断面諸元から求める（[`member_vu_ductility`]・Vbu で共用）。
-#[allow(dead_code)]
-pub(super) fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
-    let be = (b_dir - 2.0 * (rebar.cover + rebar.shear.dia / 2.0)).max(1.0);
-    let n_s = (rebar.shear.legs / 2).saturating_sub(1);
-    (be, n_s)
 }
 
 /// 選択された [`ShearMethod`] に応じた終局せん断強度 `Qsu`/`Vu` [N]。

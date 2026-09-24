@@ -1,10 +1,9 @@
 //! 鉄筋コンクリート造柱の断面検定（RC 規準14条: 軸力・軸力+曲げ・せん断）。
 
 use super::{
-    axis_props_from_shape, bar_set_area, circle_axis_props, main_rebar_grade, rc_allow,
-    rebar_allowable_tension, rebar_info_from_shape, rebar_sigma_y_of, rect_axis_props_strong,
-    rect_axis_props_weak, seismic_design_shear, shear_alpha, shear_capacity_for, shear_rebar_grade,
-    AxisProps,
+    axis_props_from_shape, main_rebar_grade, rc_allow, rebar_allowable_tension,
+    rebar_info_from_shape, rebar_sigma_y_of, seismic_design_shear, shear_alpha, shear_capacity_for,
+    shear_rebar_grade, AxisProps,
 };
 use crate::ultimate::rc_props::RcDirection;
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
@@ -140,7 +139,7 @@ pub(crate) fn column_check(
 
         if crate::rc::provisions::is_member_level_station(forces.pos) {
             let prov = crate::rc::provisions::column_provisions_info(
-                &info,
+                &rebar_info_from_shape(shape, true).unwrap(),
                 d_full,
                 ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
                 mat.concrete_class,
@@ -300,7 +299,7 @@ pub(crate) fn column_check(
         if crate::rc::provisions::is_member_level_station(forces.pos) {
             let d_min = b.min(*d);
             let prov = crate::rc::provisions::column_provisions_info(
-                &info,
+                &rebar_info_from_shape(shape, true).unwrap(),
                 d_min,
                 ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
                 mat.concrete_class,
@@ -324,14 +323,14 @@ pub(crate) fn column_check(
         };
     }
 
-    if let SectionShape::RcCircle { d, rebar } = shape {
+    if let SectionShape::RcColumnCircle { d, rebar } = shape {
         let damage_control = ctx.rc_damage_control;
         let d_full = *d;
-        let props = circle_axis_props(d_full, rebar);
-        let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
+        let props = axis_props_from_shape(shape, RcDirection::Strong, true).unwrap();
+        let ft = rebar_allowable_tension(grade, rebar.main_dia, long_term);
 
         let gross_area = std::f64::consts::PI * d_full * d_full / 4.0;
-        let as_total = bar_set_area(&rebar.main_x);
+        let as_total = rebar.total_main_area();
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft, allow.n_ratio);
 
         let axis = ColumnAxis {
@@ -417,9 +416,8 @@ pub(crate) fn column_check(
         ];
 
         if crate::rc::provisions::is_member_level_station(forces.pos) {
-            let prov = crate::rc::provisions::column_provisions(
-                shape,
-                rebar,
+            let prov = crate::rc::provisions::column_provisions_info(
+                &rebar_info_from_shape(shape, true).unwrap(),
                 d_full,
                 ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
                 mat.concrete_class,
@@ -428,6 +426,7 @@ pub(crate) fn column_check(
                 as_total,
                 n_design.max(0.0),
                 fc_raw,
+                axis.props.pw,
             );
             if let Some(c) = prov.provision_component() {
                 components.push(c);
@@ -443,24 +442,24 @@ pub(crate) fn column_check(
     }
 
     let rebar = match shape {
-        SectionShape::RcRect { rebar, .. } => rebar,
+        SectionShape::RcColumnRect { rebar, .. } => rebar,
         _ => unreachable!(),
     };
     let damage_control = ctx.rc_damage_control;
 
-    let props_z = rect_axis_props_strong(sec, rebar);
-    let props_y = rect_axis_props_weak(sec, rebar);
-    let ft_z = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
-    let ft_y = rebar_allowable_tension(grade, rebar.main_y.dia, long_term);
+    let props_z = axis_props_from_shape(shape, RcDirection::Strong, true).unwrap();
+    let props_y = axis_props_from_shape(shape, RcDirection::Weak, true).unwrap();
+    let ft_z = rebar_allowable_tension(grade, rebar.main_dia, long_term);
+    let ft_y = ft_z;
 
     let gross_area = sec.width * sec.depth;
-    let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    let ft_axial =
-        rebar_allowable_tension(grade, rebar.main_x.dia.max(rebar.main_y.dia), long_term);
+    let info = rebar_info_from_shape(shape, true).unwrap();
+    let as_total = info.main_area;
+    let ft_axial = rebar_allowable_tension(grade, rebar.main_dia, long_term);
     let na = column_axial_capacity(gross_area, as_total, allow.fc, ft_axial, allow.n_ratio);
 
-    let at_perp_for_z = bar_set_area(&rebar.main_y);
-    let at_perp_for_y = bar_set_area(&rebar.main_x);
+    let at_perp_for_z = rect_column_at_perp(as_total, props_z.at, props_z.ac);
+    let at_perp_for_y = rect_column_at_perp(as_total, props_y.at, props_y.ac);
 
     let axis_z = ColumnAxis {
         props: props_z,
@@ -578,9 +577,8 @@ pub(crate) fn column_check(
 
     if crate::rc::provisions::is_member_level_station(forces.pos) {
         let d_min = sec.width.min(sec.depth);
-        let prov = crate::rc::provisions::column_provisions(
-            shape,
-            rebar,
+        let prov = crate::rc::provisions::column_provisions_info(
+            &info,
             d_min,
             ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
             mat.concrete_class,
@@ -589,6 +587,7 @@ pub(crate) fn column_check(
             as_total,
             n_design.max(0.0),
             fc_raw,
+            axis_z.props.pw.min(axis_y.props.pw),
         );
         if let Some(c) = prov.provision_component() {
             components.push(c);

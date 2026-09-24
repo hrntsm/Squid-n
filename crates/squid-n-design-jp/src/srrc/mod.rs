@@ -18,9 +18,7 @@ mod column;
 pub mod panel_zone;
 
 pub(crate) use crate::ratio_or_large;
-pub(crate) use crate::rc::{
-    bar_set_area, rect_axis_props as src_rect_axis_props, shear_alpha, AxisProps as SrcAxisProps,
-};
+pub(crate) use crate::rc::{shear_alpha, AxisProps as SrcAxisProps};
 
 /// 内蔵鋼材の断面積・断面係数を [`SectionShape`] の断面性能計算を借りて
 /// 求める（H 形鋼: `sA`, 強軸 `sZ`, 弱軸 `sZ`）。
@@ -294,7 +292,7 @@ fn src_shear_check(
 }
 
 /// SRC 梁・SRC 柱の断面検定
-/// （`SectionShape::SrcRect`・`SrcBeamRect`・`SrcColumnRect` を対象とする）。
+/// （`SectionShape::SrcBeamRect`・`SrcColumnRect` を対象とする）。
 pub struct SrcDesign;
 
 impl DesignCheck for SrcDesign {
@@ -313,11 +311,7 @@ impl DesignCheck for SrcDesign {
         }
 
         let shape = match &sec.shape {
-            Some(
-                s @ (SectionShape::SrcRect { .. }
-                | SectionShape::SrcBeamRect { .. }
-                | SectionShape::SrcColumnRect { .. }),
-            ) => s,
+            Some(s @ (SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. })) => s,
             _ => {
                 return CheckOutcome::Skipped {
                     reason: "SRC検定: 断面形状不一致（Section.shape が SrcRect/SrcBeamRect/\
@@ -357,57 +351,6 @@ impl DesignCheck for SrcDesign {
         let steel_grade = steel_mat.name.as_str();
 
         let cr = match shape {
-            SectionShape::SrcRect {
-                b,
-                d,
-                rebar,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-            } => match ctx.kind {
-                MemberKind::Beam | MemberKind::Brace => {
-                    let props = src_rect_axis_props(*b, *d, &rebar.main_x, rebar);
-                    beam::src_beam_check(
-                        forces,
-                        mat,
-                        ctx,
-                        props,
-                        props,
-                        rebar.main_x.dia,
-                        *steel_height,
-                        *steel_width,
-                        *steel_web_thick,
-                        *steel_flange_thick,
-                        steel_grade,
-                        fc_raw,
-                    )
-                }
-                MemberKind::Column => {
-                    let props_z = src_rect_axis_props(*b, *d, &rebar.main_x, rebar);
-                    let props_y = src_rect_axis_props(*d, *b, &rebar.main_y, rebar);
-                    let as_x = bar_set_area(&rebar.main_x);
-                    let as_y = bar_set_area(&rebar.main_y);
-                    column::src_column_check(
-                        forces,
-                        mat,
-                        ctx,
-                        props_z,
-                        props_y,
-                        as_y,
-                        as_x,
-                        as_x + as_y,
-                        rebar.main_x.dia,
-                        rebar.main_y.dia,
-                        *steel_height,
-                        *steel_width,
-                        *steel_web_thick,
-                        *steel_flange_thick,
-                        steel_grade,
-                        fc_raw,
-                    )
-                }
-            },
             SectionShape::SrcBeamRect {
                 b,
                 d,

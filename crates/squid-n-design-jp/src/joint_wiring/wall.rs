@@ -1,6 +1,6 @@
 //! 耐震壁（Wall 要素 × RcWall 形状）のせん断検定配線。
 
-use super::common::{rc_dt, ForcesAt, MemberInfo};
+use super::common::{ForcesAt, MemberInfo};
 use crate::rc::wall::{rc_wall_shear_check, RcWallInput, WallSideColumn};
 use crate::rc::wall_nonlinear::{wall_shear_trilinear, WallShearTrilinearInput};
 use crate::wall_opening::equivalent_opening;
@@ -123,13 +123,7 @@ pub(super) fn check_walls(
             }
             let steel_shear = match m.sec.shape {
                 Some(
-                    SectionShape::SrcRect {
-                        steel_height,
-                        steel_web_thick,
-                        steel_flange_thick,
-                        ..
-                    }
-                    | SectionShape::SrcBeamRect {
+                    SectionShape::SrcBeamRect {
                         steel_height,
                         steel_web_thick,
                         steel_flange_thick,
@@ -285,17 +279,9 @@ pub(super) fn check_walls(
 
 /// 壁側柱の RC 諸元 `(b, d, d_eff, pw, 主筋総面積)` を形状から引く。
 ///
-/// 旧 `RcRect`/`SrcRect` は方向別総本数から、新実配筋モデルは各配筋型の API から
-/// 算定する。円形柱は等価正方形断面として扱う。対象外形状は `None`。
+/// 実配筋モデルの API から算定する。円形柱は等価正方形断面として扱う。
 fn wall_side_column_props(shape: Option<&SectionShape>) -> Option<(f64, f64, f64, f64, f64)> {
     match shape? {
-        SectionShape::RcRect { b, d, rebar } | SectionShape::SrcRect { b, d, rebar, .. } => {
-            let dt = rc_dt(rebar);
-            let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, *b);
-            let main_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
-            Some((*b, *d, *d - dt, pw, main_area))
-        }
         SectionShape::RcColumnRect { b, d, rebar }
         | SectionShape::SrcColumnRect { b, d, rebar, .. } => {
             let dt = rebar.cover + rebar.hoop.dia + rebar.main_dia / 2.0;

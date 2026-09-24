@@ -79,9 +79,7 @@ impl DesignCheck for RcDesign {
 
         let shape = match &sec.shape {
             Some(
-                s @ (SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::RcBeamRect { .. }
+                s @ (SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }),
             ) => s,

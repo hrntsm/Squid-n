@@ -6,7 +6,7 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LoadTransfer, LocalAxis, Material,
     MaterialCategory, Model, Node, RegionAnchor, Slab, SlabPlate, SlabShape,
 };
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
 use squid_n_design_jp::beam_has_attached_slab;
 
 fn node(id: u32, c: [f64; 3]) -> Node {
@@ -43,22 +43,15 @@ fn beam(id: u32, a: u32, b: u32) -> ElementData {
 }
 
 fn t_shape_model(slabs: Vec<Slab>) -> Model {
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 300.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4],
+            bottom: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            stirrup: BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,

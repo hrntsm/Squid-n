@@ -6,7 +6,7 @@
 
 use super::holding_capacity::MemberRank;
 use squid_n_core::rc_rebar_geom::RectEdge;
-use squid_n_core::section_shape::{bar_set_area, SectionShape};
+use squid_n_core::section_shape::SectionShape;
 
 /// SRC 柱の部材種別（表 2.6.6-5）。
 ///
@@ -61,7 +61,7 @@ pub fn src_wall_type(shear_failure: bool) -> MemberRank {
 /// - `rebar_sy`: 主筋の降伏強度 σy [N/mm²]（0 以下は算定不能で `None`）。
 /// - `n_ult`: メカニズム時の軸方向力 [N]（**圧縮正**。引張は 0 として扱う）。
 ///
-/// SRC 矩形（[`SectionShape::SrcRect`]・[`SectionShape::SrcColumnRect`]）以外の
+/// SRC 矩形（[`SectionShape::SrcColumnRect`]）以外の
 /// 形状は `None`。
 pub fn src_column_rank_ratios(
     shape: &SectionShape,
@@ -71,27 +71,6 @@ pub fn src_column_rank_ratios(
     n_ult: f64,
 ) -> Option<(f64, f64)> {
     let (b, d, at, ar_total, dt, (sh, sb, tw, tf)) = match shape {
-        SectionShape::SrcRect {
-            b,
-            d,
-            rebar,
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-        } => (
-            *b,
-            *d,
-            bar_set_area(&rebar.main_x) / 2.0,
-            bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y),
-            crate::rc::tension_dt(rebar.cover, rebar.shear.dia, &rebar.main_x),
-            (
-                *steel_height,
-                *steel_width,
-                *steel_web_thick,
-                *steel_flange_thick,
-            ),
-        ),
         SectionShape::SrcColumnRect {
             b,
             d,

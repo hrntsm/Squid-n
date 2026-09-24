@@ -2,8 +2,8 @@ use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRebar,
-    RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
 };
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
@@ -34,22 +34,45 @@ pub(crate) fn rc_rect_shape(
     shear_pitch: f64,
     shear_legs: u32,
 ) -> SectionShape {
-    SectionShape::RcRect {
+    SectionShape::RcColumnRect {
         b,
         d,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
-            main_y: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia,
+            x: vec![main_count / 2; main_layers as usize],
+            y: vec![main_count / 2; main_layers as usize],
             cover,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
+                dia: shear_dia,
+                pitch: shear_pitch,
+                legs_x: shear_legs,
+                legs_y: shear_legs,
+            },
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rc_beam_shape(
+    b: f64,
+    d: f64,
+    main_count: u32,
+    main_dia: f64,
+    main_layers: u32,
+    cover: f64,
+    shear_dia: f64,
+    shear_pitch: f64,
+    shear_legs: u32,
+) -> SectionShape {
+    SectionShape::RcBeamRect {
+        b,
+        d,
+        rebar: RcBeamRebar {
+            main_dia,
+            top: vec![main_count; main_layers as usize],
+            bottom: vec![main_count; main_layers as usize],
+            cover,
+            stirrup: BeamStirrup {
                 dia: shear_dia,
                 pitch: shear_pitch,
                 legs: shear_legs,

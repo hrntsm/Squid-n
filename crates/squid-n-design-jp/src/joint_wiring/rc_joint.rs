@@ -1,6 +1,6 @@
 //! RC 柱梁接合部（許容応力度・終局）のせん断検定配線。
 
-use super::common::{rc_dt, MemberInfo};
+use super::common::MemberInfo;
 use crate::rc::joint::{rc_joint_shear_check, JointShape, RcJointInput};
 use crate::{CheckComponent, CheckKind, CheckOutcome, CheckResult};
 use squid_n_core::ids::NodeId;
@@ -16,19 +16,12 @@ pub(super) fn check_rc_joint(
     let rc_col = cols.iter().find(|c| {
         matches!(
             c.sec.shape,
-            Some(SectionShape::RcRect { .. })
-                | Some(SectionShape::RcColumnRect { .. })
-                | Some(SectionShape::RcColumnCircle { .. })
+            Some(SectionShape::RcColumnRect { .. }) | Some(SectionShape::RcColumnCircle { .. })
         ) && c.mat.fc.unwrap_or(0.0) > 0.0
     });
     let rc_beams: Vec<&&MemberInfo> = beams
         .iter()
-        .filter(|b| {
-            matches!(
-                b.sec.shape,
-                Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcBeamRect { .. })
-            )
-        })
+        .filter(|b| matches!(b.sec.shape, Some(SectionShape::RcBeamRect { .. })))
         .collect();
     if let (Some(col), false) = (rc_col, rc_beams.is_empty()) {
         let shape = match (cols.len() >= 2, rc_beams.len() >= 2) {
@@ -39,7 +32,6 @@ pub(super) fn check_rc_joint(
         };
         let beam0 = rc_beams[0];
         let beam_j = match beam0.sec.shape {
-            Some(SectionShape::RcRect { d, ref rebar, .. }) => 7.0 / 8.0 * (d - rc_dt(rebar)),
             Some(SectionShape::RcBeamRect { d, ref rebar, .. }) => {
                 let tension_is_top = beam_tension_is_top(beam0, nid);
                 let dt = if tension_is_top {
@@ -54,29 +46,7 @@ pub(super) fn check_rc_joint(
         let sum_beam_moments: f64 = rc_beams
             .iter()
             .map(|b| {
-                if let Some(SectionShape::RcRect {
-                    b: bw,
-                    d,
-                    ref rebar,
-                    ..
-                }) = b.sec.shape
-                {
-                    let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-                    let dt = rc_dt(rebar);
-                    let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
-                        b: bw,
-                        d,
-                        at,
-                        d_eff: d - dt,
-                        sigma_y: crate::material_strength::rebar_sigma_y_of(b.rebar_mat),
-                        fc: b.mat.fc.unwrap_or(0.0),
-                        pw: 0.0,
-                        sigma_wy: 0.0,
-                        clear_span: 0.0,
-                        sigma_0: 0.0,
-                    };
-                    squid_n_core::rc_capacity::rc_mu_simple(&mu_inp)
-                } else if let Some(SectionShape::RcBeamRect {
+                if let Some(SectionShape::RcBeamRect {
                     b: bw,
                     d,
                     ref rebar,
@@ -141,16 +111,13 @@ pub(super) fn check_rc_joint(
         let bi = (col.sec.width - beam0.sec.width) / 2.0;
         let bai = (bi / 2.0).min(col.sec.depth / 4.0).max(0.0);
         let bj = beam0.sec.width + 2.0 * bai;
-        let (t_top, t_bottom) = if let Some(SectionShape::RcRect { rebar, .. }) = &beam0.sec.shape {
-            let half_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-            let sigma_y = crate::material_strength::rebar_sigma_y_of(beam0.rebar_mat);
-            (half_area * sigma_y, half_area * sigma_y)
-        } else if let Some(SectionShape::RcBeamRect { rebar, .. }) = &beam0.sec.shape {
-            let sigma_y = crate::material_strength::rebar_sigma_y_of(beam0.rebar_mat);
-            (rebar.top_area() * sigma_y, rebar.bottom_area() * sigma_y)
-        } else {
-            (0.0, 0.0)
-        };
+        let (t_top, t_bottom) =
+            if let Some(SectionShape::RcBeamRect { rebar, .. }) = &beam0.sec.shape {
+                let sigma_y = crate::material_strength::rebar_sigma_y_of(beam0.rebar_mat);
+                (rebar.top_area() * sigma_y, rebar.bottom_area() * sigma_y)
+            } else {
+                (0.0, 0.0)
+            };
         let col_shears: Vec<f64> = cols
             .iter()
             .filter_map(|c| c.end_forces(nid))

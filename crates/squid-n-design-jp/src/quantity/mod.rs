@@ -33,7 +33,7 @@ use squid_n_core::model::{
     WallPlate, WallPlateShape,
 };
 use squid_n_core::section_shape::{
-    RcBeamRebar, RcCircleColumnRebar, RcRebar, RcRectColumnRebar, SectionShape,
+    RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar, SectionShape,
 };
 
 use member::{BeamBarEnd, Haunch};
@@ -338,14 +338,7 @@ use squid_n_core::geom::polygon::area_3d as polygon_area_3d;
 /// SRC 内蔵 H 形鉄骨の断面積 [mm²]。
 fn src_steel_area(shape: &SectionShape) -> Option<f64> {
     match *shape {
-        SectionShape::SrcRect {
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-            ..
-        }
-        | SectionShape::SrcBeamRect {
+        SectionShape::SrcBeamRect {
             steel_height,
             steel_width,
             steel_web_thick,
@@ -670,7 +663,12 @@ fn secondary_member_quantity(ctx: &Ctx, sm: &SecondaryMember) -> Option<MemberQu
         return Some(item);
     }
     let (width, depth) = match sec.shape.as_ref() {
-        Some(SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. }) => (*b, *d),
+        Some(SectionShape::RcBeamRect { b, d, .. } | SectionShape::SrcBeamRect { b, d, .. }) => {
+            (*b, *d)
+        }
+        Some(
+            SectionShape::RcColumnRect { b, d, .. } | SectionShape::SrcColumnRect { b, d, .. },
+        ) => (*b, *d),
         _ => (sec.width, sec.depth),
     };
     if sm.kind == SecondaryMemberKind::Post {
@@ -707,16 +705,14 @@ fn line_member_quantity(ctx: &Ctx, elem_idx: usize, elem: &ElementData) -> Optio
     }
 }
 
-/// 柱の実配筋情報（旧 `RcRebar` と新型 `RcRectColumnRebar`/`RcCircleColumnRebar`）。
+/// 柱の実配筋情報。
 enum ColumnRebar<'a> {
-    Legacy(&'a RcRebar),
     Rect(&'a RcRectColumnRebar),
     Circle(&'a RcCircleColumnRebar),
 }
 
-/// 梁の実配筋情報（旧 `RcRebar` と新型 `RcBeamRebar`）。
+/// 梁の実配筋情報。
 enum BeamRebar<'a> {
-    Legacy(&'a RcRebar),
     Actual(&'a RcBeamRebar),
 }
 
@@ -837,21 +833,6 @@ fn column_quantity(
     match (structure, sec.shape.as_ref()) {
         (StructureKind::Rc | StructureKind::Src, shape) => {
             let (vol, form, rebar): (f64, f64, Option<ColumnRebar>) = match shape {
-                Some(SectionShape::RcRect { b, d, rebar }) => (
-                    member::column_concrete_volume(*b, *d, h),
-                    member::column_formwork_area(*b, *d, h),
-                    Some(ColumnRebar::Legacy(rebar)),
-                ),
-                Some(SectionShape::SrcRect { b, d, rebar, .. }) => (
-                    member::column_concrete_volume(*b, *d, h),
-                    member::column_formwork_area(*b, *d, h),
-                    Some(ColumnRebar::Legacy(rebar)),
-                ),
-                Some(SectionShape::RcCircle { d, rebar }) => (
-                    std::f64::consts::PI * d * d / 4.0 * h,
-                    std::f64::consts::PI * d * h,
-                    Some(ColumnRebar::Legacy(rebar)),
-                ),
                 Some(SectionShape::RcColumnRect { b, d, rebar })
                 | Some(SectionShape::SrcColumnRect { b, d, rebar, .. }) => (
                     member::column_concrete_volume(*b, *d, h),
@@ -873,45 +854,6 @@ fn column_quantity(
             item.formwork_m2 = form * 1e-6;
 
             match rebar {
-                Some(ColumnRebar::Legacy(rebar)) => {
-                    let mut main_bars = 0u32;
-                    for bs in [&rebar.main_x, &rebar.main_y] {
-                        if bs.count == 0 || bs.dia <= 0.0 {
-                            continue;
-                        }
-                        main_bars += bs.count;
-                        let total_len = bs.count as f64 * h;
-                        item.rebar.push(RebarItem {
-                            usage: RebarUsage::MainBar,
-                            dia: Some(bs.dia),
-                            total_length_m: total_len / 1_000.0,
-                            weight_t: rebar::rebar_weight_t(total_len, bs.dia),
-                        });
-                    }
-                    let (dx, dy, circle) = match shape {
-                        Some(SectionShape::RcRect { b, d, .. })
-                        | Some(SectionShape::SrcRect { b, d, .. }) => (*b, *d, false),
-                        Some(SectionShape::RcCircle { d, .. }) => (*d, *d, true),
-                        _ => (sec.width, sec.depth, false),
-                    };
-                    let sh = &rebar.shear;
-                    if sh.dia > 0.0 && sh.pitch > 0.0 {
-                        let set_len = if circle {
-                            sh.legs.max(1) as f64 * std::f64::consts::PI * dx
-                        } else {
-                            member::hoop_set_length(dx, dy, sh.legs.max(1), sh.legs.max(1))
-                        };
-                        let count = member::shear_bar_count(h, sh.pitch);
-                        let total_len = set_len * count;
-                        item.rebar.push(RebarItem {
-                            usage: RebarUsage::Hoop,
-                            dia: Some(sh.dia),
-                            total_length_m: total_len / 1_000.0,
-                            weight_t: rebar::rebar_weight_t(total_len, sh.dia),
-                        });
-                    }
-                    item.rebar_joints = main_bars as f64 * member::column_joint_count(h);
-                }
                 Some(ColumnRebar::Rect(rebar)) => {
                     let (b, d) = match shape {
                         Some(SectionShape::RcColumnRect { b, d, .. })
@@ -1023,8 +965,6 @@ fn beam_quantity(
 
     let lo = elem.rigid_zone.clear_span_from(len).unwrap_or(len);
     let (b, d, rebar): (f64, f64, Option<BeamRebar>) = match sec.shape.as_ref() {
-        Some(SectionShape::RcRect { b, d, rebar }) => (*b, *d, Some(BeamRebar::Legacy(rebar))),
-        Some(SectionShape::SrcRect { b, d, rebar, .. }) => (*b, *d, Some(BeamRebar::Legacy(rebar))),
         Some(SectionShape::RcBeamRect { b, d, rebar }) => (*b, *d, Some(BeamRebar::Actual(rebar))),
         Some(SectionShape::SrcBeamRect { b, d, rebar, .. }) => {
             (*b, *d, Some(BeamRebar::Actual(rebar)))
@@ -1087,57 +1027,6 @@ fn beam_quantity(
         item.formwork_m2 = form * 1e-6;
 
         match rebar {
-            Some(BeamRebar::Legacy(rebar)) => {
-                let dir_xy = {
-                    let dx = cj[0] - ci[0];
-                    let dy = cj[1] - ci[1];
-                    let l = (dx * dx + dy * dy).sqrt();
-                    [dx / l, dy / l]
-                };
-                let mut main_bars = 0u32;
-                for bs in [&rebar.main_x, &rebar.main_y] {
-                    if bs.count == 0 || bs.dia <= 0.0 {
-                        continue;
-                    }
-                    main_bars += bs.count;
-                    let l2 = ctx.cfg.anchorage_dia_factor * bs.dia;
-                    let end_i = ctx.beam_bar_end(
-                        elem_idx,
-                        ni,
-                        [-dir_xy[0], -dir_xy[1]],
-                        elem.rigid_zone.face_i_or_zero(),
-                        l2,
-                    );
-                    let end_j = ctx.beam_bar_end(
-                        elem_idx,
-                        nj,
-                        dir_xy,
-                        elem.rigid_zone.face_j_or_zero(),
-                        l2,
-                    );
-                    let bar_len = member::girder_main_bar_length(lo, end_i, end_j);
-                    let total_len = bs.count as f64 * bar_len;
-                    item.rebar.push(RebarItem {
-                        usage: RebarUsage::MainBar,
-                        dia: Some(bs.dia),
-                        total_length_m: total_len / 1_000.0,
-                        weight_t: rebar::rebar_weight_t(total_len, bs.dia),
-                    });
-                }
-                let sh = &rebar.shear;
-                if sh.dia > 0.0 && sh.pitch > 0.0 {
-                    let set_len = member::stirrup_set_length(b, d, sh.legs.max(1));
-                    let count = member::shear_bar_count(lo, sh.pitch);
-                    let total_len = set_len * count;
-                    item.rebar.push(RebarItem {
-                        usage: RebarUsage::Stirrup,
-                        dia: Some(sh.dia),
-                        total_length_m: total_len / 1_000.0,
-                        weight_t: rebar::rebar_weight_t(total_len, sh.dia),
-                    });
-                }
-                item.rebar_joints = main_bars as f64 * member::beam_joint_count(lo);
-            }
             Some(BeamRebar::Actual(rebar)) if !rebar.is_unset() => {
                 let main_bars: u32 =
                     rebar.top.iter().sum::<u32>() + rebar.bottom.iter().sum::<u32>();
