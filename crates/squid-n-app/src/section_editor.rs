@@ -12,7 +12,10 @@ use squid_n_edit::{
     SetSectionName,
 };
 use squid_n_section::catalog::CatalogShape;
-use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_section::shape::{
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
+};
 
 /// 断面作成UIのドラフト状態。App に保持して UI を跨いで維持。
 #[derive(Debug, Clone)]
@@ -46,16 +49,18 @@ pub struct SectionEditorDraft {
     pub thick: f64,
     pub rc_b: f64,
     pub rc_d: f64,
-    pub main_x_count: u32,
-    pub main_x_dia: f64,
-    pub main_x_layers: u32,
-    pub main_y_count: u32,
-    pub main_y_dia: f64,
-    pub main_y_layers: u32,
+    pub main_dia: f64,
+    pub main_top: Vec<u32>,
+    pub main_bottom: Vec<u32>,
+    pub main_x: Vec<u32>,
+    pub main_y: Vec<u32>,
+    pub circle_count: u32,
     pub cover: f64,
     pub shear_dia: f64,
     pub shear_pitch: f64,
     pub shear_legs: u32,
+    pub shear_legs_x: u32,
+    pub shear_legs_y: u32,
 }
 
 impl Default for SectionEditorDraft {
@@ -83,16 +88,18 @@ impl Default for SectionEditorDraft {
             thick: 8.0,
             rc_b: 400.0,
             rc_d: 600.0,
-            main_x_count: 6,
-            main_x_dia: 19.0,
-            main_x_layers: 2,
-            main_y_count: 2,
-            main_y_dia: 19.0,
-            main_y_layers: 1,
+            main_dia: 19.0,
+            main_top: vec![3],
+            main_bottom: vec![3],
+            main_x: vec![3],
+            main_y: vec![3],
+            circle_count: 8,
             cover: 40.0,
             shear_dia: 13.0,
             shear_pitch: 100.0,
             shear_legs: 2,
+            shear_legs_x: 2,
+            shear_legs_y: 2,
         }
     }
 }
@@ -109,8 +116,9 @@ pub enum ShapeKind {
     SteelRoundBar,
     SteelLipChannel,
     SteelBuiltH,
-    RcRect,
-    RcCircle,
+    RcBeamRect,
+    RcColumnRect,
+    RcColumnCircle,
     RcSlab,
 }
 
@@ -127,12 +135,13 @@ impl ShapeKind {
             ShapeKind::SteelRoundBar => "鋼 中実丸鋼",
             ShapeKind::SteelLipChannel => "鋼 リップ溝形",
             ShapeKind::SteelBuiltH => "鋼 非対称組立H形",
-            ShapeKind::RcRect => "RC 矩形",
-            ShapeKind::RcCircle => "RC 円形",
+            ShapeKind::RcBeamRect => "RC 矩形梁",
+            ShapeKind::RcColumnRect => "RC 矩形柱",
+            ShapeKind::RcColumnCircle => "RC 円形柱",
             ShapeKind::RcSlab => "RC スラブ",
         }
     }
-    pub const ALL: [ShapeKind; 13] = [
+    pub const ALL: [ShapeKind; 14] = [
         ShapeKind::SteelH,
         ShapeKind::SteelBox,
         ShapeKind::SteelAngle,
@@ -143,8 +152,9 @@ impl ShapeKind {
         ShapeKind::SteelRoundBar,
         ShapeKind::SteelLipChannel,
         ShapeKind::SteelBuiltH,
-        ShapeKind::RcRect,
-        ShapeKind::RcCircle,
+        ShapeKind::RcBeamRect,
+        ShapeKind::RcColumnRect,
+        ShapeKind::RcColumnCircle,
         ShapeKind::RcSlab,
     ];
 }
@@ -354,11 +364,14 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             ShapeKind::SteelBuiltH => {
                 steel_built_h_fields(ui, draft);
             }
-            ShapeKind::RcRect => {
-                rc_rect_fields(ui, draft);
+            ShapeKind::RcBeamRect => {
+                rc_beam_fields(ui, draft);
             }
-            ShapeKind::RcCircle => {
-                rc_circle_fields(ui, draft);
+            ShapeKind::RcColumnRect => {
+                rc_rect_column_fields(ui, draft);
+            }
+            ShapeKind::RcColumnCircle => {
+                rc_circle_column_fields(ui, draft);
             }
             ShapeKind::RcSlab => {
                 ui.horizontal(|ui| {
@@ -371,6 +384,10 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.separator();
 
         let shape = build_shape(draft);
+        let rebar_validation = shape.validate_rebar();
+        if let Err(error) = &rebar_validation {
+            ui.colored_label(egui::Color32::RED, format!("配筋エラー: {error}"));
+        }
         let sec = shape.to_section(
             SectionId(app.core.model.sections.len() as u32),
             draft.name.clone(),
@@ -400,7 +417,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
         };
 
         ui.horizontal(|ui| {
-            let can_add = key_free_for_add && !draft.name.trim().is_empty();
+            let can_add = key_free_for_add && !draft.name.trim().is_empty() && rebar_validation.is_ok();
             let add_resp = ui.add_enabled(can_add, egui::Button::new("+ 追加"));
             if !can_add {
                 add_resp.on_hover_text(if draft.name.trim().is_empty() {
@@ -425,7 +442,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             ui.separator();
 
-            let apply_resp = ui.add_enabled(focus.is_some(), egui::Button::new("✏ 選択断面へ適用"));
+            let apply_resp = ui.add_enabled(focus.is_some() && rebar_validation.is_ok(), egui::Button::new("✏ 選択断面へ適用"));
             match focus {
                 Some(idx) => {
                     let sid = app.core.model.sections[idx].id;
@@ -642,56 +659,98 @@ fn steel_built_h_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     });
 }
 
-fn rc_rect_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+fn rc_rect_dimensions(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     ui.horizontal(|ui| {
         ui.label("B 幅:");
         num_field(ui, &mut d.rc_b);
         ui.label("D せい:");
         num_field(ui, &mut d.rc_d);
     });
-    rc_rebar_fields(ui, d);
 }
 
-fn rc_circle_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+fn rc_beam_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+    ui.horizontal(|ui| {
+        ui.label("B 幅:");
+        num_field(ui, &mut d.rc_b);
+        ui.label("D せい:");
+        num_field(ui, &mut d.rc_d);
+    });
+    rc_common_fields(ui, d);
+    rebar_layers(ui, "上端筋", &mut d.main_top);
+    rebar_layers(ui, "下端筋", &mut d.main_bottom);
+    ui.horizontal(|ui| {
+        ui.label("あばら筋 径:");
+        size_field(ui, "sec_beam_stirrup_dia", &mut d.shear_dia);
+        ui.label("ピッチ:");
+        num_field(ui, &mut d.shear_pitch);
+        ui.label("脚数:");
+        int_field(ui, &mut d.shear_legs);
+    });
+}
+
+fn rc_rect_column_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+    rc_rect_dimensions(ui, d);
+    rc_common_fields(ui, d);
+    rebar_layers(ui, "X 主筋", &mut d.main_x);
+    rebar_layers(ui, "Y 主筋", &mut d.main_y);
+    ui.horizontal(|ui| {
+        ui.label("帯筋 径:");
+        size_field(ui, "sec_column_hoop_dia", &mut d.shear_dia);
+        ui.label("ピッチ:");
+        num_field(ui, &mut d.shear_pitch);
+        ui.label("X 脚数:");
+        int_field(ui, &mut d.shear_legs_x);
+        ui.label("Y 脚数:");
+        int_field(ui, &mut d.shear_legs_y);
+    });
+}
+
+fn rc_circle_column_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     ui.horizontal(|ui| {
         ui.label("D 径:");
         num_field(ui, &mut d.rc_d);
     });
-    rc_rebar_fields(ui, d);
+    rc_common_fields(ui, d);
+    ui.horizontal(|ui| {
+        ui.label("主筋 総本数:");
+        int_field(ui, &mut d.circle_count);
+        ui.label("帯筋 径:");
+        size_field(ui, "sec_circle_hoop_dia", &mut d.shear_dia);
+        ui.label("ピッチ:");
+        num_field(ui, &mut d.shear_pitch);
+    });
 }
 
-fn rc_rebar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+fn rc_common_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     ui.separator();
     ui.strong("配筋");
     ui.label("鉄筋・せん断補強筋の材料は断面テーブルで割り当てます");
     ui.horizontal(|ui| {
-        ui.label("X主筋 本数:");
-        int_field(ui, &mut d.main_x_count);
-        ui.label("径:");
-        size_field(ui, "sec_main_x_dia", &mut d.main_x_dia);
-        ui.label("段数:");
-        int_field(ui, &mut d.main_x_layers);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Y主筋 本数:");
-        int_field(ui, &mut d.main_y_count);
-        ui.label("径:");
-        size_field(ui, "sec_main_y_dia", &mut d.main_y_dia);
-        ui.label("段数:");
-        int_field(ui, &mut d.main_y_layers);
-    });
-    ui.horizontal(|ui| {
+        ui.label("主筋径:");
+        size_field(ui, "sec_main_dia", &mut d.main_dia);
         ui.label("かぶり:");
         num_field(ui, &mut d.cover);
     });
-    ui.horizontal(|ui| {
-        ui.label("せん断補強筋 径:");
-        size_field(ui, "sec_shear_dia", &mut d.shear_dia);
-        ui.label("ピッチ:");
-        num_field(ui, &mut d.shear_pitch);
-        ui.label("組数:");
-        int_field(ui, &mut d.shear_legs);
-    });
+}
+
+fn rebar_layers(ui: &mut egui::Ui, label: &str, layers: &mut Vec<u32>) {
+    ui.strong(label);
+    let mut remove = None;
+    for (index, count) in layers.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("段{} 本数:", index + 1));
+            int_field(ui, count);
+            if ui.button("削除").clicked() {
+                remove = Some(index);
+            }
+        });
+    }
+    if let Some(index) = remove {
+        layers.remove(index);
+    }
+    if ui.button("段を追加").clicked() {
+        layers.push(3);
+    }
 }
 
 /// 鉄筋の呼び名サイズ入力（`D10`〜`D41`）。値は呼び名の数値で保持する。
@@ -732,27 +791,6 @@ fn int_field(ui: &mut egui::Ui, val: &mut u32) {
         if n != *val {
             *val = n;
         }
-    }
-}
-
-fn build_rebar(d: &SectionEditorDraft) -> RcRebar {
-    RcRebar {
-        main_x: BarSet {
-            count: d.main_x_count,
-            dia: d.main_x_dia,
-            layers: d.main_x_layers,
-        },
-        main_y: BarSet {
-            count: d.main_y_count,
-            dia: d.main_y_dia,
-            layers: d.main_y_layers,
-        },
-        cover: d.cover,
-        shear: ShearBar {
-            dia: d.shear_dia,
-            pitch: d.shear_pitch,
-            legs: d.shear_legs,
-        },
     }
 }
 
@@ -816,16 +854,59 @@ fn build_shape(d: &SectionEditorDraft) -> SectionShape {
             lower_thick: d.lower_thick,
             web_thick: d.tw,
         },
-        ShapeKind::RcRect => SectionShape::RcRect {
+        ShapeKind::RcBeamRect => SectionShape::RcBeamRect {
             b: d.rc_b,
             d: d.rc_d,
-            rebar: build_rebar(d),
+            rebar: RcBeamRebar {
+                main_dia: d.main_dia,
+                top: nonzero_layers(&d.main_top),
+                bottom: nonzero_layers(&d.main_bottom),
+                cover: d.cover,
+                stirrup: BeamStirrup {
+                    dia: d.shear_dia,
+                    pitch: d.shear_pitch,
+                    legs: d.shear_legs,
+                },
+            },
         },
-        ShapeKind::RcCircle => SectionShape::RcCircle {
+        ShapeKind::RcColumnRect => SectionShape::RcColumnRect {
+            b: d.rc_b,
             d: d.rc_d,
-            rebar: build_rebar(d),
+            rebar: RcRectColumnRebar {
+                main_dia: d.main_dia,
+                x: nonzero_layers(&d.main_x),
+                y: nonzero_layers(&d.main_y),
+                cover: d.cover,
+                hoop: RectColumnHoop {
+                    dia: d.shear_dia,
+                    pitch: d.shear_pitch,
+                    legs_x: d.shear_legs_x,
+                    legs_y: d.shear_legs_y,
+                },
+            },
+        },
+        ShapeKind::RcColumnCircle => SectionShape::RcColumnCircle {
+            d: d.rc_d,
+            rebar: RcCircleColumnRebar {
+                main_dia: d.main_dia,
+                count: d.circle_count,
+                cover: d.cover,
+                hoop: CircleColumnHoop {
+                    dia: d.shear_dia,
+                    pitch: d.shear_pitch,
+                },
+            },
         },
         ShapeKind::RcSlab => SectionShape::RcSlab { thickness: d.thick },
+    }
+}
+
+fn nonzero_layers(layers: &[u32]) -> Vec<u32> {
+    let result: Vec<_> = layers.iter().copied().filter(|count| *count > 0).collect();
+    if result.is_empty() {
+        vec![3]
+    } else {
+        result
     }
 }
 
@@ -933,24 +1014,60 @@ mod tests {
     }
 
     #[test]
-    fn test_build_shape_rc_rect_includes_rebar() {
+    fn test_build_shape_rc_kinds_keep_real_rebar() {
         let d = SectionEditorDraft {
-            kind: ShapeKind::RcRect,
+            kind: ShapeKind::RcBeamRect,
             rc_b: 400.0,
             rc_d: 800.0,
-            main_x_count: 8,
-            main_x_dia: 25.0,
+            main_top: vec![4, 2],
+            main_bottom: vec![3, 3],
             ..SectionEditorDraft::default()
         };
-        let s = build_shape(&d);
-        if let SectionShape::RcRect { b, d, rebar } = s {
-            assert_eq!(b, 400.0);
-            assert_eq!(d, 800.0);
-            assert_eq!(rebar.main_x.count, 8);
-            assert_eq!(rebar.main_x.dia, 25.0);
-        } else {
-            panic!("expected RcRect");
+        let SectionShape::RcBeamRect { b, d: depth, rebar } = build_shape(&d) else {
+            panic!("RcBeamRect");
+        };
+        assert_eq!((b, depth), (400.0, 800.0));
+        assert_eq!(rebar.top, vec![4, 2]);
+        assert_eq!(rebar.bottom, vec![3, 3]);
+        let mut layers = rebar.top;
+        layers.push(5);
+        layers.remove(1);
+        assert_eq!(layers, vec![4, 5]);
+
+        let d = SectionEditorDraft {
+            kind: ShapeKind::RcColumnRect,
+            main_x: vec![4, 2],
+            main_y: vec![3],
+            shear_legs_x: 3,
+            shear_legs_y: 4,
+            ..SectionEditorDraft::default()
+        };
+        let SectionShape::RcColumnRect { rebar, .. } = build_shape(&d) else {
+            panic!("RcColumnRect");
+        };
+        assert_eq!(rebar.x, vec![4, 2]);
+        assert_eq!(rebar.y, vec![3]);
+        assert_eq!((rebar.hoop.legs_x, rebar.hoop.legs_y), (3, 4));
+        assert!(SectionShape::RcColumnRect {
+            b: 400.0,
+            d: 600.0,
+            rebar
         }
+        .validate_rebar()
+        .is_err());
+
+        let d = SectionEditorDraft {
+            kind: ShapeKind::RcColumnCircle,
+            circle_count: 12,
+            ..SectionEditorDraft::default()
+        };
+        let SectionShape::RcColumnCircle { rebar, .. } = build_shape(&d) else {
+            panic!("RcColumnCircle");
+        };
+        assert_eq!(rebar.count, 12);
+        assert!(!ShapeKind::ALL
+            .iter()
+            .any(|kind| kind.label().contains("円形梁")));
     }
 
     #[test]
