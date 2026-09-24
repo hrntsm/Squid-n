@@ -201,7 +201,16 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         .and_then(|s| s.shape.as_ref());
     let is_rc = matches!(
         shape,
-        Some(SectionShape::RcRect { .. } | SectionShape::RcCircle { .. })
+        Some(
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcRect { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
+        )
     );
     let is_steel = shape.is_some() && !is_rc;
 

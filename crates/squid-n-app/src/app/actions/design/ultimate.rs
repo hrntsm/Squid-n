@@ -42,19 +42,27 @@ impl App {
             e.section
                 .and_then(|sid| self.core.model.sections.get(sid.index()))
                 .and_then(|s| s.shape.as_ref())
-                .map(|sh| matches!(sh, SectionShape::RcRect { .. }))
+                .map(|sh| {
+                    matches!(
+                        sh,
+                        SectionShape::RcRect { .. }
+                            | SectionShape::RcBeamRect { .. }
+                            | SectionShape::RcColumnRect { .. }
+                            | SectionShape::RcColumnCircle { .. }
+                    )
+                })
                 .unwrap_or(false)
         });
         if checks.is_empty() {
             if has_rc_rect {
                 return Err(
-                    "RC 矩形部材の終局検定を算定できませんでした（コンクリート強度 Fc の設定・\
+                    "RC 部材の終局検定を算定できませんでした（コンクリート強度 Fc の設定・\
                      有効せいを確認してください）。"
                         .to_string(),
                 );
             }
             return Err(
-                "終局検定の対象（RcRect の RC 矩形部材）がありません。RC 断面を割り当ててください。"
+                "終局検定の対象となる RC 部材がありません。RC 断面を割り当ててください。"
                     .to_string(),
             );
         }

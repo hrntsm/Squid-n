@@ -906,9 +906,14 @@ impl App {
             let base_iy = composite.map(|p| p.iy).unwrap_or(sec.iy);
             let base_area = match (composite, sec.shape.as_ref()) {
                 (Some(p), _) => p.area_ax,
-                (None, Some(shape @ SectionShape::SrcRect { .. })) => {
-                    shape.calc_axial_stiffness_area()
-                }
+                (
+                    None,
+                    Some(
+                        shape @ (SectionShape::SrcRect { .. }
+                        | SectionShape::SrcBeamRect { .. }
+                        | SectionShape::SrcColumnRect { .. }),
+                    ),
+                ) => shape.calc_axial_stiffness_area(),
                 _ => sec.area,
             };
             if factors.slab == 1.0
