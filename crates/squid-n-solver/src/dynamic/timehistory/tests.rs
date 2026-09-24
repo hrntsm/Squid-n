@@ -809,6 +809,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 node_ids: vec![NodeId(0)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -819,6 +820,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 node_ids: vec![NodeId(1)],
                 seismic_weight: Some(10000.0),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()

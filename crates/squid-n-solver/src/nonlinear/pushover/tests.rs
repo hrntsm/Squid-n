@@ -20,6 +20,7 @@ fn base_story(node_ids: Vec<NodeId>) -> Story {
         node_ids,
         seismic_weight: None,
         weight_override: None,
+        dynamic_mass: None,
     }
 }
 
@@ -104,6 +105,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(1)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -422,6 +424,7 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
                 node_ids: vec![NodeId(1)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -756,6 +759,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(1)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -766,6 +770,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(2)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -936,6 +941,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
                 node_ids: vec![NodeId(1), NodeId(2)],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         ..Default::default()
@@ -1179,6 +1185,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(1), NodeId(2)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         constraints: vec![Constraint::rigid_diaphragm(
@@ -1649,16 +1656,78 @@ fn test_compute_shear_yield_qy_real_rebar_beam_uses_both_directions_and_steel_fa
         steel_mat: Some(&steel_mat),
     };
 
-    for dir in [ShearDir::Y, ShearDir::Z] {
-        let qy_rc = compute_shear_yield_qy(1.0, mats, Some(&rc_sec), dir, 3000.0);
-        let qy_src = compute_shear_yield_qy(1.0, mats, Some(&src_sec), dir, 3000.0);
-        let steel_y = match dir {
-            ShearDir::Y => 8.0 * (450.0 - 2.0 * 13.0) * 235.0 * 1.25 / 3.0_f64.sqrt(),
-            ShearDir::Z => 2.0 * 200.0 * 13.0 * 235.0 * 1.25 / 3.0_f64.sqrt(),
-        };
-        assert!(qy_rc.is_finite() && qy_rc > 0.0);
-        assert!((qy_src - qy_rc - steel_y).abs() < 1e-6);
-    }
+    let qy_rc = compute_shear_yield_qy(1.0, mats, Some(&rc_sec), ShearDir::Y, 3000.0);
+    let qy_src = compute_shear_yield_qy(1.0, mats, Some(&src_sec), ShearDir::Y, 3000.0);
+    let steel_y = 8.0 * (450.0 - 2.0 * 13.0) * 235.0 * 1.25 / 3.0_f64.sqrt();
+    assert!(qy_rc.is_finite() && qy_rc > 0.0);
+    assert!((qy_src - qy_rc - steel_y).abs() < 1e-6);
+
+    let qy_rc_z = compute_shear_yield_qy(1.0, mats, Some(&rc_sec), ShearDir::Z, 3000.0);
+    let qy_src_z = compute_shear_yield_qy(1.0, mats, Some(&src_sec), ShearDir::Z, 3000.0);
+    assert!(qy_rc_z.is_finite() && qy_rc_z > 0.0);
+    assert!((qy_src_z - qy_rc_z).abs() < 1e-6);
+}
+
+#[test]
+fn test_compute_shear_yield_qy_real_rebar_beam_uses_unfavorable_top_or_bottom() {
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
+
+    let concrete = Material {
+        id: MaterialId(0),
+        name: "FC24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 0.0,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+        concrete_class: Default::default(),
+        strength_factor: None,
+    };
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".into(),
+        category: MaterialCategory::Rebar,
+        fy: Some(345.0),
+        ..concrete.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".into(),
+        category: MaterialCategory::Rebar,
+        fy: Some(295.0),
+        ..rebar_mat.clone()
+    };
+    let mats = SecMaterials {
+        material: Some(&concrete),
+        rebar_mat: Some(&rebar_mat),
+        shear_mat: Some(&shear_mat),
+        steel_mat: None,
+    };
+    let make = |top, bottom| {
+        SectionShape::RcBeamRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcBeamRebar {
+                main_dia: 25.0,
+                top: vec![top],
+                bottom: vec![bottom],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+        .to_section(SectionId(0), "rc-beam".into())
+    };
+    let symmetric = make(4, 4);
+    let asymmetric = make(8, 1);
+    let qy_symmetric = compute_shear_yield_qy(1.0, mats, Some(&symmetric), ShearDir::Y, 3000.0);
+    let qy_asymmetric = compute_shear_yield_qy(1.0, mats, Some(&asymmetric), ShearDir::Y, 3000.0);
+    assert!(qy_asymmetric < qy_symmetric);
 }
 
 /// RC 矩形断面（`SectionShape::RcRect`）+ 配筋情報がある場合、Qy は荒川式
@@ -3520,6 +3589,7 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(2), NodeId(3)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         constraints: vec![Constraint::rigid_diaphragm(

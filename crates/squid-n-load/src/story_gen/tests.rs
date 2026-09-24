@@ -7,6 +7,7 @@ use squid_n_core::model::{
     RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape,
     WallRegion,
 };
+use squid_n_core::section_shape::SectionShape;
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
 fn two_story_model() -> Model {
@@ -771,6 +772,192 @@ fn test_steel_line_design_weight_and_physical_mass_are_separated() {
     assert!((corrected.stories[1].seismic_weight.unwrap() / GRAVITY_MM_S2 - m[0]).abs() > 1e-6);
 }
 
+// ------------------------------------------------------------------
+// §層の動的質量（物理質量相当）`Story::dynamic_mass`
+// ------------------------------------------------------------------
+
+/// 鋼材モデルでは、階の動的質量（物理質量相当重量）が設計地震用重量より小さい
+/// （設計重量は鋼材 78.5 kN/m³、物理質量は 7.85 t/m³ ベース）。
+#[test]
+fn test_dynamic_mass_weight_is_physical_not_design() {
+    let (len, area) = (4000.0, 90000.0);
+    let model = single_beam_model(len, 7.85e-9, area, None, RigidZone::default(), None);
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+
+    let dm = gen.stories[1]
+        .dynamic_mass
+        .expect("階生成が動的質量を埋める");
+    let design = gen.stories[1].seismic_weight.unwrap();
+    assert!(dm.mass_equiv_weight_n > 0.0);
+    assert!(
+        dm.mass_equiv_weight_n < design,
+        "物理質量相当重量が設計重量を下回っていない: mass={} design={}",
+        dm.mass_equiv_weight_n,
+        design
+    );
+    // 物理質量相当重量は 7.85 t/m³ ベースの上端半分。
+    let physical = 7.85e-9 * area * len * GRAVITY_MM_S2 / 2.0;
+    assert!(
+        (dm.mass_equiv_weight_n - physical).abs() < 1e-9 * physical,
+        "物理質量相当重量が 7.85 ベースでない: {}",
+        dm.mass_equiv_weight_n
+    );
+}
+
+/// 層の動的質量は質量方式（[`MassMethod::CorrectedLumped`] / [`MassMethod::LumpedOnly`]）に
+/// 依らず一致する（串団子は部材分布質量を持たず全量を使うため）。
+#[test]
+fn test_dynamic_mass_is_independent_of_mass_method() {
+    let model = two_story_model();
+    let corrected =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::CorrectedLumped)
+            .unwrap();
+    let lumped =
+        generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::LumpedOnly).unwrap();
+
+    assert_eq!(corrected.stories.len(), lumped.stories.len());
+    for (c, l) in corrected.stories.iter().zip(lumped.stories.iter()) {
+        assert!(c.dynamic_mass.is_some(), "動的質量が未算定");
+        assert_eq!(
+            c.dynamic_mass, l.dynamic_mass,
+            "質量方式で動的質量が変わっている: {:?} vs {:?}",
+            c.dynamic_mass, l.dynamic_mass
+        );
+    }
+}
+
+/// 密度直接算入（[`generate_stories_with_opts`] の `true`）と自重同期
+/// （[`generate_stories_with_synced_self_weight`]）の 2 経路で層の動的質量が一致する。
+#[test]
+fn test_dynamic_mass_matches_between_density_and_synced_paths() {
+    let mut model = two_story_model();
+    model.load_cases.clear();
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &LoadCfg::default());
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let by_density = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let by_case =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+
+    let mut any_positive = false;
+    for (d, c) in by_density.stories.iter().zip(by_case.stories.iter()) {
+        let dm = d.dynamic_mass.expect("動的質量");
+        any_positive |= dm.mass_equiv_weight_n > 0.0;
+        assert_eq!(
+            d.dynamic_mass, c.dynamic_mass,
+            "密度経路と自重同期経路で動的質量が一致しない"
+        );
+    }
+    assert!(
+        any_positive,
+        "動的質量が 0 のままでは 2 経路の差を検出できない"
+    );
+}
+
+/// 手入力の地震用重量 `Story::weight_override` は設計地震力だけを変え、
+/// 物理質量（動的質量）は変えない。
+#[test]
+fn test_weight_override_does_not_change_dynamic_mass() {
+    let mut model = two_story_model();
+    let before = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let before_dm: Vec<_> = before.stories.iter().map(|s| s.dynamic_mass).collect();
+
+    model.stories = before.stories.clone();
+    let override_value = 1.0e9;
+    model.stories[1].weight_override = Some(override_value);
+    let after = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+
+    assert_eq!(after.stories[1].seismic_weight, Some(override_value));
+    assert_ne!(
+        before_dm[1].map(|m| m.mass_equiv_weight_n),
+        Some(override_value)
+    );
+    for (b, a) in before_dm.iter().zip(after.stories.iter()) {
+        assert_eq!(
+            *b, a.dynamic_mass,
+            "weight_override が物理質量（動的質量）へ影響している"
+        );
+    }
+}
+
+/// 3 次元配置の回転慣性 J が質量重心まわりで直接算定されていることを、
+/// 2 節点の既知配置で手計算と照合する。
+#[test]
+fn test_dynamic_mass_inertia_about_mass_center_3d() {
+    let mut model = Model::default();
+    // 基部の床 2 節点 + 上の床 2 節点。y 方向にもずらして 3 次元配置にする。
+    let coords = [
+        [0.0, 0.0, 0.0],
+        [4000.0, 2000.0, 0.0],
+        [0.0, 0.0, 3000.0],
+        [4000.0, 2000.0, 3000.0],
+    ];
+    for (i, c) in coords.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i < 2 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let w = [100000.0, 300000.0];
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal: vec![
+            NodalLoad::manual(NodeId(2), [0.0, 0.0, -w[0], 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [0.0, 0.0, -w[1], 0.0, 0.0, 0.0]),
+        ],
+        member: vec![],
+    });
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let dm = gen.stories[1].dynamic_mass.expect("動的質量");
+
+    let w_sum = w[0] + w[1];
+    assert!(
+        (dm.mass_equiv_weight_n - w_sum).abs() < 1e-6,
+        "w_sum={}",
+        dm.mass_equiv_weight_n
+    );
+    let gx = (w[0] * coords[2][0] + w[1] * coords[3][0]) / w_sum;
+    let gy = (w[0] * coords[2][1] + w[1] * coords[3][1]) / w_sum;
+    assert!(
+        (dm.center_xy_mm[0] - gx).abs() < 1e-6,
+        "gx={}",
+        dm.center_xy_mm[0]
+    );
+    assert!(
+        (dm.center_xy_mm[1] - gy).abs() < 1e-6,
+        "gy={}",
+        dm.center_xy_mm[1]
+    );
+    // J = Σ (w/g)·((x−gx)² + (y−gy)²)。重心まわりで直接算定する。
+    let j = (w[0] * ((coords[2][0] - gx).powi(2) + (coords[2][1] - gy).powi(2))
+        + w[1] * ((coords[3][0] - gx).powi(2) + (coords[3][1] - gy).powi(2)))
+        / GRAVITY_MM_S2;
+    assert!(
+        (dm.inertia_t_mm2 - j).abs() < 1e-9 * j,
+        "J={} expected={}",
+        dm.inertia_t_mm2,
+        j
+    );
+}
+
 /// `model` の主架構線材（ダンパー要素を除く）が解析の質量行列へ与える総質量相当の
 /// 重量 [N]。実装（`analysis_mass_per_length`）と同じ [`Model::element_mass_properties`]
 /// から求める。
@@ -1032,6 +1219,294 @@ fn test_both_mass_methods_equal_with_steel_weight_factor() {
         (m[0] - physical_half / GRAVITY_MM_S2).abs() < 1e-9 * (physical_half / GRAVITY_MM_S2),
         "動的質量に factor が物理ベースで掛かっていない: {}",
         m[0]
+    );
+}
+
+/// 基部 z=0・上端 z=3000 の CFT 柱 1 本（鋼管 400×400×16、充填 Fc36）。
+/// 主材料は鋼材区分＋ `fc`。質量行列は鋼管と充填コンクリートを別領域で計上する。
+fn cft_column_model() -> Model {
+    let shape = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    };
+    let mut section = shape.to_section(SectionId(0), "CFT".into());
+    section.material = Some(MaterialId(0));
+    let mut model = Model::default();
+    for (id, z, restraint) in [(0u32, 0.0, Dof6Mask::FIXED), (1, 3000.0, Dof6Mask::FREE)] {
+        model.nodes.push(Node {
+            id: NodeId(id),
+            coord: [0.0, 0.0, z],
+            restraint,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(section);
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "CFT".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: Some(36.0),
+        fy: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model
+}
+
+/// CFT 柱でも両 MassMethod の公称並進総動的質量が一致し、物理質量を二重計上しない
+/// （`mass_equiv` の躯体分は質量行列の鋼管＋充填に factor を掛けた値になる）。
+#[test]
+fn test_both_mass_methods_equal_for_cft_column() {
+    assert_mass_methods_consistent(&cft_column_model());
+}
+
+/// CFT 柱の物理質量は鋼管部に鉄骨重量割増を掛け、充填コンクリート部（γC）には
+/// 掛けない。factor=1.3 で LumpedOnly の質点質量が期待値に一致する。
+#[test]
+fn test_cft_steel_weight_factor_applies_to_steel_mass_only() {
+    let mut model = cft_column_model();
+    model.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+    assert_mass_methods_consistent(&model);
+
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let m = lumped.rep_nodes[1].mass.expect("質点質量");
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let expected = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 / 2.0;
+    assert!(
+        (m[0] - expected).abs() < 1e-9 * expected,
+        "質点質量={} expected={expected}",
+        m[0]
+    );
+}
+
+/// CFT 柱の質点系用の物理質量相当重量（`Story::dynamic_mass.mass_equiv_weight_n`）も、
+/// 鋼管部に鉄骨重量割増を掛け充填コンクリート部（γC）には掛けない値になること。
+/// 質量方式に依らず全量を階ごとに集計する（[ADR-0034]）。
+#[test]
+fn test_cft_dynamic_mass_weight_is_steel_factor_plus_core() {
+    let mut model = cft_column_model();
+    model.load_cfg = Some(LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    });
+
+    let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
+    let dm = gen.stories[1].dynamic_mass.expect("階の動的質量");
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    // 柱は上下節点へ 1/2 ずつ配分する。躯体分は鋼管部×factor ＋ 充填コンクリート部。
+    let expected = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 * GRAVITY_MM_S2 / 2.0;
+    assert!(
+        (dm.mass_equiv_weight_n - expected).abs() < 1e-9 * expected,
+        "物理質量相当重量={} expected={expected}",
+        dm.mass_equiv_weight_n
+    );
+}
+
+/// 自重同期済み DL（[`generate_stories_with_synced_self_weight`]）でも、CFT 柱の質点質量が
+/// `node_weight − design_sw + physical_sw` の置換で「鋼管部×factor ＋ 充填コンクリート部」
+/// の物理質量になる。
+#[test]
+fn test_synced_self_weight_cft_column_mass_excludes_core_from_factor() {
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let mut model = cft_column_model();
+    model.load_cfg = Some(cfg.clone());
+    let (nodal, member) = crate::self_weight::self_weight_case_content(&model, &cfg);
+    model.load_cases.clear();
+    model.load_cases.push(LoadCase {
+        kind: LoadCaseKind::Dead,
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal,
+        member,
+    });
+
+    let gen =
+        generate_stories_with_synced_self_weight(&model, &[LoadCaseId(0)], MassMethod::LumpedOnly)
+            .unwrap();
+    let (as_area, ac_area) = (24576.0, 135424.0);
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let physical_half = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 / 2.0;
+    let m = gen.rep_nodes[1].mass.expect("自重同期済み DL の質点質量");
+    assert!(
+        (m[0] - physical_half).abs() < 1e-9 * physical_half,
+        "質点質量={} expected={}",
+        m[0],
+        physical_half
+    );
+}
+
+/// 水平 CFT 梁 1 本（節点 2-3, z=3000, 700×400×16, 充填 Fc36）と自重ゼロの柱 2 本を持つ
+/// 1 層モデル。柱せい 800 で梁のフェイス控除 400×2、スラブ厚 50 で梁のスラブ厚控除を
+/// 生じさせる。
+fn horizontal_cft_beam_model() -> Model {
+    let len = 6000.0;
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [len, 0.0, 0.0],
+        [0.0, 0.0, 3000.0],
+        [len, 0.0, 3000.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if c[2] == 0.0 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut beam = SectionShape::CftBox {
+        height: 700.0,
+        width: 400.0,
+        thick: 16.0,
+    }
+    .to_section(SectionId(0), "CFT梁".into());
+    beam.material = Some(MaterialId(0));
+    model.sections.push(beam);
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "柱(重量なし)".into(),
+        area: 0.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 800.0,
+        width: 800.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "CFT".into(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: Some(36.0),
+        fy: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(2), NodeId(3)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    for (id, a, b) in [(1u32, 0u32, 2u32), (2, 1, 3)] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(1)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.slab_thickness = 50.0;
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(2), NodeId(3)],
+    ));
+    model
+}
+
+/// 水平 CFT 梁でも、設計重量はスラブ厚控除後の鋼管部×factor ＋ 充填部をフェイス間長で、
+/// 物理質量は節点間長で「鋼管部×factor ＋ 充填部」を算定する（二重計上しない）。
+#[test]
+fn test_horizontal_cft_beam_self_weight_with_face_and_slab_deduction() {
+    let cfg = LoadCfg {
+        steel_weight_factor: 1.3,
+        ..Default::default()
+    };
+    let mut model = horizontal_cft_beam_model();
+    model.load_cfg = Some(cfg);
+
+    let as_area: f64 = 400.0 * 700.0 - 368.0 * 668.0;
+    let ac_area: f64 = 368.0 * 668.0;
+    let self_weight_area = as_area - 400.0 * 50.0;
+    let eff_len = 6000.0 - 400.0 - 400.0;
+    let design = (78.5e-6 * self_weight_area * 1.3 + 23.0e-6 * ac_area) * eff_len;
+    let gen = generate_stories(&model, None).unwrap();
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - design).abs() < 1e-9 * design,
+        "地震用重量={} expected={design}",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+
+    let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+    let mass_equiv = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 6000.0 * GRAVITY_MM_S2;
+    let lumped = generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly).unwrap();
+    let total_mass: f64 = lumped
+        .rep_nodes
+        .iter()
+        .filter_map(|n| n.mass)
+        .map(|m| m[0])
+        .sum();
+    assert!(
+        (total_mass - mass_equiv / GRAVITY_MM_S2).abs() < 1e-9 * (mass_equiv / GRAVITY_MM_S2),
+        "総動的質量={total_mass} expected={}",
+        mass_equiv / GRAVITY_MM_S2
     );
 }
 
@@ -4011,6 +4486,7 @@ fn split_column_model() -> Model {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
     model
 }
@@ -4057,6 +4533,7 @@ fn test_predefined_stories_drive_the_assignment() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
@@ -4086,6 +4563,7 @@ fn test_story_without_floor_nodes_gets_no_diaphragm() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
     // レベル 10500 には節点がない（区間 (3500, 10500] には z=7000 の節点が入る）。
     model.stories.push(Story {
@@ -4097,6 +4575,7 @@ fn test_story_without_floor_nodes_gets_no_diaphragm() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
@@ -4140,6 +4619,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
         Story {
             id: StoryId(1),
@@ -4150,6 +4630,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
     ];
 
@@ -4165,6 +4646,7 @@ fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         },
         legacy.stories[0].clone(),
         legacy.stories[1].clone(),

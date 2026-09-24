@@ -1789,6 +1789,7 @@ fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
         node_ids: vec![],
         seismic_weight: weight,
         weight_override: None,
+        dynamic_mass: None,
     }
 }
 
@@ -1910,6 +1911,7 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
             node_ids: vec![NodeId(0), NodeId(1)],
             seismic_weight: Some(1000.0),
             weight_override: None,
+            dynamic_mass: None,
         }],
         node_story: vec![Some(StoryId(0)), Some(StoryId(0))],
         constraints: vec![Constraint::rigid_diaphragm(
@@ -3967,6 +3969,7 @@ fn story_edit_model(zs: &[f64], levels: &[(&str, f64)]) -> Model {
                 weight_override: None,
                 structure: Default::default(),
                 level_kind: Default::default(),
+                dynamic_mass: None,
             })
             .collect(),
         ..Default::default()
@@ -5159,6 +5162,46 @@ fn make_sm(
     }
 }
 
+/// CFT 角形断面を末尾へ追加し、その ID を返す（テスト用ヘルパー）。
+fn push_cft_section(model: &mut Model) -> SectionId {
+    let id = SectionId(model.sections.len() as u32);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        }
+        .to_section(id, "CFT".into()),
+    );
+    id
+}
+
+/// 形状を持たない鋼材断面を末尾へ追加し、その ID を返す（テスト用ヘルパー）。
+fn push_steel_section(model: &mut Model) -> SectionId {
+    let id = SectionId(model.sections.len() as u32);
+    model.sections.push(squid_n_core::model::Section {
+        id,
+        name: "S".into(),
+        area: 100.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 10.0,
+        width: 10.0,
+        as_y: 80.0,
+        as_z: 80.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    id
+}
+
 /// 未割当小梁の追加・削除を確認する（D6）。
 #[test]
 fn add_delete_unassigned_joist() {
@@ -5425,6 +5468,264 @@ fn set_floor_region_joist_section() {
         model.floor_regions[0].secondary_joists[0].section,
         Some(SectionId(0))
     );
+}
+
+/// CFT 断面の小梁への断面変更は Noop で、断面は変わらない。
+#[test]
+fn set_floor_region_joist_section_rejects_cft() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        }
+        .to_section(SectionId(0), "CFT".into()),
+    );
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1)],
+    ));
+    model.floor_regions[0]
+        .secondary_joists
+        .push(make_sm(0, SecondaryMemberKind::Joist));
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetFloorRegionJoistSection {
+            region: FloorRegionId(0),
+            index: 0,
+            section: Some(SectionId(0)),
+        }),
+    );
+    assert!(!applied, "CFT 断面は小梁へ設定しない");
+    assert_eq!(model.floor_regions[0].secondary_joists[0].section, None);
+}
+
+/// CFT 断面の間柱への断面変更は Noop で、断面は変わらない。
+#[test]
+fn set_wall_region_post_section_rejects_cft() {
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
+    let mut model = sm_base_model();
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::CftPipe {
+            outer_dia: 400.0,
+            thick: 12.0,
+        }
+        .to_section(SectionId(0), "CFT".into()),
+    );
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![NodeId(0), NodeId(1)]));
+    model.wall_regions[0]
+        .posts
+        .push(make_sm(0, SecondaryMemberKind::Post));
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetWallRegionPostSection {
+            region: WallRegionId(0),
+            index: 0,
+            section: Some(SectionId(0)),
+        }),
+    );
+    assert!(!applied, "CFT 断面は間柱へ設定しない");
+    assert_eq!(model.wall_regions[0].posts[0].section, None);
+}
+
+/// 鋼材断面は間柱へ設定できる。
+#[test]
+fn set_wall_region_post_section_accepts_steel() {
+    use squid_n_core::model::{SecondaryMemberKind, Section, WallRegion};
+    let mut model = sm_base_model();
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "S0".into(),
+        area: 100.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 10.0,
+        width: 10.0,
+        as_y: 80.0,
+        as_z: 80.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![NodeId(0), NodeId(1)]));
+    model.wall_regions[0]
+        .posts
+        .push(make_sm(0, SecondaryMemberKind::Post));
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetWallRegionPostSection {
+            region: WallRegionId(0),
+            index: 0,
+            section: Some(SectionId(0)),
+        }),
+    );
+    assert!(applied, "鋼材断面は間柱へ設定できる");
+    assert_eq!(model.wall_regions[0].posts[0].section, Some(SectionId(0)));
+}
+
+/// CFT 断面の未割当小梁は追加できない（Noop）。
+#[test]
+fn add_unassigned_joist_rejects_cft_section() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let cft = push_cft_section(&mut model);
+    let mut sm = make_sm(0, SecondaryMemberKind::Joist);
+    sm.section = Some(cft);
+    let mut stack = UndoStack::new();
+    assert!(!stack.run(&mut model, Box::new(AddUnassignedJoist { sm })));
+    assert!(model.unassigned_joists.is_empty());
+}
+
+/// CFT 断面の未割当間柱は追加できない（Noop）。
+#[test]
+fn add_unassigned_post_rejects_cft_section() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let cft = push_cft_section(&mut model);
+    let mut sm = make_sm(0, SecondaryMemberKind::Post);
+    sm.section = Some(cft);
+    let mut stack = UndoStack::new();
+    assert!(!stack.run(&mut model, Box::new(AddUnassignedPost { sm })));
+    assert!(model.unassigned_posts.is_empty());
+}
+
+/// 鋼材断面の未割当小梁は従来どおり追加できる（CFT 判定で有効な入力を弾かない）。
+#[test]
+fn add_unassigned_joist_accepts_steel_section() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let steel = push_steel_section(&mut model);
+    let mut sm = make_sm(0, SecondaryMemberKind::Joist);
+    sm.section = Some(steel);
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(AddUnassignedJoist { sm })));
+    assert_eq!(model.unassigned_joists.len(), 1);
+}
+
+/// CFT 断面を含む床領域小梁リストは置換できない（Noop）。
+#[test]
+fn set_floor_region_secondary_joists_rejects_cft_section() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let cft = push_cft_section(&mut model);
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1)],
+    ));
+    let mut joist = make_sm(0, SecondaryMemberKind::Joist);
+    joist.section = Some(cft);
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetFloorRegionSecondaryJoists {
+            region: FloorRegionId(0),
+            joists: vec![joist],
+        }),
+    );
+    assert!(!applied, "CFT 断面を含む小梁リストは置換しない");
+    assert!(model.floor_regions[0].secondary_joists.is_empty());
+}
+
+/// CFT 断面を含む壁領域間柱リストは置換できない（Noop）。
+#[test]
+fn set_wall_region_posts_rejects_cft_section() {
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
+    let mut model = sm_base_model();
+    let cft = push_cft_section(&mut model);
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![NodeId(0), NodeId(1)]));
+    let mut post = make_sm(0, SecondaryMemberKind::Post);
+    post.section = Some(cft);
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetWallRegionPosts {
+            region: WallRegionId(0),
+            posts: vec![post],
+        }),
+    );
+    assert!(!applied, "CFT 断面を含む間柱リストは置換しない");
+    assert!(model.wall_regions[0].posts.is_empty());
+}
+
+/// CFT 断面の二次部材は配置できない（Noop）。
+#[test]
+fn place_secondary_member_rejects_cft_section() {
+    use squid_n_core::model::{
+        SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind, SupportMemberId,
+    };
+    let mut model = square_with_region();
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    ));
+    model.rebuild_floor_assignment_regions();
+    let cft = push_cft_section(&mut model);
+    let anchor = |elem: u32, position: f64| SecondaryMemberAnchor {
+        support: SupportMemberId::Primary(ElemId(elem)),
+        position,
+    };
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(PlaceSecondaryMember {
+            parent: SecondaryParent::Floor(FloorRegionId(0)),
+            kind: SecondaryMemberKind::Joist,
+            ends: SecondaryMemberEnds::Supported([anchor(0, 0.5), anchor(2, 0.5)]),
+            section: Some(cft),
+            name: "CFT小梁".into(),
+        }),
+    );
+    assert!(!applied, "CFT 断面の二次部材は配置しない");
+    assert_eq!(model.joists().count(), 0);
+}
+
+/// 鋼材断面の二次部材は従来どおり配置できる。
+#[test]
+fn place_secondary_member_accepts_steel_section() {
+    use squid_n_core::model::{
+        SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind, SupportMemberId,
+    };
+    let mut model = square_with_region();
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    ));
+    model.rebuild_floor_assignment_regions();
+    let steel = push_steel_section(&mut model);
+    let anchor = |elem: u32, position: f64| SecondaryMemberAnchor {
+        support: SupportMemberId::Primary(ElemId(elem)),
+        position,
+    };
+    let mut stack = UndoStack::new();
+    let applied = stack.run(
+        &mut model,
+        Box::new(PlaceSecondaryMember {
+            parent: SecondaryParent::Floor(FloorRegionId(0)),
+            kind: SecondaryMemberKind::Joist,
+            ends: SecondaryMemberEnds::Supported([anchor(0, 0.5), anchor(2, 0.5)]),
+            section: Some(steel),
+            name: "S小梁".into(),
+        }),
+    );
+    assert!(applied, "鋼材断面の二次部材は配置できる");
+    assert_eq!(model.joists().count(), 1);
 }
 
 /// 階への複製で未割当小梁が増えること（D6）。

@@ -727,6 +727,7 @@ fn test_model_issues_warns_story_without_diaphragm() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     });
 
     let issues = model_issues(&model);
@@ -760,6 +761,7 @@ fn test_model_issues_errors_on_duplicate_story_names() {
         weight_override: None,
         structure: Default::default(),
         level_kind: Default::default(),
+        dynamic_mass: None,
     };
     // 見た目で区別できない差（末尾の空白）でも同名として扱う。
     model.stories.push(story(0, "2F", 3000.0));
@@ -821,6 +823,7 @@ fn make_two_story_diaphragm_model(
                 weight_override: None,
                 structure: StoryStructure::Rc,
                 level_kind: StoryLevelKind::Normal,
+                dynamic_mass: None,
             },
             Story {
                 id: StoryId(1),
@@ -831,6 +834,7 @@ fn make_two_story_diaphragm_model(
                 weight_override: None,
                 structure: StoryStructure::Rc,
                 level_kind: StoryLevelKind::Normal,
+                dynamic_mass: None,
             },
         ],
         elements: vec![ElementData {
@@ -1076,6 +1080,7 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
         weight_override: None,
         structure: StoryStructure::default(),
         level_kind: StoryLevelKind::Normal,
+        dynamic_mass: None,
     }];
     for (i, s) in structures.iter().enumerate() {
         let elev = (i as f64 + 1.0) * 1000.0;
@@ -1097,6 +1102,7 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
             weight_override: None,
             structure: *s,
             level_kind: StoryLevelKind::Normal,
+            dynamic_mass: None,
         });
     }
     Model {
@@ -1139,6 +1145,7 @@ fn test_ground_elevation_from_basement_and_fallback() {
         weight_override: None,
         structure: StoryStructure::default(),
         level_kind: kind,
+        dynamic_mass: None,
     };
     // 地下2層。各層の「床レベル + 深さ」がともに 0（GL）になる。
     // B2(-9000) B1(-5000, 深さ5000) B0(-1000, 深さ1000) 1F(3000)。
@@ -1202,6 +1209,7 @@ fn make_diaphragm_model(diaphragms: Vec<(NodeId, Option<f64>, Option<f64>)>) -> 
             weight_override: None,
             structure: StoryStructure::Rc,
             level_kind: StoryLevelKind::Normal,
+            dynamic_mass: None,
         }],
         ..Default::default()
     };
@@ -1773,6 +1781,73 @@ fn test_model_issues_warns_unassigned_joist() {
             .iter()
             .any(|i| i.message.contains("どの床領域にも所属しない小梁")),
         "実部材化済みの小梁は所属なしのエラーにしない"
+    );
+}
+
+/// 二次部材（小梁・間柱）に CFT 断面が割り当てられていると、解析前チェックでエラーにする。
+/// CFT は柱専用で、二次部材の自重式は充填コンクリートを扱わないため危険側になる。
+#[test]
+fn test_model_issues_errors_cft_secondary_section() {
+    use super::precheck::precheck_model;
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(cft_shape());
+    model.materials[0].fc = Some(24.0);
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Cantilever {
+            support: SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [0.0, 1000.0],
+        },
+        section: Some(SectionId(0)),
+        name: "CFT小梁".into(),
+    });
+
+    let err = precheck_model(&model).expect_err("CFT 断面の二次部材はエラーにする");
+    assert!(
+        err.to_string().contains("CFT") && err.to_string().contains("二次部材"),
+        "{err}"
+    );
+}
+
+/// 通常の鋼材断面の二次部材はエラーにせず、解析前チェックを通す。
+#[test]
+fn test_model_issues_allows_steel_secondary_section() {
+    use super::precheck::precheck_model;
+    use squid_n_core::model::{
+        SecondaryMember, SecondaryMemberAnchor, SecondaryMemberEnds, SecondaryMemberKind,
+        SupportMemberId,
+    };
+
+    let mut model = make_cantilever_model();
+    model.unassigned_joists.push(SecondaryMember {
+        gravity_end_shares: None,
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        ends: SecondaryMemberEnds::Cantilever {
+            support: SecondaryMemberAnchor {
+                support: SupportMemberId::Primary(ElemId(0)),
+                position: 0.5,
+            },
+            free_end_vector: [0.0, 1000.0],
+        },
+        section: Some(SectionId(0)),
+        name: "S小梁".into(),
+    });
+
+    assert!(
+        precheck_model(&model).is_ok(),
+        "鋼材断面の二次部材は解析前チェックを通す: {:?}",
+        precheck_model(&model)
     );
 }
 

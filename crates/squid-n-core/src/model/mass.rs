@@ -567,15 +567,7 @@ fn circle_geometry(dia: f64) -> GeometryMass {
 }
 
 fn cft_core_density(material: Option<&Material>) -> f64 {
-    material.map_or(0.0, |m| {
-        m.fc.filter(|fc| *fc > 0.0).map_or(0.0, |fc| {
-            mass_density_from_unit_weight_kn_m3(concrete_unit_weight_kn_m3(
-                fc,
-                m.concrete_class,
-                ConcreteComposition::Plain,
-            ))
-        })
-    })
+    material.map_or(0.0, Material::cft_core_mass_density)
 }
 
 fn concrete_density(material: Option<&Material>, composition: ConcreteComposition) -> f64 {

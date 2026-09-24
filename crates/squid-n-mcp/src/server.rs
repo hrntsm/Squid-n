@@ -537,6 +537,7 @@ mod tests {
                     weight_override: None,
                     structure: Default::default(),
                     level_kind: Default::default(),
+                    dynamic_mass: None,
                 },
                 Story {
                     id: StoryId(1),
@@ -547,6 +548,7 @@ mod tests {
                     weight_override: None,
                     structure: Default::default(),
                     level_kind: Default::default(),
+                    dynamic_mass: None,
                 },
             ],
             ..Default::default()

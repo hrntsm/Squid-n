@@ -161,6 +161,17 @@ pub enum StoryLevelKind {
     Basement { depth_mm: f64 },
 }
 
+/// 層の動的質量（物理質量相当）。階生成が節点ごとの物理質量相当重量から一括算定する。
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoryDynamicMass {
+    /// 物理質量相当重量 [N]（質量方式に依らない全量。Σ node_mass_equiv）。
+    pub mass_equiv_weight_n: f64,
+    /// 質量重心 (x, y) [mm]。
+    pub center_xy_mm: [f64; 2],
+    /// 質量重心まわりの回転慣性 [t·mm²]。
+    pub inertia_t_mm2: f64,
+}
+
 /// 階（床）の定義。法規上の「層」は [`Layer`] である。
 ///
 /// フィールドは**誰が決めるか**で 2 系統に分かれる。
@@ -201,6 +212,10 @@ pub struct Story {
     /// 階の種別（一般/PH/地下）。フィールド無しは一般階扱い。
     #[serde(default)]
     pub level_kind: StoryLevelKind,
+    /// 動的解析（質点系解析など）用の物理質量相当。準備計算の階生成が埋める。
+    /// 未算定は `None`。フィールド無しは `None`。
+    #[serde(default)]
+    pub dynamic_mass: Option<StoryDynamicMass>,
 }
 
 /// 層（隣り合う 2 つの階の間）。法規上の「i 階」はこれを指す。
@@ -243,6 +258,8 @@ pub struct Layer {
     pub node_ids: Vec<NodeId>,
     /// 主要構造種別（略算周期の鉄骨造比 α 算定用）。
     pub structure: StoryStructure,
+    /// 動的解析用の物理質量相当（上端床が持つ値）。未算定は `None`。
+    pub dynamic_mass: Option<StoryDynamicMass>,
 }
 
 impl Model {
@@ -269,6 +286,7 @@ impl Model {
                     weight: top.seismic_weight,
                     node_ids: top.node_ids.clone(),
                     structure: top.structure,
+                    dynamic_mass: top.dynamic_mass,
                 }
             })
             .collect()

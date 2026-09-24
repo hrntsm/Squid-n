@@ -239,9 +239,7 @@ pub(super) fn breakdown_with(
     let slab = match &sec.shape {
         Some(
             SectionShape::RcRect { .. }
-            | SectionShape::RcBeamRect { .. }
-            | SectionShape::RcColumnRect { .. }
-            | SectionShape::RcColumnCircle { .. },
+            | SectionShape::RcBeamRect { .. },
         ) => slab_stiffness_factor(model, data, sec.width, sec.depth),
         Some(SectionShape::SteelH { .. }) => composite_beam_stiffness_factor(model, data, sec, es),
         _ => 1.0,

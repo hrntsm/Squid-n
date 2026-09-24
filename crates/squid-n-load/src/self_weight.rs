@@ -117,8 +117,10 @@ mod tests {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, MassMethod, Material, Node,
+        Section,
     };
+    use squid_n_core::section_shape::SectionShape;
     use squid_n_core::units::GRAVITY_MM_S2;
 
     fn simple_node(id: u32, coord: [f64; 3]) -> Node {
@@ -492,6 +494,304 @@ mod tests {
             (gen.stories[0].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
             "地震用重量 基部階={}",
             gen.stories[0].seismic_weight.unwrap()
+        );
+    }
+
+    /// CFT 柱 1 本（基部 z=0・上端 z=3000）。主材料は鋼材区分＋充填コンクリート Fc36。
+    fn cft_column_model(shape: SectionShape) -> Model {
+        let mut section = shape.to_section(SectionId(0), "CFT".into());
+        section.material = Some(MaterialId(0));
+        Model {
+            nodes: vec![
+                simple_node(0, [0.0, 0.0, 0.0]),
+                simple_node(1, [0.0, 0.0, 3000.0]),
+            ],
+            sections: vec![section],
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "CFT".into(),
+                category: MaterialCategory::Steel,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: Some(36.0),
+                fy: None,
+            }],
+            elements: vec![beam_elem(0, 0, 1)],
+            ..Default::default()
+        }
+    }
+
+    /// 角形 CFT 柱（400×400×16, Fc36）の単位長さ設計自重が
+    /// `78.5e-6·As + 23.0e-6·Ac`（As=鋼管断面積, Ac=充填部断面積）に一致する。
+    /// As=24576, Ac=368²=135424、普通コンクリート Fc36 の γC=23.0 kN/m³。
+    #[test]
+    fn test_square_cft_column_design_weight_includes_filling_concrete() {
+        let model = cft_column_model(SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        });
+        let (nodal, member) = self_weight_case_content(&model, &LoadCfg::default());
+        assert!(member.is_empty(), "柱のみなので部材荷重は出ない");
+
+        let as_area: f64 = 400.0 * 400.0 - 368.0 * 368.0;
+        let ac_area: f64 = 368.0 * 368.0;
+        assert!((as_area - 24576.0).abs() < 1e-9);
+        assert!((ac_area - 135424.0).abs() < 1e-9);
+        let per_mm = 78.5e-6 * as_area + 23.0e-6 * ac_area;
+        let w_col = per_mm * 3000.0;
+        assert!(
+            (node_force(&nodal, 1) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "上端={}",
+            node_force(&nodal, 1)
+        );
+        assert!(
+            (node_force(&nodal, 0) - w_col / 2.0).abs() < 1e-9 * w_col,
+            "下端={}",
+            node_force(&nodal, 0)
+        );
+    }
+
+    /// 円形 CFT 柱（D=500, t=12, Fc36）の設計自重も同式に一致する。
+    #[test]
+    fn test_circular_cft_column_design_weight_includes_filling_concrete() {
+        let (d, t) = (500.0_f64, 12.0_f64);
+        let di = d - 2.0 * t;
+        let model = cft_column_model(SectionShape::CftPipe {
+            outer_dia: d,
+            thick: t,
+        });
+        let (nodal, _member) = self_weight_case_content(&model, &LoadCfg::default());
+
+        let as_area = std::f64::consts::PI * (d * d - di * di) / 4.0;
+        let ac_area = std::f64::consts::PI * di * di / 4.0;
+        let per_mm = 78.5e-6 * as_area + 23.0e-6 * ac_area;
+        let w_col = per_mm * 3000.0;
+        let total = node_force(&nodal, 0) + node_force(&nodal, 1);
+        assert!(
+            (total - w_col).abs() < 1e-9 * w_col,
+            "total={total} expected={w_col}"
+        );
+    }
+
+    /// DL ケースの総量に CFT 充填コンクリート分が含まれる（鋼管のみの設計重量を上回る）。
+    #[test]
+    fn test_dl_self_weight_case_includes_cft_filling_concrete() {
+        let model = cft_column_model(SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        });
+        let (nodal, member) = self_weight_case_content(&model, &LoadCfg::default());
+        let total = node_force(&nodal, 0)
+            + node_force(&nodal, 1)
+            + member
+                .iter()
+                .map(|ml| match ml.kind {
+                    MemberLoadKind::Distributed { a, b, w1, w2 } => (b - a) * (w1 + w2) / 2.0,
+                    MemberLoadKind::Point { p, .. } => p,
+                })
+                .sum::<f64>();
+
+        let steel_only = 78.5e-6 * 24576.0 * 3000.0;
+        let core = 23.0e-6 * 135424.0 * 3000.0;
+        assert!(
+            (total - (steel_only + core)).abs() < 1e-9 * total,
+            "total={total} expected={}",
+            steel_only + core
+        );
+        assert!(
+            total > steel_only,
+            "充填コンクリート分が計上されていない: total={total} steel_only={steel_only}"
+        );
+    }
+
+    /// 地震用重量（generate_stories）にも CFT 充填コンクリート分が含まれ、
+    /// 上端・下端へ 1/2 ずつ配分される。
+    #[test]
+    fn test_generate_stories_seismic_weight_includes_cft_filling_concrete() {
+        let model = cft_column_model(SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        });
+        let per_mm = 78.5e-6 * 24576.0 + 23.0e-6 * 135424.0;
+        let w_col = per_mm * 3000.0;
+        let gen = crate::story_gen::generate_stories(&model, None).unwrap();
+        assert_eq!(gen.stories.len(), 2);
+        assert!(
+            (gen.stories[1].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 上端階={}",
+            gen.stories[1].seismic_weight.unwrap()
+        );
+        assert!(
+            (gen.stories[0].seismic_weight.unwrap() - w_col / 2.0).abs() < 1e-9 * w_col,
+            "地震用重量 基部階={}",
+            gen.stories[0].seismic_weight.unwrap()
+        );
+    }
+
+    /// 鉄骨重量割増 factor=1.3 は CFT 鋼管部にだけ掛かり、充填コンクリート部には
+    /// 掛からない（設計重量・物理質量の両方）。
+    #[test]
+    fn test_cft_steel_weight_factor_applies_to_steel_only() {
+        let cfg = LoadCfg {
+            steel_weight_factor: 1.3,
+            ..Default::default()
+        };
+        let mut model = cft_column_model(SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        });
+        model.load_cfg = Some(cfg.clone());
+        let (as_area, ac_area) = (24576.0, 135424.0);
+
+        // 設計重量: 鋼管部のみ factor、充填部は γC のまま。
+        let (nodal, _) = self_weight_case_content(&model, &cfg);
+        let total = node_force(&nodal, 0) + node_force(&nodal, 1);
+        let expected_design = (78.5e-6 * as_area * 1.3 + 23.0e-6 * ac_area) * 3000.0;
+        assert!(
+            (total - expected_design).abs() < 1e-9 * expected_design,
+            "設計自重={total} expected={expected_design}"
+        );
+
+        // 物理質量: 鋼管部のみ factor、充填部は物理密度 γC/g のまま。
+        let gen =
+            crate::story_gen::generate_stories_with_opts(&model, &[], true, MassMethod::LumpedOnly)
+                .unwrap();
+        let m = gen.rep_nodes[1].mass.expect("LumpedOnly は質点を持つ");
+        let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+        let expected_mass = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * 3000.0 / 2.0;
+        assert!(
+            (m[0] - expected_mass).abs() < 1e-9 * expected_mass,
+            "質点質量={} expected={expected_mass}",
+            m[0]
+        );
+    }
+
+    /// CFT 柱 1 本（基部 z=0・上端 z=3000）と、柱脚節点に取り付く水平梁 2 本
+    /// （area=0・せい `depths`）を持つモデル。主材料は鋼材区分＋充填 Fc36。
+    fn cft_base_column_with_base_beams(depths: &[f64]) -> Model {
+        let mut column = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        }
+        .to_section(SectionId(0), "CFT".into());
+        column.material = Some(MaterialId(0));
+        let mut sections = vec![column];
+        let beam_nodes = [NodeId(2), NodeId(3)];
+        for (k, &depth) in depths.iter().enumerate() {
+            sections.push(Section {
+                id: SectionId((k + 1) as u32),
+                name: format!("Beam{depth}"),
+                area: 0.0,
+                iy: 1.0e8,
+                iz: 1.0e8,
+                j: 1.0e8,
+                depth,
+                width: 300.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                floor: None,
+                panel_thickness: None,
+                thickness: None,
+                shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
+            });
+        }
+        let mut elements = vec![beam_elem(0, 0, 1)];
+        for (k, node) in beam_nodes.iter().enumerate().take(depths.len()) {
+            let mut e = beam_elem((k + 1) as u32, 0, node.0);
+            e.section = Some(SectionId((k + 1) as u32));
+            e.local_axis = LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            };
+            elements.push(e);
+        }
+        Model {
+            nodes: vec![
+                simple_node(0, [0.0, 0.0, 0.0]),
+                simple_node(1, [0.0, 0.0, 3000.0]),
+                simple_node(2, [4000.0, 0.0, 0.0]),
+                simple_node(3, [0.0, 4000.0, 0.0]),
+            ],
+            sections,
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "CFT".into(),
+                category: MaterialCategory::Steel,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: Some(36.0),
+                fy: None,
+            }],
+            elements,
+            ..Default::default()
+        }
+    }
+
+    /// 下階柱なし CFT 柱: 柱脚に水平梁（最大せい 800）が接続するとき、下端付加の
+    /// 設計重量・物理質量相当に充填コンクリート分（γC·Ac·Dmax）が含まれ、鋼管部には
+    /// `effective_steel_factor()` が掛かる。`is_concrete` による `max_depth` の適用条件は
+    /// 変わらないため、CFT でも RC/SRC と同じく最大せい 800 が付加される。
+    #[test]
+    fn test_cft_base_column_extra_bottom_includes_filling_concrete() {
+        let cfg = LoadCfg {
+            steel_weight_factor: 1.3,
+            ..Default::default()
+        };
+        let mut model = cft_base_column_with_base_beams(&[600.0, 800.0]);
+        model.load_cfg = Some(cfg.clone());
+
+        let items = crate::story_gen::enumerate_self_weight(&model, &cfg);
+        let (extra_bottom_load, extra_bottom_mass_equiv) = items
+            .iter()
+            .find_map(|item| match item {
+                crate::story_gen::SelfWeightItem::Line {
+                    elem_idx,
+                    extra_bottom_load,
+                    extra_bottom_mass_equiv,
+                    ..
+                } if *elem_idx == 0 => Some((*extra_bottom_load, *extra_bottom_mass_equiv)),
+                _ => None,
+            })
+            .expect("CFT 柱の Line がある");
+
+        let (as_area, ac_area) = (24576.0, 135424.0);
+        let dmax = 800.0;
+        // 設計: 鋼管部（γs=78.5 kN/m³）×factor ＋ 充填部（γC=23.0 kN/m³）を最大せい分。
+        let expected_load = (78.5e-6 * as_area * 1.3 + 23.0e-6 * ac_area) * dmax;
+        assert!(
+            (extra_bottom_load - expected_load).abs() < 1e-9 * expected_load,
+            "extra_bottom_load={extra_bottom_load} expected={expected_load}"
+        );
+
+        // 物理: 鋼管部（物理密度 7.85e-9 ×g）×factor ＋ 充填部（γC/g）を最大せい分。
+        let rho_core = 23.0e-6 / GRAVITY_MM_S2;
+        let expected_mass = (7.85e-9 * as_area * 1.3 + rho_core * ac_area) * dmax * GRAVITY_MM_S2;
+        assert!(
+            (extra_bottom_mass_equiv - expected_mass).abs() < 1e-9 * expected_mass,
+            "extra_bottom_mass_equiv={extra_bottom_mass_equiv} expected={expected_mass}"
+        );
+
+        // 鋼管部に割増が掛かり、factor 無し（充填部込み）より大きいこと。
+        let no_factor = (78.5e-6 * as_area + 23.0e-6 * ac_area) * dmax;
+        assert!(
+            extra_bottom_load > no_factor,
+            "鋼管部に割増が掛かっていない: {extra_bottom_load} <= {no_factor}"
         );
     }
 }

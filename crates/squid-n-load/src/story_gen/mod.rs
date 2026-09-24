@@ -50,7 +50,7 @@ use squid_n_core::dof::{Dof, Dof6Mask};
 use squid_n_core::ids::{LoadCaseId, NodeId, StoryId};
 use squid_n_core::model::{
     Constraint, ElementData, ElementKind, KBraceWeightRule, LoadCfg, MassMethod, MemberLoadKind,
-    Model, Node, Story, DIAPHRAGM_LEVEL_TOL_MM,
+    Model, Node, Story, StoryDynamicMass, DIAPHRAGM_LEVEL_TOL_MM,
 };
 
 /// 重力加速度 [mm/s²]（内部単位系 N-mm-s、質量 ton）。

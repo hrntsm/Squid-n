@@ -476,6 +476,60 @@ fn generate_stories_impl(
 
         let weight: f64 = node_ids.iter().map(|n| node_weight[n.index()]).sum();
 
+        let dynamic_mass = {
+            let w_sum: f64 = node_ids.iter().map(|n| node_mass_equiv[n.index()]).sum();
+            let (gx, gy) = if w_sum > 0.0 {
+                (
+                    node_ids
+                        .iter()
+                        .map(|n| node_mass_equiv[n.index()] * model.nodes[n.index()].coord[0])
+                        .sum::<f64>()
+                        / w_sum,
+                    node_ids
+                        .iter()
+                        .map(|n| node_mass_equiv[n.index()] * model.nodes[n.index()].coord[1])
+                        .sum::<f64>()
+                        / w_sum,
+                )
+            } else if node_ids.is_empty() {
+                (0.0, 0.0)
+            } else {
+                (
+                    node_ids
+                        .iter()
+                        .map(|n| model.nodes[n.index()].coord[0])
+                        .sum::<f64>()
+                        / node_ids.len() as f64,
+                    node_ids
+                        .iter()
+                        .map(|n| model.nodes[n.index()].coord[1])
+                        .sum::<f64>()
+                        / node_ids.len() as f64,
+                )
+            };
+            let inertia = if w_sum > 0.0 {
+                node_ids
+                    .iter()
+                    .map(|n| {
+                        let idx = n.index();
+                        let mi = squid_n_core::units::to_internal::weight_n_to_mass(
+                            node_mass_equiv[idx],
+                        );
+                        let dx = model.nodes[idx].coord[0] - gx;
+                        let dy = model.nodes[idx].coord[1] - gy;
+                        mi * (dx * dx + dy * dy)
+                    })
+                    .sum()
+            } else {
+                0.0
+            };
+            StoryDynamicMass {
+                mass_equiv_weight_n: w_sum,
+                center_xy_mm: [gx, gy],
+                inertia_t_mm2: inertia,
+            }
+        };
+
         let slaves: Vec<NodeId> = node_ids
             .iter()
             .copied()
@@ -573,6 +627,7 @@ fn generate_stories_impl(
             weight_override,
             structure: Default::default(),
             level_kind,
+            dynamic_mass: Some(dynamic_mass),
         });
     }
 

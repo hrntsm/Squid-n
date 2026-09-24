@@ -127,6 +127,7 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![],
                 seismic_weight: None,
                 weight_override: None,
+                dynamic_mass: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -137,6 +138,7 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
                 node_ids: vec![NodeId(1), NodeId(2)],
                 seismic_weight: Some(seismic_weight),
                 weight_override: None,
+                dynamic_mass: None,
             },
         ],
         constraints: vec![Constraint::rigid_diaphragm(

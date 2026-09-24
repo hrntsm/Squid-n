@@ -61,10 +61,11 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
 
 ## 残課題
 
-- **D8**: 質点系解析 `crates/squid-n-job/src/lumped_mass.rs` は `seismic_weight/g` を
-  用いており、設計重量ベースの質量のまま。物理質量へ切り替えるかは別途判断。
-  [GitHub Issue #365](https://github.com/hrntsm/Squid-n/issues/365) で追跡。
-  [残課題一覧](../handoff/残課題一覧.md) に記載。
+- **D8（対応済み）**: 質点系解析 `crates/squid-n-job/src/lumped_mass.rs` の層質量は
+  `seismic_weight/g`（設計重量ベース）であったが、[ADR-0034](../adr/0034-lumped-mass-physical-mass.md)
+  と [`質点系の物理質量化_Issue365_申し送り.md`](質点系の物理質量化_Issue365_申し送り.md) により、
+  階生成が `Story::dynamic_mass`（物理質量相当）へ保存した値へ統一した
+  （GitHub Issue #365）。[残課題一覧](../handoff/残課題一覧.md) の該当行は削除済み。
 - **高密度カスタム鋼材**: 設計重量を 78.5 kN/m³ 固定としたため、78.5/g ≈ 8.005 t/m³ を
   超える密度を入力した鋼材では設計重量が物理重量を下回る（DL・地震用重量を過小評価する
   危険側）。ADR-0033 に留保として明記。入力制限・警告を設けるかは別途判断。
@@ -73,7 +74,7 @@ Squid-n の設計判断として設計重量（DL・地震用重量）と物理�
 - RC/SRC 梁の設計重量（DL・地震用重量）は従来どおりスラブ厚を控除した断面積で算定する。
   物理質量相当は質量行列と同じ総断面・節点間長へ統一したため、`CorrectedLumped` の
   クランプ（`max(0, mass_equiv − matrix)`）は発生せず両方式が一致する。
-- **CFT**: 線材の設計重量（DL・地震用重量）は鋼管断面×78.5 のみで、充填コンクリート分を
-  欠く（質量行列は `element_mass_properties` でコアを含むため両方式が一致しない）。
-  **危険側**。要検討。[GitHub Issue #364](https://github.com/hrntsm/Squid-n/issues/364)、
-  [残課題一覧](../handoff/残課題一覧.md) に記載。
+- **CFT**: 線材の設計重量（DL・地震用重量）が充填コンクリート分を欠く問題は
+  [GitHub Issue #364](https://github.com/hrntsm/Squid-n/issues/364) で解消した
+  （鋼管部 `γs`×`factor` ＋ 充填部 `γC`。物理質量は鋼管と充填を別領域で計上）。
+  詳細は [CFT 充填コンクリートの設計自重（Issue #364）申し送り](CFT充填コンクリートの設計自重_Issue364_申し送り.md)。

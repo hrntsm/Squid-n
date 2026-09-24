@@ -49,8 +49,7 @@ pub fn member_flexural_yield_moment(
     let ze = sec.map(section_elastic_modulus).unwrap_or(0.0);
     let fy = mat.and_then(|m| m.fy);
     match sec.and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::RcRect { rebar, d, .. })
-        | Some(SectionShape::SrcRect { rebar, d, .. }) => rc_flexural_yield_moment(
+        Some(SectionShape::RcRect { rebar, d, .. }) => rc_flexural_yield_moment(
             elem,
             model,
             mat,
@@ -70,8 +69,7 @@ pub fn member_flexural_yield_moment(
             ze,
             factors.rebar,
         ),
-        Some(SectionShape::RcBeamRect { b: _, d, rebar })
-        | Some(SectionShape::SrcBeamRect { b: _, d, rebar, .. }) => {
+        Some(SectionShape::RcBeamRect { b: _, d, rebar }) => {
             let bottom = rebar.bending_steel(*d, false);
             let top = rebar.bending_steel(*d, true);
             let my_bottom = rc_flexural_yield_moment(
@@ -96,8 +94,7 @@ pub fn member_flexural_yield_moment(
             );
             my_bottom.min(my_top)
         }
-        Some(SectionShape::RcColumnRect { b, d, rebar })
-        | Some(SectionShape::SrcColumnRect { b, d, rebar, .. }) => {
+        Some(SectionShape::RcColumnRect { b, d, rebar }) => {
             let side = rebar.edge_steel(crate::rc_rebar_geom::RectEdge::Top, *b, *d);
             rc_flexural_yield_moment(
                 elem,

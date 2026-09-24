@@ -206,6 +206,7 @@ mod tests {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         };
         let story = Story {
             id: s0,
@@ -216,6 +217,7 @@ mod tests {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         };
         let model = Model {
             nodes,
@@ -329,6 +331,7 @@ mod tests {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         };
         let top = Story {
             id: top_story,
@@ -339,6 +342,7 @@ mod tests {
             weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
+            dynamic_mass: None,
         };
         let model = Model {
             nodes,

@@ -99,21 +99,22 @@ fn real_rebar_capacity_input(
     dir: ShearDir,
     clear_span: f64,
 ) -> Option<(RcCapacityInput, f64)> {
-    let (b, d, at, d_eff, pw) = match shape {
+    let (b, d, steel_candidates, pw) = match shape {
         SectionShape::RcBeamRect { b, d, rebar }
         | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
-            let (width, depth) = if dir == ShearDir::Y {
-                (*b, *d)
-            } else {
-                (*d, *b)
-            };
-            let steel = rebar.bending_steel(depth, false);
+            if dir != ShearDir::Y {
+                return None;
+            }
+            let bottom = rebar.bending_steel(*d, false).tension;
+            let top = rebar.bending_steel(*d, true).tension;
             (
-                width,
-                depth,
-                steel.tension.area_mm2,
-                steel.tension.effective_depth_mm,
-                rebar.pw(width),
+                *b,
+                *d,
+                vec![
+                    (bottom.area_mm2, bottom.effective_depth_mm),
+                    (top.area_mm2, top.effective_depth_mm),
+                ],
+                rebar.pw(*b),
             )
         }
         SectionShape::RcColumnRect { b, d, rebar }
@@ -148,25 +149,27 @@ fn real_rebar_capacity_input(
                     },
                 )
             };
-            (width, depth, edge.area_mm2, edge.effective_depth_mm, pw)
+            (width, depth, vec![(edge.area_mm2, edge.effective_depth_mm)], pw)
         }
         SectionShape::RcColumnCircle { d, rebar } => {
             let side = rebar.equivalent_square_side_mm(*d);
             (
                 side,
                 side,
-                rebar.equivalent_tension_area_mm2(),
-                rebar.equivalent_effective_depth_mm(*d),
+                vec![(
+                    rebar.equivalent_tension_area_mm2(),
+                    rebar.equivalent_effective_depth_mm(*d),
+                )],
                 rebar.pw(side),
             )
         }
         _ => return None,
     };
     let fc = mat.fc?;
-    if b <= 0.0 || d <= 0.0 || at <= 0.0 || d_eff <= 0.0 {
+    if b <= 0.0 || d <= 0.0 {
         return None;
     }
-    let input = RcCapacityInput {
+    let input_for = |(at, d_eff)| RcCapacityInput {
         b,
         d,
         at,
@@ -182,6 +185,15 @@ fn real_rebar_capacity_input(
         clear_span,
         sigma_0: 0.0,
     };
+    let input = steel_candidates
+        .into_iter()
+        .filter(|(at, d_eff)| *at > 0.0 && *d_eff > 0.0)
+        .map(input_for)
+        .min_by(|a, b| {
+            rc_qsu_simple(a)
+                .partial_cmp(&rc_qsu_simple(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
     let steel_qy = match shape {
         SectionShape::SrcBeamRect {
             steel_height,
