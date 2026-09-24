@@ -16,7 +16,7 @@ ST-Bridge の ID は `positiveInteger`（1 始まり）に合わせて出力し�
 
 <div class="impl-ref">
 
-**実装参照**：書き出しは `squid_n_io::stbridge::export_stbridge`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。取り込みは節ごとに入口を示します。
+**実装参照**：書き出しは `squid_n_io::stbridge::export_stbridge`（`crates/squid-n-io/src/stbridge/export.rs`）が担います。表現限界による近似・切り捨ての警告は `export_stbridge_with_report` が返します。取り込みは節ごとに入口を示します。
 
 </div>
 
@@ -123,11 +123,11 @@ ST-Bridge 2.0 の `floor` は省略可能な `xs:string` なので、未設定�
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
 |---|:--:|:--:|---|
-| `StbSecColumn_RC`（`_Rect` / `_Circle`） | ✅ | ✅ | RC 矩形・円形柱（`RcRect`/`RcCircle`）＋配筋 |
-| `StbSecBeam_RC`（`_Straight`） | ✅ | ✅ | RC 矩形梁＋配筋。円形梁は ST-Bridge に図形がなく `StbSecRaw` へフォールバック |
+| `StbSecColumn_RC`（`_Rect` / `_Circle`） | ✅ | ✅ | RC 矩形柱・円形柱（`RcColumnRect`/`RcColumnCircle`）＋配筋。旧 `RcRect`/`RcCircle` は部材使用状況から柱用と判定して書き出す |
+| `StbSecBeam_RC`（`_Straight`） | ✅ | ✅ | RC 矩形梁（`RcBeamRect`）＋配筋。旧 `RcRect` は部材使用状況から梁用と判定して書き出す。円形梁は ST-Bridge に図形がなく `StbSecRaw` へフォールバック（警告を出す） |
 | `StbSecBarArrangement*`（配筋） | ⚠️ | ✅ | 主筋（本数・径・段数）・帯筋・あばら筋・かぶりを best-effort で取り込む。詳細は下記 |
 | `StbSecColumn_CFT`（＋充填鋼管） | ✅ | ⚠️ | CFT 角形・円形（`CftBox`/`CftPipe`）。**柱のみ**。梁に使うと `StbSecRaw` へ |
-| `StbSecColumn_SRC` / `StbSecBeam_SRC` | ✅ | ✅ | SRC 矩形（`SrcRect`）＋内蔵鉄骨（H 形鋼）＋配筋＋鋼種 `strength_steel` |
+| `StbSecColumn_SRC` / `StbSecBeam_SRC` | ✅ | ✅ | SRC 矩形（`SrcColumnRect`/`SrcBeamRect`、旧 `SrcRect`）＋内蔵鉄骨（H 形鋼）＋配筋＋鋼種 `strength_steel` |
 | `StbSecRaw`（物性直持ちの拡張要素） | ✅ | ✅ | 標準要素で表せない断面のフォールバック。他ソフトは解釈できないが、参照する部材の断面リンクは保たれる |
 | RC・SRC のテーパ・ハンチ等（矩形・円形以外の図形） | ❌ | ❌ | 図形を認識できず、断面を取り込めなかったものとして警告する |
 | `StbSecFoundation_RC` / `StbSecPile_*` / `StbSecParapet_RC` / `StbSecOpen_RC` | ❌ | ❌ | 取り込み時に警告 |
@@ -141,7 +141,11 @@ ST-Bridge 2.0 の `floor` は省略可能な `xs:string` なので、未設定�
 - 材質は主筋が `strength_main`、せん断補強筋が `strength_band`・`strength_stirrup`
 
 ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y 方向で径を変えた配筋は往復しません。
-書き出しでは 1 段の配筋へ丸めるため、多段配筋も段数を保てません。
+実配筋型（`RcBeamRect`・`RcColumnRect`・`RcColumnCircle`・`SrcBeamRect`・`SrcColumnRect`）は、
+梁の上端筋・下端筋、矩形柱の X 方向・Y 方向を段別本数（`N_main_top_*`・`N_main_X_*` など 1〜3 段目）として書き出し、
+帯筋の X/Y 脚数（`N_band_direction_X`/`_Y`）と円形柱の全本数（`N_main`）も保ちます。
+4 段目以降は ST-Bridge 標準が 1〜3 段のため切り捨て、断面名・段・本数を警告へ出します。
+旧型（`RcRect`・`RcCircle`・`SrcRect`）は従来どおり 1 段の配筋へ丸めるため、多段配筋の段数は保てません。
 
 <div class="impl-ref">
 

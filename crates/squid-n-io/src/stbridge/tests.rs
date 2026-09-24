@@ -327,6 +327,11 @@ fn push_section(m: &mut Model, mut sec: Section) {
             SectionShape::RcRect { .. }
                 | SectionShape::RcCircle { .. }
                 | SectionShape::SrcRect { .. }
+                | SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
                 | SectionShape::RcWall { .. }
         )
     );
@@ -335,7 +340,14 @@ fn push_section(m: &mut Model, mut sec: Section) {
         sec.rebar_material = Some(id);
         sec.shear_rebar_material = Some(id);
     }
-    if matches!(sec.shape, Some(SectionShape::SrcRect { .. })) {
+    if matches!(
+        sec.shape,
+        Some(
+            SectionShape::SrcRect { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
+        )
+    ) {
         let id = ensure_material(m, "SN490B", MaterialCategory::Steel, Some(325.0));
         sec.steel_material = Some(id);
     }
@@ -644,6 +656,260 @@ fn test_standard_roundtrip_rc_beam_rebar() {
     );
 }
 
+/// 標準モード: 実配筋型の RC 梁（`RcBeamRect`）が上端筋・下端筋の段別本数を保って往復する。
+#[test]
+fn test_standard_roundtrip_rc_beam_rect_stages() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 2],
+            bottom: vec![3],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "G1".into()));
+    m.elements.push(member(0, false, 0)); // 梁
+
+    let xml = export_stbridge(&m).unwrap();
+    assert!(xml.contains("<StbSecBeam_RC "), "RC 梁要素: {xml}");
+    assert!(xml.contains("N_main_top_1st=\"4\""), "{xml}");
+    assert!(xml.contains("N_main_top_2nd=\"2\""), "上端筋 2 段目: {xml}");
+    assert!(xml.contains("N_main_bottom_1st=\"3\""), "下端筋: {xml}");
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+    assert_eq!(
+        back.sections[0].shape, m.sections[0].shape,
+        "RC 梁の段別本数が実配筋型で往復する"
+    );
+}
+
+/// 標準モード: 実配筋型の矩形柱（`RcColumnRect`）が X/Y の段別本数と X/Y 脚数を保って往復する。
+#[test]
+fn test_standard_roundtrip_rc_column_rect_stages_legs() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4, 3],
+            y: vec![5],
+            cover: 45.0,
+            hoop: RectColumnHoop {
+                dia: 13.0,
+                pitch: 100.0,
+                legs_x: 3,
+                legs_y: 2,
+            },
+        },
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
+    m.elements.push(member(0, true, 0)); // 柱
+
+    let xml = export_stbridge(&m).unwrap();
+    assert!(xml.contains("<StbSecColumn_RC "), "RC 柱要素: {xml}");
+    assert!(xml.contains("N_main_X_1st=\"4\""), "{xml}");
+    assert!(xml.contains("N_main_X_2nd=\"3\""), "X 方向 2 段目: {xml}");
+    assert!(xml.contains("N_main_Y_1st=\"5\""), "Y 方向: {xml}");
+    assert!(xml.contains("N_band_direction_X=\"3\""), "X 脚数: {xml}");
+    assert!(xml.contains("N_band_direction_Y=\"2\""), "Y 脚数: {xml}");
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+    assert_eq!(
+        back.sections[0].shape, m.sections[0].shape,
+        "矩形柱の段別本数・X/Y 脚数が実配筋型で往復する"
+    );
+}
+
+/// 標準モード: 実配筋型の円形柱（`RcColumnCircle`）が主筋の全本数を保って往復する。
+#[test]
+fn test_standard_roundtrip_rc_column_circle_count() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::RcColumnCircle {
+        d: 800.0,
+        rebar: RcCircleColumnRebar {
+            main_dia: 25.0,
+            count: 8,
+            cover: 45.0,
+            hoop: CircleColumnHoop {
+                dia: 13.0,
+                pitch: 100.0,
+            },
+        },
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
+    m.elements.push(member(0, true, 0)); // 柱
+
+    let xml = export_stbridge(&m).unwrap();
+    assert!(
+        xml.contains("<StbSecBarColumn_RC_CircleSame "),
+        "円形配筋要素: {xml}"
+    );
+    assert!(xml.contains("N_main=\"8\""), "全本数: {xml}");
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+    assert_eq!(
+        back.sections[0].shape, m.sections[0].shape,
+        "円形柱の全本数が実配筋型で往復する"
+    );
+}
+
+/// 主筋が 4 段以上あるとき、3 段目までを書き出し、4 段目以降の切り捨てを
+/// 断面名・段・本数つきで export 警告へ出す（無音の欠落を防ぐ）。
+#[test]
+fn test_standard_export_warns_on_fourth_rebar_stage() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 3, 2, 1],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "G1".into()));
+    m.elements.push(member(0, false, 0)); // 梁
+
+    let (xml, report) = export_stbridge_with_report(&m).expect("export");
+    assert!(xml.contains("N_main_top_3rd=\"2\""), "{xml}");
+    assert!(
+        !xml.contains("N_main_top_4th"),
+        "4 段目は書き出さない: {xml}"
+    );
+    let joined = report.warnings.join(" | ");
+    assert!(
+        joined.contains("4 段目以降"),
+        "切り捨てを警告する: {joined}"
+    );
+    assert!(joined.contains("G1"), "断面名を含む: {joined}");
+    assert!(joined.contains("4 段目 1 本"), "段と本数を含む: {joined}");
+
+    let back = import_stbridge(&xml).expect("import");
+    match &back.sections[0].shape {
+        Some(SectionShape::RcBeamRect { rebar, .. }) => {
+            assert_eq!(rebar.top, vec![4, 3, 2], "3 段目までを取り込む");
+        }
+        other => panic!("RcBeamRect を期待: {other:?}"),
+    }
+}
+
+/// 円形 RC 梁（旧 `RcCircle` の梁用途）は ST-Bridge に梁用の円形図形がないため
+/// `StbSecRaw` へフォールバックし、その旨を export 警告へ出す。
+#[test]
+fn test_standard_export_warns_circle_beam_raw() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::RcCircle {
+        d: 700.0,
+        rebar: rebar_distinct(),
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "RCB".into()));
+    m.elements.push(member(0, false, 0)); // 梁
+
+    let (xml, report) = export_stbridge_with_report(&m).expect("export");
+    assert!(xml.contains("<StbSecRaw "), "円形梁は StbSecRaw: {xml}");
+    assert!(
+        !xml.contains("<StbSecBeam_RC "),
+        "梁用の円形図形は出さない: {xml}"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("RC 円形梁") && w.contains("RCB")),
+        "円形梁のフォールバックを警告する: {:?}",
+        report.warnings
+    );
+}
+
+/// 標準モード: 実配筋型の SRC 梁（`SrcBeamRect`）も RC 部分を段別本数で書き出す。
+#[test]
+fn test_standard_export_src_beam_rect_stages() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::SrcBeamRect {
+        b: 500.0,
+        d: 800.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 2],
+            bottom: vec![3],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 450.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 14.0,
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "SG1".into()));
+    m.elements.push(member(0, false, 0)); // 梁
+
+    let xml = export_stbridge(&m).unwrap();
+    assert!(xml.contains("<StbSecBeam_SRC "), "SRC 梁要素: {xml}");
+    assert!(xml.contains("N_main_top_1st=\"4\""), "{xml}");
+    assert!(xml.contains("N_main_top_2nd=\"2\""), "{xml}");
+    assert!(xml.contains("N_main_bottom_1st=\"3\""), "{xml}");
+    assert!(xml.contains("strength_steel=\"SN490B\""), "{xml}");
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+}
+
+/// 標準モード: 実配筋型の SRC 柱（`SrcColumnRect`）も RC 部分を段別本数・X/Y 脚数で書き出す。
+#[test]
+fn test_standard_export_src_column_rect_stages() {
+    let mut m = frame_nodes();
+    let shape = SectionShape::SrcColumnRect {
+        b: 800.0,
+        d: 800.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4, 3],
+            y: vec![5],
+            cover: 45.0,
+            hoop: RectColumnHoop {
+                dia: 13.0,
+                pitch: 100.0,
+                legs_x: 3,
+                legs_y: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 8.0,
+        steel_flange_thick: 13.0,
+    };
+    push_section(&mut m, shape.to_section(SectionId(0), "SC1".into()));
+    m.elements.push(member(0, true, 0)); // 柱
+
+    let xml = export_stbridge(&m).unwrap();
+    assert!(xml.contains("<StbSecColumn_SRC "), "SRC 柱要素: {xml}");
+    assert!(xml.contains("N_main_X_1st=\"4\""), "{xml}");
+    assert!(xml.contains("N_main_X_2nd=\"3\""), "{xml}");
+    assert!(xml.contains("N_main_Y_1st=\"5\""), "{xml}");
+    assert!(xml.contains("N_band_direction_X=\"3\""), "{xml}");
+    assert!(xml.contains("N_band_direction_Y=\"2\""), "{xml}");
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+}
+
 /// file id が重複する STB は fail-loud でエラーにする（無言のジオメトリ破損防止）。
 /// 重複 id があると「配列添字 == id.index()」の不変条件が壊れ、部材が別実体の
 /// 節点を参照してしまうため、取り込み時に検出してエラーとする。
@@ -867,7 +1133,10 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
         back.sections[0].shape
     );
     assert!(
-        matches!(back.sections[1].shape, Some(SectionShape::RcBeamRect { .. })),
+        matches!(
+            back.sections[1].shape,
+            Some(SectionShape::RcBeamRect { .. })
+        ),
         "梁は矩形梁の実配筋: {:?}",
         back.sections[1].shape
     );
@@ -1183,10 +1452,7 @@ fn test_import_rc_kind_preserved() {
 </StbModel></ST_BRIDGE>"#;
     let m = import_stbridge(xml).expect("import");
     assert!(
-        matches!(
-            m.sections[0].shape,
-            Some(SectionShape::RcColumnRect { .. })
-        ),
+        matches!(m.sections[0].shape, Some(SectionShape::RcColumnRect { .. })),
         "柱用は RcColumnRect: {:?}",
         m.sections[0].shape
     );

@@ -45,9 +45,18 @@ fn secondary_end_nodes(
     Some([find(a)?, find(b)?])
 }
 
-/// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する。
+/// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する（警告は破棄する）。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
+    export_stbridge_with_report(model).map(|(xml, _)| xml)
+}
+
+/// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力し、[`ExportReport`] も返す。
+///
+/// 標準スキーマの表現限界による近似・切り捨て（主筋の 4 段目以降、円形 RC 梁の
+/// `StbSecRaw` フォールバックなど）は警告として報告する。
+pub fn export_stbridge_with_report(model: &Model) -> Result<(String, ExportReport), StbError> {
     let std = standard_sections(model);
+    let warnings = std.warnings;
     let (sections_body, steel_lib, col_map, beam_map) =
         (std.sections_xml, std.steel_lib, std.col_map, std.beam_map);
 
@@ -127,7 +136,21 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     s.push_str("    <StbJoints/>\n");
     s.push_str("  </StbModel>\n");
     s.push_str("</ST_BRIDGE>\n");
-    Ok(s)
+    Ok((s, ExportReport { warnings }))
+}
+
+/// 書き出し時に標準スキーマの表現限界で近似・切り捨てが生じた内容の報告。
+#[derive(Debug, Default, Clone)]
+pub struct ExportReport {
+    /// 人間可読の警告メッセージ（段数超過による切り捨て、円形 RC 梁のフォールバックなど）。
+    pub warnings: Vec<String>,
+}
+
+impl ExportReport {
+    /// 警告が 1 件もないか。
+    pub fn is_clean(&self) -> bool {
+        self.warnings.is_empty()
+    }
 }
 
 /// スラブ断面 id の採番開始値。既存断面 id（柱・梁。柱/梁の役割分割で
