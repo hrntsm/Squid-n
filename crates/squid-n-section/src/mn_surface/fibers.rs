@@ -1,5 +1,6 @@
 //! 断面形状から全塑性計算用のファイバ/バネ配置を生成する。
 
+use squid_n_core::error::RebarGeometryError;
 use squid_n_core::section_shape::{one_bar_area, BarSet, RcRebar, RebarPoint, SectionShape};
 
 use super::types::{concrete_young, FiberRegion, PlasticFiber, StrengthParams, YieldModelKind};
@@ -293,11 +294,12 @@ fn rebar_fibers_from_points(
 
 /// 断面形状からファイバ/バネ配置を生成する。
 /// `kind` により解像度が変わる（細分割と粗い配置）。
+/// 実配筋を生成できない場合は [`RebarGeometryError`] を返す。
 pub fn plastic_fibers(
     shape: &SectionShape,
     strength: &StrengthParams,
     kind: YieldModelKind,
-) -> Vec<PlasticFiber> {
+) -> Result<Vec<PlasticFiber>, RebarGeometryError> {
     let fine = !matches!(kind, YieldModelKind::MultiSpring);
     let target = if fine {
         max_dimension(shape) / 40.0
@@ -357,12 +359,13 @@ pub fn max_dimension(shape: &SectionShape) -> f64 {
 /// 目標ファイバ寸法 `target` [mm] と円環解像度 `ring` を明示して配置を生成する。
 /// [`plastic_fibers`]（MN 曲面・M-φ 用）と要素ファイバ生成
 /// （`squid-n-element` の `build_gauss_fibers`）が同じ配置規則を共用するための実体。
+/// 実配筋を生成できない場合は [`RebarGeometryError`] を返す。
 pub fn plastic_fibers_at(
     shape: &SectionShape,
     strength: &StrengthParams,
     target: f64,
     ring: AnnulusRes,
-) -> Vec<PlasticFiber> {
+) -> Result<Vec<PlasticFiber>, RebarGeometryError> {
     let fy = strength.steel_fy;
     let fc = strength.concrete_fc;
     let steel = FiberMat {
@@ -619,8 +622,7 @@ pub fn plastic_fibers_at(
         }
         SectionShape::RcBeamRect { b, d, ref rebar } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
-            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            let positions = rebar.bar_positions(b, d)?;
             rebar_fibers_from_points(
                 &mut fibers,
                 &positions,
@@ -631,8 +633,7 @@ pub fn plastic_fibers_at(
         }
         SectionShape::RcColumnRect { b, d, ref rebar } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
-            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            let positions = rebar.bar_positions(b, d)?;
             rebar_fibers_from_points(
                 &mut fibers,
                 &positions,
@@ -643,8 +644,7 @@ pub fn plastic_fibers_at(
         }
         SectionShape::RcColumnCircle { d, ref rebar } => {
             mesh_annulus(&mut fibers, d, d / 2.0, ring.n_theta, ring.n_r_solid, conc);
-            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
-            let positions = rebar.bar_positions(d).unwrap_or_default();
+            let positions = rebar.bar_positions(d)?;
             rebar_fibers_from_points(
                 &mut fibers,
                 &positions,
@@ -663,8 +663,7 @@ pub fn plastic_fibers_at(
             steel_flange_thick,
         } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
-            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            let positions = rebar.bar_positions(b, d)?;
             rebar_fibers_from_points(
                 &mut fibers,
                 &positions,
@@ -692,8 +691,7 @@ pub fn plastic_fibers_at(
             steel_flange_thick,
         } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
-            // TODO(#366): ファイバー生成を Result 化し、不正配筋を無音で空にしない
-            let positions = rebar.bar_positions(b, d).unwrap_or_default();
+            let positions = rebar.bar_positions(b, d)?;
             rebar_fibers_from_points(
                 &mut fibers,
                 &positions,
@@ -778,5 +776,5 @@ pub fn plastic_fibers_at(
         }
     }
 
-    fibers
+    Ok(fibers)
 }

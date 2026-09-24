@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use crate::app::{App, Staleness};
 use crate::theme;
 use crate::viewer::mn_draw;
+use squid_n_core::error::RebarGeometryError;
 use squid_n_core::ids::{ElemId, MaterialId};
 use squid_n_core::model::{
     AnalysisKind, ElementData, ElementKind, HysteresisModel, Material, MaterialCategory, Model,
@@ -278,7 +279,7 @@ fn draw_hinge_legend(painter: &egui::Painter, counts: &[usize; 3]) {
 /// 分割・曲面構築を含む [`build_hinge_view`] を再実行しない。
 pub struct HingeViewCache {
     key: HingeViewKey,
-    view: HingeView,
+    view: Result<HingeView, RebarGeometryError>,
 }
 
 impl HingeViewCache {
@@ -716,13 +717,17 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
         &elem_snapshot,
         axial_force_n,
     );
-    let view = app
-        .ui
-        .scoped
-        .hinge_view_cache
-        .as_ref()
-        .map(|c| &c.view)
-        .expect("ensure_hinge_view がキャッシュを設定する");
+    let view = match app.ui.scoped.hinge_view_cache.as_ref().map(|c| &c.view) {
+        Some(Ok(view)) => view,
+        Some(Err(error)) => {
+            ui.colored_label(
+                theme::PARETO_RED,
+                format!("非線形特性を算定できません（実配筋が不正です）: {error}"),
+            );
+            return;
+        }
+        None => return,
+    };
     let bend_dir_z = effective_bend_dir_z(view.model, dominant_z);
 
     ui.label(format!("解析モデル: {}", analysis_model_label(view.model)));
@@ -1843,7 +1848,8 @@ mod tests {
             concrete_fc: 24.0,
             steel_e: 205_000.0,
         };
-        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber)
+            .expect("鋼断面は配筋不要");
         assert!(!raw.is_empty());
         // build_gauss_fibers と同じ 90°回転 (y,z)←(z,−y) を適用し要素座標系へ。
         let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
@@ -1904,7 +1910,8 @@ mod tests {
             concrete_fc: 24.0,
             steel_e: 205_000.0,
         };
-        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber)
+            .expect("鋼断面は配筋不要");
         assert!(!raw.is_empty());
         let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
 
@@ -2108,7 +2115,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert!(
             view.mn_linear.is_some(),
             "縮退ケースでも解析は N-M 相関を適用する"
@@ -2357,6 +2365,7 @@ mod tests {
                 mn_draw::N_ALPHA,
                 mn_draw::N_BETA,
             )
+            .expect("配筋は妥当")
             .model
         };
         assert_eq!(view(&model), AnalysisHingeModel::Fiber);
@@ -2474,6 +2483,7 @@ mod tests {
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
         )
+        .expect("配筋は妥当")
         .backbone
         .expect("集中ばねは骨格を返す");
         let b1 = build_hinge_view(
@@ -2485,6 +2495,7 @@ mod tests {
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
         )
+        .expect("配筋は妥当")
         .backbone
         .expect("集中ばねは骨格を返す");
         assert!(
@@ -2513,6 +2524,7 @@ mod tests {
                 mn_draw::N_ALPHA,
                 mn_draw::N_BETA,
             )
+            .expect("配筋は妥当")
             .backbone
             .expect("集中ばねは骨格を返す")
         };
@@ -2543,7 +2555,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
         assert!(view.mn_linear.is_none());
         assert_eq!(mn_display(&view), MnDisplay::None);
@@ -2563,7 +2576,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(concentrated.model, AnalysisHingeModel::ConcentratedSpring);
 
         let weak_dominant = step(50.0, -10.0, 200.0, -150.0, 0.0);
@@ -2583,7 +2597,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(fiber_view.model, AnalysisHingeModel::Fiber);
         assert!(
             !effective_bend_dir_z(fiber_view.model, dominant_bend_axis_z(&weak_dominant)),
@@ -2600,12 +2615,12 @@ mod tests {
         let k0 = key_of(&model, &elem, 0);
         let cache = HingeViewCache {
             key: k0.clone(),
-            view: HingeView {
+            view: Ok(HingeView {
                 model: AnalysisHingeModel::Other,
                 backbone: None,
                 mn_linear: None,
                 mn_surface: None,
-            },
+            }),
         };
         assert_eq!(cache.key(), &k0);
         let k1 = key_of(&model, &elem, 1);
@@ -2657,7 +2672,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(beam_view.model, AnalysisHingeModel::ConcentratedSpring);
         assert_eq!(mn_display(&beam_view), MnDisplay::Linear);
 
@@ -2670,7 +2686,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(fiber_view.model, AnalysisHingeModel::Fiber);
         assert_eq!(mn_display(&fiber_view), MnDisplay::Surface);
 
@@ -2683,7 +2700,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(ms_view.model, AnalysisHingeModel::MultiSpring);
         assert_eq!(mn_display(&ms_view), MnDisplay::Surface);
 
@@ -2701,7 +2719,8 @@ mod tests {
             0.0,
             mn_draw::N_ALPHA,
             mn_draw::N_BETA,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(other_view.model, AnalysisHingeModel::Other);
         assert_eq!(mn_display(&other_view), MnDisplay::None);
     }

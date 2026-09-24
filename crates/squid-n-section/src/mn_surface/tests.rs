@@ -1,7 +1,9 @@
 use super::fibers::{mesh_rect, FiberMat};
 use super::*;
 use approx::assert_relative_eq;
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{
+    BarSet, RcRebar, RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
+};
 
 fn steel_rect_fibers(b: f64, d: f64, fy: f64, n: usize) -> Vec<PlasticFiber> {
     let mut fibers = Vec::new();
@@ -93,7 +95,8 @@ fn sample_rc_shape() -> SectionShape {
 #[test]
 fn test_rc_rect_capacity() {
     let strength = StrengthParams::default();
-    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber);
+    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber)
+        .expect("配筋は妥当");
     // 引張耐力 = 主筋のみ: (4×2 + 2×2) 本 × a × fy
     let a_bar = std::f64::consts::PI * 22.0 * 22.0 / 4.0;
     let nt_exact = 12.0 * a_bar * strength.rebar_fy;
@@ -108,7 +111,8 @@ fn test_rc_rect_capacity() {
 fn test_rc_moment_increases_with_moderate_compression() {
     // RC 断面は適度な圧縮軸力下で曲げ耐力が増す（相関曲線のふくらみ）
     let strength = StrengthParams::default();
-    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber);
+    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber)
+        .expect("配筋は妥当");
     let (nc, _) = axial_capacity(&fibers);
     let m0 = plastic_moment_at_n(&fibers, 1.0, 0.0, 0.0).unwrap()[0];
     let m_comp = plastic_moment_at_n(&fibers, 1.0, 0.0, 0.3 * nc).unwrap()[0];
@@ -191,7 +195,8 @@ fn test_steel_h_plastic_moment() {
         flange_thick: 13.0,
     };
     let strength = StrengthParams::default();
-    let fibers = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+    let fibers =
+        plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber).expect("鋼断面は配筋不要");
     // Zp = B·tf·(H−tf) + tw·(H−2tf)²/4
     let zp =
         200.0 * 13.0 * (400.0 - 13.0) + 8.0 * (400.0 - 2.0 * 13.0) * (400.0 - 2.0 * 13.0) / 4.0;
@@ -209,7 +214,8 @@ fn test_tee_centroid_correction() {
         flange_thick: 12.0,
     };
     let strength = StrengthParams::default();
-    let fibers = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+    let fibers =
+        plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber).expect("鋼断面は配筋不要");
     let a_sum: f64 = fibers.iter().map(|f| f.area).sum();
     let cz: f64 = fibers.iter().map(|f| f.area * f.z).sum::<f64>() / a_sum;
     assert_relative_eq!(cz, 0.0, epsilon = 1e-9);
@@ -274,7 +280,8 @@ fn test_m_theta_elastic_slope_and_plastic_rotation() {
 fn test_m_phi_rc_section() {
     // RC断面: 引張側コンクリートが効かない弾完全塑性でも有限・単調な M-φ になる
     let strength = StrengthParams::default();
-    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber);
+    let fibers = plastic_fibers(&sample_rc_shape(), &strength, YieldModelKind::MultiFiber)
+        .expect("配筋は妥当");
     let (nc, _) = axial_capacity(&fibers);
     let curve = m_phi_curve(&fibers, 1.0, 0.0, 0.2 * nc, 40).unwrap();
     assert!(curve.ei0.is_finite() && curve.ei0 > 0.0);
@@ -295,8 +302,8 @@ fn test_m_phi_multispring_is_piecewise() {
     // 初期剛性がほぼ一致し、終局耐力もほぼ一致することを確認する。
     let strength = StrengthParams::default();
     let shape = sample_rc_shape();
-    let ms = plastic_fibers(&shape, &strength, YieldModelKind::MultiSpring);
-    let fib = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+    let ms = plastic_fibers(&shape, &strength, YieldModelKind::MultiSpring).expect("配筋は妥当");
+    let fib = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber).expect("配筋は妥当");
     assert!(
         ms.len() < fib.len() / 10,
         "MS ({}) must be much coarser than fiber ({})",
@@ -314,4 +321,32 @@ fn test_m_phi_multispring_is_piecewise() {
     let m_ms = c_ms.points.last().unwrap()[1];
     let m_f = c_f.points.last().unwrap()[1];
     assert_relative_eq!(m_ms, m_f, max_relative = 8e-2);
+}
+
+/// 幾何的に成立しない実配筋（Y 方向の段数不整合）では、ファイバ生成が
+/// 主筋なしのコンクリートのみを無音で返さず `Err` になる。
+#[test]
+fn test_inconsistent_column_rebar_returns_err() {
+    let shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        },
+    };
+    let result = plastic_fibers(
+        &shape,
+        &StrengthParams::default(),
+        YieldModelKind::MultiFiber,
+    );
+    assert!(result.is_err(), "不正配筋は Err を返す: {result:?}");
 }

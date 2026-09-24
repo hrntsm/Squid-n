@@ -14,6 +14,7 @@
 use crate::app::App;
 use crate::theme;
 use crate::viewer::CameraState;
+use squid_n_core::error::RebarGeometryError;
 use squid_n_core::section_shape::SectionShape;
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_section::mn_surface::{
@@ -315,7 +316,13 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.strong("耐力サマリ");
     if let Some(shape) = shape.cloned() {
         let section_idx = app.ui.scoped.mn_view.section_idx;
-        ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+        if let Err(error) = ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape) {
+            ui.colored_label(
+                theme::PARETO_RED,
+                format!("実配筋を生成できないため曲面を算定できません: {error}"),
+            );
+            return;
+        }
         if let Some(cache) = &app.ui.scoped.mn_view.cache {
             summary_table(ui, cache);
         }
@@ -374,7 +381,12 @@ fn section_depth(shape: &SectionShape) -> f64 {
         SectionShape::SteelPipe { outer_dia, .. } => outer_dia,
         SectionShape::RcRect { d, .. }
         | SectionShape::RcCircle { d, .. }
-        | SectionShape::SrcRect { d, .. } => d,
+        | SectionShape::SrcRect { d, .. }
+        | SectionShape::RcBeamRect { d, .. }
+        | SectionShape::RcColumnRect { d, .. }
+        | SectionShape::RcColumnCircle { d, .. }
+        | SectionShape::SrcBeamRect { d, .. }
+        | SectionShape::SrcColumnRect { d, .. } => d,
         SectionShape::CftBox { height, .. } => height,
         SectionShape::CftPipe { outer_dia, .. } => outer_dia,
         SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => thickness,
@@ -384,7 +396,12 @@ fn section_depth(shape: &SectionShape) -> f64 {
 /// キャッシュが古ければ再計算する（断面〔添字または形状〕、あるいは `strength` が
 /// 変化した場合）。断面が変わったときは塑性化領域長さ Lp を新断面の 0.5D へ
 /// 自動リセットする（形状の編集で断面せい D が変われば Lp も追随させる）。
-fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShape) {
+/// 実配筋を生成できない場合は `Err` を返し、古いキャッシュを破棄する。
+fn ensure_cache(
+    state: &mut MnViewState,
+    section_idx: usize,
+    shape: &SectionShape,
+) -> Result<(), RebarGeometryError> {
     let section_changed = match &state.cache {
         Some(c) => c.section_idx != section_idx || &c.shape != shape,
         None => true,
@@ -395,7 +412,7 @@ fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShap
             .as_ref()
             .is_none_or(|c| c.strength != state.strength);
     if !stale {
-        return;
+        return Ok(());
     }
 
     if section_changed {
@@ -403,23 +420,33 @@ fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShap
     }
 
     let strength = state.strength;
-    let fiber_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiFiber);
-    let ms_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiSpring);
-
-    let fiber = build_surface(&fiber_fibers, YieldModelKind::MultiFiber, N_ALPHA, N_BETA);
-    let ms = build_surface(&ms_fibers, YieldModelKind::MultiSpring, N_ALPHA, N_BETA);
-    let simple = build_simple_spring_surface(&fiber_fibers, N_ALPHA, N_BETA);
-
-    state.cache = Some(MnCache {
-        section_idx,
-        shape: shape.clone(),
-        strength,
-        simple,
-        ms,
-        fiber,
-        ms_fibers,
-        fiber_fibers,
-    });
+    let build = || -> Result<MnCache, RebarGeometryError> {
+        let fiber_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiFiber)?;
+        let ms_fibers = plastic_fibers(shape, &strength, YieldModelKind::MultiSpring)?;
+        let fiber = build_surface(&fiber_fibers, YieldModelKind::MultiFiber, N_ALPHA, N_BETA);
+        let ms = build_surface(&ms_fibers, YieldModelKind::MultiSpring, N_ALPHA, N_BETA);
+        let simple = build_simple_spring_surface(&fiber_fibers, N_ALPHA, N_BETA);
+        Ok(MnCache {
+            section_idx,
+            shape: shape.clone(),
+            strength,
+            simple,
+            ms,
+            fiber,
+            ms_fibers,
+            fiber_fibers,
+        })
+    };
+    match build() {
+        Ok(cache) => {
+            state.cache = Some(cache);
+            Ok(())
+        }
+        Err(error) => {
+            state.cache = None;
+            Err(error)
+        }
+    }
 }
 
 /// `n_ratio`（-1.0〜1.0）をファイバーモデルの軸耐力基準で実軸力 [N] へ変換する。
@@ -507,7 +534,13 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
     };
 
     let section_idx = app.ui.scoped.mn_view.section_idx;
-    ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+    if let Err(error) = ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape) {
+        ui.colored_label(
+            theme::PARETO_RED,
+            format!("実配筋を生成できないため曲面を算定できません: {error}"),
+        );
+        return;
+    }
     let Some(cache) = app.ui.scoped.mn_view.cache.as_ref() else {
         return;
     };
@@ -770,7 +803,7 @@ mod tests {
     fn cache_is_rebuilt_when_shape_changes_at_same_index() {
         let mut state = MnViewState::default();
 
-        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0)).expect("配筋は妥当");
         // 軸圧縮耐力はコンクリート断面積で決まるので、せいを増やせば必ず増える
         // （軸引張耐力は主筋量だけで決まるため、この検証には使えない）。
         let n_comp_before = state
@@ -786,7 +819,7 @@ mod tests {
         );
 
         // 添字も強度も同じまま、断面せいだけを大きくする。
-        ensure_cache(&mut state, 0, &rc_rect(400.0, 900.0));
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 900.0)).expect("配筋は妥当");
         let cache = state.cache.as_ref().expect("作り直される");
         assert_eq!(cache.shape, rc_rect(400.0, 900.0), "新しい形状で持ち直す");
         assert!(
@@ -804,9 +837,9 @@ mod tests {
     #[test]
     fn cache_is_reused_when_nothing_changes() {
         let mut state = MnViewState::default();
-        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0)).expect("配筋は妥当");
         state.lp = 123.0; // 利用者が手で変えた値
-        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0)).expect("配筋は妥当");
         assert!(
             (state.lp - 123.0).abs() < 1e-9,
             "作り直していないので Lp は不変"

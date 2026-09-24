@@ -3030,7 +3030,8 @@ fn test_steel_box_fibers_are_hollow() {
             steel_e: 205000.0,
         },
         HysteresisModel::Retrograde,
-    );
+    )
+    .expect("鋼断面は配筋不要");
     assert_eq!(sec.fibers.len(), mats.len());
 
     let a_sum: f64 = sec.fibers.iter().map(|f| f.area).sum();
@@ -3093,7 +3094,8 @@ fn test_rc_circle_fibers_match_circle_area() {
             steel_e: 22000.0,
         },
         HysteresisModel::Retrograde,
-    );
+    )
+    .expect("RC 円形断面の配筋は妥当");
 
     let conc_area: f64 = sec
         .fibers

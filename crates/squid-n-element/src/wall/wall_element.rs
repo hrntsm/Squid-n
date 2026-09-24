@@ -377,7 +377,8 @@ impl WallElement {
                 1.0,
                 squid_n_section::mn_surface::StrengthParams::default(),
                 concrete_rule,
-            );
+            )
+            .expect("形状なしの壁ファイバは実配筋を要求しない");
             if ps > 0.0 {
                 let a_each = ps * t * lw / nd as f64;
                 for i in 0..nd {

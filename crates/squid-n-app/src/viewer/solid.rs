@@ -244,10 +244,15 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
                 [-h, -b],
             ]
         }
-        SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. } => {
-            rect_outline(*d, *b)
+        SectionShape::RcRect { b, d, .. }
+        | SectionShape::SrcRect { b, d, .. }
+        | SectionShape::RcBeamRect { b, d, .. }
+        | SectionShape::RcColumnRect { b, d, .. }
+        | SectionShape::SrcBeamRect { b, d, .. }
+        | SectionShape::SrcColumnRect { b, d, .. } => rect_outline(*d, *b),
+        SectionShape::RcCircle { d, .. } | SectionShape::RcColumnCircle { d, .. } => {
+            circle_outline(*d)
         }
-        SectionShape::RcCircle { d, .. } => circle_outline(*d),
         SectionShape::CftBox { height, width, .. } => rect_outline(*height, *width),
         SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => return None,
     };
