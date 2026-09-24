@@ -1841,7 +1841,12 @@ fn test_standard_roundtrip_src_column() {
             x: vec![4],
             y: vec![3],
             cover: 45.0,
-            hoop: RectColumnHoop { dia: 13.0, pitch: 150.0, legs_x: 4, legs_y: 4 },
+            hoop: RectColumnHoop {
+                dia: 13.0,
+                pitch: 150.0,
+                legs_x: 4,
+                legs_y: 4,
+            },
         },
         steel_height: 400.0,
         steel_width: 200.0,
@@ -1858,7 +1863,10 @@ fn test_standard_roundtrip_src_column() {
         "鋼種が書き出される"
     );
     assert!(xml.contains("<StbSecRoll-H "), "内蔵鉄骨の形鋼ライブラリ");
-    assert!(xml.contains("N_main_X_1st=\"4\""), "X 方向の段別本数: {xml}");
+    assert!(
+        xml.contains("N_main_X_1st=\"4\""),
+        "X 方向の段別本数: {xml}"
+    );
     assert!(xml.contains("N_main_Y_1st=\"3\""), "Y 方向の本数: {xml}");
     let back = import_stbridge(&xml).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
@@ -1880,7 +1888,11 @@ fn test_standard_roundtrip_src_beam() {
             top: vec![4],
             bottom: vec![3],
             cover: 45.0,
-            stirrup: BeamStirrup { dia: 13.0, pitch: 150.0, legs: 4 },
+            stirrup: BeamStirrup {
+                dia: 13.0,
+                pitch: 150.0,
+                legs: 4,
+            },
         },
         steel_height: 450.0,
         steel_width: 200.0,

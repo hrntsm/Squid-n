@@ -1108,8 +1108,13 @@ fn beam_quantity(
                         elem.rigid_zone.face_i_or_zero(),
                         l2,
                     );
-                    let end_j =
-                        ctx.beam_bar_end(elem_idx, nj, dir_xy, elem.rigid_zone.face_j_or_zero(), l2);
+                    let end_j = ctx.beam_bar_end(
+                        elem_idx,
+                        nj,
+                        dir_xy,
+                        elem.rigid_zone.face_j_or_zero(),
+                        l2,
+                    );
                     let bar_len = member::girder_main_bar_length(lo, end_i, end_j);
                     let total_len = bs.count as f64 * bar_len;
                     item.rebar.push(RebarItem {
@@ -1151,8 +1156,13 @@ fn beam_quantity(
                         elem.rigid_zone.face_i_or_zero(),
                         l2,
                     );
-                    let end_j =
-                        ctx.beam_bar_end(elem_idx, nj, dir_xy, elem.rigid_zone.face_j_or_zero(), l2);
+                    let end_j = ctx.beam_bar_end(
+                        elem_idx,
+                        nj,
+                        dir_xy,
+                        elem.rigid_zone.face_j_or_zero(),
+                        l2,
+                    );
                     let bar_len = member::girder_main_bar_length(lo, end_i, end_j);
                     let total_len = main_bars as f64 * bar_len;
                     item.rebar.push(RebarItem {

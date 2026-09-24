@@ -1033,5 +1033,9 @@ fn src_cross_panel_new_types_emits_check() {
         .find(|(_, l, _)| l == "柱梁接合部(SRC)")
         .expect("SRC 十字形接合部はパネルゾーン検定が出力されるはず");
     let cr = found.2.clone().unwrap_checked();
-    assert!(cr.ratio().is_finite() && cr.ratio() > 0.0, "ratio={}", cr.ratio());
+    assert!(
+        cr.ratio().is_finite() && cr.ratio() > 0.0,
+        "ratio={}",
+        cr.ratio()
+    );
 }

@@ -1042,10 +1042,9 @@ fn test_new_rc_rebar_unset_yields_zero_without_panic() {
         .to_section(SectionId(1), "RD".to_string()),
     );
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
-    assert!(
-        q.items
-            .iter()
-            .filter(|i| i.category == MemberCategory::Column)
-            .all(|i| i.rebar_weight_t() == 0.0)
-    );
+    assert!(q
+        .items
+        .iter()
+        .filter(|i| i.category == MemberCategory::Column)
+        .all(|i| i.rebar_weight_t() == 0.0));
 }

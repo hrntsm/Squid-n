@@ -156,14 +156,8 @@ pub(super) fn member_shear_strength(
             rp: opts.rp,
             lightweight: opts.lightweight,
         }),
-        ShearMethod::Ductility => member_vu_ductility(
-            props,
-            jt,
-            fc,
-            n_axial,
-            l_clear,
-            opts.sigma_wy,
-            opts,
-        ),
+        ShearMethod::Ductility => {
+            member_vu_ductility(props, jt, fc, n_axial, l_clear, opts.sigma_wy, opts)
+        }
     }
 }

@@ -564,8 +564,7 @@ mod tests {
 
         let opts = UltimateShearOptions::default();
         let qsu = super::super::rc_strength::member_shear_strength(&p, 24.0, 0.0, 3000.0, &opts);
-        let qsu0 =
-            super::super::rc_strength::member_shear_strength(&p0, 24.0, 0.0, 3000.0, &opts);
+        let qsu0 = super::super::rc_strength::member_shear_strength(&p0, 24.0, 0.0, 3000.0, &opts);
         assert!(qsu > qsu0, "終局せん断: with={qsu}, without={qsu0}");
     }
 

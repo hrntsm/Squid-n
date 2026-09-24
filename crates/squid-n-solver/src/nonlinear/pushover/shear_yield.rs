@@ -149,7 +149,12 @@ fn real_rebar_capacity_input(
                     },
                 )
             };
-            (width, depth, vec![(edge.area_mm2, edge.effective_depth_mm)], pw)
+            (
+                width,
+                depth,
+                vec![(edge.area_mm2, edge.effective_depth_mm)],
+                pw,
+            )
         }
         SectionShape::RcColumnCircle { d, rebar } => {
             let side = rebar.equivalent_square_side_mm(*d);

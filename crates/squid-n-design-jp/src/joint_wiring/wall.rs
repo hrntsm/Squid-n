@@ -154,8 +154,7 @@ pub(super) fn check_walls(
                 }
                 _ => 0.0,
             };
-            let Some((b, d, d_eff, pw, main_area)) =
-                wall_side_column_props(m.sec.shape.as_ref())
+            let Some((b, d, d_eff, pw, main_area)) = wall_side_column_props(m.sec.shape.as_ref())
             else {
                 continue;
             };
@@ -312,7 +311,8 @@ fn wall_side_column_props(shape: Option<&SectionShape>) -> Option<(f64, f64, f64
             let d_eff = rebar.equivalent_effective_depth_mm(*d);
             Some((side, side, d_eff, rebar.pw(side), rebar.total_main_area()))
         }
-        SectionShape::RcBeamRect { b, d, rebar } | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+        SectionShape::RcBeamRect { b, d, rebar }
+        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
             let dt = rebar
                 .top_centroid_from_edge()
                 .max(rebar.bottom_centroid_from_edge());

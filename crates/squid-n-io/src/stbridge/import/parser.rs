@@ -522,9 +522,7 @@ impl StbParser {
                     }
                 }
             }
-            t if t.starts_with("StbSecBarBeam_SRC_")
-                || t.starts_with("StbSecBarColumn_SRC_") =>
-            {
+            t if t.starts_with("StbSecBarBeam_SRC_") || t.starts_with("StbSecBarColumn_SRC_") => {
                 let mut new_warnings = Vec::new();
                 if let CurSec::Src {
                     kind,

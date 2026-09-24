@@ -434,7 +434,8 @@ mod tests {
     #[test]
     fn test_axis_props_from_shape_column_rect() {
         let a1 = one_bar_area(22.0);
-        let strong = axis_props_from_shape(&column_rect_shape(), RcDirection::Strong, true).unwrap();
+        let strong =
+            axis_props_from_shape(&column_rect_shape(), RcDirection::Strong, true).unwrap();
         assert!((strong.at - 4.0 * a1).abs() < 1e-9);
         assert!((strong.ac - 4.0 * a1).abs() < 1e-9);
 

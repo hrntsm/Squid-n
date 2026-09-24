@@ -226,8 +226,7 @@ fn check_member(
 
     let biaxial_shear_margin = if kind == MemberKind::Column && opts.biaxial_shear {
         rc_bar_props(shape, RcDirection::Weak, tension_is_top, need_be).map(|p_y| {
-            let (qsu_y, qmu_y_hinge) =
-                column_axis_shear(&p_y, fc, sigma_y, n_axial, l_clear, opts);
+            let (qsu_y, qmu_y_hinge) = column_axis_shear(&p_y, fc, sigma_y, n_axial, l_clear, opts);
             let qmu_y = match demand.shear_weak {
                 Some(qmy) => opts.upper_strength_factor * qmy.abs(),
                 None => qmu_y_hinge,
@@ -247,8 +246,9 @@ fn check_member(
     let biaxial_bending_margin = if kind == MemberKind::Column && opts.biaxial_bending {
         rc_bar_props(shape, RcDirection::Weak, tension_is_top, need_be).map(|p_y| {
             let mux = mu;
-            let muy =
-                column_mu(p_y.b_dir, p_y.d_dir, p_y.dt, p_y.at, p_y.ag, sigma_y, fc, n_axial);
+            let muy = column_mu(
+                p_y.b_dir, p_y.d_dir, p_y.dt, p_y.at, p_y.ag, sigma_y, fc, n_axial,
+            );
             let rx = if mux > 0.0 {
                 demand.mz.abs() / mux
             } else if demand.mz.abs() > 0.0 {

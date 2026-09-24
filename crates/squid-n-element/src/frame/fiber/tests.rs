@@ -314,11 +314,8 @@ fn srcファイバーは内蔵鋼材のstrength_factorを使う() {
         ..model.materials[0].clone()
     });
 
-    let strength = fiber_strength_params(
-        &model.elements[0],
-        &model,
-        StrengthBasis::MaterialStrength,
-    );
+    let strength =
+        fiber_strength_params(&model.elements[0], &model, StrengthBasis::MaterialStrength);
     assert_eq!(strength.steel_fy, 235.0 * 1.05);
 
     let [(section, mats), _] = build_gauss_fiber_pair(

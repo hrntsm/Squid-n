@@ -3,8 +3,8 @@
 use super::{
     axis_props_from_shape, bar_set_area, circle_axis_props, main_rebar_grade, rc_allow,
     rebar_allowable_tension, rebar_info_from_shape, rebar_sigma_y_of, rect_axis_props_strong,
-    rect_axis_props_weak, seismic_design_shear, shear_alpha, shear_capacity_for,
-    shear_rebar_grade, AxisProps,
+    rect_axis_props_weak, seismic_design_shear, shear_alpha, shear_capacity_for, shear_rebar_grade,
+    AxisProps,
 };
 use crate::ultimate::rc_props::RcDirection;
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
@@ -48,8 +48,8 @@ pub(crate) fn column_check(
         let d_full = *d;
         let props = axis_props_from_shape(shape, RcDirection::Strong, true)
             .expect("円形柱の断面諸元を算定できる形状のみ来る");
-        let info = rebar_info_from_shape(shape, true)
-            .expect("円形柱の鉄筋情報を算定できる形状のみ来る");
+        let info =
+            rebar_info_from_shape(shape, true).expect("円形柱の鉄筋情報を算定できる形状のみ来る");
         let ft = rebar_allowable_tension(grade, info.main_dia, long_term);
 
         let gross_area = std::f64::consts::PI * d_full * d_full / 4.0;
@@ -171,8 +171,8 @@ pub(crate) fn column_check(
             .expect("矩形柱の強軸断面諸元を算定できる形状のみ来る");
         let props_y = axis_props_from_shape(shape, RcDirection::Weak, true)
             .expect("矩形柱の弱軸断面諸元を算定できる形状のみ来る");
-        let info = rebar_info_from_shape(shape, true)
-            .expect("矩形柱の鉄筋情報を算定できる形状のみ来る");
+        let info =
+            rebar_info_from_shape(shape, true).expect("矩形柱の鉄筋情報を算定できる形状のみ来る");
         let ft_z = rebar_allowable_tension(grade, info.main_dia, long_term);
         let ft_y = ft_z;
 

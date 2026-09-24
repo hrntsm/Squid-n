@@ -29,7 +29,12 @@ pub(super) fn check_src_panel(
                 steel_flange_thick,
                 ref rebar,
                 ..
-            }) => Some((steel_height, steel_web_thick, steel_flange_thick, rc_dt(rebar))),
+            }) => Some((
+                steel_height,
+                steel_web_thick,
+                steel_flange_thick,
+                rc_dt(rebar),
+            )),
             Some(SectionShape::SrcColumnRect {
                 steel_height,
                 steel_web_thick,
@@ -73,7 +78,7 @@ pub(super) fn check_src_panel(
                     Some(SectionShape::RcColumnRect { ref rebar, .. })
                     | Some(SectionShape::SrcColumnRect { ref rebar, .. }) => (beam0.sec.depth
                         - 2.0 * (rebar.cover + rebar.hoop.dia + rebar.main_dia / 2.0))
-                    .max(0.0),
+                        .max(0.0),
                     _ => 0.8 * beam0.sec.depth,
                 }
             };

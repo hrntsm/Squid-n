@@ -129,7 +129,11 @@ pub enum SectionShape {
     /// RC 梁（実配筋）。`b`: 幅 [mm], `d`: せい [mm]。
     RcBeamRect { b: f64, d: f64, rebar: RcBeamRebar },
     /// RC 矩形柱（実配筋）。
-    RcColumnRect { b: f64, d: f64, rebar: RcRectColumnRebar },
+    RcColumnRect {
+        b: f64,
+        d: f64,
+        rebar: RcRectColumnRebar,
+    },
     /// RC 円形柱（実配筋）。
     RcColumnCircle { d: f64, rebar: RcCircleColumnRebar },
     /// SRC 梁（RC 梁 + 内蔵 H 形鉄骨）。

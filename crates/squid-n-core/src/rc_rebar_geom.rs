@@ -224,9 +224,7 @@ fn line_bar_coords(
             }
             let left = center - offset;
             let right = center + offset;
-            let per = (remaining / 2)
-                .min(capacity(left))
-                .min(capacity(right));
+            let per = (remaining / 2).min(capacity(left)).min(capacity(right));
             allocation[left] = per;
             allocation[right] = per;
             remaining -= per * 2;
@@ -297,10 +295,8 @@ impl RcBeamRebar {
             return Err(RebarGeometryError::OutOfBounds);
         }
 
-        let top_inner_y =
-            d / 2.0 - (k0 + self.top.len().saturating_sub(1) as f64 * s);
-        let bottom_inner_y =
-            -(d / 2.0 - (k0 + self.bottom.len().saturating_sub(1) as f64 * s));
+        let top_inner_y = d / 2.0 - (k0 + self.top.len().saturating_sub(1) as f64 * s);
+        let bottom_inner_y = -(d / 2.0 - (k0 + self.bottom.len().saturating_sub(1) as f64 * s));
         if !self.top.is_empty() && top_inner_y <= 0.0 {
             return Err(RebarGeometryError::LayerCollision);
         }
