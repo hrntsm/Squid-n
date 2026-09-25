@@ -154,27 +154,21 @@ fn test_query_model_elements_with_member_detail() {
 /// RC 矩形の片持ち柱モデル（終局検定ジョブ用）。長期荷重ケース 1 つ。
 fn rc_column_model() -> Model {
     use squid_n_core::model::{LoadCase, Material, NodalLoad};
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 8,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 8,
-            dia: 25.0,
-            layers: 1,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![8],
+        y: vec![8],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar,
