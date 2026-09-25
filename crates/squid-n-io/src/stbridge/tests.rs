@@ -231,27 +231,35 @@ fn test_read_stbridge_file_utf8_bom() {
 }
 
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRebar,
-    RcRectColumnRebar, RectColumnHoop, ShearBar,
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop,
 };
 
-fn rebar() -> RcRebar {
-    RcRebar {
-        main_x: BarSet {
-            count: 3,
-            dia: 22.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 3,
-            dia: 22.0,
-            layers: 1,
-        },
+fn beam_rebar() -> RcBeamRebar {
+    RcBeamRebar {
+        main_dia: 22.0,
+        top: vec![3],
+        bottom: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
+        },
+    }
+}
+
+fn column_rebar() -> RcRectColumnRebar {
+    RcRectColumnRebar {
+        main_dia: 22.0,
+        x: vec![3],
+        y: vec![3],
+        cover: 40.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 2,
         },
     }
 }
@@ -325,10 +333,7 @@ fn push_section(m: &mut Model, mut sec: Section) {
     let has_rebar = matches!(
         sec.shape,
         Some(
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
                 | SectionShape::SrcBeamRect { .. }
@@ -343,11 +348,7 @@ fn push_section(m: &mut Model, mut sec: Section) {
     }
     if matches!(
         sec.shape,
-        Some(
-            SectionShape::SrcRect { .. }
-                | SectionShape::SrcBeamRect { .. }
-                | SectionShape::SrcColumnRect { .. }
-        )
+        Some(SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. })
     ) {
         let id = ensure_material(m, "SN490B", MaterialCategory::Steel, Some(325.0));
         sec.steel_material = Some(id);
@@ -416,10 +417,10 @@ fn test_standard_mode_steel_column() {
 #[test]
 fn test_standard_mode_rc_beam() {
     let mut m = frame_nodes();
-    let rc = SectionShape::RcRect {
+    let rc = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar(),
+        rebar: beam_rebar(),
     };
     push_section(&mut m, rc.to_section(SectionId(0), "G1".into()));
     m.elements.push(member(0, false, 0)); // 梁
@@ -513,10 +514,10 @@ fn test_standard_import_roundtrip_steel_and_rc() {
         flange_thick: 13.0,
     };
     push_section(&mut m, h.to_section(SectionId(0), "C1".into()));
-    let rc = SectionShape::RcRect {
+    let rc = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar(),
+        rebar: beam_rebar(),
     };
     push_section(&mut m, rc.to_section(SectionId(1), "G1".into()));
     m.elements.push(member(0, true, 0)); // 柱 → 鋼断面
@@ -560,23 +561,43 @@ fn test_standard_import_roundtrip_steel_and_rc() {
 /// 標準 ST-Bridge が保存できる配筋（主筋本数は X/Y で別、径は単一 `D_main`、1 段）。
 /// ST-Bridge の主筋径は `D_main` 1 つ・段別本数のみのため、X/Y で径を変えたり多段に
 /// したりは標準では往復しない（[`super`] モジュールドキュメント参照）。
-fn rebar_distinct() -> RcRebar {
-    RcRebar {
-        main_x: BarSet {
-            count: 4,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 3,
-            dia: 25.0,
-            layers: 1,
-        },
+fn beam_rebar_distinct() -> RcBeamRebar {
+    RcBeamRebar {
+        main_dia: 25.0,
+        top: vec![4],
+        bottom: vec![3],
         cover: 45.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 13.0,
             pitch: 150.0,
             legs: 4,
+        },
+    }
+}
+
+fn column_rebar_distinct() -> RcRectColumnRebar {
+    RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![4],
+        y: vec![3],
+        cover: 45.0,
+        hoop: RectColumnHoop {
+            dia: 13.0,
+            pitch: 150.0,
+            legs_x: 4,
+            legs_y: 4,
+        },
+    }
+}
+
+fn circle_rebar_distinct(count: u32) -> RcCircleColumnRebar {
+    RcCircleColumnRebar {
+        main_dia: 25.0,
+        count,
+        cover: 45.0,
+        hoop: CircleColumnHoop {
+            dia: 13.0,
+            pitch: 150.0,
         },
     }
 }
@@ -585,9 +606,9 @@ fn rebar_distinct() -> RcRebar {
 #[test]
 fn test_standard_roundtrip_rc_circle_column_rebar() {
     let mut m = frame_nodes();
-    let shape = SectionShape::RcCircle {
+    let shape = SectionShape::RcColumnCircle {
         d: 800.0,
-        rebar: rebar_distinct(),
+        rebar: circle_rebar_distinct(4),
     };
     push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0)); // 柱
@@ -621,10 +642,10 @@ fn test_standard_roundtrip_rc_circle_column_rebar() {
 #[test]
 fn test_standard_roundtrip_rc_beam_rebar() {
     let mut m = frame_nodes();
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar_distinct(),
+        rebar: beam_rebar_distinct(),
     };
     push_section(&mut m, shape.to_section(SectionId(0), "G1".into()));
     m.elements.push(member(0, false, 0)); // 梁
@@ -809,14 +830,14 @@ fn test_standard_export_warns_on_fourth_rebar_stage() {
     }
 }
 
-/// 円形 RC 梁（旧 `RcCircle` の梁用途）は ST-Bridge に梁用の円形図形がないため
+/// 円形 RC 柱を梁位置に使うと ST-Bridge に梁用の円形図形がないため
 /// `StbSecRaw` へフォールバックし、その旨を export 警告へ出す。
 #[test]
 fn test_standard_export_warns_circle_beam_raw() {
     let mut m = frame_nodes();
-    let shape = SectionShape::RcCircle {
+    let shape = SectionShape::RcColumnCircle {
         d: 700.0,
-        rebar: rebar_distinct(),
+        rebar: circle_rebar_distinct(8),
     };
     push_section(&mut m, shape.to_section(SectionId(0), "RCB".into()));
     m.elements.push(member(0, false, 0)); // 梁
@@ -1094,20 +1115,26 @@ fn test_import_warns_when_members_conflict_on_section_material() {
     );
 }
 
-/// 標準モード: 柱・梁で共有された RC 矩形断面は、書き出しで柱用・梁用へ分割され、
+/// 標準モード: 柱・梁で同名の RC 矩形断面は用途別に書き分けられ、
 /// 取り込みでは用途別の実配筋モデル（`RcColumnRect` / `RcBeamRect`）として
 /// 別断面になる（用途で配筋の意味が異なるため統合しない）。
 #[test]
 fn test_standard_roundtrip_shared_rc_rect_rebar() {
     let mut m = frame_nodes();
-    let shape = SectionShape::RcRect {
+    let column = SectionShape::RcColumnRect {
         b: 500.0,
         d: 800.0,
-        rebar: rebar_distinct(),
+        rebar: column_rebar_distinct(),
     };
-    push_section(&mut m, shape.to_section(SectionId(0), "RC1".into()));
+    let beam = SectionShape::RcBeamRect {
+        b: 500.0,
+        d: 800.0,
+        rebar: beam_rebar_distinct(),
+    };
+    push_section(&mut m, column.to_section(SectionId(0), "RC1".into()));
+    push_section(&mut m, beam.to_section(SectionId(1), "RC1".into()));
     m.elements.push(member(0, true, 0)); // 柱
-    m.elements.push(member(1, false, 0)); // 梁（共有）
+    m.elements.push(member(1, false, 1)); // 梁
 
     let xml = export_stbridge(&m).unwrap();
     assert!(
@@ -1150,10 +1177,10 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
 #[test]
 fn test_standard_roundtrip_rc_rebar_without_shear_material() {
     let mut m = frame_nodes();
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 400.0,
         d: 600.0,
-        rebar: rebar_distinct(),
+        rebar: column_rebar_distinct(),
     };
     let mut sec = shape.to_section(SectionId(0), "C1".into());
     sec.shear_rebar_material = None;
@@ -1188,25 +1215,19 @@ fn test_standard_roundtrip_rc_rebar_without_shear_material() {
 fn test_standard_roundtrip_rc_rebar_non_integer() {
     let mut m = frame_nodes();
     // 主筋径は単一 `D_main`・1 段のみ標準往復する（X/Y で径・段数は変えない）。
-    let r = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 12.7,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 12.7,
-            layers: 1,
-        },
+    let r = RcRectColumnRebar {
+        main_dia: 12.7,
+        x: vec![6],
+        y: vec![4],
         cover: 40.5,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 6.35,
             pitch: 133.3,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 450.0,
         d: 650.0,
         rebar: r,
@@ -1255,10 +1276,10 @@ fn test_standard_roundtrip_shear_rebar_material_with_control_chars() {
         fy: Some(785.0),
     });
     let shear_mat = MaterialId(m.materials.len() as u32 - 1);
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar_distinct(),
+        rebar: column_rebar_distinct(),
     };
     let mut sec = shape.to_section(SectionId(0), "C1".into());
     sec.shear_rebar_material = Some(shear_mat);
@@ -1465,7 +1486,7 @@ fn test_import_rc_kind_preserved() {
 }
 
 /// `StbSecBeam_RC` に円形図形が来た場合は RC 円形梁として未対応を警告し、
-/// 断面を生成しない（旧 `RcCircle` へ落とさない）。
+/// 断面を生成しない。
 #[test]
 fn test_import_rc_circle_beam_unsupported() {
     let xml = r#"<?xml version="1.0"?>
@@ -1923,9 +1944,9 @@ fn test_standard_unsupported_beam_shapes_fall_back_to_raw() {
         thick: 12.0,
     };
     push_section(&mut m, cft.to_section(SectionId(0), "CB".into()));
-    let rc_circle = SectionShape::RcCircle {
+    let rc_circle = SectionShape::RcColumnCircle {
         d: 700.0,
-        rebar: rebar_distinct(),
+        rebar: circle_rebar_distinct(8),
     };
     push_section(&mut m, rc_circle.to_section(SectionId(1), "RCB".into()));
     m.elements.push(member(0, false, 0)); // CFT 梁
@@ -2106,10 +2127,10 @@ fn test_standard_writes_section_material() {
 
     // RC 柱: strength_concrete にコンクリートのグレード名（id は 1 始まり）。
     let mut m2 = frame_nodes();
-    let rc = SectionShape::RcRect {
+    let rc = SectionShape::RcColumnRect {
         b: 500.0,
         d: 500.0,
-        rebar: rebar(),
+        rebar: column_rebar(),
     };
     push_section(&mut m2, rc.to_section(SectionId(0), "C".into()));
     m2.elements.push(member(0, true, 0));

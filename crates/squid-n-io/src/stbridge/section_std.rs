@@ -88,8 +88,7 @@ fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
 
 /// 実配筋型（`RcBeamRect`・`RcColumnRect`・`RcColumnCircle`・`SrcBeamRect`・
 /// `SrcColumnRect`）が持つ用途。`Some(true)` は梁用、`Some(false)` は柱用。
-/// 旧型（`RcRect`・`RcCircle`・`SrcRect`）は用途を型で表さないため `None` を返し、
-/// 部材使用状況から柱／梁を判定する。
+/// 配筋なし形状は `None` を返し、部材使用状況から柱／梁を判定する。
 fn rebar_purpose(shape: &SectionShape) -> Option<bool> {
     match shape {
         SectionShape::RcBeamRect { .. } | SectionShape::SrcBeamRect { .. } => Some(true),
@@ -1024,9 +1023,10 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
         let (used_col, used_beam) = roles.get(&base).copied().unwrap_or((false, false));
+        let unused = !used_col && !used_beam;
         let (need_col, need_beam) = match sec.shape.as_ref().and_then(rebar_purpose) {
-            Some(true) => (false, true),
-            Some(false) => (true, false),
+            Some(true) => (used_col, used_beam || unused),
+            Some(false) => (used_col || unused, used_beam),
             None => (used_col || !used_beam, used_beam),
         };
 
@@ -1121,6 +1121,14 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     parts.push((0, xml));
                     warnings.extend(w);
                     col_map.insert(base, base);
+                } else {
+                    warnings.push(format!(
+                        "断面 \"{}\" は RC 梁を柱位置に使用しているため \
+                         StbSecRaw へフォールバックしました",
+                        sec.name
+                    ));
+                    parts.push((90, raw(base, sec)));
+                    col_map.insert(base, base);
                 }
             }
             if need_beam {
@@ -1134,7 +1142,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     parts.push((4, xml));
                     warnings.extend(w);
                     beam_map.insert(base, bid);
-                } else {
+                } else if matches!(shape, SectionShape::RcColumnCircle { .. }) {
                     let bid = if col_map.contains_key(&base) {
                         alloc()
                     } else {
@@ -1142,6 +1150,19 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     };
                     warnings.push(format!(
                         "断面 \"{}\" は RC 円形梁に相当し、ST-Bridge に梁用の円形図形がないため \
+                         StbSecRaw へフォールバックしました",
+                        sec.name
+                    ));
+                    parts.push((90, raw(bid, sec)));
+                    beam_map.insert(base, bid);
+                } else {
+                    let bid = if col_map.contains_key(&base) {
+                        alloc()
+                    } else {
+                        base
+                    };
+                    warnings.push(format!(
+                        "断面 \"{}\" は RC 柱を梁位置に使用しているため \
                          StbSecRaw へフォールバックしました",
                         sec.name
                     ));
