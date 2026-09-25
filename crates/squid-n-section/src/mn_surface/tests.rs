@@ -1,9 +1,7 @@
 use super::fibers::{mesh_rect, FiberMat};
 use super::*;
 use approx::assert_relative_eq;
-use squid_n_core::section_shape::{
-    BarSet, RcRebar, RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
-};
+use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
 fn steel_rect_fibers(b: f64, d: f64, fy: f64, n: usize) -> Vec<PlasticFiber> {
     let mut fibers = Vec::new();
@@ -68,25 +66,19 @@ fn test_outside_axial_range_returns_none() {
 }
 
 fn sample_rc_shape() -> SectionShape {
-    SectionShape::RcRect {
+    SectionShape::RcColumnRect {
         b: 500.0,
         d: 500.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 2,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![4],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     }
