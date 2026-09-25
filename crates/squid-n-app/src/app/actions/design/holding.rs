@@ -19,16 +19,13 @@ impl App {
     > {
         use squid_n_core::section_shape::SectionShape;
         use squid_n_design_jp::secondary::ds_group::{
-            ds_rc, ds_steel, member_group, rank_index_for_group, rc_beam_type, rc_column_type,
-            rc_wall_shear_brittle, rc_wall_tau_over_fc, rc_wall_type, steel_brace_type, GroupType,
+            ds_rc, ds_steel, member_group, rank_index_for_group, rc_wall_shear_brittle,
+            rc_wall_tau_over_fc, rc_wall_type, steel_brace_type, GroupType,
         };
         use squid_n_design_jp::secondary::holding_capacity::{
             check_holding_capacity, qud_by_story, MemberRank,
         };
         use squid_n_design_jp::secondary::member_rank::worst_rank;
-        use squid_n_design_jp::secondary::rc_capacity::{
-            rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
-        };
         use squid_n_design_jp::steel_f_value_prefix;
         use squid_n_solver::nonlinear::pushover::MechanismType;
 
@@ -113,9 +110,6 @@ impl App {
         {
             let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
             let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
-            let gravity_lc = gravity_cases_for_seismic_weight(&self.core.model)
-                .first()
-                .copied();
             let expanded_storage;
             let model: &squid_n_core::model::Model =
                 if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.core.model) {
@@ -191,7 +185,7 @@ impl App {
                     rank
                 } else if matches!(
                     sec.shape.as_ref(),
-                    Some(SectionShape::SrcRect { .. } | SectionShape::SrcColumnRect { .. })
+                    Some(SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. },)
                 ) {
                     use squid_n_design_jp::secondary::src_rank::{
                         src_column_rank, src_column_rank_ratios,
@@ -208,7 +202,7 @@ impl App {
                         continue;
                     };
                     let shape = sec.shape.as_ref().expect("SRC 矩形柱と判定済み");
-                    if shape.rebar().is_none() && shape.rect_column_rebar().is_none() {
+                    if shape.beam_rebar().is_none() && shape.rect_column_rebar().is_none() {
                         continue;
                     }
                     let Some(rebar_sy) =
@@ -335,86 +329,7 @@ impl App {
                         _ => unreachable!(),
                     }
                 } else {
-                    let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
-                        continue;
-                    };
-                    let geom_len = model.member_length(elem);
-                    let face_sum =
-                        elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
-                    let clear_span = if geom_len - face_sum > 0.0 {
-                        geom_len - face_sum
-                    } else {
-                        geom_len
-                    };
-                    let Some(mut input) = rc_capacity_input_from_rect(
-                        *b, *d, rebar, mat, rebar_mat, shear_mat, clear_span,
-                    ) else {
-                        continue;
-                    };
-                    let sigma_0 = self
-                        .core
-                        .scoped
-                        .results
-                        .as_ref()
-                        .map(|r| {
-                            rc_sigma_0_from_gravity_or_last_static(
-                                &r.statics,
-                                &r.member_forces,
-                                gravity_lc,
-                                elem.id,
-                                *b,
-                                *d,
-                            )
-                        })
-                        .unwrap_or(0.0);
-                    let kind = squid_n_design_jp::MemberKind::of_element(elem, model);
-                    let Some(resp) = resp_by_elem.get(&elem.id) else {
-                        continue;
-                    };
-                    let gross = *b * *d;
-                    if gross <= 0.0 || input.fc <= 0.0 {
-                        continue;
-                    }
-                    let sigma_0_ult = resp.axial / gross;
-                    let _ = sigma_0;
-                    input.sigma_0 = sigma_0_ult;
-                    let qmu = match kind {
-                        squid_n_design_jp::MemberKind::Column => {
-                            let ag = squid_n_core::section_shape::bar_set_area(&rebar.main_x);
-                            let n_axial = resp.axial;
-                            let mu = rc_column_mu_simple(&input, ag, n_axial);
-                            if clear_span > 0.0 {
-                                2.0 * mu / clear_span
-                            } else {
-                                0.0
-                            }
-                        }
-                        _ => rc_qmu_simple(&input),
-                    };
-                    let qsu = rc_qsu_simple(&input);
-
-                    let shear_u = resp.shear_strong.max(resp.shear_weak);
-                    let tau_over_fc = (shear_u / gross) / input.fc;
-                    let brittle = qmu > 0.0 && qsu < qmu;
-                    match kind {
-                        squid_n_design_jp::MemberKind::Column => {
-                            let sigma0_over_fc = sigma_0_ult / input.fc;
-                            let pt_percent = if *b > 0.0 && input.d_eff > 0.0 {
-                                100.0 * input.at / (*b * input.d_eff)
-                            } else {
-                                0.0
-                            };
-                            let h0_over_d = if *d > 0.0 { clear_span / *d } else { 0.0 };
-                            rc_column_type(
-                                h0_over_d,
-                                sigma0_over_fc,
-                                pt_percent,
-                                tau_over_fc,
-                                brittle,
-                            )
-                        }
-                        _ => rc_beam_type(tau_over_fc, brittle),
-                    }
+                    continue;
                 };
                 let Some(story_idx) = elem
                     .nodes

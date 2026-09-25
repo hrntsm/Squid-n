@@ -909,8 +909,7 @@ impl App {
                 (
                     None,
                     Some(
-                        shape @ (SectionShape::SrcRect { .. }
-                        | SectionShape::SrcBeamRect { .. }
+                        shape @ (SectionShape::SrcBeamRect { .. }
                         | SectionShape::SrcColumnRect { .. }),
                     ),
                 ) => shape.calc_axial_stiffness_area(),
@@ -991,14 +990,11 @@ impl App {
 pub fn section_shape_label(shape: &squid_n_core::section_shape::SectionShape) -> &'static str {
     use squid_n_core::section_shape::SectionShape;
     match shape {
-        SectionShape::RcRect { .. } => "RC 矩形",
-        SectionShape::RcCircle { .. } => "RC 円形",
         SectionShape::RcBeamRect { .. } => "RC 矩形梁",
         SectionShape::RcColumnRect { .. } => "RC 矩形柱",
         SectionShape::RcColumnCircle { .. } => "RC 円形柱",
         SectionShape::RcWall { .. } => "RC 壁",
         SectionShape::RcSlab { .. } => "RC スラブ",
-        SectionShape::SrcRect { .. } => "SRC 矩形",
         SectionShape::SrcBeamRect { .. } => "SRC 梁",
         SectionShape::SrcColumnRect { .. } => "SRC 矩形柱",
         SectionShape::SteelH { .. } => "H 形鋼",

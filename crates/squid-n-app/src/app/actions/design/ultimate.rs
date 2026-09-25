@@ -45,8 +45,7 @@ impl App {
                 .map(|sh| {
                     matches!(
                         sh,
-                        SectionShape::RcRect { .. }
-                            | SectionShape::RcBeamRect { .. }
+                        SectionShape::RcBeamRect { .. }
                             | SectionShape::RcColumnRect { .. }
                             | SectionShape::RcColumnCircle { .. }
                     )
