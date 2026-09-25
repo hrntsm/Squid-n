@@ -1284,29 +1284,23 @@ fn test_axial_cut_not_applied_to_short_term_case() {
 /// SRC柱の軸剛性を低減しても、曲げ・せん断・ねじり剛性と質量は保持する。
 #[test]
 fn test_axial_cut_applies_to_composite_src_column() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
     let mut model = column_with_parallel_vertical_brace();
     // 柱断面を SRC（shape あり・コンクリート材料 fc あり）へ差し替える。
-    model.sections[0].shape = Some(SectionShape::SrcRect {
+    model.sections[0].shape = Some(SectionShape::SrcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![8],
+            y: vec![8],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
         steel_height: 400.0,

@@ -6,7 +6,7 @@ use squid_n_core::model::{
     Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
     MaterialCategory, Node, Section, Story,
 };
-use squid_n_core::section_shape::{bar_set_area, ShearBar};
+use squid_n_core::section_shape::SectionShape;
 
 /// 基部の床（階の列の先頭）。階は床であり、その先頭が基部であることは
 /// `Model::layers` が依拠する不変条件のため、テストのモデルにも必ず置く。
@@ -273,28 +273,22 @@ fn test_pushover_load_control_endpoint_is_mesh_independent() {
 /// 保有水平耐力を過大評価する（危険側）。
 #[test]
 fn test_pushover_stops_when_concrete_strength_unset() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
     let mut model = single_column_model(235.0, 80_000.0);
-    model.sections[0].shape = Some(SectionShape::RcRect {
-        b: 100.0,
-        d: 100.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 13.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 13.0,
-                layers: 1,
-            },
+    model.sections[0].shape = Some(SectionShape::RcColumnRect {
+        b: 400.0,
+        d: 400.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 13.0,
+            x: vec![4],
+            y: vec![4],
             cover: 20.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     });
@@ -1280,7 +1274,7 @@ fn test_portal_frame_collapse_load() {
 
 #[test]
 fn test_compute_shear_yield_qy_static_formulas_and_guards() {
-    // 鋼系（fy 設定あり）: Qy = as・fy/√3（RcRect 形状の有無・方向によらない）。
+    // 鋼系（fy 設定あり）: Qy = as・fy/√3（RC 形状の有無・方向によらない）。
     let steel = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -1312,7 +1306,7 @@ fn test_compute_shear_yield_qy_static_formulas_and_guards() {
         "qy={qy} should equal as*fy/sqrt(3)={expected}"
     );
 
-    // RC系（fy 無し・fc 設定あり）かつ断面形状情報（RcRect）がない場合:
+    // RC系（fy 無し・fc 設定あり）かつ断面形状情報がない場合:
     // Qy = as・0.7√fc（慣用値へフォールバック）。
     let rc = Material {
         strength_factor: None,
@@ -1380,10 +1374,10 @@ fn test_compute_shear_yield_qy_static_formulas_and_guards() {
 }
 
 /// SRC 矩形の Qy は「RC 部（荒川式）＋内蔵鉄骨の全塑性せん断 sAw·F/√3」の
-/// 累加式。同一の b・d・配筋の RcRect との差が鉄骨項の手計算値と一致する。
+/// 累加式。同一の b・d・配筋の矩形柱との差が鉄骨項の手計算値と一致する。
 #[test]
 fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
     let mat = Material {
         strength_factor: None,
@@ -1398,30 +1392,24 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         fc: Some(24.0),
         fy: None,
     };
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 8,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 25.0,
-            layers: 1,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![8],
+        y: vec![4],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let rc_shape = SectionShape::RcRect {
+    let rc_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar: rebar.clone(),
     };
-    let src_shape = SectionShape::SrcRect {
+    let src_shape = SectionShape::SrcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar,
@@ -1546,11 +1534,11 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
 
     // 板厚区分: フランジ厚 45mm（>40）の SN400B は弱軸（フランジ）の F が
     // 215 へ落ち、強軸（ウェブ tw=8 ≤40）は 235 のまま（板厚は板要素ごとに解決）。
-    let thick_flange = SectionShape::SrcRect {
+    let thick_flange = SectionShape::SrcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar: match &rc_shape {
-            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            SectionShape::RcColumnRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         },
         steel_height: 400.0,
@@ -1730,32 +1718,28 @@ fn test_compute_shear_yield_qy_real_rebar_beam_uses_unfavorable_top_or_bottom() 
     assert!(qy_asymmetric < qy_symmetric);
 }
 
-/// RC 矩形断面（`SectionShape::RcRect`）+ 配筋情報がある場合、Qy は荒川式
+/// RC 矩形柱（`SectionShape::RcColumnRect`）+ 配筋情報がある場合、Qy は荒川式
 /// （`rc_qsu_simple`）による方向別算定値に一致すること。
-/// 要素座標系はせい方向＝ローカル y のため、y 方向（強軸・main_x）、
-/// z 方向（弱軸・main_y、b/d 入れ替え）の双方を検証する。
+/// 要素座標系はせい方向＝ローカル y のため、y 方向（強軸・X 方向最外段）、
+/// z 方向（弱軸・Y 方向最外段、b/d 入れ替え）の双方を検証する。
 #[test]
 fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 19.0,
-            layers: 1,
-        },
+    use squid_n_core::rc_rebar_geom::RectEdge;
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![5],
+        y: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
     let (b, d) = (400.0, 600.0);
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b,
         d,
         rebar: rebar.clone(),
@@ -1795,24 +1779,20 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     };
     let clear_span = 3000.0;
 
-    // y 方向（強軸曲げのせん断）: b=幅, d=せい, 引張鉄筋 main_x。
+    // y 方向（強軸曲げのせん断）: b=幅, d=せい, 引張鉄筋は X 方向最外段。
     // しきい値のせん断有効断面積は断面 as_z（ウェブ）由来（クロス変換）。
     // 本モジュール（shear_yield.rs）は保有水平耐力計算専用のため、主筋 σy には
     // 材料強度係数（直接入力係数優先、なければ一律1.1）を無条件で乗じる
     // （`material_strength_factor_rebar`）。せん断補強筋 σwy=295 は割増対象外。
+    let edge_y = rebar.edge_steel(RectEdge::Top, b, d);
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_set_area(&rebar.main_x) / 2.0,
-        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
-            d,
-            rebar.cover,
-            rebar.shear.dia,
-            &rebar.main_x,
-        ),
+        at: edge_y.area_mm2,
+        d_eff: edge_y.effective_depth_mm,
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
-        pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (b * 100.0),
+        pw: rebar.aw_x_mm2() / (b * rebar.hoop.pitch),
         sigma_wy: 295.0,
         clear_span,
         sigma_0: 0.0,
@@ -1834,20 +1814,16 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         "qy_y={qy_y} should equal rc_qsu_simple handcalc={qsu_y_handcalc}"
     );
 
-    // z 方向（弱軸曲げのせん断）: b と d を入れ替え、引張鉄筋 main_y。
+    // z 方向（弱軸曲げのせん断）: b と d を入れ替え、引張鉄筋は Y 方向最外段。
+    let edge_z = rebar.edge_steel(RectEdge::Left, b, d);
     let qsu_z_handcalc = rc_qsu_simple(&RcCapacityInput {
         b: d,
         d: b,
-        at: bar_set_area(&rebar.main_y) / 2.0,
-        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
-            b,
-            rebar.cover,
-            rebar.shear.dia,
-            &rebar.main_y,
-        ),
+        at: edge_z.area_mm2,
+        d_eff: edge_z.effective_depth_mm,
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
-        pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (d * 100.0),
+        pw: rebar.aw_y_mm2() / (d * rebar.hoop.pitch),
         sigma_wy: 295.0,
         clear_span,
         sigma_0: 0.0,
@@ -1881,25 +1857,20 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
 #[test]
 fn test_section_rebar_materials_are_reflected_in_capacities() {
     let section = || {
-        let rebar = RcRebar {
-            main_x: BarSet {
-                count: 6,
-                dia: 25.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 19.0,
-                layers: 1,
-            },
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        let rebar = RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![5],
+            y: vec![3],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         };
-        SectionShape::RcRect {
+        SectionShape::RcColumnRect {
             b: 400.0,
             d: 600.0,
             rebar,
@@ -2058,27 +2029,29 @@ fn test_effective_clear_span_falls_back_when_non_positive() {
 
 /// RC矩形断面 + 配筋情報を持つ要素モデル（剛域テスト共通）。
 /// 節点間距離3000mm、`rigid_zone` は呼び出し側で差し替える。
-fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f64, f64) {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 19.0,
-            layers: 1,
-        },
+fn rc_column_model_with_rigid_zone(
+    rigid_zone: RigidZone,
+) -> (
+    Model,
+    squid_n_core::section_shape::RcRectColumnRebar,
+    f64,
+    f64,
+) {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![5],
+        y: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
     let (b, d) = (400.0, 600.0);
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b,
         d,
         rebar: rebar.clone(),
@@ -2170,22 +2143,18 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
 
     let expected_clear_span = 2400.0;
 
-    // y方向（強軸・main_x。クロス変換で局所 y が強軸側）: RcArakawa を採用し、
+    // y方向（強軸・X 方向最外段。クロス変換で局所 y が強軸側）: RcArakawa を採用し、
     // h0=2400 での rc_qsu_simple 手計算に一致。σy は主筋の材料強度係数（一律1.1）を
     // 乗じた 345×1.1（保有水平耐力計算専用モジュールのため無条件で適用）。
+    let edge_y = rebar.edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d);
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_set_area(&rebar.main_x) / 2.0,
-        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
-            d,
-            rebar.cover,
-            rebar.shear.dia,
-            &rebar.main_x,
-        ),
+        at: edge_y.area_mm2,
+        d_eff: edge_y.effective_depth_mm,
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
-        pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (b * 100.0),
+        pw: rebar.aw_x_mm2() / (b * rebar.hoop.pitch),
         sigma_wy: 295.0,
         clear_span: expected_clear_span,
         sigma_0: 0.0,
@@ -2202,7 +2171,7 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
             );
             assert!((gross_area - b * d).abs() < 1e-9);
         }
-        DirThreshold::Static(_) => panic!("expected RcArakawa for RcRect with rebar"),
+        DirThreshold::Static(_) => panic!("expected RcArakawa for RcColumnRect with rebar"),
     }
     assert!(
         (th.y.qy(0.0) - qsu_y_handcalc).abs() < 1e-6,
@@ -2228,17 +2197,16 @@ fn test_compute_shear_yield_thresholds_rc_rect_falls_back_when_rigid_zone_exceed
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_set_area(&rebar.main_x) / 2.0,
-        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
-            d,
-            rebar.cover,
-            rebar.shear.dia,
-            &rebar.main_x,
-        ),
+        at: rebar
+            .edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d)
+            .area_mm2,
+        d_eff: rebar
+            .edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d)
+            .effective_depth_mm,
         // 主筋の材料強度係数（一律1.1）を乗じた 345×1.1。
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
-        pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (b * 100.0),
+        pw: rebar.aw_x_mm2() / (b * rebar.hoop.pitch),
         sigma_wy: 295.0,
         clear_span: 3000.0, // フォールバック後の値
         sigma_0: 0.0,
@@ -2591,27 +2559,27 @@ fn test_compute_hinge_thresholds_steel_strength_factor_resolution() {
 }
 
 /// RC 矩形断面 + 配筋情報を持つ片持ち柱モデル（fy 未設定＝既定345）を作る。
-fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 19.0,
-            layers: 1,
-        },
+fn rc_hinge_model() -> (
+    Model,
+    squid_n_core::section_shape::RcRectColumnRebar,
+    f64,
+    f64,
+) {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![5],
+        y: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
     let (b, d) = (400.0, 600.0);
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b,
         d,
         rebar: rebar.clone(),
@@ -2694,17 +2662,15 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
 /// `rc_mu_simple` 相当になることを確認する。
 #[test]
 fn test_compute_hinge_thresholds_rc_rebar_uses_material_strength_factor() {
-    let (model, rebar, _b, d) = rc_hinge_model();
+    let (model, rebar, b, d) = rc_hinge_model();
     let thresholds = compute_hinge_thresholds(&model);
 
-    let at = bar_set_area(&rebar.main_x) / 2.0;
-    // d_eff は断面検定と同規約（帯筋径を含む dt）。
-    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
+    let edge = rebar.edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d);
     let expected_my = rc_mu_simple(&RcCapacityInput {
         b: 1.0,
         d,
-        at,
-        d_eff,
+        at: edge.area_mm2,
+        d_eff: edge.effective_depth_mm,
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
         pw: 0.0,
@@ -3460,7 +3426,7 @@ fn wall_story_model(seismic_weight: f64) -> Model {
 /// 四周へ RC 側柱・大梁を配置する。側柱は面内両端ピン化されて面内せん断・曲げを
 /// 負担しないため、面内の応答は壁エレメントが支配する。
 fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
     let make_node = |id: u32, coord: [f64; 3], restraint: Dof6Mask, story: Option<StoryId>| Node {
         id: NodeId(id),
         coord,
@@ -3474,25 +3440,19 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         thickness: 150.0,
         ps: 0.0025,
     };
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 8,
-            dia: 22.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 8,
-            dia: 22.0,
-            layers: 1,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 22.0,
+        x: vec![8],
+        y: vec![8],
         cover: 50.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let frame_shape = SectionShape::RcRect {
+    let frame_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar,

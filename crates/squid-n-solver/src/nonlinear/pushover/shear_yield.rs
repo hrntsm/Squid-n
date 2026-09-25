@@ -64,9 +64,9 @@ impl DirThreshold {
 /// せん断降伏耐力 Qy 算定対象の方向（局所座標系。せい方向＝ローカル y）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShearDir {
-    /// 局所 y 方向（強軸曲げ＝Mz 面に伴うせん断、`Section.as_z`・`RcRebar.main_x` 対応）。
+    /// 局所 y 方向（強軸曲げ＝Mz 面に伴うせん断、`Section.as_z` 対応）。
     Y,
-    /// 局所 z 方向（弱軸曲げ＝My 面に伴うせん断、`Section.as_y`・`RcRebar.main_y` 対応）。
+    /// 局所 z 方向（弱軸曲げ＝My 面に伴うせん断、`Section.as_y` 対応）。
     Z,
 }
 

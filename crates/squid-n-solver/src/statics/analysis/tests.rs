@@ -464,23 +464,20 @@ fn test_model_issues_detects_new_src_column_steel_missing() {
 
 /// 診断用の SRC 断面（内蔵 H 形鉄骨付き）。
 fn src_shape() -> squid_n_core::section_shape::SectionShape {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
-    let bars = BarSet {
-        dia: 22.0,
-        count: 8,
-        layers: 1,
-    };
-    SectionShape::SrcRect {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
+    SectionShape::SrcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: bars.clone(),
-            main_y: bars,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![8],
+            y: vec![8],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
         steel_height: 400.0,
