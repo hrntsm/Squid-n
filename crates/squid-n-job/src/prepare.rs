@@ -221,24 +221,36 @@ mod tests {
         use squid_n_core::model::{
             Material, MaterialCategory, WallPlate, WallPlateShape, WallRegion,
         };
-        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+        use squid_n_core::section_shape::{
+            RcBeamRebar, RcRectColumnRebar, SectionShape,
+        };
 
         // 主筋 3-D22・せん断補強筋 D10@100（`剛域`の算定自体は鉄筋量を見ないが、
-        // `RcRect`/`to_section` が鉄筋情報を要求するため、名目値を与える）。
-        fn rebar() -> RcRebar {
-            RcRebar {
-                main_x: BarSet {
-                    count: 3,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 3,
-                    dia: 22.0,
-                    layers: 1,
-                },
+        // 実配筋の検証を通すため名目値を与える）。
+        fn column_rebar() -> RcRectColumnRebar {
+            use squid_n_core::section_shape::RectColumnHoop;
+            RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![3],
+                y: vec![3],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            }
+        }
+
+        fn beam_rebar() -> RcBeamRebar {
+            use squid_n_core::section_shape::BeamStirrup;
+            RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![3],
+                bottom: vec![3],
+                cover: 40.0,
+                stirrup: BeamStirrup {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
@@ -292,18 +304,18 @@ mod tests {
                 fc: Some(24.0),
                 fy: None,
             });
-            let mut col_sec = SectionShape::RcRect {
+            let mut col_sec = SectionShape::RcColumnRect {
                 b: 300.0,
                 d: 300.0,
-                rebar: rebar(),
+                rebar: column_rebar(),
             }
             .to_section(SectionId(0), "柱 RC 300x300".into());
             col_sec.material = Some(MaterialId(0));
             model.sections.push(col_sec);
-            let mut beam_sec = SectionShape::RcRect {
+            let mut beam_sec = SectionShape::RcBeamRect {
                 b: 300.0,
                 d: 400.0,
-                rebar: rebar(),
+                rebar: beam_rebar(),
             }
             .to_section(SectionId(1), "梁 RC 300x400".into());
             beam_sec.material = Some(MaterialId(0));
