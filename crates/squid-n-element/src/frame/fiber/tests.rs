@@ -120,29 +120,23 @@ fn 有効断面性能を使うbeamとfiberのphiと整合質量が一致する()
 
 #[test]
 fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 4,
-            dia: 19.0,
-            layers: 2,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 19.0,
-            layers: 2,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 19.0,
+        x: vec![4],
+        y: vec![4],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 10.0,
             pitch: 150.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
     for (shape, main_category, with_rebar, with_steel) in [
         (
-            SectionShape::RcRect {
+            SectionShape::RcColumnRect {
                 b: 500.0,
                 d: 600.0,
                 rebar: rebar.clone(),
@@ -152,7 +146,7 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
             false,
         ),
         (
-            SectionShape::SrcRect {
+            SectionShape::SrcColumnRect {
                 b: 500.0,
                 d: 600.0,
                 rebar: rebar.clone(),
@@ -264,28 +258,22 @@ fn rc_src_cftの材料領域質量はbeamとfiberの全成分で一致する() {
 
 #[test]
 fn srcファイバーは内蔵鋼材のstrength_factorを使う() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
     let mut model = build_test_model(Some(78846.15));
-    model.sections[0].shape = Some(SectionShape::SrcRect {
+    model.sections[0].shape = Some(SectionShape::SrcColumnRect {
         b: 500.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 19.0,
-                layers: 2,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 19.0,
-                layers: 2,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 19.0,
+            x: vec![4],
+            y: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 150.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
         steel_height: 400.0,
@@ -1410,25 +1398,19 @@ fn test_torsional_stiffness_and_internal_force() {
 #[test]
 fn 不正な質量特性でもfiberはlumpedで生成できconsistentで失敗する() {
     let mut model = build_test_model(Some(78846.15));
-    model.sections[0].shape = Some(squid_n_core::section_shape::SectionShape::RcRect {
+    model.sections[0].shape = Some(squid_n_core::section_shape::SectionShape::RcColumnRect {
         b: 400.0,
         d: 400.0,
-        rebar: squid_n_core::section_shape::RcRebar {
-            main_x: squid_n_core::section_shape::BarSet {
-                count: 0,
-                dia: 0.0,
-                layers: 0,
-            },
-            main_y: squid_n_core::section_shape::BarSet {
-                count: 0,
-                dia: 0.0,
-                layers: 0,
-            },
+        rebar: squid_n_core::section_shape::RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![],
+            y: vec![],
             cover: 0.0,
-            shear: squid_n_core::section_shape::ShearBar {
+            hoop: squid_n_core::section_shape::RectColumnHoop {
                 dia: 0.0,
                 pitch: 0.0,
-                legs: 0,
+                legs_x: 0,
+                legs_y: 0,
             },
         },
     });
@@ -2078,31 +2060,25 @@ fn test_plastic_zone_checkpoint_roundtrip() {
     }
 }
 
-/// RC 断面（RcRect＋配筋）のファイバー柱は、コンクリート格子に加えて主筋が
+/// RC 断面（矩形柱＋配筋）のファイバー柱は、コンクリート格子に加えて主筋が
 /// 点ファイバーとして分離配置される。
-/// RC 断面（RcRect＋配筋、500 角・Fc30）のファイバー柱モデル。
+/// RC 断面（矩形柱＋配筋、500 角・Fc30）のファイバー柱モデル。
 fn rc_fiber_model() -> Model {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 500.0,
         d: 500.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 25.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 25.0,
-                layers: 1,
-            },
-            cover: 50.0,
-            shear: ShearBar {
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     };
@@ -2192,7 +2168,10 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         gp.section.fibers.len()
     );
     let rebar_count = gp.section.fibers.iter().filter(|f| f.material == 1).count();
-    assert_eq!(rebar_count, 16, "主筋本数（上下8＋側面8）: {rebar_count}");
+    assert_eq!(
+        rebar_count, 12,
+        "主筋本数（交点を共有して12）: {rebar_count}"
+    );
     let max_abs_z = gp
         .section
         .fibers
@@ -3130,25 +3109,16 @@ fn test_steel_box_fibers_are_hollow() {
 /// π·d²/4 と一致し、主筋が材料区分 1 で分離配置されることを検証する。
 #[test]
 fn test_rc_circle_fibers_match_circle_area() {
-    let rebar = squid_n_core::section_shape::RcRebar {
-        main_x: squid_n_core::section_shape::BarSet {
-            count: 4,
-            dia: 22.0,
-            layers: 1,
-        },
-        main_y: squid_n_core::section_shape::BarSet {
-            count: 4,
-            dia: 22.0,
-            layers: 1,
-        },
+    let rebar = squid_n_core::section_shape::RcCircleColumnRebar {
+        main_dia: 22.0,
+        count: 8,
         cover: 40.0,
-        shear: squid_n_core::section_shape::ShearBar {
+        hoop: squid_n_core::section_shape::CircleColumnHoop {
             dia: 10.0,
             pitch: 100.0,
-            legs: 2,
         },
     };
-    let shape = squid_n_core::section_shape::SectionShape::RcCircle { d: 600.0, rebar };
+    let shape = squid_n_core::section_shape::SectionShape::RcColumnCircle { d: 600.0, rebar };
     let (sec, _mats) = build_gauss_fibers(
         600.0,
         600.0,

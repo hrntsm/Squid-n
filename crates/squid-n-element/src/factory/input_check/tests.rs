@@ -6,7 +6,7 @@ use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
     EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory, Node, Section,
 };
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
 fn steel_material() -> Material {
     Material {
@@ -64,22 +64,16 @@ fn rc_section() -> Section {
 }
 
 fn rc_section_shape() -> Section {
-    SectionShape::RcRect {
+    use squid_n_core::section_shape::BeamStirrup;
+    SectionShape::RcBeamRect {
         b: 400.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 6,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![6],
+            bottom: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            stirrup: BeamStirrup {
                 dia: 10.0,
                 pitch: 200.0,
                 legs: 2,
@@ -350,10 +344,10 @@ fn src_section() -> Section {
 /// 内蔵鉄骨・鉄筋の材料を割り当てていない SRC 断面。
 fn src_section_bare() -> Section {
     let rebar = match rc_section().shape {
-        Some(SectionShape::RcRect { rebar, .. }) => rebar,
+        Some(SectionShape::RcBeamRect { rebar, .. }) => rebar,
         _ => unreachable!(),
     };
-    SectionShape::SrcRect {
+    SectionShape::SrcBeamRect {
         b: 500.0,
         d: 700.0,
         rebar,

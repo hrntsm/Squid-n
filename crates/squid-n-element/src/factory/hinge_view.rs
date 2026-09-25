@@ -264,7 +264,9 @@ mod tests {
         Constraint, EndCondition, ForceRegime, HysteresisModel, LocalAxis, Material,
         MaterialCategory, Node, Section,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{
+        RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
+    };
 
     /// 剛床所属の水平梁・鉛直柱を持つ小モデル。梁 [0,1] は集中ばね、
     /// 柱 [0,2] はファイバーに判定される。
@@ -356,22 +358,16 @@ mod tests {
     }
 
     fn rc_shape() -> SectionShape {
-        SectionShape::RcRect {
+        use squid_n_core::section_shape::BeamStirrup;
+        SectionShape::RcBeamRect {
             b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
                 cover: 50.0,
-                shear: ShearBar {
+                stirrup: BeamStirrup {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
@@ -380,26 +376,39 @@ mod tests {
         }
     }
 
-    fn src_shape() -> SectionShape {
-        SectionShape::SrcRect {
-            b: 500.0,
+    fn rc_column_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
+            b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
                 cover: 50.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+    }
+
+    fn src_shape() -> SectionShape {
+        SectionShape::SrcColumnRect {
+            b: 500.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 50.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
             steel_height: 400.0,
@@ -756,7 +765,7 @@ mod tests {
     /// 曲面を返さない（表示 API の「近似は返さない」契約）。
     #[test]
     fn concrete_shape_without_fc_returns_no_surface() {
-        let mut model = make_model(Some(rc_shape()), None);
+        let mut model = make_model(Some(rc_column_shape()), None);
         model.materials[0].category = MaterialCategory::Concrete;
         let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
         let issue = crate::factory::input_check::member_strength_issue(&col, &model)
@@ -926,6 +935,7 @@ mod tests {
     #[test]
     fn src_shape_without_steel_material_returns_no_surface() {
         let mut model = make_model(Some(src_shape()), Some(24.0));
+        model.materials[0].category = MaterialCategory::Concrete;
         model.materials.push(Material {
             strength_factor: None,
             concrete_class: Default::default(),
