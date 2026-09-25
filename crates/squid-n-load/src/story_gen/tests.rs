@@ -4320,23 +4320,20 @@ fn two_story_model_with_shapes(
 }
 
 fn rc_rect_shape() -> squid_n_core::section_shape::SectionShape {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-    let bars = BarSet {
-        count: 4,
-        dia: 22.0,
-        layers: 1,
-    };
-    squid_n_core::section_shape::SectionShape::RcRect {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+    squid_n_core::section_shape::SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: bars.clone(),
-            main_y: bars,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     }
