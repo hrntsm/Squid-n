@@ -22,25 +22,33 @@ mod tests {
 
     // ===== max_width_thickness テスト =====
 
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{
+        CircleColumnHoop, RcCircleColumnRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
+    };
 
-    fn dummy_rebar() -> RcRebar {
-        RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 16.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 16.0,
-                layers: 1,
-            },
+    fn dummy_rect_rebar() -> RcRectColumnRebar {
+        RcRectColumnRebar {
+            main_dia: 16.0,
+            x: vec![2],
+            y: vec![2],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        }
+    }
+
+    fn dummy_circle_rebar() -> RcCircleColumnRebar {
+        RcCircleColumnRebar {
+            main_dia: 16.0,
+            count: 8,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
             },
         }
     }
@@ -141,15 +149,15 @@ mod tests {
     /// RC 断面は幅厚比の概念がないため None
     #[test]
     fn test_max_width_thickness_rc_is_none() {
-        let rect = SectionShape::RcRect {
+        let rect = SectionShape::RcColumnRect {
             b: 500.0,
             d: 500.0,
-            rebar: dummy_rebar(),
+            rebar: dummy_rect_rebar(),
         };
         assert!(max_width_thickness(&rect).is_none());
-        let circle = SectionShape::RcCircle {
+        let circle = SectionShape::RcColumnCircle {
             d: 600.0,
-            rebar: dummy_rebar(),
+            rebar: dummy_circle_rebar(),
         };
         assert!(max_width_thickness(&circle).is_none());
     }
@@ -364,10 +372,10 @@ mod tests {
     /// RC・角形以外の対象外形状は None。
     #[test]
     fn test_s_member_rank_by_kihon_unsupported_shape_is_none() {
-        let rc = SectionShape::RcRect {
+        let rc = SectionShape::RcColumnRect {
             b: 500.0,
             d: 500.0,
-            rebar: dummy_rebar(),
+            rebar: dummy_rect_rebar(),
         };
         assert!(s_member_rank_by_kihon(&rc, SteelMemberUse::Column, "SN400B").is_none());
 

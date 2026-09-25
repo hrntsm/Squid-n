@@ -260,28 +260,7 @@ pub(crate) fn beam_deflection_component(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::section_shape::{one_bar_area, BarSet, ShearBar};
-
-    fn sample_rebar(cover: f64, pitch: f64, dia: f64, count: u32) -> RcRebar {
-        RcRebar {
-            cover,
-            main_x: BarSet {
-                dia,
-                count,
-                layers: 1,
-            },
-            main_y: BarSet {
-                dia,
-                count: 0,
-                layers: 1,
-            },
-            shear: ShearBar {
-                dia: 10.0,
-                pitch,
-                legs: 2,
-            },
-        }
-    }
+    use squid_n_core::section_shape::one_bar_area;
 
     fn sample_info(cover: f64, pitch: f64, dia: f64, count: u32) -> RcRebarInfo {
         RcRebarInfo {
@@ -338,23 +317,18 @@ mod tests {
         // 帯筋 Aw=2·78.5、ピッチ 100 → pw(b)=Aw/(b·s)。
         // b=800, d=400 → pw_d < pw_b。pw_d = 157/(400·100)=0.003925 ≥ 0.2%。
         // ピッチを大きくして pw_d だけ 0.2% 未満にする。
-        let rebar = sample_rebar(40.0, 250.0, 22.0, 4);
-        let shape = SectionShape::RcRect {
-            b: 800.0,
-            d: 400.0,
-            rebar: rebar.clone(),
-        };
-        let p = column_provisions(
-            &shape,
-            &rebar,
+        let info = sample_info(40.0, 250.0, 22.0, 4);
+        let p = column_provisions_info(
+            &info,
             400.0,
             4000.0,
             ConcreteClass::Normal,
             true,
             800.0 * 400.0,
-            4.0 * std::f64::consts::PI * 11.0 * 11.0,
+            info.main_area,
             0.0,
             24.0,
+            2.0 * one_bar_area(10.0) / (800.0 * 250.0),
         );
         // pw_d = 2·(π·5²)/(400·250) ≈ 0.00157 < 0.002
         assert!(
@@ -385,27 +359,21 @@ mod tests {
 
     #[test]
     fn column_short_axial_warns_below_fc_over_3() {
-        let rebar = sample_rebar(40.0, 100.0, 22.0, 4);
-        let shape = SectionShape::RcRect {
-            b: 400.0,
-            d: 400.0,
-            rebar: rebar.clone(),
-        };
+        let info = sample_info(40.0, 100.0, 22.0, 4);
         let ag = 400.0 * 400.0;
-        let as_total = 4.0 * std::f64::consts::PI * 11.0 * 11.0;
         let fc = 24.0;
         // σ = 1.0 < Fc/3=8 → 警告
-        let low = column_provisions(
-            &shape,
-            &rebar,
+        let low = column_provisions_info(
+            &info,
             400.0,
             4000.0,
             ConcreteClass::Normal,
             false,
             ag,
-            as_total,
+            info.main_area,
             1.0 * ag,
             fc,
+            2.0 * one_bar_area(10.0) / (400.0 * 100.0),
         );
         assert!(
             low.warnings
@@ -415,17 +383,17 @@ mod tests {
             low.warnings
         );
         // σ = 10.0 > Fc/3=8 → 警告なし
-        let ok = column_provisions(
-            &shape,
-            &rebar,
+        let ok = column_provisions_info(
+            &info,
             400.0,
             4000.0,
             ConcreteClass::Normal,
             false,
             ag,
-            as_total,
+            info.main_area,
             10.0 * ag,
             fc,
+            2.0 * one_bar_area(10.0) / (400.0 * 100.0),
         );
         assert!(
             ok.warnings.iter().all(|w| !w.contains("短期軸応力度")),
@@ -437,25 +405,19 @@ mod tests {
     #[test]
     fn column_slenderness_uses_passed_span_length() {
         // d_min/L: 400/7000 < 1/15 → 警告、400/5000 > 1/15 → なし
-        let rebar = sample_rebar(40.0, 100.0, 22.0, 8);
-        let shape = SectionShape::RcRect {
-            b: 400.0,
-            d: 400.0,
-            rebar: rebar.clone(),
-        };
+        let info = sample_info(40.0, 100.0, 22.0, 8);
         let ag = 400.0 * 400.0;
-        let as_total = 8.0 * std::f64::consts::PI * 11.0 * 11.0;
-        let slender = column_provisions(
-            &shape,
-            &rebar,
+        let slender = column_provisions_info(
+            &info,
             400.0,
             7000.0,
             ConcreteClass::Normal,
             true,
             ag,
-            as_total,
+            info.main_area,
             0.0,
             24.0,
+            2.0 * one_bar_area(10.0) / (400.0 * 100.0),
         );
         assert!(
             slender
@@ -465,17 +427,17 @@ mod tests {
             "warnings={:?}",
             slender.warnings
         );
-        let ok = column_provisions(
-            &shape,
-            &rebar,
+        let ok = column_provisions_info(
+            &info,
             400.0,
             5000.0,
             ConcreteClass::Normal,
             true,
             ag,
-            as_total,
+            info.main_area,
             0.0,
             24.0,
+            2.0 * one_bar_area(10.0) / (400.0 * 100.0),
         );
         assert!(
             ok.warnings.iter().all(|w| !w.contains("最小径/支点間距離")),

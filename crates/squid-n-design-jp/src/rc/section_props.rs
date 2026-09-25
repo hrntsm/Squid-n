@@ -2,10 +2,7 @@
 //!
 //! [`AxisProps`] — 検討方向 1 軸分の断面諸元。
 //! [`one_bar_area`] — 主筋 1 本あたりの断面積（core の再エクスポート）。
-//! [`rect_axis_props`] — 矩形断面 1 軸分の断面諸元。
-//! [`rect_axis_props_strong`] — 強軸曲げ（mz）用の断面諸元。
-//! [`rect_axis_props_weak`] — 弱軸曲げ（my）用の断面諸元。
-//! [`circle_axis_props`] — 円形柱の等価矩形断面諸元。
+//! 実配筋形状から矩形・円形断面の 1 軸分の断面諸元を算定する。
 //! [`RcRebarInfo`] — 構造規定・付着検定用の鉄筋情報（中立型）。
 //! [`rebar_info_from_shape`] — 断面形状から鉄筋情報を引く。
 //!
@@ -184,46 +181,32 @@ pub(crate) fn rebar_info_from_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::SectionId;
     use squid_n_core::section_shape::{
         BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
-        RectColumnHoop, ShearBar,
+        RectColumnHoop,
     };
 
-    fn old_rect_rebar() -> RcRebar {
-        RcRebar {
-            main_x: BarSet {
-                count: 6,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+    fn rect_rebar() -> RcRectColumnRebar {
+        RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![2],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         }
     }
 
-    fn old_rect_shape() -> SectionShape {
-        SectionShape::RcRect {
+    fn rect_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
             b: 300.0,
             d: 600.0,
-            rebar: old_rect_rebar(),
+            rebar: rect_rebar(),
         }
-    }
-
-    fn old_rect_section() -> Section {
-        let mut sec = Section::zero(SectionId(0), "test".to_string());
-        sec.width = 300.0;
-        sec.depth = 600.0;
-        sec
     }
 
     fn beam_shape() -> SectionShape {
@@ -279,10 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn test_axis_props_from_shape_old_rect_matches_legacy() {
-        let shape = old_rect_shape();
-        let rebar = old_rect_rebar();
-        let sec = old_rect_section();
+    fn test_axis_props_from_shape_rect() {
+        let shape = rect_shape();
         let a1 = one_bar_area(22.0);
         let a10 = one_bar_area(10.0);
 
@@ -295,16 +276,6 @@ mod tests {
         assert!((strong.ac - 3.0 * a1).abs() < 1e-9);
         assert!((strong.j - 7.0 * 539.0 / 8.0).abs() < 1e-9);
         assert!((strong.pw - 2.0 * a10 / (300.0 * 100.0)).abs() < 1e-15);
-        let legacy_strong = rect_axis_props_strong(&sec, &rebar);
-        assert_eq!(strong.b, legacy_strong.b);
-        assert_eq!(strong.d_full, legacy_strong.d_full);
-        assert_eq!(strong.dt, legacy_strong.dt);
-        assert_eq!(strong.d, legacy_strong.d);
-        assert_eq!(strong.at, legacy_strong.at);
-        assert_eq!(strong.ac, legacy_strong.ac);
-        assert_eq!(strong.j, legacy_strong.j);
-        assert_eq!(strong.pw, legacy_strong.pw);
-
         let weak = axis_props_from_shape(&shape, RcDirection::Weak, true).unwrap();
         assert!((weak.b - 600.0).abs() < 1e-9);
         assert!((weak.d_full - 300.0).abs() < 1e-9);
@@ -312,15 +283,6 @@ mod tests {
         assert!((weak.d - 239.0).abs() < 1e-9);
         assert!((weak.at - 2.0 * a1).abs() < 1e-9);
         assert!((weak.ac - 2.0 * a1).abs() < 1e-9);
-        let legacy_weak = rect_axis_props_weak(&sec, &rebar);
-        assert_eq!(weak.b, legacy_weak.b);
-        assert_eq!(weak.d_full, legacy_weak.d_full);
-        assert_eq!(weak.dt, legacy_weak.dt);
-        assert_eq!(weak.d, legacy_weak.d);
-        assert_eq!(weak.at, legacy_weak.at);
-        assert_eq!(weak.ac, legacy_weak.ac);
-        assert_eq!(weak.j, legacy_weak.j);
-        assert_eq!(weak.pw, legacy_weak.pw);
     }
 
     #[test]
@@ -366,22 +328,21 @@ mod tests {
     }
 
     #[test]
-    fn test_axis_props_from_shape_old_circle_matches_legacy() {
-        let rebar = old_rect_rebar();
-        let shape = SectionShape::RcCircle {
+    fn test_axis_props_from_shape_circle() {
+        let shape = SectionShape::RcColumnCircle {
             d: 600.0,
-            rebar: rebar.clone(),
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 6,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
         };
         let p = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
-        let legacy = circle_axis_props(600.0, &rebar);
-        assert_eq!(p.b, legacy.b);
-        assert_eq!(p.d_full, legacy.d_full);
-        assert_eq!(p.dt, legacy.dt);
-        assert_eq!(p.d, legacy.d);
-        assert_eq!(p.at, legacy.at);
-        assert_eq!(p.ac, legacy.ac);
-        assert_eq!(p.j, legacy.j);
-        assert_eq!(p.pw, legacy.pw);
+        assert!(p.at > 0.0 && p.pw > 0.0);
     }
 
     #[test]
@@ -413,42 +374,36 @@ mod tests {
         assert!(axis_props_from_shape(&steel, RcDirection::Strong, true).is_none());
     }
 
-    fn old_rect_layered_shape() -> SectionShape {
-        SectionShape::RcRect {
+    fn rect_layered_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
             b: 300.0,
             d: 600.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 6,
-                    dia: 22.0,
-                    layers: 2,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![4],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         }
     }
 
     #[test]
-    fn test_rebar_info_from_shape_old_rect() {
-        let info = rebar_info_from_shape(&old_rect_layered_shape(), true).unwrap();
+    fn test_rebar_info_from_shape_rect() {
+        let info = rebar_info_from_shape(&rect_layered_shape(), true).unwrap();
         assert!((info.main_dia - 22.0).abs() < 1e-9);
-        assert_eq!(info.main_count, 10);
-        assert_eq!(info.main_count_per_side, 6);
-        assert!((info.main_area - 10.0 * one_bar_area(22.0)).abs() < 1e-9);
-        assert_eq!(info.tension_count, 6);
-        assert_eq!(info.tension_layers, 2);
-        assert!((info.tension_first_layer_count - 3.0).abs() < 1e-9);
-        assert!((info.tension_count_1991 - 3.0).abs() < 1e-9);
+        assert_eq!(info.main_count, 12);
+        assert_eq!(info.main_count_per_side, 4);
+        assert!((info.main_area - 12.0 * one_bar_area(22.0)).abs() < 1e-9);
+        assert_eq!(info.tension_count, 12);
+        assert_eq!(info.tension_layers, 1);
+        assert!((info.tension_first_layer_count - 12.0).abs() < 1e-9);
+        assert!((info.tension_count_1991 - 12.0).abs() < 1e-9);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);
         assert!(!info.is_circle);
     }
@@ -499,9 +454,17 @@ mod tests {
 
     #[test]
     fn test_rebar_info_from_shape_circle() {
-        let circle = SectionShape::RcCircle {
+        let circle = SectionShape::RcColumnCircle {
             d: 600.0,
-            rebar: old_rect_rebar(),
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 6,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
         };
         let info = rebar_info_from_shape(&circle, true).unwrap();
         assert!((info.main_dia - 22.0).abs() < 1e-9);
@@ -511,7 +474,7 @@ mod tests {
         assert_eq!(info.tension_count, 6);
         assert_eq!(info.tension_layers, 1);
         assert!((info.tension_first_layer_count - 6.0).abs() < 1e-9);
-        assert!((info.tension_count_1991 - 3.0).abs() < 1e-9);
+        assert!((info.tension_count_1991 - 6.0).abs() < 1e-9);
         assert!((info.shear_pitch - 100.0).abs() < 1e-9);
         assert!(info.is_circle);
     }

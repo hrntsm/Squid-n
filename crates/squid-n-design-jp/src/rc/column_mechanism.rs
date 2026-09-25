@@ -355,36 +355,42 @@ mod tests {
             ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
             MaterialCategory, Node, RigidZone,
         };
-        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+        use squid_n_core::section_shape::{
+            BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+        };
         use squid_n_core::Dof6Mask;
 
-        let rebar = RcRebar {
+        let col_rebar = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![2],
+            y: vec![2],
             cover: 40.0,
-            main_x: BarSet {
-                dia: 22.0,
-                count: 4,
-                layers: 1,
-            },
-            main_y: BarSet {
-                dia: 22.0,
-                count: 4,
-                layers: 1,
-            },
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         };
-        let col_shape = SectionShape::RcRect {
+        let col_shape = SectionShape::RcColumnRect {
             b: 500.0,
             d: 500.0,
-            rebar: rebar.clone(),
+            rebar: col_rebar,
         };
-        let beam_shape = SectionShape::SrcRect {
+        let beam_shape = SectionShape::SrcBeamRect {
             b: 300.0,
             d: 600.0,
-            rebar,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
             steel_height: 400.0,
             steel_width: 200.0,
             steel_web_thick: 9.0,
@@ -714,16 +720,13 @@ mod tests {
         );
     }
 
-    /// 新型 `RcColumnRect` の ΣMy が旧 `RcRect` 相当断面と一致する。
+    /// 新型 `RcColumnRect` の ΣMy が段数違いの等価断面と一致する。
     ///
-    /// 最外段 4 本（`x:[4]`,`y:[4]`）と、旧の `main_x`/`main_y` = 8 本
-    /// （引張側 `at` = 8/2 = 4 本）を対応させ、軸力 0 では `ag` の差が
-    /// Mu に効かないため両者は一致する。
+    /// 最外段 4 本（`x:[4]`）は段構成（1段・2段）によらず引張側 `at` が等しく、
+    /// 軸力 0 では `Mu = 0.8·at·σy·D` のため両者は一致する。
     #[test]
     fn new_column_rect_sum_my_matches_legacy_equivalent() {
-        use squid_n_core::section_shape::{
-            BarSet, RcRebar, RcRectColumnRebar, RectColumnHoop, ShearBar,
-        };
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
 
         let new_shape = SectionShape::RcColumnRect {
             b: 600.0,
@@ -741,37 +744,32 @@ mod tests {
                 },
             },
         };
-        let old_shape = SectionShape::RcRect {
+        let equivalent_shape = SectionShape::RcColumnRect {
             b: 600.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![4],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         };
 
         let new_sum = sum_my_of(&column_only_model(new_shape));
-        let old_sum = sum_my_of(&column_only_model(old_shape));
+        let equivalent_sum = sum_my_of(&column_only_model(equivalent_shape));
 
         let (ns, nw) = (new_sum.0.unwrap(), new_sum.1.unwrap());
         assert!(ns > 0.0 && nw > 0.0, "new_sum={new_sum:?}");
         assert!(
-            (ns - old_sum.0.unwrap()).abs() < 1e-6 && (nw - old_sum.1.unwrap()).abs() < 1e-6,
-            "new={new_sum:?}, old={old_sum:?}"
+            (ns - equivalent_sum.0.unwrap()).abs() < 1e-6
+                && (nw - equivalent_sum.1.unwrap()).abs() < 1e-6,
+            "new={new_sum:?}, equivalent={equivalent_sum:?}"
         );
     }
 

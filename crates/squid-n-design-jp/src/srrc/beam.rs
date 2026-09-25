@@ -148,25 +148,39 @@ pub(crate) fn src_beam_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::srrc::src_rect_axis_props;
-    use crate::srrc::tests::{ctx_beam, make_material, make_section, src_rect_shape, zero_forces};
+    use crate::srrc::beam_axis_props;
+    use crate::srrc::tests::{
+        ctx_beam, make_material, make_section, src_beam_rect_shape, zero_forces,
+    };
     use crate::DesignCheck;
     use squid_n_core::section_shape::SectionShape;
 
     #[test]
     fn test_src_beam_moment_handcalc() {
-        let shape = src_rect_shape(
-            400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+        let shape = src_beam_rect_shape(
+            400.0,
+            700.0,
+            22.0,
+            vec![6, 2],
+            vec![6, 2],
+            40.0,
+            10.0,
+            100.0,
+            2,
+            500.0,
+            200.0,
+            9.0,
+            14.0,
         );
         let sec = make_section(shape.clone());
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
 
         let rebar = match &shape {
-            SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+            SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
-        let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+        let props = beam_axis_props(400.0, 700.0, &rebar, false);
         let ft = rebar_allowable_tension("SD345", 22.0, true);
         let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
         let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();

@@ -633,10 +633,10 @@ mod tests {
         let d_full = 400.0;
         let shape = rc_rect_shape(b, d_full, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
         let rebar = match &shape {
-            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            SectionShape::RcColumnRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
-        let sec = make_section(shape);
+        let sec = make_section(shape.clone());
 
         let allow = rc_allow(
             24.0,
@@ -646,16 +646,16 @@ mod tests {
         );
         let ft = rebar_allowable_tension("SD345", 22.0, true);
 
-        let props_z = rect_axis_props_strong(&sec, &rebar);
+        let props_z = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
         let bm = beam_moment_capacity(&props_z, ft, allow.fc, allow.n_ratio);
 
         let gross_area = sec.width * sec.depth;
-        let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
+        let as_total = rebar.total_main_area();
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft, allow.n_ratio);
 
         let axis_z = ColumnAxis {
             props: props_z,
-            at_perp: bar_set_area(&rebar.main_y),
+            at_perp: rebar.y_direction_area_mm2(),
             ft,
         };
         let curve = column_nm_curve(&axis_z, &allow, na);
@@ -683,10 +683,10 @@ mod tests {
         let d_full = 400.0;
         let shape = rc_rect_shape(b, d_full, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let rebar = match &shape {
-            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            SectionShape::RcColumnRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
-        let sec = make_section(shape);
+        let sec = make_section(shape.clone());
 
         let allow = rc_allow(
             24.0,
@@ -695,14 +695,14 @@ mod tests {
             true,
         );
         let ft = rebar_allowable_tension("SD345", 19.0, true);
-        let props_z = rect_axis_props_strong(&sec, &rebar);
+        let props_z = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
         let gross_area = sec.width * sec.depth;
-        let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
+        let as_total = rebar.total_main_area();
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft, allow.n_ratio);
 
         let axis_z = ColumnAxis {
             props: props_z,
-            at_perp: bar_set_area(&rebar.main_y),
+            at_perp: rebar.y_direction_area_mm2(),
             ft,
         };
         let curve = column_nm_curve(&axis_z, &allow, na);
@@ -851,8 +851,7 @@ mod tests {
         );
     }
 
-    /// 旧 `RcRect` 柱の検定値が、`axis_props_from_shape` 経由で諸元を引いた
-    /// 場合と一致すること（新型移行後も旧柱の値を変えない回帰）。
+    /// `RcColumnRect` 柱の検定値が、`axis_props_from_shape` 経由の諸元と一致する。
     #[test]
     fn test_old_rect_column_check_matches_axis_props_from_shape() {
         let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 1, 40.0, 10.0, 100.0, 2);
@@ -872,7 +871,7 @@ mod tests {
             .unwrap_checked();
 
         let rebar = match &shape {
-            SectionShape::RcRect { rebar, .. } => rebar,
+            SectionShape::RcColumnRect { rebar, .. } => rebar,
             _ => unreachable!(),
         };
         let allow = rc_allow(
@@ -882,15 +881,14 @@ mod tests {
             false,
         );
         let props_z = axis_props_from_shape(&shape, RcDirection::Strong, true).unwrap();
-        let ft = rebar_allowable_tension("SD345", rebar.main_x.dia, false);
-        let ft_axial =
-            rebar_allowable_tension("SD345", rebar.main_x.dia.max(rebar.main_y.dia), false);
+        let ft = rebar_allowable_tension("SD345", rebar.main_dia, false);
+        let ft_axial = rebar_allowable_tension("SD345", rebar.main_dia, false);
         let gross_area = sec.width * sec.depth;
-        let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
+        let as_total = rebar.total_main_area();
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft_axial, allow.n_ratio);
         let axis_z = ColumnAxis {
             props: props_z,
-            at_perp: bar_set_area(&rebar.main_y),
+            at_perp: rect_column_at_perp(as_total, props_z.at, props_z.ac),
             ft,
         };
         let ma_z = interp_ma(&column_nm_curve(&axis_z, &allow, na), -forces.n);
@@ -898,7 +896,7 @@ mod tests {
 
         assert!(
             (r.ratio() - expected).abs() < 1e-9,
-            "旧 RcRect 柱の検定比が axis_props_from_shape 経由と一致しない: {} vs {}",
+            "RcColumnRect 柱の検定比が axis_props_from_shape 経由と一致しない: {} vs {}",
             r.ratio(),
             expected
         );

@@ -11,8 +11,15 @@ use squid_n_core::section_shape::{
     RectColumnHoop, SectionShape,
 };
 
-/// テスト用の矩形 RC 断面（b×d, main_x=main_y, 帯筋 D10@pitch）。
-fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitch: f64) -> Section {
+/// テスト用の梁矩形 RC 断面（上下各 `main_count` 本、帯筋 D10@pitch）。
+fn rc_beam_rect_section(
+    id: u32,
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    main_count: u32,
+    pitch: f64,
+) -> Section {
     let rebar = RcBeamRebar {
         main_dia,
         top: vec![main_count],
@@ -40,6 +47,50 @@ fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitc
         thickness: None,
         shape: Some(SectionShape::RcBeamRect { b, d, rebar }),
         // 材料は断面が持つ。主筋・せん断補強筋も同じ材料（SD345）とする。
+        material: Some(MaterialId(0)),
+        rebar_material: Some(MaterialId(0)),
+        shear_rebar_material: Some(MaterialId(0)),
+        steel_material: None,
+    }
+}
+
+/// テスト用の柱矩形 RC 断面（`x:[nx]`・`y:[ny]`、帯筋 D10@pitch）。
+fn rc_column_rect_section(
+    id: u32,
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    nx: u32,
+    ny: u32,
+    pitch: f64,
+) -> Section {
+    let rebar = RcRectColumnRebar {
+        main_dia,
+        x: vec![nx],
+        y: vec![ny],
+        cover: 40.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    };
+    Section {
+        id: SectionId(id),
+        name: format!("RC{id}"),
+        area: b * d,
+        iy: b * d.powi(3) / 12.0,
+        iz: d * b.powi(3) / 12.0,
+        j: 1.0,
+        depth: d,
+        width: b,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: Some(SectionShape::RcColumnRect { b, d, rebar }),
         material: Some(MaterialId(0)),
         rebar_material: Some(MaterialId(0)),
         shear_rebar_material: Some(MaterialId(0)),
@@ -102,8 +153,8 @@ fn column_and_beam_model() -> Model {
         node(2, [6000.0, 0.0, 3000.0]), // 梁: 水平
     ];
     let sections = vec![
-        rc_rect_section(0, 600.0, 600.0, 25.0, 8, 100.0), // 柱断面
-        rc_rect_section(1, 400.0, 700.0, 25.0, 6, 100.0), // 梁断面
+        rc_column_rect_section(0, 600.0, 600.0, 25.0, 4, 4, 100.0), // 柱断面
+        rc_beam_rect_section(1, 400.0, 700.0, 25.0, 4, 100.0),      // 梁断面
     ];
     let materials = vec![material()];
     let elements = vec![

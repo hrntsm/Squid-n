@@ -10,8 +10,8 @@ use squid_n_core::model::{
     MaterialCategory, Model, Node, RigidZone, Section,
 };
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRebar,
-    RcRectColumnRebar, RectColumnHoop, SectionShape, ShearBar,
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
 };
 
 use super::*;
@@ -49,20 +49,13 @@ fn line_elem(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
     }
 }
 
-fn rc_rebar() -> RcRebar {
-    RcRebar {
-        main_x: BarSet {
-            count: 8,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 0,
-            dia: 25.0,
-            layers: 1,
-        },
+fn rc_beam_rebar() -> RcBeamRebar {
+    RcBeamRebar {
+        main_dia: 25.0,
+        top: vec![4],
+        bottom: vec![4],
         cover: 40.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch: 200.0,
             legs: 2,
@@ -71,10 +64,10 @@ fn rc_rebar() -> RcRebar {
 }
 
 fn rc_girder_section(id: u32) -> Section {
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 800.0,
-        rebar: rc_rebar(),
+        rebar: rc_beam_rebar(),
     };
     with_rc_materials(shape.to_section(SectionId(id), format!("G{id}")))
 }
@@ -105,25 +98,19 @@ fn rebar_material(id: u32) -> Material {
 }
 
 fn rc_column_section(id: u32) -> Section {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 25.0,
-            layers: 1,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![4],
+        y: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 13.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 700.0,
         d: 700.0,
         rebar,
@@ -332,7 +319,7 @@ fn test_rc_column_rebar() {
         .find(|i| i.category == MemberCategory::Column)
         .unwrap();
 
-    // 主筋: X 6 本 + Y 4 本、各 H=3.5m
+    // 主筋: 固有本数 2·4+2·3−4=10 本、各 H=3.5m
     let total_main_len: f64 = col
         .rebar
         .iter()

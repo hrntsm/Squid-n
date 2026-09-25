@@ -239,7 +239,7 @@ mod tests {
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
         Node, PcaBeamAttr, RigidZone,
     };
-    use squid_n_core::section_shape::{BarSet, BeamStirrup, RcBeamRebar, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
 
     #[test]
     fn moment_zero_distance_symmetric_beam() {
@@ -396,31 +396,6 @@ mod tests {
         }
     }
 
-    fn rc_rect_shape() -> SectionShape {
-        SectionShape::RcRect {
-            b: 400.0,
-            d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 6,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 19.0,
-                    layers: 1,
-                },
-                cover: 40.0,
-                shear: ShearBar {
-                    dia: 10.0,
-                    pitch: 150.0,
-                    legs: 2,
-                },
-            },
-        }
-    }
-
     fn rc_beam_rect_shape() -> SectionShape {
         SectionShape::RcBeamRect {
             b: 400.0,
@@ -453,7 +428,7 @@ mod tests {
     /// 使用限界の τxy は手計算（Q・Sy/(b・I)）と一致する。
     #[test]
     fn collect_pca_checks_returns_four_rows_and_service_matches_hand_calc() {
-        let model = pca_beam_model(rc_rect_shape(), Some(default_pca_attr()));
+        let model = pca_beam_model(rc_beam_rect_shape(), Some(default_pca_attr()));
         let forces: Vec<(f64, [f64; 6])> = vec![
             (0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, -100.0e6]),
             (0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 50.0e6]),
@@ -544,7 +519,7 @@ mod tests {
     /// PCa 属性が未登録のモデルは空を返す。
     #[test]
     fn collect_pca_checks_empty_without_attrs() {
-        let model = pca_beam_model(rc_rect_shape(), None);
+        let model = pca_beam_model(rc_beam_rect_shape(), None);
         let forces: Vec<(f64, [f64; 6])> = vec![(0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 0.0])];
         let member_forces = vec![(ElemId(0), forces.as_slice())];
         assert!(collect_pca_checks(&model, &member_forces, false).is_empty());

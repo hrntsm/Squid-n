@@ -163,25 +163,19 @@ mod tests {
     }
 
     fn sample_src_shape() -> SectionShape {
-        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-        SectionShape::SrcRect {
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        SectionShape::SrcColumnRect {
             b: 600.0,
             d: 600.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 8,
-                    dia: 25.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 25.0,
-                    layers: 1,
-                },
-                shear: ShearBar {
+            rebar: RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![4],
+                y: vec![2],
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
                 cover: 40.0,
             },
@@ -204,9 +198,9 @@ mod tests {
         // sZp = 200·13·(400−13) + 8·374²/4 = 1_006_200 + 279_752 = 1_285_952
         // sM0 = 1_285_952·235 = 302_198_720 N·mm
         let s_m0 = 1_285_952.0 * 235.0;
-        // ar = (8+4)·π/4·25² ≈ 5890.49、at = 8 本/2 側 → 4 本分 ≈ 1963.50
+        // ar = 固有本数 2·4+2·2−4=8 本分、at = 最外段 x:[4] の 4 本分
         let one = std::f64::consts::PI / 4.0 * 25.0 * 25.0;
-        let ar = 12.0 * one;
+        let ar = 8.0 * one;
         let at = 4.0 * one;
         // Ac = 600·600 − 8192 − ar、N0 = Ac·24 + 8192·235 + ar·345
         let ac = 600.0 * 600.0 - 8192.0 - ar;
@@ -227,10 +221,10 @@ mod tests {
         let shape = sample_src_shape();
         assert!(src_column_rank_ratios(&shape, "SN400B", 0.0, 345.0, 0.0).is_none());
         assert!(src_column_rank_ratios(&shape, "SN400B", 24.0, 0.0, 0.0).is_none());
-        let SectionShape::SrcRect { rebar, .. } = sample_src_shape() else {
+        let SectionShape::SrcColumnRect { rebar, .. } = sample_src_shape() else {
             unreachable!()
         };
-        let rc = SectionShape::RcRect {
+        let rc = SectionShape::RcColumnRect {
             b: 600.0,
             d: 600.0,
             rebar,

@@ -6,8 +6,7 @@ use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{
-    BarSet, BeamStirrup, RcBeamRebar, RcRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
-    ShearBar,
+    BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
 };
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
@@ -58,25 +57,19 @@ pub(crate) fn src_rect_shape(
     steel_web_thick: f64,
     steel_flange_thick: f64,
 ) -> SectionShape {
-    SectionShape::SrcRect {
+    SectionShape::SrcColumnRect {
         b,
         d,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
-            main_y: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia,
+            x: vec![main_count / 2; main_layers as usize],
+            y: vec![main_count / 2; main_layers as usize],
             cover,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: shear_dia,
                 pitch: shear_pitch,
-                legs: shear_legs,
+                legs_x: shear_legs,
+                legs_y: shear_legs,
             },
         },
         steel_height,
@@ -253,14 +246,26 @@ pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
 
 #[test]
 fn test_src_beam_shear_split_handcalc() {
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
 
     let q = 200_000.0;
@@ -309,14 +314,26 @@ fn test_src_beam_shear_split_handcalc() {
 fn test_src_shear_pw_capped_at_0_6_percent_both_terms() {
     // 過大なせん断補強筋比（pw > 0.6%）を与え、算定に使われる pw が
     // 0.6% に頭打ちされることを確認する。
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 30.0, 4, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        13.0,
+        30.0,
+        4,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     assert!(props.pw > 0.006, "テストの前提として pw > 0.6% が必要");
 
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
@@ -372,10 +389,10 @@ fn test_src_column_short_rc_allowable_has_no_alpha() {
         400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = column_axis_props(400.0, 700.0, &rebar, true);
     let fs = concrete_allowable_shear(24.0, false);
     let w_ft = rebar_allowable_shear("SD345", false);
     let ctx = ctx_column(LoadTerm::Short);
@@ -427,10 +444,10 @@ fn test_src_column_long_combined_formula() {
         400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = column_axis_props(400.0, 700.0, &rebar, true);
     let fs = concrete_allowable_shear(24.0, true);
     let ctx = ctx_column(LoadTerm::Long);
     let seismic = SrcSeismicCtx {
@@ -591,14 +608,26 @@ fn test_src_supported_shear_rebar_fy_missing_skip() {
 #[test]
 fn test_src_beam_seismic_qd2_handcalc() {
     use crate::QdMethod;
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
@@ -678,14 +707,26 @@ fn test_src_beam_seismic_qd2_handcalc() {
 #[test]
 fn test_src_beam_seismic_qd1_handcalc() {
     use crate::QdMethod;
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);

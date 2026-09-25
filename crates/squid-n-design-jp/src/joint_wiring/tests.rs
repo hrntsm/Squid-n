@@ -550,29 +550,23 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
 /// 算定・出力される（付帯柱の主筋量が得られる壁のみ）。
 #[test]
 fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
 
     let mut model = wall_model(None);
     // 四周のうち両側の鉛直辺（ElemId 3・4）へ 600×600 RC 側柱の断面を与える。
-    let col_shape = SectionShape::RcRect {
+    let col_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![4],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     };
@@ -630,35 +624,42 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
 /// RC 十字形接合部で終局検定（Vju/Qdu）の「接合部終局(RC)」チェックが出力される。
 #[test]
 fn rc_cross_joint_emits_ultimate_check() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
 
-    let rebar = |count: u32, dia: f64| RcRebar {
-        main_x: BarSet {
-            count,
-            dia,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count,
-            dia,
-            layers: 1,
-        },
+    let col_rebar = |count: u32, dia: f64| RcRectColumnRebar {
+        main_dia: dia,
+        x: vec![count / 2],
+        y: vec![count / 2],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    };
+    let beam_rebar = |count: u32, dia: f64| RcBeamRebar {
+        main_dia: dia,
+        top: vec![count],
+        bottom: vec![count],
+        cover: 40.0,
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
         },
     };
-    let col_shape = SectionShape::RcRect {
+    let col_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: rebar(8, 25.0),
+        rebar: col_rebar(8, 25.0),
     };
-    let beam_shape = SectionShape::RcRect {
+    let beam_shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar(6, 25.0),
+        rebar: beam_rebar(6, 25.0),
     };
 
     // 中央節点 0 に上下柱・左右梁が取り付く十字形接合部。

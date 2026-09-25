@@ -237,11 +237,8 @@ fn test_shear_alpha_formula_and_clamps() {
 fn test_pw_ratio_capped_long_term() {
     // 過大なせん断補強筋比を作り、長期は 0.6% に制限されることを確認する。
     let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 13.0, 30.0, 4);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+    let props = axis_props_from_shape(&shape, crate::ultimate::rc_props::RcDirection::Strong, true)
+        .unwrap();
     assert!(props.pw > 0.006, "テストの前提として pw > 0.6% が必要");
 
     let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", true);
@@ -257,11 +254,8 @@ fn test_pw_ratio_capped_long_term() {
 #[test]
 fn test_beam_shear_damage_control_vs_safety() {
     let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+    let props = axis_props_from_shape(&shape, crate::ultimate::rc_props::RcDirection::Strong, true)
+        .unwrap();
     let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", false);
     let alpha = 1.4;
 
@@ -305,11 +299,8 @@ fn test_beam_shear_damage_control_vs_safety() {
 #[test]
 fn test_beam_shear_damage_control_wft_cap_sd490() {
     let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+    let props = axis_props_from_shape(&shape, crate::ultimate::rc_props::RcDirection::Strong, true)
+        .unwrap();
     assert!(props.pw > 0.002, "テストの前提として pw > 0.002 が必要");
 
     // 材料表の w_ft は SD490 短期 = 490 のまま（クランプは検定時のみ）。
@@ -339,11 +330,8 @@ fn test_beam_shear_damage_control_wft_cap_sd490() {
 #[test]
 fn test_column_safety_check_excludes_alpha() {
     let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props_strong(&make_section(shape), &rebar);
+    let props = axis_props_from_shape(&shape, crate::ultimate::rc_props::RcDirection::Strong, true)
+        .unwrap();
 
     // 柱の「安全確保のための検討」式は α を含まない。普通強度せん断補強筋で、
     // 手計算の期待値 b・j・(fs + 0.5・w_ft・(pw − 0.002)) と照合する。
@@ -377,11 +365,8 @@ fn test_column_safety_check_excludes_alpha() {
 #[test]
 fn test_column_long_term_shear_has_no_rebar_term() {
     let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 60.0, 4);
-    let rebar = match &shape {
-        SectionShape::RcRect { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let props = rect_axis_props_strong(&make_section(shape), &rebar);
+    let props = axis_props_from_shape(&shape, crate::ultimate::rc_props::RcDirection::Strong, true)
+        .unwrap();
     let allow = rc_allow(24.0, ConcreteClass::Normal, "SD345", true);
     let alpha = 1.3;
     let qal = shear_capacity(&props, &allow, alpha, LoadTerm::Long, true, true);
@@ -504,7 +489,7 @@ fn test_rc_unsupported_shear_rebar_grade_skip() {
 /// fy を設定すれば検定する。
 #[test]
 fn test_rc_supported_shear_rebar_fy_missing_skip() {
-    let sec = make_section(rc_rect_shape(
+    let sec = make_section(rc_beam_shape(
         300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2,
     ));
     let mat = make_material(24.0, "SD345");
@@ -545,24 +530,15 @@ fn test_rc_supported_shear_rebar_fy_missing_skip() {
 
 #[test]
 fn test_rc_circle_beam_and_column_smoke() {
-    let shape = SectionShape::RcCircle {
+    let shape = SectionShape::RcColumnCircle {
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcCircleColumnRebar {
+            main_dia: 22.0,
+            count: 12,
             cover: 40.0,
-            shear: ShearBar {
+            hoop: CircleColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 1,
             },
         },
     };
@@ -584,9 +560,12 @@ fn test_rc_circle_beam_and_column_smoke() {
     assert!(r_col.ratio().is_finite() && r_col.ratio() >= 0.0);
     assert!(r_col.basis.contains("円形柱"));
 
+    // 円形柱断面を梁部材に割り当てた場合は用途不一致として検定不能。
     let ctx_b = ctx_beam(LoadTerm::Short);
-    let r_beam = design.check(&forces, &sec, &mat, &ctx_b).unwrap_checked();
-    assert!(r_beam.ratio().is_finite() && r_beam.ratio() >= 0.0);
+    match design.check(&forces, &sec, &mat, &ctx_b) {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("用途不一致"), "{reason}"),
+        CheckOutcome::Checked(_) => panic!("柱用断面の梁割当は検定不能(Skipped)のはず"),
+    }
 }
 
 fn rc_beam_rect_shape() -> SectionShape {
@@ -765,62 +744,50 @@ fn test_rc_beam_rect_bending_depends_on_tension_side() {
     );
 }
 
-/// 旧 `RcCircle` の梁検定は従来どおり `circle_axis_props` の曲げ耐力を用いる。
+/// 新型 `RcColumnCircle` の柱検定は円形断面の曲げ耐力（N-M 相関）を用いる。
 #[test]
 fn test_rc_circle_beam_bending_matches_circle_axis_props() {
-    let shape = SectionShape::RcCircle {
+    let shape = SectionShape::RcColumnCircle {
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 12,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcCircleColumnRebar {
+            main_dia: 22.0,
+            count: 12,
             cover: 40.0,
-            shear: ShearBar {
+            hoop: CircleColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 1,
             },
         },
     };
-    let rebar = match &shape {
-        SectionShape::RcCircle { rebar, .. } => rebar.clone(),
-        _ => unreachable!(),
-    };
-    let sec = make_section(shape);
+    let sec = make_section(shape.clone());
     let mat = make_material(24.0, "SD345");
-    let ctx = ctx_beam(LoadTerm::Short);
-    let forces = MemberForcesAt {
+    let ctx = ctx_column(LoadTerm::Short);
+    let forces_at = |mz: f64| MemberForcesAt {
         pos: 0.0,
         n: 0.0,
         qy: 0.0,
         qz: 0.0,
         my: 0.0,
-        mz: 20_000_000.0,
+        mz,
     };
-    let r = RcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-    let bend = r
-        .components
-        .iter()
-        .find(|c| c.kind == crate::CheckKind::Bending)
-        .expect("Bending component")
-        .ratio;
+    let axial_bending = |mz: f64| {
+        RcDesign
+            .check(&forces_at(mz), &sec, &mat, &ctx)
+            .unwrap_checked()
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::AxialBending)
+            .expect("AxialBending component")
+            .ratio
+    };
 
-    let props = circle_axis_props(600.0, &rebar);
-    let ft = rebar_allowable_tension("SD345", rebar.main_x.dia, false);
-    let fc = concrete_allowable_compression(24.0, false);
-    let n_ratio = young_ratio_n(24.0);
-    let bm = super::beam::beam_moment_capacity(&props, ft, fc, n_ratio);
-    let expected = forces.mz.abs() / bm.ma;
+    // N=0 の円形柱は軸力比 0・曲げ比 (mz/MA)^2 の2乗則に従う。
+    let r20 = axial_bending(20_000_000.0);
+    let r40 = axial_bending(40_000_000.0);
+    assert!(r20 > 0.0 && r20.is_finite(), "r20={r20}");
     assert!(
-        (bend - expected).abs() / expected < 1e-9,
-        "bend={bend}, expected={expected}"
+        (r40 / r20 - 4.0).abs() < 1e-9,
+        "2乗則のはず: r20={r20}, r40={r40}"
     );
 }
 

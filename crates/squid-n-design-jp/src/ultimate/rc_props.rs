@@ -317,14 +317,14 @@ mod tests {
         let p = rc_bar_props(&column_rect_shape(), RcDirection::Strong, true, false).unwrap();
         let a1 = one_bar_area(22.0);
         let a10 = one_bar_area(10.0);
-        assert!((p.b_dir - 400.0).abs() < 1e-9);
-        assert!((p.d_dir - 600.0).abs() < 1e-9);
+        assert!((p.b_dir - 600.0).abs() < 1e-9);
+        assert!((p.d_dir - 700.0).abs() < 1e-9);
         assert!((p.at - 4.0 * a1).abs() < 1e-9);
         assert!((p.ac - 4.0 * a1).abs() < 1e-9);
         assert!((p.ag - 12.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
-        assert!((p.d_eff - 539.0).abs() < 1e-9);
-        assert!((p.pw - 2.0 * a10 / (400.0 * 100.0)).abs() < 1e-15);
+        assert!((p.d_eff - 639.0).abs() < 1e-9);
+        assert!((p.pw - 2.0 * a10 / (600.0 * 100.0)).abs() < 1e-15);
         assert_eq!(p.n_tension, 4);
         assert_eq!(p.shear_legs, 2);
         assert!(!p.top_bar);
@@ -336,18 +336,21 @@ mod tests {
     fn test_rc_rect_weak_props() {
         let p = rc_bar_props(&column_rect_shape(), RcDirection::Weak, true, false).unwrap();
         let a1 = one_bar_area(22.0);
-        assert!((p.b_dir - 600.0).abs() < 1e-9);
-        assert!((p.d_dir - 400.0).abs() < 1e-9);
-        assert!((p.at - 2.0 * a1).abs() < 1e-9);
+        let a10 = one_bar_area(10.0);
+        assert!((p.b_dir - 700.0).abs() < 1e-9);
+        assert!((p.d_dir - 600.0).abs() < 1e-9);
+        assert!((p.at - 4.0 * a1).abs() < 1e-9);
         assert!((p.dt - 61.0).abs() < 1e-9);
-        assert!((p.d_eff - 339.0).abs() < 1e-9);
-        assert_eq!(p.n_tension, 2);
+        assert!((p.d_eff - 539.0).abs() < 1e-9);
+        assert_eq!(p.n_tension, 4);
+        assert_eq!(p.shear_legs, 3);
+        assert!((p.pw - 3.0 * a10 / (700.0 * 100.0)).abs() < 1e-15);
     }
 
     #[test]
     fn test_rc_rect_ductility_be_ns() {
         let p = rc_bar_props(&column_rect_shape(), RcDirection::Strong, true, true).unwrap();
-        assert!((p.be - (400.0 - 2.0 * (40.0 + 5.0))).abs() < 1e-9);
+        assert!((p.be - (600.0 - 2.0 * (40.0 + 5.0))).abs() < 1e-9);
         assert_eq!(p.n_s, 0);
     }
 

@@ -405,11 +405,11 @@ pub(crate) fn src_column_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::srrc::column_axis_props;
     use crate::srrc::src_seismic_qd;
     use crate::srrc::tests::{
         ctx_column, make_material, make_section, src_column_shape, src_rect_shape, zero_forces,
     };
-    use crate::srrc::{bar_set_area, src_rect_axis_props};
     use crate::DesignCheck;
     use squid_n_core::section_shape::SectionShape;
     use squid_n_core::units::ConcreteClass;
@@ -599,11 +599,11 @@ mod tests {
 
         let shape = src_column_shape();
         let rebar = match &shape {
-            SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+            SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
-        let props_z = src_rect_axis_props(500.0, 500.0, &rebar.main_x, &rebar);
-        let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
+        let props_z = column_axis_props(500.0, 500.0, &rebar, true);
+        let as_total = rebar.total_main_area();
         // σy は断面の主筋材料から決まる（検定コンテキストと同じ材料を使う）。
         let rebar_mat = crate::srrc::tests::make_rebar_material("SD345", 345.0);
         let sigma_y = rebar_sigma_y_of(Some(&rebar_mat));

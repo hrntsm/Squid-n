@@ -282,7 +282,7 @@ pub(crate) fn beam_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rc::tests::{ctx_beam, make_material, make_section, rc_rect_shape};
+    use crate::rc::tests::{ctx_beam, make_material, make_section, rc_beam_shape};
     use crate::DesignCheck;
     use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
     use squid_n_core::units::ConcreteClass;
@@ -300,7 +300,7 @@ mod tests {
         // 短期・地震時: QL=20kN、当該組合せ Q=60kN → QE=40kN、
         // QD2 = 20+1.5×40 = 80kN（QD1 は ΣMy が大きく効かないよう長スパン）。
         let mat = make_material(24.0, "SD345");
-        let shape = rc_rect_shape(400.0, 700.0, 6, 22.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(400.0, 700.0, 6, 22.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape.clone());
         let forces = MemberForcesAt {
             pos: 0.0,
@@ -345,12 +345,13 @@ mod tests {
     #[test]
     fn test_beam_moment_light_reinforcement_tension_governs() {
         // 軽配筋（1段筋）: MA_t が支配するはず。
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
-        let rebar = match &shape {
-            SectionShape::RcBeamRect { rebar, .. } => rebar.clone(),
-            _ => unreachable!(),
-        };
-        let props = super::super::rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let props = crate::rc::section_props::axis_props_from_shape(
+            &shape,
+            crate::ultimate::rc_props::RcDirection::Strong,
+            false,
+        )
+        .unwrap();
         let ft = rebar_allowable_tension("SD345", 19.0, true);
         let fc = super::super::concrete_allowable_compression(24.0, true);
         let n_ratio = super::super::young_ratio_n(24.0);
@@ -364,13 +365,14 @@ mod tests {
 
     #[test]
     fn test_beam_moment_heavy_reinforcement_compression_governs() {
-        // 過大配筋（多段・多本数）: MA_c が MA_t を下回り支配するはず。
-        let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
-        let rebar = match &shape {
-            SectionShape::RcBeamRect { rebar, .. } => rebar.clone(),
-            _ => unreachable!(),
-        };
-        let props = super::super::rect_axis_props(300.0, 600.0, &rebar.main_x, &rebar);
+        // 重配筋（400×600・D25・上下各8本2段）: MA_c が MA_t を下回り支配するはず。
+        let shape = rc_beam_shape(400.0, 600.0, 4, 25.0, 2, 40.0, 10.0, 100.0, 2);
+        let props = crate::rc::section_props::axis_props_from_shape(
+            &shape,
+            crate::ultimate::rc_props::RcDirection::Strong,
+            false,
+        )
+        .unwrap();
         let ft = rebar_allowable_tension("SD345", 32.0, true);
         let fc = super::super::concrete_allowable_compression(24.0, true);
         let n_ratio = super::super::young_ratio_n(24.0);
@@ -382,8 +384,8 @@ mod tests {
 
     #[test]
     fn test_beam_mid_with_slab_uses_ma_t_only() {
-        // 過大配筋で MA_c < MA_t のとき、中央+スラブは MA_t のみ → 検定比が下がる。
-        let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
+        // 重配筋で MA_c < MA_t のとき、中央+スラブは MA_t のみ → 検定比が下がる。
+        let shape = rc_beam_shape(400.0, 600.0, 4, 25.0, 2, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape.clone());
         let mat = make_material(24.0, "SD345");
         let forces = MemberForcesAt {
@@ -431,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_beam_check_via_design_check_trait() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
@@ -454,7 +456,7 @@ mod tests {
     /// 型で保証されるため、ここでは内訳の内容のみ検証する）。
     #[test]
     fn test_beam_check_components_bending_and_shear() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
@@ -483,7 +485,7 @@ mod tests {
     /// （許容せん断応力度 fs の 0.9 倍低減が `mat.concrete_class` 経由で効いている）。
     #[test]
     fn test_beam_check_lightweight_reduces_capacity() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat_n = make_material(24.0, "SD345");
         let mat_l = make_material_class(24.0, "SD345", ConcreteClass::Lightweight1);
@@ -510,7 +512,7 @@ mod tests {
     #[test]
     fn test_beam_check_provision_error_on_cover() {
         // かぶり 20 mm → 構造規定エラー（中央で付記）。
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 20.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 20.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
@@ -534,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_beam_check_long_deflection_component() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mut mat = make_material(24.0, "SD345");
         mat.young = 21_000.0;
@@ -564,7 +566,7 @@ mod tests {
     #[test]
     fn test_beam_mid_negative_with_slab_keeps_min_ma() {
         // 中央+スラブでも負曲げ（mz≤0）は T 形略算せず min(MAt,MAc)。
-        let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(400.0, 600.0, 4, 25.0, 2, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape.clone());
         let mat = make_material(24.0, "SD345");
         let forces = MemberForcesAt {
@@ -611,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_beam_check_via_design_check_trait_includes_bond_detail() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let mut ctx = ctx_beam(LoadTerm::Short);
@@ -698,7 +700,7 @@ mod tests {
     #[test]
     fn test_beam_check_bond_skipped_without_length_regression() {
         // ctx.length が既定の 0.0 のままなら付着検定は省略され、曲げ・せん断比が変化しないこと。
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
@@ -719,7 +721,7 @@ mod tests {
     /// （Bending の detail に "MA_t=" が含まれ、Shear の detail には含まれない）。
     #[test]
     fn test_beam_check_detail_fragments_assigned_to_intended_components() {
-        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let shape = rc_beam_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
         let ctx = ctx_beam(LoadTerm::Long);
