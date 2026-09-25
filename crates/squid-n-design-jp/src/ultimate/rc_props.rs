@@ -1,7 +1,7 @@
 //! 断面形状から RC 検定方向の諸元を導く中立型。
 //!
-//! 旧 [`squid_n_core::section_shape::RcRebar`] 経路と新実配筋モデル経路の差異を
-//! [`rc_bar_props`] が吸収し、検定ロジックへ共通の [`RcBarProps`] を渡す。
+//! 実配筋モデル（梁・矩形柱・円形柱）の差異を [`rc_bar_props`] が吸収し、
+//! 検定ロジックへ共通の [`RcBarProps`] を渡す。
 
 use squid_n_core::rc_rebar_geom::RectEdge;
 use squid_n_core::section_shape::{
@@ -17,7 +17,7 @@ pub(crate) enum RcDirection {
     Weak,
 }
 
-/// RC 検定方向の諸元。旧 RcRebar 経路と新実配筋モデル経路を共通化する。
+/// RC 検定方向の諸元。実配筋モデルの各用途を共通化する。
 ///
 /// `b_dir`・`d_dir` は検討方向の幅・せい [mm]、`at`・`ac`・`ag` は引張側・圧縮側・
 /// 全主筋断面積 [mm²]、`dt` は引張縁〜引張鉄筋重心 [mm]、`d_eff` は有効せい [mm]、

@@ -221,9 +221,7 @@ mod tests {
         use squid_n_core::model::{
             Material, MaterialCategory, WallPlate, WallPlateShape, WallRegion,
         };
-        use squid_n_core::section_shape::{
-            RcBeamRebar, RcRectColumnRebar, SectionShape,
-        };
+        use squid_n_core::section_shape::{RcBeamRebar, RcRectColumnRebar, SectionShape};
 
         // 主筋 3-D22・せん断補強筋 D10@100（`剛域`の算定自体は鉄筋量を見ないが、
         // 実配筋の検証を通すため名目値を与える）。
