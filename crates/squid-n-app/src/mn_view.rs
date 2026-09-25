@@ -202,12 +202,9 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     let is_rc = matches!(
         shape,
         Some(
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
-                | SectionShape::SrcRect { .. }
                 | SectionShape::SrcBeamRect { .. }
                 | SectionShape::SrcColumnRect { .. }
         )
@@ -388,10 +385,7 @@ fn section_depth(shape: &SectionShape) -> f64 {
         SectionShape::SteelBuiltH { height, .. } => height,
         SectionShape::SteelLipChannel { height, .. } => height,
         SectionShape::SteelPipe { outer_dia, .. } => outer_dia,
-        SectionShape::RcRect { d, .. }
-        | SectionShape::RcCircle { d, .. }
-        | SectionShape::SrcRect { d, .. }
-        | SectionShape::RcBeamRect { d, .. }
+        SectionShape::RcBeamRect { d, .. }
         | SectionShape::RcColumnRect { d, .. }
         | SectionShape::RcColumnCircle { d, .. }
         | SectionShape::SrcBeamRect { d, .. }
@@ -782,26 +776,20 @@ mod tests {
     use super::*;
 
     fn rc_rect(b: f64, d: f64) -> SectionShape {
-        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-        SectionShape::RcRect {
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        SectionShape::RcColumnRect {
             b,
             d,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 3,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 3,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![3],
+                y: vec![2],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         }

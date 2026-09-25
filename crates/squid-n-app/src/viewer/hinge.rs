@@ -2006,25 +2006,18 @@ mod tests {
 
     /// キャッシュキーのテスト用モデル（RC 断面形状つき。ファイバー曲面生成用）。
     fn key_test_model_rc() -> Model {
-        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+        use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
         let mut model = key_test_model();
-        model.sections[0].shape = Some(SectionShape::RcRect {
+        model.sections[0].shape = Some(SectionShape::RcBeamRect {
             b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
                 cover: 50.0,
-                shear: ShearBar {
+                stirrup: squid_n_core::section_shape::BeamStirrup {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,

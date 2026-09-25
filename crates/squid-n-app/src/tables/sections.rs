@@ -31,10 +31,7 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
         SectionMaterialRole::Main => true,
         SectionMaterialRole::Rebar | SectionMaterialRole::ShearRebar => matches!(
             shape,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-                | SectionShape::RcBeamRect { .. }
+            SectionShape::RcBeamRect { .. }
                 | SectionShape::RcColumnRect { .. }
                 | SectionShape::RcColumnCircle { .. }
                 | SectionShape::SrcBeamRect { .. }
@@ -43,9 +40,7 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
         ),
         SectionMaterialRole::Steel => matches!(
             shape,
-            SectionShape::SrcRect { .. }
-                | SectionShape::SrcBeamRect { .. }
-                | SectionShape::SrcColumnRect { .. }
+            SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }
         ),
     }
 }
