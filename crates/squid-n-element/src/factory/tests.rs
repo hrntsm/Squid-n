@@ -836,6 +836,48 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
 }
 
 #[test]
+fn test_src_beam_alpha_y_falls_back_to_default() {
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
+
+    let mut model = make_diaphragm_model();
+    let beam = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(beam.clone());
+    model.sections[0].shape = Some(SectionShape::SrcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![2],
+            bottom: vec![2],
+            cover: 50.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    });
+    assert!((flexural_alpha_y(&beam, &model) - 0.3).abs() < 1e-12);
+}
+
+#[test]
 fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
     use squid_n_core::model::HysteresisModel;
     use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};

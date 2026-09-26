@@ -203,8 +203,7 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
         return DEFAULT_ALPHA_Y;
     };
     let (b, d, at, d_eff) = match shape {
-        SectionShape::RcBeamRect { b, d, rebar }
-        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+        SectionShape::RcBeamRect { b, d, rebar } => {
             let bottom = rebar.bending_steel(*d, false).tension;
             let top = rebar.bending_steel(*d, true).tension;
             let steel = if bottom.area_mm2 <= top.area_mm2 {
