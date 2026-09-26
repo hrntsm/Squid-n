@@ -72,8 +72,9 @@ fn strong_tension_is_top(shape: &SectionShape, mz: f64, need_be: bool) -> bool {
     }
 }
 
-/// 1 部材の終局検定を実行する（対応断面以外・Fc 未設定は `Ok(None)`、
-/// せん断補強筋に未対応グレードまたは `fy` 未設定がある場合は `Err`）。
+/// 1 部材の終局検定を実行する（対応断面以外は `Ok(None)`、
+/// RC 矩形なのに Fc・主筋降伏強度・配筋・有効せいが不整合なら部材 ID 付きで `Err`、
+/// せん断補強筋に未対応グレードまたは `fy` 未設定がある場合も `Err`）。
 fn check_member(
     elem: &ElementData,
     sec: &Section,
@@ -92,10 +93,16 @@ fn check_member(
         _ => return Ok(None),
     };
     let Some(fc) = mat.fc else {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} のコンクリート強度 Fc が未設定です",
+            elem.id.0
+        ));
     };
     if fc <= 0.0 || b <= 0.0 || d <= 0.0 {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} の Fc または断面寸法が不正です",
+            elem.id.0
+        ));
     }
     if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
         model.element_shear_rebar_material(elem),
@@ -114,14 +121,20 @@ fn check_member(
     let Some(sigma_y) =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))
     else {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} の主筋の降伏強度を解決できません",
+            elem.id.0
+        ));
     };
     let l_clear = clear_span(elem, model);
 
     let need_be = opts.shear_method == ShearMethod::Ductility;
     let tension_is_top = strong_tension_is_top(shape, demand.mz, need_be);
     let Some(p) = rc_bar_props(shape, RcDirection::Strong, tension_is_top, need_be) else {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} の配筋形状が不正または有効せいが 0 以下です",
+            elem.id.0
+        ));
     };
     let jt = 7.0 * p.d_eff / 8.0;
     let at = p.at;
@@ -339,8 +352,10 @@ fn check_member(
 ///   設計用曲げモーメント）。柱の Mu・軸余裕度・2 軸曲げ余裕度に用いる。該当 ID がない
 ///   部材は需要 0（安全側）で評価する。軸力は長期（G+P）静的、曲げ需要は当該組合せの
 ///   応答値を渡すことを想定する。
-/// - 対象外（RC用途別断面以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
+/// - 対象外（RC用途別断面以外・断面未解決・形状不明の材料未解決）の部材は
 ///   結果に含めない。
+/// - RC 矩形部材で Fc 未設定・Fc/断面寸法不正・主筋降伏強度未解決・配筋不整合・
+///   有効せい ≤ 0 の場合は、部材 ID を含む理由を `Err` で返す。
 /// - 検定対象の部材でせん断補強筋に未対応グレードまたは `fy` 未設定がある場合は、
 ///   部材 ID と是正内容を含む理由を `Err` で返す。
 pub fn collect_rc_ultimate_checks(
@@ -353,7 +368,18 @@ pub fn collect_rc_ultimate_checks(
         let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
             continue;
         };
+        let is_rc = matches!(
+            sec.shape.as_ref(),
+            Some(
+                SectionShape::RcBeamRect { .. }
+                    | SectionShape::RcColumnRect { .. }
+                    | SectionShape::RcColumnCircle { .. }
+            )
+        );
         let Some(mat) = model.element_material(elem) else {
+            if is_rc {
+                return Err(format!("部材 ID {} の材料が未設定です", elem.id.0));
+            }
             continue;
         };
         let demand = demand_by_elem

@@ -812,9 +812,10 @@ fn test_ultimate_check_new_rc_shapes_supported() {
     assert!(checks[0].axial.is_some());
 }
 
-/// 実配筋が幾何的に成立しない新モデル断面は、終局検定の対象外（結果に含めない）。
+/// 実配筋が幾何的に成立しない新モデル断面は、終局検定の入力不備として
+/// 部材 ID 付きで停止する（無言スキップしない）。
 #[test]
-fn test_ultimate_inconsistent_rebar_skipped() {
+fn test_ultimate_inconsistent_rebar_errors() {
     let opts = UltimateShearOptions::default();
     let shape = SectionShape::RcColumnRect {
         b: 600.0,
@@ -833,8 +834,9 @@ fn test_ultimate_inconsistent_rebar_skipped() {
         },
     };
     let model = single_shape_model(shape, 600.0, 700.0, false);
-    let checks = collect_rc_ultimate_checks(&model, &[], &opts).unwrap();
-    assert!(checks.is_empty(), "{checks:?}");
+    let err = collect_rc_ultimate_checks(&model, &[], &opts).unwrap_err();
+    assert!(err.contains("部材 ID 0"), "{err}");
+    assert!(err.contains("配筋形状"), "{err}");
 }
 
 /// 矩形柱・円形柱の Mu が軸力 0 の手計算（0.8·at·σy·D）に一致する。
