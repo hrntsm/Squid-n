@@ -24,6 +24,18 @@ pub(super) fn check_rc_joint(
         .filter(|b| matches!(b.sec.shape, Some(SectionShape::RcBeamRect { .. })))
         .collect();
     if let (Some(col), false) = (rc_col, rc_beams.is_empty()) {
+        if let Some(reason) = joint_rebar_issue(col, &rc_beams) {
+            for label in ["接合部(RC)", "接合部終局(RC)"] {
+                out.push((
+                    nid,
+                    label.to_string(),
+                    CheckOutcome::Skipped {
+                        reason: reason.clone(),
+                    },
+                ));
+            }
+            return;
+        }
         let shape = match (cols.len() >= 2, rc_beams.len() >= 2) {
             (true, true) => JointShape::Cross,
             (false, true) => JointShape::Tee,
@@ -163,6 +175,36 @@ pub(super) fn check_rc_joint(
                 }),
             ));
     }
+}
+
+/// 接合部に用いる柱・梁の実配筋幾何を検証する。不整合があれば理由を返す。
+fn joint_rebar_issue(col: &MemberInfo<'_>, beams: &[&&MemberInfo<'_>]) -> Option<String> {
+    match col.sec.shape {
+        Some(SectionShape::RcColumnRect { b, d, ref rebar }) => {
+            if let Err(err) = rebar.validate(b, d) {
+                return Some(format!("柱の実配筋の幾何が不整合です（{err}）。断面タブで段別本数・かぶり・断面寸法を見直してください。"));
+            }
+        }
+        Some(SectionShape::RcColumnCircle { d, ref rebar }) => {
+            if let Err(err) = rebar.validate(d) {
+                return Some(format!("柱の実配筋の幾何が不整合です（{err}）。断面タブで段別本数・かぶり・断面寸法を見直してください。"));
+            }
+        }
+        _ => {}
+    }
+    for b in beams {
+        if let Some(SectionShape::RcBeamRect {
+            b: bw,
+            d,
+            ref rebar,
+        }) = b.sec.shape
+        {
+            if let Err(err) = rebar.validate(bw, d) {
+                return Some(format!("梁の実配筋の幾何が不整合です（{err}）。断面タブで段別本数・かぶり・断面寸法を見直してください。"));
+            }
+        }
+    }
+    None
 }
 
 /// 新 `RcBeamRect` の曲げ引張側。`mz>0` は下端引張、`mz<0` は上端引張、

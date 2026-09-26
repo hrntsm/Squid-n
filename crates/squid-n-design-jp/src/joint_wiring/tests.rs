@@ -640,10 +640,10 @@ fn rc_cross_joint_emits_ultimate_check() {
             legs_y: 2,
         },
     };
-    let beam_rebar = |count: u32, dia: f64| RcBeamRebar {
+    let beam_rebar = |top: Vec<u32>, bottom: Vec<u32>, dia: f64| RcBeamRebar {
         main_dia: dia,
-        top: vec![count],
-        bottom: vec![count],
+        top,
+        bottom,
         cover: 40.0,
         stirrup: BeamStirrup {
             dia: 10.0,
@@ -659,7 +659,7 @@ fn rc_cross_joint_emits_ultimate_check() {
     let beam_shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: beam_rebar(6, 25.0),
+        rebar: beam_rebar(vec![4], vec![4], 25.0),
     };
 
     // 中央節点 0 に上下柱・左右梁が取り付く十字形接合部。
@@ -961,6 +961,82 @@ fn rc_cross_joint_new_types_emits_checks() {
             .unwrap_or_else(|| panic!("{label} が出力されるはず"));
         let cr = found.2.clone().unwrap_checked();
         assert!(cr.ratio().is_finite(), "{label} ratio={}", cr.ratio());
+    }
+}
+
+/// 実配筋の幾何が不整合な梁が取り付く接合部は、RC 接合部検定を実施せず
+/// 検定不能として理由を示す。不整合な集約値で検定比を作らない。
+#[test]
+fn rc_joint_with_invalid_beam_rebar_is_skipped() {
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
+
+    let col_shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    };
+    let beam_shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 25.0,
+            top: vec![0],
+            bottom: vec![6],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    if let SectionShape::RcBeamRect { b, d, ref rebar } = beam_shape {
+        assert!(rebar.validate(b, d).is_err());
+    } else {
+        unreachable!();
+    }
+    let model = cross_joint_model(col_shape, beam_shape);
+
+    let col_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let beam_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let member_forces: Vec<(ElemId, ForcesAt)> = vec![
+        (ElemId(0), &col_f),
+        (ElemId(1), &col_f),
+        (ElemId(2), &beam_f),
+        (ElemId(3), &beam_f),
+    ];
+
+    let checks = collect_joint_checks(&model, &member_forces, LoadTerm::Short);
+    for label in ["接合部(RC)", "接合部終局(RC)"] {
+        let found = checks
+            .iter()
+            .find(|(_, l, _)| l == label)
+            .unwrap_or_else(|| panic!("{label} が出力されるはず"));
+        match &found.2 {
+            CheckOutcome::Skipped { reason } => {
+                assert!(reason.contains("幾何が不整合"), "{label} reason={reason}");
+            }
+            CheckOutcome::Checked(_) => panic!("{label} は不整合時に検定してはならない"),
+        }
     }
 }
 
