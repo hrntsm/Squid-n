@@ -99,6 +99,7 @@ fn aligns_exclusively(
     s > sp + 1e-12 || ((s - sp).abs() <= 1e-12 && prefer_on_tie)
 }
 
+/// 梁の略算降伏モーメント。上下の大きい方（安全側。柱 QD1 の過小を避ける）を用いる。
 fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
     let sec = elem
         .section
@@ -130,7 +131,7 @@ fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
         SectionShape::RcBeamRect { .. } => {
             let top = axis_props_from_shape(shape, RcDirection::Strong, true)?;
             let bottom = axis_props_from_shape(shape, RcDirection::Strong, false)?;
-            Some(mu_of(top)?.min(mu_of(bottom)?))
+            Some(mu_of(top)?.max(mu_of(bottom)?))
         }
         _ => None,
     }
@@ -682,9 +683,9 @@ mod tests {
         model
     }
 
-    /// 上下非対称の `RcBeamRect` は ΣMy に小さい引張側（下端引張）の My を用いる。
+    /// 上下非対称の `RcBeamRect` は ΣMy に大きい引張側（上端引張）の My を用いる。
     #[test]
-    fn new_beam_rect_sum_my_uses_smaller_tension_side() {
+    fn new_beam_rect_sum_my_uses_larger_tension_side() {
         use squid_n_core::section_shape::{one_bar_area, BeamStirrup, RcBeamRebar};
 
         let beam = |top: Vec<u32>, bottom: Vec<u32>| SectionShape::RcBeamRect {
@@ -711,12 +712,12 @@ mod tests {
         let col_my = 0.8 * 4.0 * a1 * sigma_y * 700.0;
         let beam_bottom = 0.9 * 2.0 * a1 * sigma_y * 539.0;
         let beam_top = 0.9 * 4.0 * a1 * sigma_y * 539.0;
-        let expected = col_my + 0.5 * beam_bottom;
-        let if_top_tension = col_my + 0.5 * beam_top;
+        let expected = col_my + 0.5 * beam_top;
+        let if_bottom_tension = col_my + 0.5 * beam_bottom;
         assert!((s - expected).abs() < 1e-6, "s={s}, expected={expected}");
         assert!(
-            (s - if_top_tension).abs() > 1.0,
-            "上端引張を採用してはならない: s={s}"
+            (s - if_bottom_tension).abs() > 1.0,
+            "下端引張を採用してはならない: s={s}"
         );
     }
 
