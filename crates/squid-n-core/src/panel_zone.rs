@@ -387,12 +387,11 @@ pub fn beam_panel_depth(sec: &Section) -> f64 {
     }
 }
 
-#[cfg(all(test, any()))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::SectionId;
     use crate::model::MaterialCategory;
-    use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
     fn sec(shape: SectionShape, depth: f64, panel_thickness: Option<f64>) -> Section {
         Section {
@@ -670,22 +669,19 @@ mod tests {
 
     /// RC 矩形断面。
     fn rc_rect_shape(b: f64, d: f64) -> SectionShape {
-        let bars = BarSet {
-            dia: 25.0,
-            count: 4,
-            layers: 1,
-        };
-        SectionShape::RcRect {
+        SectionShape::RcColumnRect {
             b,
             d,
-            rebar: RcRebar {
-                main_x: bars.clone(),
-                main_y: bars,
+            rebar: crate::section_shape::RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![4],
+                y: vec![4],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: crate::section_shape::RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         }

@@ -21,7 +21,7 @@ mod properties;
 mod shear;
 mod types;
 
-#[cfg(all(test, any()))]
+#[cfg(test)]
 mod tests;
 
 pub use composite::{CftCoreProps, CompositeProps};
