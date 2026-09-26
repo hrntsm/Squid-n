@@ -2660,24 +2660,33 @@ fn rc_hinge_model() -> (
 /// RC 主筋文脈: fy 未設定（既定 SD345=345）の RC 矩形で、`compute_hinge_thresholds`
 /// の My が主筋の材料強度係数（一律1.1）を乗じた σy=345×1.1 の
 /// `rc_mu_simple` 相当になることを確認する。
+/// 矩形柱は強軸・弱軸の小さい方に一致する。
 #[test]
 fn test_compute_hinge_thresholds_rc_rebar_uses_material_strength_factor() {
     let (model, rebar, b, d) = rc_hinge_model();
     let thresholds = compute_hinge_thresholds(&model);
 
-    let edge = rebar.edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d);
-    let expected_my = rc_mu_simple(&RcCapacityInput {
-        b: 1.0,
-        d,
-        at: edge.area_mm2,
-        d_eff: edge.effective_depth_mm,
-        sigma_y: 345.0 * 1.1,
-        fc: 24.0,
-        pw: 0.0,
-        sigma_wy: 0.0,
-        clear_span: 1.0,
-        sigma_0: 0.0,
-    });
+    let strong = rebar.edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Top, b, d);
+    let weak = rebar.edge_steel(squid_n_core::rc_rebar_geom::RectEdge::Left, b, d);
+    let my_of = |at: f64, d_eff: f64, depth: f64| {
+        rc_mu_simple(&RcCapacityInput {
+            b: 1.0,
+            d: depth,
+            at,
+            d_eff,
+            sigma_y: 345.0 * 1.1,
+            fc: 24.0,
+            pw: 0.0,
+            sigma_wy: 0.0,
+            clear_span: 1.0,
+            sigma_0: 0.0,
+        })
+    };
+    let expected_my = my_of(strong.area_mm2, strong.effective_depth_mm, d).min(my_of(
+        weak.area_mm2,
+        weak.effective_depth_mm,
+        b,
+    ));
     assert!(
         (thresholds[0].my - expected_my).abs() < 1e-6,
         "my={} expected={}",
