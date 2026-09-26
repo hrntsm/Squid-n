@@ -74,9 +74,11 @@ fn face_shade(quad: &[[f32; 3]; 4]) -> f32 {
 fn base_color(shape: Option<&SectionShape>) -> egui::Color32 {
     match shape {
         Some(
-            SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::SrcRect { .. }
+            SectionShape::RcBeamRect { .. }
+            | SectionShape::RcColumnRect { .. }
+            | SectionShape::RcColumnCircle { .. }
+            | SectionShape::SrcBeamRect { .. }
+            | SectionShape::SrcColumnRect { .. }
             | SectionShape::RcWall { .. }
             | SectionShape::RcSlab { .. },
         ) => theme::GRAY_300,
@@ -244,10 +246,11 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
                 [-h, -b],
             ]
         }
-        SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. } => {
-            rect_outline(*d, *b)
-        }
-        SectionShape::RcCircle { d, .. } => circle_outline(*d),
+        SectionShape::RcBeamRect { b, d, .. }
+        | SectionShape::RcColumnRect { b, d, .. }
+        | SectionShape::SrcBeamRect { b, d, .. }
+        | SectionShape::SrcColumnRect { b, d, .. } => rect_outline(*d, *b),
+        SectionShape::RcColumnCircle { d, .. } => circle_outline(*d),
         SectionShape::CftBox { height, width, .. } => rect_outline(*height, *width),
         SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => return None,
     };

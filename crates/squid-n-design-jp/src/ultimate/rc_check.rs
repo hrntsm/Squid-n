@@ -1,25 +1,23 @@
-//! RC 矩形部材の終局検定ドライバ。
+//! RC梁・矩形柱・円形柱の終局検定ドライバ。
 //!
 //! - [`UltimateCheck`] — 1 部材分の終局検定結果。
-//! - [`collect_rc_ultimate_checks`] — モデルの RC 矩形部材を一括検定する。
+//! - [`collect_rc_ultimate_checks`] — モデルの RC梁・矩形柱・円形柱を一括検定する。
 
 use crate::MemberKind;
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::{ElementData, Material, Model, Section};
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
-use squid_n_core::rc_rebar_geom::{pw_ratio, rebar_tension_dt};
-use squid_n_core::section_shape::{bar_set_area, SectionShape};
+use squid_n_core::section_shape::{one_bar_area, SectionShape};
 
 use super::geometry::clear_span;
 use super::options::{MemberDemand, ShearMethod, UltimateShearOptions};
 use super::rc_axial::{rc_column_axial_ultimate, RcAxialUltimate};
+use super::rc_props::{rc_bar_props, RcDirection};
 use super::rc_shear::{
     bond_reliable_strength_deformed, rc_shear_qbu_bond, BondStrengthInput, RcBondSplitInput,
 };
 use super::rc_shear_ductility::{rc_shear_vbu_ductility, RcVbuInput};
-use super::rc_strength::{
-    biaxial_margin, column_axis_shear, column_mu, ductility_be_ns, member_shear_strength,
-};
+use super::rc_strength::{biaxial_margin, column_axis_shear, column_mu, member_shear_strength};
 
 /// 1 部材分の終局検定結果。
 #[derive(Clone, Debug)]
@@ -56,8 +54,27 @@ pub struct UltimateCheck {
     pub detail: String,
 }
 
-/// 1 部材の終局検定を実行する（`RcRect` 以外・Fc 未設定は `Ok(None)`、
-/// せん断補強筋に未対応グレードまたは `fy` 未設定がある場合は `Err`）。
+/// 強軸曲げの引張側。`mz > 0` は下端引張、`mz < 0` は上端引張、`mz == 0` は
+/// 上下の引張鉄筋量 `at` が小さい側を引張とする。
+fn strong_tension_is_top(shape: &SectionShape, mz: f64, need_be: bool) -> bool {
+    if mz < 0.0 {
+        return true;
+    }
+    if mz > 0.0 {
+        return false;
+    }
+    let at_top = rc_bar_props(shape, RcDirection::Strong, true, need_be).map(|p| p.at);
+    let at_bottom = rc_bar_props(shape, RcDirection::Strong, false, need_be).map(|p| p.at);
+    match (at_top, at_bottom) {
+        (Some(t), Some(b)) => t < b,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// 1 部材の終局検定を実行する（対応断面以外は `Ok(None)`、
+/// RC梁・矩形柱・円形柱なのに Fc・主筋降伏強度・配筋・有効せいが不整合なら部材 ID 付きで `Err`、
+/// せん断補強筋に未対応グレードまたは `fy` 未設定がある場合も `Err`）。
 fn check_member(
     elem: &ElementData,
     sec: &Section,
@@ -66,15 +83,26 @@ fn check_member(
     demand: MemberDemand,
     opts: &UltimateShearOptions,
 ) -> Result<Option<UltimateCheck>, String> {
-    let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
+    let Some(shape) = sec.shape.as_ref() else {
         return Ok(None);
     };
-    let (b, d) = (*b, *d);
+    let (b, d, kind) = match shape {
+        SectionShape::RcBeamRect { b, d, .. } => (*b, *d, MemberKind::Beam),
+        SectionShape::RcColumnRect { b, d, .. } => (*b, *d, MemberKind::Column),
+        SectionShape::RcColumnCircle { d, .. } => (*d, *d, MemberKind::Column),
+        _ => return Ok(None),
+    };
     let Some(fc) = mat.fc else {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} のコンクリート強度 Fc が未設定です",
+            elem.id.0
+        ));
     };
     if fc <= 0.0 || b <= 0.0 || d <= 0.0 {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} の Fc または断面寸法が不正です",
+            elem.id.0
+        ));
     }
     if let Some(msg) = squid_n_core::material_grade::shear_rebar_material_issue(
         model.element_shear_rebar_material(elem),
@@ -90,30 +118,35 @@ fn check_member(
         ..opts.clone()
     };
     let opts = &opts_owned;
-    let kind = MemberKind::of_element(elem, model);
     let Some(sigma_y) =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))
     else {
-        return Ok(None);
+        return Err(format!(
+            "部材 ID {} の主筋の降伏強度を解決できません",
+            elem.id.0
+        ));
     };
     let l_clear = clear_span(elem, model);
 
-    let dt = rebar_tension_dt(rebar);
-    let d_eff = d - dt;
-    if d_eff <= 0.0 {
-        return Ok(None);
-    }
-    let jt = 7.0 * d_eff / 8.0;
-    let at = bar_set_area(&rebar.main_x) / 2.0;
-    let ag = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    let pw = pw_ratio(&rebar.shear, b);
+    let need_be = opts.shear_method == ShearMethod::Ductility;
+    let tension_is_top = strong_tension_is_top(shape, demand.mz, need_be);
+    let Some(p) = rc_bar_props(shape, RcDirection::Strong, tension_is_top, need_be) else {
+        return Err(format!(
+            "部材 ID {} の配筋形状が不正または有効せいが 0 以下です",
+            elem.id.0
+        ));
+    };
+    let jt = 7.0 * p.d_eff / 8.0;
+    let at = p.at;
+    let ag = p.ag;
+    let pw = p.pw;
     let n_axial = demand.n_axial;
 
     let cap = RcCapacityInput {
-        b,
-        d,
+        b: p.b_dir,
+        d: p.d_dir,
         at,
-        d_eff,
+        d_eff: p.d_eff,
         sigma_y,
         fc,
         pw,
@@ -122,7 +155,7 @@ fn check_member(
         sigma_0: 0.0,
     };
     let mu = match kind {
-        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial),
+        MemberKind::Column => column_mu(p.b_dir, p.d_dir, p.dt, at, ag, sigma_y, fc, n_axial),
         _ => rc_mu_simple(&cap),
     };
 
@@ -137,27 +170,26 @@ fn check_member(
         }
     };
 
-    let qsu = member_shear_strength(b, d, jt, pw, rebar, fc, n_axial, l_clear, opts);
+    let qsu = member_shear_strength(&p, fc, n_axial, l_clear, opts);
 
     let (qbu, tau_bu) = if opts.include_bond {
-        let n_tension = (rebar.main_x.count as f64 / 2.0).max(1.0);
         let tau_bu = bond_reliable_strength_deformed(&BondStrengthInput {
             fc,
-            b,
-            db1: rebar.main_x.dia,
-            n_bars: n_tension.round() as u32,
-            cover_side: rebar.cover,
-            cover_bottom: rebar.cover,
-            hoop_area: squid_n_core::section_shape::shear_legs_area(&rebar.shear),
-            hoop_pitch: rebar.shear.pitch,
+            b: p.b_dir,
+            db1: p.main_dia,
+            n_bars: p.n_tension,
+            cover_side: p.cover,
+            cover_bottom: p.cover,
+            hoop_area: p.shear_legs as f64 * one_bar_area(p.shear_dia),
+            hoop_pitch: p.shear_pitch,
             pw,
-            top_bar: false,
+            top_bar: p.top_bar,
         });
-        let sum_phi = n_tension * std::f64::consts::PI * rebar.main_x.dia;
+        let sum_phi = p.n_tension as f64 * std::f64::consts::PI * p.main_dia;
         let qbu = match opts.shear_method {
             ShearMethod::Plastic => rc_shear_qbu_bond(&RcBondSplitInput {
-                b,
-                d_full: d,
+                b: p.b_dir,
+                d_full: p.d_dir,
                 jt,
                 tau_bu,
                 sum_phi,
@@ -166,27 +198,24 @@ fn check_member(
                 rp: opts.rp,
                 lightweight: opts.lightweight,
             }),
-            ShearMethod::Ductility => {
-                let (be, n_s) = ductility_be_ns(b, rebar);
-                rc_shear_vbu_ductility(&RcVbuInput {
-                    b,
-                    d_full: d,
-                    be,
-                    je: jt,
-                    tau_bu,
-                    sum_phi1: sum_phi,
-                    tau_bu2: 0.0,
-                    sum_phi2: 0.0,
-                    s: rebar.shear.pitch,
-                    n_s,
-                    l_clear,
-                    fc,
-                    rp: opts.rp,
-                    tensile_axial: n_axial < 0.0,
-                    yield_hinge: opts.rp > 0.0,
-                    lightweight: opts.lightweight,
-                })
-            }
+            ShearMethod::Ductility => rc_shear_vbu_ductility(&RcVbuInput {
+                b: p.b_dir,
+                d_full: p.d_dir,
+                be: p.be,
+                je: jt,
+                tau_bu,
+                sum_phi1: sum_phi,
+                tau_bu2: 0.0,
+                sum_phi2: 0.0,
+                s: p.shear_pitch,
+                n_s: p.n_s,
+                l_clear,
+                fc,
+                rp: opts.rp,
+                tensile_axial: n_axial < 0.0,
+                yield_hinge: opts.rp > 0.0,
+                lightweight: opts.lightweight,
+            }),
         };
         (qbu, tau_bu)
     } else {
@@ -208,59 +237,52 @@ fn check_member(
     };
 
     let biaxial_shear_margin = if kind == MemberKind::Column && opts.biaxial_shear {
-        let (qsu_y, qmu_y_hinge) = column_axis_shear(
-            d,
-            b,
-            &rebar.main_y,
-            rebar,
-            fc,
-            sigma_y,
-            ag,
-            n_axial,
-            l_clear,
-            opts,
-        );
-        let qmu_y = match demand.shear_weak {
-            Some(qmy) => opts.upper_strength_factor * qmy.abs(),
-            None => qmu_y_hinge,
-        };
-        let rx = if qsu > 0.0 { qmu / qsu } else { f64::INFINITY };
-        let ry = if qsu_y > 0.0 {
-            qmu_y / qsu_y
-        } else {
-            f64::INFINITY
-        };
-        Some(biaxial_margin(rx, ry, 2.0))
+        rc_bar_props(shape, RcDirection::Weak, tension_is_top, need_be).map(|p_y| {
+            let (qsu_y, qmu_y_hinge) = column_axis_shear(&p_y, fc, sigma_y, n_axial, l_clear, opts);
+            let qmu_y = match demand.shear_weak {
+                Some(qmy) => opts.upper_strength_factor * qmy.abs(),
+                None => qmu_y_hinge,
+            };
+            let rx = if qsu > 0.0 { qmu / qsu } else { f64::INFINITY };
+            let ry = if qsu_y > 0.0 {
+                qmu_y / qsu_y
+            } else {
+                f64::INFINITY
+            };
+            biaxial_margin(rx, ry, 2.0)
+        })
     } else {
         None
     };
 
     let biaxial_bending_margin = if kind == MemberKind::Column && opts.biaxial_bending {
-        let dt_y = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
-        let at_y = bar_set_area(&rebar.main_y) / 2.0;
-        let mux = mu;
-        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial);
-        let rx = if mux > 0.0 {
-            demand.mz.abs() / mux
-        } else if demand.mz.abs() > 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
-        let ry = if muy > 0.0 {
-            demand.my.abs() / muy
-        } else if demand.my.abs() > 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
-        Some(biaxial_margin(rx, ry, 2.0))
+        rc_bar_props(shape, RcDirection::Weak, tension_is_top, need_be).map(|p_y| {
+            let mux = mu;
+            let muy = column_mu(
+                p_y.b_dir, p_y.d_dir, p_y.dt, p_y.at, p_y.ag, sigma_y, fc, n_axial,
+            );
+            let rx = if mux > 0.0 {
+                demand.mz.abs() / mux
+            } else if demand.mz.abs() > 0.0 {
+                f64::INFINITY
+            } else {
+                0.0
+            };
+            let ry = if muy > 0.0 {
+                demand.my.abs() / muy
+            } else if demand.my.abs() > 0.0 {
+                f64::INFINITY
+            } else {
+                0.0
+            };
+            biaxial_margin(rx, ry, 2.0)
+        })
     } else {
         None
     };
 
     let axial = if kind == MemberKind::Column {
-        Some(rc_column_axial_ultimate(b, d, fc, ag, sigma_y))
+        Some(rc_column_axial_ultimate(p.b_dir, p.d_dir, fc, ag, sigma_y))
     } else {
         None
     };
@@ -324,14 +346,16 @@ fn check_member(
     }))
 }
 
-/// モデルの RC 矩形部材について終局検定（塑性理論式）を一括実行する。
+/// モデルの RC梁・矩形柱・円形柱について終局検定（塑性理論式）を一括実行する。
 ///
 /// - `demand_by_elem`: 部材の設計用需要（[`MemberDemand`]：圧縮正の軸力と強軸/弱軸の
 ///   設計用曲げモーメント）。柱の Mu・軸余裕度・2 軸曲げ余裕度に用いる。該当 ID がない
 ///   部材は需要 0（安全側）で評価する。軸力は長期（G+P）静的、曲げ需要は当該組合せの
 ///   応答値を渡すことを想定する。
-/// - 対象外（`RcRect` 以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
+/// - 対象外（RC用途別断面以外・断面未解決・形状不明の材料未解決）の部材は
 ///   結果に含めない。
+/// - 検定対象の RC梁・矩形柱・円形柱で Fc 未設定・Fc/断面寸法不正・主筋降伏強度未解決・配筋不整合・
+///   有効せい ≤ 0 の場合は、部材 ID を含む理由を `Err` で返す。
 /// - 検定対象の部材でせん断補強筋に未対応グレードまたは `fy` 未設定がある場合は、
 ///   部材 ID と是正内容を含む理由を `Err` で返す。
 pub fn collect_rc_ultimate_checks(
@@ -344,7 +368,18 @@ pub fn collect_rc_ultimate_checks(
         let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
             continue;
         };
+        let is_rc = matches!(
+            sec.shape.as_ref(),
+            Some(
+                SectionShape::RcBeamRect { .. }
+                    | SectionShape::RcColumnRect { .. }
+                    | SectionShape::RcColumnCircle { .. }
+            )
+        );
         let Some(mat) = model.element_material(elem) else {
+            if is_rc {
+                return Err(format!("部材 ID {} の材料が未設定です", elem.id.0));
+            }
             continue;
         };
         let demand = demand_by_elem

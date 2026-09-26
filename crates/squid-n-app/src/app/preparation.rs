@@ -906,9 +906,13 @@ impl App {
             let base_iy = composite.map(|p| p.iy).unwrap_or(sec.iy);
             let base_area = match (composite, sec.shape.as_ref()) {
                 (Some(p), _) => p.area_ax,
-                (None, Some(shape @ SectionShape::SrcRect { .. })) => {
-                    shape.calc_axial_stiffness_area()
-                }
+                (
+                    None,
+                    Some(
+                        shape @ (SectionShape::SrcBeamRect { .. }
+                        | SectionShape::SrcColumnRect { .. }),
+                    ),
+                ) => shape.calc_axial_stiffness_area(),
                 _ => sec.area,
             };
             if factors.slab == 1.0
@@ -986,11 +990,13 @@ impl App {
 pub fn section_shape_label(shape: &squid_n_core::section_shape::SectionShape) -> &'static str {
     use squid_n_core::section_shape::SectionShape;
     match shape {
-        SectionShape::RcRect { .. } => "RC 矩形",
-        SectionShape::RcCircle { .. } => "RC 円形",
+        SectionShape::RcBeamRect { .. } => "RC 矩形梁",
+        SectionShape::RcColumnRect { .. } => "RC 矩形柱",
+        SectionShape::RcColumnCircle { .. } => "RC 円形柱",
         SectionShape::RcWall { .. } => "RC 壁",
         SectionShape::RcSlab { .. } => "RC スラブ",
-        SectionShape::SrcRect { .. } => "SRC 矩形",
+        SectionShape::SrcBeamRect { .. } => "SRC 梁",
+        SectionShape::SrcColumnRect { .. } => "SRC 矩形柱",
         SectionShape::SteelH { .. } => "H 形鋼",
         SectionShape::SteelBuiltH { .. } => "組立 H 形鋼",
         SectionShape::SteelBox { .. } => "角形鋼管",

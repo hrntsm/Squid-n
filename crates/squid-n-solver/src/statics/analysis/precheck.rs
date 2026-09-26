@@ -202,12 +202,19 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     let has_rebar = |sh: &SectionShape| {
         matches!(
             sh,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
+            SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
         )
     };
-    let is_src = |sh: &SectionShape| matches!(sh, SectionShape::SrcRect { .. });
+    let is_src = |sh: &SectionShape| {
+        matches!(
+            sh,
+            SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }
+        )
+    };
     let collect_ids =
         |want: fn(&SectionShape) -> bool,
          slot: fn(&squid_n_core::model::Section) -> Option<MaterialId>| {
@@ -248,6 +255,91 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             "断面に内蔵鉄骨の材料が未割当です",
             "断面タブで内蔵鉄骨の材料を割り当ててください。",
         ));
+    }
+
+    {
+        let mut beam_shape_on_column: Vec<ElemId> = Vec::new();
+        let mut column_shape_on_beam: Vec<ElemId> = Vec::new();
+        for e in model
+            .elements
+            .iter()
+            .filter(|e| e.kind.requires_section_and_material())
+        {
+            let Some(shape) = model.element_section(e).and_then(|s| s.shape.as_ref()) else {
+                continue;
+            };
+            let (Some(n0), Some(n1)) = (e.nodes.first(), e.nodes.get(1)) else {
+                continue;
+            };
+            let (Some(n0), Some(n1)) = (model.nodes.get(n0.index()), model.nodes.get(n1.index()))
+            else {
+                continue;
+            };
+            let vertical = squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord);
+            match shape {
+                SectionShape::RcBeamRect { .. } | SectionShape::SrcBeamRect { .. } if vertical => {
+                    beam_shape_on_column.push(e.id)
+                }
+                SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcColumnRect { .. }
+                    if !vertical =>
+                {
+                    column_shape_on_beam.push(e.id)
+                }
+                _ => {}
+            }
+        }
+        if !beam_shape_on_column.is_empty() {
+            issues.push(ModelIssue::members(
+                "梁用断面を柱部材に割り当てています",
+                "ID ",
+                beam_shape_on_column,
+                "梁用断面が柱部材に割り当てられています",
+                "断面タブで柱用断面を割り当てるか、部材の用途を確認してください。",
+            ));
+        }
+        if !column_shape_on_beam.is_empty() {
+            issues.push(ModelIssue::members(
+                "柱用断面を梁部材に割り当てています",
+                "ID ",
+                column_shape_on_beam,
+                "柱用断面が梁部材に割り当てられています",
+                "断面タブで梁用断面を割り当てるか、部材の用途を確認してください。",
+            ));
+        }
+    }
+
+    {
+        let mut invalid_rebar: Vec<(ElemId, u32, String, String)> = Vec::new();
+        for e in model
+            .elements
+            .iter()
+            .filter(|e| e.kind.requires_section_and_material())
+        {
+            let Some(sec) = model.element_section(e) else {
+                continue;
+            };
+            let Some(shape) = sec.shape.as_ref() else {
+                continue;
+            };
+            if let Err(err) = shape.validate_rebar() {
+                invalid_rebar.push((e.id, sec.id.0, sec.name.clone(), err.to_string()));
+            }
+        }
+        for (id, section_id, section_name, reason) in invalid_rebar {
+            issues.push(ModelIssue {
+                severity: IssueSeverity::Error,
+                message: format!(
+                    "実配筋の幾何が不整合な断面を使う部材 ID {} があります\
+                     （断面 ID {section_id}({section_name}) の配筋: {reason}）。\
+                     断面タブで段別本数・かぶり・断面寸法を見直してください。",
+                    id.0
+                ),
+                short: "断面の実配筋の幾何が不整合です".into(),
+                targets: IssueTargets::Members(vec![id]),
+            });
+        }
     }
 
     let no_thickness: Vec<ElemId> = model

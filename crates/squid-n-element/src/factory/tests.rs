@@ -512,22 +512,16 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
 #[test]
 fn test_resolve_member_hysteresis_and_flexural_springs() {
     use squid_n_core::model::HysteresisModel;
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
-    fn rebar() -> RcRebar {
-        RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+    fn rebar() -> RcBeamRebar {
+        use squid_n_core::section_shape::BeamStirrup;
+        RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![2],
+            bottom: vec![2],
             cover: 50.0,
-            shear: ShearBar {
+            stirrup: BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
@@ -565,7 +559,7 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     );
     assert!(backbone.use_mn);
 
-    model.sections[0].shape = Some(SectionShape::RcRect {
+    model.sections[0].shape = Some(SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
         rebar: rebar(),
@@ -788,7 +782,7 @@ fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
 ///   （pt=0.002715、a/D=3.571、d/D=629/700、n=10.25）。
 #[test]
 fn test_flexural_alpha_y_sugano_for_rc_beam() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
     let mut model = make_diaphragm_model();
     let beam = ElementData {
@@ -809,25 +803,18 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
 
     assert!((flexural_alpha_y(&beam, &model) - 0.3).abs() < 1e-12);
 
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 4,
-            dia: 22.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 22.0,
-            layers: 1,
-        },
+    let rebar = RcBeamRebar {
+        main_dia: 22.0,
+        top: vec![2],
+        bottom: vec![2],
         cover: 50.0,
-        shear: ShearBar {
+        stirrup: squid_n_core::section_shape::BeamStirrup {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
         },
     };
-    model.sections[0].shape = Some(SectionShape::RcRect {
+    model.sections[0].shape = Some(SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
         rebar,
@@ -849,9 +836,8 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
 }
 
 #[test]
-fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
-    use squid_n_core::model::HysteresisModel;
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+fn test_src_beam_alpha_y_falls_back_to_default() {
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
 
     let mut model = make_diaphragm_model();
     let beam = ElementData {
@@ -869,22 +855,58 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
         spring: None,
     };
     model.elements.push(beam.clone());
-    model.sections[0].shape = Some(SectionShape::RcRect {
+    model.sections[0].shape = Some(SectionShape::SrcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![2],
+            bottom: vec![2],
             cover: 50.0,
-            shear: ShearBar {
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    });
+    assert!((flexural_alpha_y(&beam, &model) - 0.3).abs() < 1e-12);
+}
+
+#[test]
+fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
+    use squid_n_core::model::HysteresisModel;
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
+
+    let mut model = make_diaphragm_model();
+    let beam = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(beam.clone());
+    model.sections[0].shape = Some(SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![2],
+            bottom: vec![2],
+            cover: 50.0,
+            stirrup: BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,

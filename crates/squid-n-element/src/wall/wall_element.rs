@@ -92,6 +92,27 @@ fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f6
         })
 }
 
+/// 側柱断面の主筋総断面積 at [mm²]。RC 耐力式を適用できない形状は `None`。
+///
+/// 検証済みの総主筋量を返す。未入力は 0、検証失敗は `None`。
+fn side_column_main_area(shape: &SectionShape) -> Option<f64> {
+    match shape {
+        SectionShape::RcBeamRect { b, d, rebar } => {
+            rebar.validate(*b, *d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        SectionShape::RcColumnRect { b, d, rebar } => {
+            rebar.validate(*b, *d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        SectionShape::RcColumnCircle { d, rebar } => {
+            rebar.validate(*d).ok()?;
+            Some(rebar.total_main_area())
+        }
+        _ => None,
+    }
+}
+
 /// 耐震壁の幾何・配筋・材料。
 struct WallShearGeometry {
     /// コンクリート設計基準強度 Fc [N/mm²]（未設定は `None`）
@@ -377,7 +398,8 @@ impl WallElement {
                 1.0,
                 squid_n_section::mn_surface::StrengthParams::default(),
                 concrete_rule,
-            );
+            )
+            .expect("形状なしの壁ファイバは実配筋を要求しない");
             if ps > 0.0 {
                 let a_each = ps * t * lw / nd as f64;
                 for i in 0..nd {
@@ -522,14 +544,10 @@ impl WallElement {
                 else {
                     return [0.0; 2];
                 };
-                let rebar = match shape {
-                    SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. } => {
-                        rebar
-                    }
-                    _ => return [0.0; 2],
+                let Some(area) = side_column_main_area(shape) else {
+                    return [0.0; 2];
                 };
-                at[side] = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                    + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
+                at[side] = area;
                 if at[side] <= 0.0 {
                     return [0.0; 2];
                 }
@@ -692,10 +710,8 @@ impl WallElement {
             let shape = model
                 .element_section(&model.elements[column.element_index])
                 .and_then(|sec| sec.shape.as_ref());
-            match shape {
-                Some(SectionShape::RcRect { rebar, .. } | SectionShape::RcCircle { rebar, .. })
-                    if squid_n_core::section_shape::bar_set_area(&rebar.main_x)
-                        + squid_n_core::section_shape::bar_set_area(&rebar.main_y) > 0.0 => {}
+            match shape.and_then(side_column_main_area) {
+                Some(area) if area > 0.0 => {}
                 _ => return Some(format!("耐震壁 ID {} の側柱の終局せん断耐力を算定できません。現在のRC耐力式は主筋を明示したRC矩形・円形側柱に適用します。SRC・CFT・鋼材側柱の弾性断面計算とは適用範囲が異なります。", data.id.0)),
             }
         }
@@ -1434,25 +1450,19 @@ mod tests {
     #[test]
     fn test_wall_mass_uses_clear_area_between_surrounding_members() {
         let (mut model, data) = make_wall_model();
-        let mut section = SectionShape::RcRect {
+        let mut section = SectionShape::RcColumnRect {
             b: 600.0,
             d: 600.0,
-            rebar: squid_n_core::section_shape::RcRebar {
-                main_x: squid_n_core::section_shape::BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: squid_n_core::section_shape::BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: squid_n_core::section_shape::RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![8],
+                y: vec![8],
                 cover: 50.0,
-                shear: squid_n_core::section_shape::ShearBar {
+                hoop: squid_n_core::section_shape::RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         }
@@ -1825,25 +1835,19 @@ mod tests {
         let (mut model, data) = make_wall_model();
         let wall_plain = WallElement::try_new(&data, &model).unwrap();
 
-        let col_shape = SectionShape::RcRect {
+        let col_shape = SectionShape::RcColumnRect {
             b: 600.0,
             d: 600.0,
-            rebar: squid_n_core::section_shape::RcRebar {
-                main_x: squid_n_core::section_shape::BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: squid_n_core::section_shape::BarSet {
-                    count: 8,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: squid_n_core::section_shape::RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![8],
+                y: vec![8],
                 cover: 50.0,
-                shear: squid_n_core::section_shape::ShearBar {
+                hoop: squid_n_core::section_shape::RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         };
@@ -2361,7 +2365,7 @@ mod capacity_issue_tests {
     use squid_n_core::model::{
         ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
 
     /// 側柱あり／なし、側柱断面の指定を切り替えて壁モデルを作る。
     fn model_with(side_col_sec: Option<Section>, ps: f64) -> (Model, ElementData) {
@@ -2456,48 +2460,36 @@ mod capacity_issue_tests {
 
     fn rc_col(with_rebar: bool) -> Section {
         let shape = if with_rebar {
-            SectionShape::RcRect {
+            SectionShape::RcColumnRect {
                 b: 600.0,
                 d: 600.0,
-                rebar: RcRebar {
-                    main_x: BarSet {
-                        count: 8,
-                        dia: 22.0,
-                        layers: 2,
-                    },
-                    main_y: BarSet {
-                        count: 4,
-                        dia: 22.0,
-                        layers: 1,
-                    },
+                rebar: RcRectColumnRebar {
+                    main_dia: 22.0,
+                    x: vec![4],
+                    y: vec![3],
                     cover: 40.0,
-                    shear: ShearBar {
+                    hoop: RectColumnHoop {
                         dia: 10.0,
                         pitch: 100.0,
-                        legs: 2,
+                        legs_x: 2,
+                        legs_y: 2,
                     },
                 },
             }
         } else {
-            SectionShape::RcRect {
+            SectionShape::RcColumnRect {
                 b: 600.0,
                 d: 600.0,
-                rebar: RcRebar {
-                    main_x: BarSet {
-                        count: 0,
-                        dia: 0.0,
-                        layers: 1,
-                    },
-                    main_y: BarSet {
-                        count: 0,
-                        dia: 0.0,
-                        layers: 1,
-                    },
+                rebar: RcRectColumnRebar {
+                    main_dia: 22.0,
+                    x: vec![],
+                    y: vec![],
                     cover: 40.0,
-                    shear: ShearBar {
+                    hoop: RectColumnHoop {
                         dia: 10.0,
                         pitch: 100.0,
-                        legs: 2,
+                        legs_x: 2,
+                        legs_y: 2,
                     },
                 },
             }
@@ -2510,9 +2502,13 @@ mod capacity_issue_tests {
         let (mut model, wall) = model_with(Some(rc_col(true)), 0.0025);
         let mut right = model.sections[1].clone();
         right.id = SectionId(2);
-        if let Some(SectionShape::RcRect { rebar, .. }) = &mut right.shape {
-            rebar.main_x.count *= 2;
-            rebar.main_y.count *= 2;
+        if let Some(SectionShape::RcColumnRect { rebar, .. }) = &mut right.shape {
+            for c in rebar.x.iter_mut() {
+                *c *= 2;
+            }
+            for c in rebar.y.iter_mut() {
+                *c *= 2;
+            }
         }
         model.sections.push(right);
         model
@@ -2671,5 +2667,99 @@ mod capacity_issue_tests {
             "{}",
             issue
         );
+    }
+
+    /// 実配筋モデルの矩形柱側柱は総主筋量（`total_main_area`）を at として方向別耐力を与える。
+    #[test]
+    fn test_new_rect_column_side_column_uses_total_main_area() {
+        use squid_n_core::section_shape::one_bar_area;
+        let new_rebar = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![5],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        };
+        let expected_at = 12.0 * one_bar_area(22.0);
+        assert!(
+            (new_rebar.total_main_area() - expected_at).abs() < 1e-9,
+            "テスト前提: 総主筋量が12本分であること"
+        );
+
+        let new_shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: new_rebar,
+        };
+        let (model_new, wall_new) = model_with(
+            Some(new_shape.to_section(SectionId(1), "C600".into())),
+            0.0025,
+        );
+
+        assert_eq!(
+            WallElement::wall_shear_capacity_issue(&wall_new, &model_new),
+            None
+        );
+        let new_qu = WallElement::directional_shear_capacity_of(&wall_new, &model_new);
+        assert!(new_qu[0] > 0.0 && new_qu[1] > 0.0, "{new_qu:?}");
+    }
+
+    /// SRC 側柱を含む壁モデル。弾性断面を構築できるよう内蔵鉄骨材料まで与える。
+    fn model_with_src_side_column(shape: SectionShape) -> (Model, ElementData) {
+        let (mut model, wall) = model_with(
+            Some(shape.to_section(SectionId(1), "SRC600".into())),
+            0.0025,
+        );
+        model.materials.push(Material {
+            id: MaterialId(1),
+            name: "SN400".into(),
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        });
+        model.sections[1].steel_material = Some(MaterialId(1));
+        (model, wall)
+    }
+
+    /// SRC 矩形柱側柱は RC 耐力式の適用外として拒否する。
+    #[test]
+    fn test_issue_when_new_src_side_column() {
+        let shape = SectionShape::SrcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![5],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+            steel_height: 500.0,
+            steel_width: 300.0,
+            steel_web_thick: 12.0,
+            steel_flange_thick: 20.0,
+        };
+        let (model, wall) = model_with_src_side_column(shape);
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("SRC側柱はRC耐力式の適用外として拒否する");
+        assert!(issue.contains("SRC"), "{}", issue);
+        assert!(issue.contains("適用範囲"), "{}", issue);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 }

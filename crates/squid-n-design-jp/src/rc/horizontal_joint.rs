@@ -5,6 +5,9 @@ use squid_n_core::ids::ElemId;
 use squid_n_core::model::Model;
 use squid_n_core::section_shape::SectionShape;
 
+use super::section_props::axis_props_from_shape;
+use crate::ultimate::rc_props::RcDirection;
+
 /// モーメント 2 次曲線分布の M=0 となる端部からの距離（近い方）[mm]。
 /// 実数解が (0, L) にない場合は None。
 pub fn moment_zero_distance(m1: f64, m2: f64, m0: f64, l: f64) -> Option<f64> {
@@ -85,8 +88,6 @@ pub fn pca_horizontal_joint_ultimate(
     finish("終局限界", tau_xy, tau_u)
 }
 
-use squid_n_core::rc_rebar_geom::rebar_tension_dt as rc_dt;
-
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
     forces.iter().min_by(|a, b| {
@@ -95,6 +96,18 @@ fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option
             .partial_cmp(&(b.0 - pos).abs())
             .unwrap_or(std::cmp::Ordering::Equal)
     })
+}
+
+/// PCa 水平接合面の算定に用いる断面の幅 b・せい D・有効せい d・引張鉄筋断面積 at。
+/// `RcBeamRect`/`RcColumnRect` を対象とし、対象外は `None`。
+fn pca_section_geometry(shape: &SectionShape) -> Option<(f64, f64, f64, f64)> {
+    match shape {
+        SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
+            let props = axis_props_from_shape(shape, RcDirection::Strong, true)?;
+            Some((*b, *d, props.d, props.at))
+        }
+        _ => None,
+    }
 }
 
 /// PCa 属性が登録された梁部材の水平接合面検定を一括実行する。
@@ -116,7 +129,10 @@ pub fn collect_pca_checks(
         let Some(sec) = model.element_section(elem) else {
             continue;
         };
-        let Some(SectionShape::RcRect { b, d, ref rebar }) = sec.shape else {
+        let Some(shape) = sec.shape.as_ref() else {
+            continue;
+        };
+        let Some((b, d, d_eff, at)) = pca_section_geometry(shape) else {
             continue;
         };
         let Some(mat) = model.element_material(elem) else {
@@ -139,8 +155,6 @@ pub fn collect_pca_checks(
             continue;
         }
         let s_y = b * yj * (d - yj) / 2.0;
-        let d_eff = d - rc_dt(rebar);
-        let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
 
         let length = model.member_length(elem);
         if length < 1e-9 {
@@ -225,7 +239,7 @@ mod tests {
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
         Node, PcaBeamAttr, RigidZone,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{BeamStirrup, RcBeamRebar, SectionShape};
 
     #[test]
     fn moment_zero_distance_symmetric_beam() {
@@ -382,23 +396,16 @@ mod tests {
         }
     }
 
-    fn rc_rect_shape() -> SectionShape {
-        SectionShape::RcRect {
+    fn rc_beam_rect_shape() -> SectionShape {
+        SectionShape::RcBeamRect {
             b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 6,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 19.0,
-                    layers: 1,
-                },
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![6],
+                bottom: vec![6],
                 cover: 40.0,
-                shear: ShearBar {
+                stirrup: BeamStirrup {
                     dia: 10.0,
                     pitch: 150.0,
                     legs: 2,
@@ -421,7 +428,7 @@ mod tests {
     /// 使用限界の τxy は手計算（Q・Sy/(b・I)）と一致する。
     #[test]
     fn collect_pca_checks_returns_four_rows_and_service_matches_hand_calc() {
-        let model = pca_beam_model(rc_rect_shape(), Some(default_pca_attr()));
+        let model = pca_beam_model(rc_beam_rect_shape(), Some(default_pca_attr()));
         let forces: Vec<(f64, [f64; 6])> = vec![
             (0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, -100.0e6]),
             (0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 50.0e6]),
@@ -461,10 +468,58 @@ mod tests {
         assert_eq!(ultimate_rows.len(), 2);
     }
 
+    /// 属性が登録された新型 `RcBeamRect` 梁も 4 行を返し、使用限界は手計算に一致する。
+    /// 終局限界（短期）は上端筋 6-D22 の引張力 ΔT = at・σy で算定される。
+    #[test]
+    fn collect_pca_checks_new_beam_rect_runs() {
+        let model = pca_beam_model(rc_beam_rect_shape(), Some(default_pca_attr()));
+        let forces: Vec<(f64, [f64; 6])> = vec![
+            (0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, -100.0e6]),
+            (0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 50.0e6]),
+            (1.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 80.0e6]),
+        ];
+        let member_forces = vec![(ElemId(0), forces.as_slice())];
+        let results = collect_pca_checks(&model, &member_forces, false);
+        assert_eq!(results.len(), 4, "2端部×(使用限界・終局限界)=4行のはず");
+
+        let s_y = 400.0 * 150.0 * (700.0 - 150.0) / 2.0;
+        let i = 400.0 * 700.0_f64.powi(3) / 12.0;
+        let expected_service = 200_000.0 * s_y / (400.0 * i) / (0.5 * 0.6 * 0.008 * 345.0);
+        for (_, _, cr) in results
+            .iter()
+            .filter(|(_, _, cr)| cr.basis.contains("使用限界"))
+        {
+            assert!(
+                (cr.ratio() - expected_service).abs() < 1e-6,
+                "ratio={} expected={}",
+                cr.ratio(),
+                expected_service
+            );
+        }
+
+        let at = 6.0 * std::f64::consts::PI * 22.0_f64.powi(2) / 4.0;
+        let delta_t = at * 345.0;
+        let delta_l = moment_zero_distance(-100.0e6, -80.0e6, 140.0e6, 6000.0).unwrap_or(3000.0);
+        let expected_ultimate = (delta_t / (400.0 * delta_l)).abs() / (0.6 * 0.008 * 345.0);
+        let ultimate_rows: Vec<&(ElemId, f64, CheckResult)> = results
+            .iter()
+            .filter(|(_, _, cr)| cr.basis.contains("終局限界"))
+            .collect();
+        assert_eq!(ultimate_rows.len(), 2);
+        for (_, _, cr) in &ultimate_rows {
+            assert!(
+                (cr.ratio() - expected_ultimate).abs() < 1e-6,
+                "ratio={} expected={}",
+                cr.ratio(),
+                expected_ultimate
+            );
+        }
+    }
+
     /// PCa 属性が未登録のモデルは空を返す。
     #[test]
     fn collect_pca_checks_empty_without_attrs() {
-        let model = pca_beam_model(rc_rect_shape(), None);
+        let model = pca_beam_model(rc_beam_rect_shape(), None);
         let forces: Vec<(f64, [f64; 6])> = vec![(0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 0.0])];
         let member_forces = vec![(ElemId(0), forces.as_slice())];
         assert!(collect_pca_checks(&model, &member_forces, false).is_empty());

@@ -4,6 +4,7 @@
 //!
 //! 単位: 長さ [mm]、力 [N]、モーメント [N·mm]、回転角 [rad]。
 
+use squid_n_core::error::RebarGeometryError;
 use squid_n_core::model::{AnalysisKind, ElementData, ElementKind, Model};
 use squid_n_section::fiber::Fiber;
 use squid_n_section::mn_surface::{
@@ -70,7 +71,7 @@ pub fn build_hinge_view(
     axial_force_compression_positive: f64,
     n_alpha: usize,
     n_beta: usize,
-) -> HingeView {
+) -> Result<HingeView, RebarGeometryError> {
     match data.kind {
         ElementKind::Beam => beam_view(
             data,
@@ -83,7 +84,7 @@ pub fn build_hinge_view(
         ),
         ElementKind::Fiber => fiber_view(data, model, basis, kind, n_alpha, n_beta),
         ElementKind::MultiSpring => multi_spring_view(data, model, basis, kind, n_alpha, n_beta),
-        _ => HingeView::none(AnalysisHingeModel::Other),
+        _ => Ok(HingeView::none(AnalysisHingeModel::Other)),
     }
 }
 
@@ -109,25 +110,25 @@ fn beam_view(
     axial_force_compression_positive: f64,
     n_alpha: usize,
     n_beta: usize,
-) -> HingeView {
+) -> Result<HingeView, RebarGeometryError> {
     if resolves_to_concentrated_spring(data, model) {
         if super::input_check::member_strength_issue(data, model).is_some() {
-            return HingeView::none(AnalysisHingeModel::ConcentratedSpring);
+            return Ok(HingeView::none(AnalysisHingeModel::ConcentratedSpring));
         }
         let rule = resolve_member_hysteresis(data, model, kind);
         let (_i, _j, backbone) = build_flexural_springs(data, model, rule, basis);
         let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
         let mn = backbone.use_mn.then(|| MnInteraction::new(my0, n_allow));
         let points = backbone.points_with_mn(mn.as_ref(), axial_force_compression_positive);
-        return HingeView {
+        return Ok(HingeView {
             model: AnalysisHingeModel::ConcentratedSpring,
             backbone: Some(points),
             mn_linear: mn,
             mn_surface: None,
-        };
+        });
     }
     if crate::wall::side_column::wall_side_column_release(data, model).is_some() {
-        return HingeView::none(AnalysisHingeModel::Other);
+        return Ok(HingeView::none(AnalysisHingeModel::Other));
     }
     fiber_view(data, model, basis, kind, n_alpha, n_beta)
 }
@@ -140,14 +141,14 @@ fn fiber_view(
     kind: AnalysisKind,
     n_alpha: usize,
     n_beta: usize,
-) -> HingeView {
-    surface_view(
+) -> Result<HingeView, RebarGeometryError> {
+    Ok(surface_view(
         AnalysisHingeModel::Fiber,
         YieldModelKind::MultiFiber,
-        analysis_plastic_fibers(data, model, basis, kind, FIBER_NW, FIBER_ND),
+        analysis_plastic_fibers(data, model, basis, kind, FIBER_NW, FIBER_ND)?,
         n_alpha,
         n_beta,
-    )
+    ))
 }
 
 /// マルチスプリング要素（解析の `MS_NW × MS_ND`）の N-M 曲面。
@@ -158,14 +159,14 @@ fn multi_spring_view(
     kind: AnalysisKind,
     n_alpha: usize,
     n_beta: usize,
-) -> HingeView {
-    surface_view(
+) -> Result<HingeView, RebarGeometryError> {
+    Ok(surface_view(
         AnalysisHingeModel::MultiSpring,
         YieldModelKind::MultiSpring,
-        analysis_plastic_fibers(data, model, basis, kind, MS_NW, MS_ND),
+        analysis_plastic_fibers(data, model, basis, kind, MS_NW, MS_ND)?,
         n_alpha,
         n_beta,
-    )
+    ))
 }
 
 fn surface_view(
@@ -187,7 +188,8 @@ fn surface_view(
 }
 
 /// 解析が実際に生成する端部ファイバ断面を `PlasticFiber` 群へ変換する。
-/// 断面未定義、または材料強度（Fc・fy）を解決できない場合は `None`。
+/// 断面未定義、または材料強度（Fc・fy）を解決できない場合は `Ok(None)`。
+/// 実配筋を生成できない場合は [`RebarGeometryError`] を返す。
 pub(crate) fn analysis_plastic_fibers(
     data: &ElementData,
     model: &Model,
@@ -195,26 +197,26 @@ pub(crate) fn analysis_plastic_fibers(
     kind: AnalysisKind,
     nw: usize,
     nd: usize,
-) -> Option<Vec<PlasticFiber>> {
-    let sec = data
-        .section
-        .and_then(|sid| model.sections.get(sid.index()))?;
+) -> Result<Option<Vec<PlasticFiber>>, RebarGeometryError> {
+    let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
+        return Ok(None);
+    };
     if super::input_check::member_strength_issue(data, model).is_some() {
-        return None;
+        return Ok(None);
     }
     if !fiber_yield_covers_shape(sec.shape.as_ref(), &resolve_fiber_yield(model, data)) {
-        return None;
+        return Ok(None);
     }
     let strength = fiber_strength_params(data, model, basis);
     let [(section, _mats), _] =
-        build_gauss_fiber_pair(data, model, basis, kind, sec.width, sec.depth, nw, nd);
-    Some(
+        build_gauss_fiber_pair(data, model, basis, kind, sec.width, sec.depth, nw, nd)?;
+    Ok(Some(
         section
             .fibers
             .iter()
             .map(|f| to_plastic_fiber(f, &strength))
             .collect(),
-    )
+    ))
 }
 
 /// ファイバの材料区分タグ（0=コンクリート／1=主筋／2=鋼材）から全塑性計算用の
@@ -262,7 +264,9 @@ mod tests {
         Constraint, EndCondition, ForceRegime, HysteresisModel, LocalAxis, Material,
         MaterialCategory, Node, Section,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{
+        RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
+    };
 
     /// 剛床所属の水平梁・鉛直柱を持つ小モデル。梁 [0,1] は集中ばね、
     /// 柱 [0,2] はファイバーに判定される。
@@ -354,22 +358,16 @@ mod tests {
     }
 
     fn rc_shape() -> SectionShape {
-        SectionShape::RcRect {
+        use squid_n_core::section_shape::BeamStirrup;
+        SectionShape::RcBeamRect {
             b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
                 cover: 50.0,
-                shear: ShearBar {
+                stirrup: BeamStirrup {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
@@ -378,26 +376,39 @@ mod tests {
         }
     }
 
-    fn src_shape() -> SectionShape {
-        SectionShape::SrcRect {
-            b: 500.0,
+    fn rc_column_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
+            b: 400.0,
             d: 700.0,
-            rebar: RcRebar {
-                main_x: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
-                main_y: BarSet {
-                    count: 4,
-                    dia: 22.0,
-                    layers: 1,
-                },
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
                 cover: 50.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+    }
+
+    fn src_shape() -> SectionShape {
+        SectionShape::SrcColumnRect {
+            b: 500.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 50.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
             steel_height: 400.0,
@@ -416,7 +427,7 @@ mod tests {
         let basis = StrengthBasis::Nominal;
         let kind = AnalysisKind::Incremental;
 
-        let view = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24);
+        let view = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
         let points = view.backbone.expect("集中ばねは骨格を返す");
         assert_eq!(points.len(), 3, "標準型は原点・降伏点・降伏後端点");
@@ -447,7 +458,7 @@ mod tests {
 
         let model = make_model(None, None);
         let beam = elem(ElementKind::Beam, [NodeId(0), NodeId(1)]);
-        let view = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24);
+        let view = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         let mn = view.mn_linear.expect("標準型は N-M 線形相関を返す");
         let (my0, n_allow) = yield_moment_and_axial(&beam, &model, basis);
         assert!((mn.my0 - my0).abs() < 1e-9);
@@ -475,7 +486,8 @@ mod tests {
             crate::factory::input_check::member_strength_issue(&rc_beam, &rc_model).is_none(),
             "正しい RC モデルは入力不備なし（早期 return 経路を通らない）"
         );
-        let rc_view = build_hinge_view(&rc_beam, &rc_model, basis, kind, 0.0, 8, 24);
+        let rc_view =
+            build_hinge_view(&rc_beam, &rc_model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         assert_eq!(rc_view.model, AnalysisHingeModel::ConcentratedSpring);
         assert!(
             rc_view.backbone.is_some(),
@@ -501,7 +513,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
         assert!(view.backbone.is_none());
         assert!(view.mn_linear.is_none());
@@ -521,7 +534,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::ConcentratedSpring);
         assert!(view.backbone.is_none());
         assert!(view.mn_linear.is_none());
@@ -537,7 +551,7 @@ mod tests {
         model.elements.push(beam.clone());
 
         model.set_member_hysteresis(ElemId(0), HysteresisModel::Retrograde);
-        let retro = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24);
+        let retro = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         let (_ri, _rj, retro_backbone) =
             build_flexural_springs(&beam, &model, HysteresisModel::Retrograde, basis);
         assert!(retro.mn_linear.is_none());
@@ -545,7 +559,7 @@ mod tests {
         assert_eq!(retro_backbone.points.len(), 4, "逆行型はトリリニア");
 
         model.set_member_hysteresis(ElemId(0), HysteresisModel::SteelBuckling);
-        let buckle = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24);
+        let buckle = build_hinge_view(&beam, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         let (_bi, _bj, buckle_backbone) =
             build_flexural_springs(&beam, &model, HysteresisModel::SteelBuckling, basis);
         assert!(buckle.mn_linear.is_some());
@@ -562,7 +576,7 @@ mod tests {
         let kind = AnalysisKind::Incremental;
 
         let axial = 2.0e5;
-        let view = build_hinge_view(&beam, &model, basis, kind, axial, 8, 24);
+        let view = build_hinge_view(&beam, &model, basis, kind, axial, 8, 24).expect("配筋は妥当");
         let mn = view.mn_linear.expect("N-M 線形相関");
         let points = view.backbone.expect("骨格");
         let expected = mn.moment_limit(axial);
@@ -605,7 +619,8 @@ mod tests {
             model.elements.push(beam.clone());
             model.set_member_hysteresis(ElemId(0), rule);
 
-            let view = build_hinge_view(&beam, &model, basis, kind, axial, 8, 24);
+            let view =
+                build_hinge_view(&beam, &model, basis, kind, axial, 8, 24).expect("配筋は妥当");
             let mn = view.mn_linear.expect("N-M 線形相関");
             let points = view.backbone.expect("骨格");
             assert_eq!(points.len(), 3, "{rule:?} は 3 折れ点");
@@ -641,7 +656,7 @@ mod tests {
         let kind = AnalysisKind::Incremental;
 
         let axial = 1.0e5;
-        let view = build_hinge_view(&beam, &model, basis, kind, axial, 8, 24);
+        let view = build_hinge_view(&beam, &model, basis, kind, axial, 8, 24).expect("配筋は妥当");
         let mn = view.mn_linear.expect("N-M 線形相関");
         let points = view.backbone.expect("骨格");
         let expected = mn.moment_limit(axial);
@@ -676,6 +691,7 @@ mod tests {
         let analysis = &beam.gauss_points[0].section.fibers;
 
         let plastic = analysis_plastic_fibers(&col, &model, basis, kind, FIBER_NW, FIBER_ND)
+            .expect("配筋は妥当")
             .expect("断面ありはファイバを返す");
         assert_eq!(plastic.len(), analysis.len());
         for (p, f) in plastic.iter().zip(analysis.iter()) {
@@ -690,7 +706,7 @@ mod tests {
             assert_eq!(tag, f.material);
         }
 
-        let view = build_hinge_view(&col, &model, basis, kind, 0.0, 8, 24);
+        let view = build_hinge_view(&col, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.backbone.is_none());
         let surface = view.mn_surface.expect("ファイバーは N-M 曲面を返す");
@@ -709,6 +725,7 @@ mod tests {
         let kind = AnalysisKind::Incremental;
 
         let plastic = analysis_plastic_fibers(&ms, &model, basis, kind, MS_NW, MS_ND)
+            .expect("配筋は妥当")
             .expect("断面ありはファイバを返す");
         assert_eq!(plastic.len(), MS_NW * MS_ND);
 
@@ -718,7 +735,7 @@ mod tests {
             .expect("MS 要素はファイバー断面の状態を返す");
         assert_eq!(states[0].fibers.len(), MS_NW * MS_ND);
 
-        let view = build_hinge_view(&ms, &model, basis, kind, 0.0, 8, 24);
+        let view = build_hinge_view(&ms, &model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::MultiSpring);
         assert!(view.mn_surface.is_some());
     }
@@ -737,7 +754,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
         assert!(view.backbone.is_none());
@@ -747,7 +765,7 @@ mod tests {
     /// 曲面を返さない（表示 API の「近似は返さない」契約）。
     #[test]
     fn concrete_shape_without_fc_returns_no_surface() {
-        let mut model = make_model(Some(rc_shape()), None);
+        let mut model = make_model(Some(rc_column_shape()), None);
         model.materials[0].category = MaterialCategory::Concrete;
         let col = elem(ElementKind::Fiber, [NodeId(0), NodeId(2)]);
         let issue = crate::factory::input_check::member_strength_issue(&col, &model)
@@ -761,6 +779,7 @@ mod tests {
             FIBER_NW,
             FIBER_ND,
         )
+        .expect("配筋は妥当")
         .is_none());
         let view = build_hinge_view(
             &col,
@@ -770,7 +789,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
     }
@@ -846,7 +866,7 @@ mod tests {
         let basis = StrengthBasis::Nominal;
         let kind = AnalysisKind::Incremental;
         let check = |data: &ElementData, model: &Model| {
-            let view = build_hinge_view(data, model, basis, kind, 0.0, 8, 24);
+            let view = build_hinge_view(data, model, basis, kind, 0.0, 8, 24).expect("配筋は妥当");
             assert_eq!(
                 resolves_to_concentrated_spring(data, model),
                 view.model == AnalysisHingeModel::ConcentratedSpring,
@@ -893,6 +913,7 @@ mod tests {
             FIBER_NW,
             FIBER_ND,
         )
+        .expect("配筋は妥当")
         .is_none());
         let view = build_hinge_view(
             &col,
@@ -902,7 +923,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
     }
@@ -913,6 +935,7 @@ mod tests {
     #[test]
     fn src_shape_without_steel_material_returns_no_surface() {
         let mut model = make_model(Some(src_shape()), Some(24.0));
+        model.materials[0].category = MaterialCategory::Concrete;
         model.materials.push(Material {
             strength_factor: None,
             concrete_class: Default::default(),
@@ -945,6 +968,7 @@ mod tests {
             FIBER_NW,
             FIBER_ND,
         )
+        .expect("配筋は妥当")
         .is_none());
 
         let view = build_hinge_view(
@@ -955,7 +979,8 @@ mod tests {
             0.0,
             8,
             24,
-        );
+        )
+        .expect("配筋は妥当");
         assert_eq!(view.model, AnalysisHingeModel::Fiber);
         assert!(view.mn_surface.is_none());
     }

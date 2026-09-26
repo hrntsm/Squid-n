@@ -7,7 +7,8 @@
 use super::geom::member_end_forces_at_face;
 use super::types::{HingeEvent, HingeLevel};
 use squid_n_core::flexural_strength::{
-    member_flexural_yield_moment, section_elastic_modulus, FlexuralStrengthFactors,
+    member_flexural_yield_moment, section_elastic_modulus, section_elastic_modulus_weak,
+    FlexuralStrengthFactors,
 };
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
@@ -43,7 +44,17 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
     let ze = section_elastic_modulus(sec);
     let kind = squid_n_core::structure_kind::structure_kind_of(Some(sec), mat.map(|m| m.category));
     match (&sec.shape, kind) {
-        (Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcCircle { .. }), _) => {
+        (Some(SectionShape::RcColumnRect { .. }), _) => {
+            let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
+            let mc = squid_n_core::rc_capacity::rc_crack_moment(fc, section_elastic_modulus(sec))
+                .min(squid_n_core::rc_capacity::rc_crack_moment(
+                    fc,
+                    section_elastic_modulus_weak(sec),
+                ));
+            let my = member_flexural_yield_moment(elem, model, factors);
+            HingeThreshold { mc: mc.min(my), my }
+        }
+        (Some(SectionShape::RcBeamRect { .. }) | Some(SectionShape::RcColumnCircle { .. }), _) => {
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let mc = squid_n_core::rc_capacity::rc_crack_moment(fc, ze);
             let my = member_flexural_yield_moment(elem, model, factors);

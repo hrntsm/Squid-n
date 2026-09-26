@@ -1803,31 +1803,6 @@ fn wall_has_src_boundary_column(
     })
 }
 
-/// `SectionShape::RcRect` の配筋情報から RC 終局耐力算定（rank-auto）用の入力を組み立てる。
-///
-/// 本体は [`squid_n_core::rc_capacity::rc_capacity_input_from_rect`]。
-/// 保有水平耐力の GUI 入口は強軸（`main_x`）のみを渡す薄い委譲である。
-fn rc_capacity_input_from_rect(
-    b: f64,
-    d: f64,
-    rebar: &squid_n_core::section_shape::RcRebar,
-    mat: &squid_n_core::model::Material,
-    rebar_mat: Option<&squid_n_core::model::Material>,
-    shear_mat: Option<&squid_n_core::model::Material>,
-    clear_span: f64,
-) -> Option<squid_n_design_jp::secondary::rc_capacity::RcCapacityInput> {
-    squid_n_core::rc_capacity::rc_capacity_input_from_rect(
-        b,
-        d,
-        &rebar.main_x,
-        rebar,
-        mat,
-        rebar_mat,
-        shear_mat,
-        clear_span,
-    )
-}
-
 /// 長期軸力の簡易近似として先頭荷重ケース(`model.load_cases.first()`)の結果を優先し、
 /// `bundle.statics` になければ最後に実行した静的解析結果(`member_forces`)を
 /// 用いて部材の軸力を取得する。圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。
@@ -1838,6 +1813,7 @@ fn rc_capacity_input_from_rect(
 /// 格納される。
 /// 先頭荷重ケースが `statics` にない（未実行）場合のみ `fallback_member_forces`
 /// （最後に実行した静的解析の内力）を用いる。
+#[allow(dead_code)]
 fn rc_sigma_0_from_gravity_or_last_static(
     statics: &[(StaticCaseKey, squid_n_solver::statics::linear::StaticOnce)],
     fallback_member_forces: &[(ElemId, squid_n_element::frame::beam::MemberForces)],

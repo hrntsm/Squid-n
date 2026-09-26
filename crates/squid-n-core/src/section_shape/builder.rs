@@ -112,9 +112,16 @@ impl SectionShape {
                 upper_width * upper_thick + lower_width * lower_thick,
                 h_web_shear_area(height, web_thick),
             ),
-            SectionShape::RcRect { b, d, .. } => (d, b, b * d / KAPPA_RC, b * d / KAPPA_RC),
-            SectionShape::RcCircle { d, .. } => (d, d, area / KAPPA_RC, area / KAPPA_RC),
-            SectionShape::SrcRect {
+            SectionShape::SrcBeamRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            }
+            | SectionShape::SrcColumnRect {
                 b,
                 d,
                 steel_height,
@@ -133,6 +140,10 @@ impl SectionShape {
                     rc_as + (N_S_EQ - 1.0) * s_web,
                 )
             }
+            SectionShape::RcBeamRect { b, d, .. } | SectionShape::RcColumnRect { b, d, .. } => {
+                (d, b, b * d / KAPPA_RC, b * d / KAPPA_RC)
+            }
+            SectionShape::RcColumnCircle { d, .. } => (d, d, area / KAPPA_RC, area / KAPPA_RC),
             SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => (
                 1000.0,
                 thickness,

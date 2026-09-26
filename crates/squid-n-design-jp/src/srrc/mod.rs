@@ -7,7 +7,8 @@
 
 use crate::{CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
-use squid_n_core::section_shape::SectionShape;
+use squid_n_core::rc_rebar_geom::RectEdge;
+use squid_n_core::section_shape::{RcBeamRebar, RcRectColumnRebar, SectionShape};
 
 mod beam;
 /// 鉄骨鉄筋コンクリート造梁のせん断終局強度（非線形解析のせん断ばね終局耐力）。
@@ -17,9 +18,7 @@ mod column;
 pub mod panel_zone;
 
 pub(crate) use crate::ratio_or_large;
-pub(crate) use crate::rc::{
-    bar_set_area, rect_axis_props as src_rect_axis_props, shear_alpha, AxisProps as SrcAxisProps,
-};
+pub(crate) use crate::rc::{shear_alpha, AxisProps as SrcAxisProps};
 
 /// 内蔵鋼材の断面積・断面係数を [`SectionShape`] の断面性能計算を借りて
 /// 求める（H 形鋼: `sA`, 強軸 `sZ`, 弱軸 `sZ`）。
@@ -36,6 +35,64 @@ fn steel_h_props(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> 
     let sz_strong = if height > 0.0 { iy * 2.0 / height } else { 0.0 };
     let sz_weak = if width > 0.0 { iz * 2.0 / width } else { 0.0 };
     (a, sz_strong, sz_weak)
+}
+
+/// 実配筋梁（[`RcBeamRebar`]）の指定引張側における、RC 部分 1 軸分の断面諸元。
+///
+/// `tension_is_top` は上端側を引張とするか。応力中心間距離は `j = 7d/8`。
+fn beam_axis_props(b: f64, d_full: f64, rebar: &RcBeamRebar, tension_is_top: bool) -> SrcAxisProps {
+    let bending = rebar.bending_steel(d_full, tension_is_top);
+    let tension = bending.tension;
+    SrcAxisProps {
+        b,
+        d_full,
+        dt: tension.centroid_from_edge_mm,
+        d: tension.effective_depth_mm,
+        at: tension.area_mm2,
+        ac: bending.compression.area_mm2,
+        j: 7.0 * tension.effective_depth_mm / 8.0,
+        pw: rebar.pw(b),
+    }
+}
+
+/// 実配筋矩形柱（[`RcRectColumnRebar`]）の強軸/弱軸における、RC 部分 1 軸分の断面諸元。
+///
+/// 強軸は上下辺、弱軸は左右辺の最外段 1 列を引張側とする。応力中心間距離は `j = 7d/8`。
+fn column_axis_props(b: f64, d_full: f64, rebar: &RcRectColumnRebar, strong: bool) -> SrcAxisProps {
+    let (b_dir, d_dir, edge, aw) = if strong {
+        (b, d_full, RectEdge::Top, rebar.aw_x_mm2())
+    } else {
+        (d_full, b, RectEdge::Left, rebar.aw_y_mm2())
+    };
+    let steel = rebar.edge_steel(edge, b, d_full);
+    let pw = if rebar.hoop.pitch > 0.0 {
+        aw / (b_dir * rebar.hoop.pitch)
+    } else {
+        0.0
+    };
+    SrcAxisProps {
+        b: b_dir,
+        d_full: d_dir,
+        dt: steel.centroid_from_edge_mm,
+        d: steel.effective_depth_mm,
+        at: steel.area_mm2,
+        ac: steel.area_mm2,
+        j: 7.0 * steel.effective_depth_mm / 8.0,
+        pw,
+    }
+}
+
+/// 実配筋梁の曲げ引張側。`mz>0` は下端引張、`mz<0` は上端引張とし、
+/// `mz=0` は上下の引張鉄筋量が小さい側を引張とする。
+fn beam_tension_is_top(forces: &MemberForcesAt, d_full: f64, rebar: &RcBeamRebar) -> bool {
+    if forces.mz < 0.0 {
+        true
+    } else if forces.mz > 0.0 {
+        false
+    } else {
+        rebar.bending_steel(d_full, true).tension.area_mm2
+            < rebar.bending_steel(d_full, false).tension.area_mm2
+    }
 }
 
 struct SrcShearResult {
@@ -234,7 +291,8 @@ fn src_shear_check(
     }
 }
 
-/// SRC 梁・SRC 柱の断面検定（`SectionShape::SrcRect` を対象とする）。
+/// SRC 梁・SRC 柱の断面検定
+/// （`SectionShape::SrcBeamRect`・`SrcColumnRect` を対象とする）。
 pub struct SrcDesign;
 
 impl DesignCheck for SrcDesign {
@@ -253,26 +311,14 @@ impl DesignCheck for SrcDesign {
         }
 
         let shape = match &sec.shape {
-            Some(s @ SectionShape::SrcRect { .. }) => s,
+            Some(s @ (SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. })) => s,
             _ => {
                 return CheckOutcome::Skipped {
-                    reason: "SRC検定: 断面形状不一致（Section.shape が SrcRect ではありません）"
+                    reason: "SRC検定: 断面形状不一致（Section.shape が SrcBeamRect/\
+                             SrcColumnRect ではありません）"
                         .to_string(),
                 };
             }
-        };
-
-        let SectionShape::SrcRect {
-            b,
-            d,
-            rebar,
-            steel_height,
-            steel_width,
-            steel_web_thick,
-            steel_flange_thick,
-        } = shape
-        else {
-            unreachable!()
         };
 
         if ctx.rebar_material.is_none() {
@@ -303,35 +349,101 @@ impl DesignCheck for SrcDesign {
             };
         };
         let steel_grade = steel_mat.name.as_str();
-        let cr = match ctx.kind {
-            MemberKind::Beam | MemberKind::Brace => beam::src_beam_check(
-                forces,
-                mat,
-                ctx,
-                *b,
-                *d,
+
+        let cr = match shape {
+            SectionShape::SrcBeamRect {
+                b,
+                d,
                 rebar,
-                *steel_height,
-                *steel_width,
-                *steel_web_thick,
-                *steel_flange_thick,
-                steel_grade,
-                fc_raw,
-            ),
-            MemberKind::Column => column::src_column_check(
-                forces,
-                mat,
-                ctx,
-                *b,
-                *d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+            } => {
+                if ctx.kind == MemberKind::Column {
+                    return CheckOutcome::Skipped {
+                        reason: "SRC検定: 梁用断面を柱部材に割り当てています（用途不一致）"
+                            .to_string(),
+                    };
+                }
+                if rebar.is_unset() {
+                    return CheckOutcome::Skipped {
+                        reason: "SRC検定: 配筋が未入力です".to_string(),
+                    };
+                }
+                if let Err(e) = rebar.validate(*b, *d) {
+                    return CheckOutcome::Skipped {
+                        reason: format!("SRC検定: 配筋が不整合です（{e}）"),
+                    };
+                }
+                let tension_is_top = beam_tension_is_top(forces, *d, rebar);
+                let props = beam_axis_props(*b, *d, rebar, tension_is_top);
+                let props_other = beam_axis_props(*b, *d, rebar, !tension_is_top);
+                beam::src_beam_check(
+                    forces,
+                    mat,
+                    ctx,
+                    props,
+                    props_other,
+                    rebar.main_dia,
+                    *steel_height,
+                    *steel_width,
+                    *steel_web_thick,
+                    *steel_flange_thick,
+                    steel_grade,
+                    fc_raw,
+                )
+            }
+            SectionShape::SrcColumnRect {
+                b,
+                d,
                 rebar,
-                *steel_height,
-                *steel_width,
-                *steel_web_thick,
-                *steel_flange_thick,
-                steel_grade,
-                fc_raw,
-            ),
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+            } => {
+                if matches!(ctx.kind, MemberKind::Beam | MemberKind::Brace) {
+                    return CheckOutcome::Skipped {
+                        reason: "SRC検定: 柱用断面を梁部材に割り当てています（用途不一致）"
+                            .to_string(),
+                    };
+                }
+                if rebar.is_unset() {
+                    return CheckOutcome::Skipped {
+                        reason: "SRC検定: 配筋が未入力です".to_string(),
+                    };
+                }
+                if let Err(e) = rebar.validate(*b, *d) {
+                    return CheckOutcome::Skipped {
+                        reason: format!("SRC検定: 配筋が不整合です（{e}）"),
+                    };
+                }
+                let props_z = column_axis_props(*b, *d, rebar, true);
+                let props_y = column_axis_props(*b, *d, rebar, false);
+                let ag = rebar.total_main_area();
+                let at_perp_z = (ag - props_z.at - props_z.ac).max(0.0);
+                let at_perp_y = (ag - props_y.at - props_y.ac).max(0.0);
+                column::src_column_check(
+                    forces,
+                    mat,
+                    ctx,
+                    props_z,
+                    props_y,
+                    at_perp_z,
+                    at_perp_y,
+                    ag,
+                    rebar.main_dia,
+                    rebar.main_dia,
+                    *steel_height,
+                    *steel_width,
+                    *steel_web_thick,
+                    *steel_flange_thick,
+                    steel_grade,
+                    fc_raw,
+                )
+            }
+            _ => unreachable!(),
         };
         CheckOutcome::Checked(cr)
     }

@@ -9,7 +9,7 @@
 //! # 判定の順序
 //!
 //! 1. 断面形状が**複合断面**なら、その種別で決まる
-//!    - `SrcRect` → [`StructureKind::Src`]
+//!    - `SrcBeamRect` / `SrcColumnRect` → [`StructureKind::Src`]
 //!    - `CftBox` / `CftPipe` → [`StructureKind::Cft`]
 //! 2. それ以外は**材料の区分**（[`MaterialCategory`]）で決まる
 //!    - `Steel` → [`StructureKind::S`]
@@ -24,7 +24,7 @@
 //! 組み合わせに対して、どの検定式を適用すべきかが定まる。
 //!
 //! SRC・CFT だけを断面形状で判定するのは、これらが 1 つの材料では表せない
-//! **複合断面**だからである。`SrcRect` は内蔵鉄骨のグレードを断面側に持ち、
+//! **複合断面**だからである。`SrcBeamRect` / `SrcColumnRect` は内蔵鉄骨のグレードを断面側に持ち、
 //! CFT は `Material::fc` を充填コンクリートの強度として使う。
 //!
 //! # 用途ごとの畳み込み
@@ -84,10 +84,13 @@ impl StructureKind {
 /// [`shape_default_kind`] だけで、追随を忘れるとコンパイルエラーになる。
 pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
     match shape {
-        SectionShape::SrcRect { .. } => Some(StructureKind::Src),
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => {
+            Some(StructureKind::Src)
+        }
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => Some(StructureKind::Cft),
-        SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
+        SectionShape::RcBeamRect { .. }
+        | SectionShape::RcColumnRect { .. }
+        | SectionShape::RcColumnCircle { .. }
         | SectionShape::RcWall { .. }
         | SectionShape::RcSlab { .. }
         | SectionShape::SteelH { .. }
@@ -110,10 +113,11 @@ pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
 /// 意図をよく表すため、材料がないときに限ってこれを既定として採る。
 pub fn shape_default_kind(shape: &SectionShape) -> StructureKind {
     match shape {
-        SectionShape::SrcRect { .. } => StructureKind::Src,
+        SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => StructureKind::Src,
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => StructureKind::Cft,
-        SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
+        SectionShape::RcBeamRect { .. }
+        | SectionShape::RcColumnRect { .. }
+        | SectionShape::RcColumnCircle { .. }
         | SectionShape::RcWall { .. }
         | SectionShape::RcSlab { .. } => StructureKind::Rc,
         SectionShape::SteelH { .. }
@@ -253,21 +257,17 @@ mod tests {
         }
     }
 
-    fn rc_rebar() -> crate::section_shape::RcRebar {
-        use crate::section_shape::{BarSet, RcRebar, ShearBar};
-        let bars = BarSet {
-            dia: 25.0,
-            count: 4,
-            layers: 1,
-        };
-        RcRebar {
-            main_x: bars.clone(),
-            main_y: bars,
+    fn rc_column_rebar() -> crate::section_shape::RcRectColumnRebar {
+        crate::section_shape::RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4],
+            y: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: crate::section_shape::RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         }
     }
@@ -304,10 +304,10 @@ mod tests {
     /// 複合断面は材料に依らず断面形状で決まる。
     #[test]
     fn test_composite_shape_wins_over_material() {
-        let src = SectionShape::SrcRect {
+        let src = SectionShape::SrcColumnRect {
             b: 700.0,
             d: 700.0,
-            rebar: rc_rebar(),
+            rebar: rc_column_rebar(),
             steel_height: 400.0,
             steel_width: 200.0,
             steel_web_thick: 8.0,
@@ -346,10 +346,10 @@ mod tests {
         m.sections[0].material = None;
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::S);
 
-        let rc = SectionShape::RcRect {
+        let rc = SectionShape::RcColumnRect {
             b: 700.0,
             d: 700.0,
-            rebar: rc_rebar(),
+            rebar: rc_column_rebar(),
         };
         let mut m = model_with(Some(rc), MaterialCategory::Steel);
         m.sections[0].material = None;

@@ -69,7 +69,7 @@ impl WallSection {
                     shear: mat.shear_modulus(),
                 }];
                 match shape {
-                    SectionShape::SrcRect { .. } => {
+                    SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. } => {
                         let steel = model
                             .element_steel_material(e)
                             .ok_or("SRC側柱の内蔵鉄骨材料が未指定です")?;
@@ -295,25 +295,33 @@ pub fn wall_shear_rigidity(data: &ElementData, model: &Model) -> Result<f64, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{RcCircleColumnRebar, RcRectColumnRebar};
 
-    fn rebar() -> RcRebar {
-        RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+    fn column_rebar() -> RcRectColumnRebar {
+        use squid_n_core::section_shape::RectColumnHoop;
+        RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![6],
+            y: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        }
+    }
+
+    fn circle_rebar() -> RcCircleColumnRebar {
+        use squid_n_core::section_shape::CircleColumnHoop;
+        RcCircleColumnRebar {
+            main_dia: 22.0,
+            count: 8,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
             },
         }
     }
@@ -359,10 +367,10 @@ mod tests {
 
     #[test]
     fn rotated_rectangle_union_matches_geometric_area() {
-        let shape = SectionShape::RcRect {
+        let shape = SectionShape::RcColumnRect {
             b: 500.0,
             d: 800.0,
-            rebar: rebar(),
+            rebar: column_rebar(),
         };
         for angle in [0.0, 0.3, 0.7, std::f64::consts::FRAC_PI_2] {
             let wall = section(&shape, angle);
@@ -378,9 +386,9 @@ mod tests {
 
     #[test]
     fn circular_column_area_uses_exact_curved_overlap() {
-        let shape = SectionShape::RcCircle {
+        let shape = SectionShape::RcColumnCircle {
             d: 600.0,
-            rebar: rebar(),
+            rebar: circle_rebar(),
         };
         let p = section(&shape, 0.0).properties().unwrap();
         let r = 300.0_f64;
@@ -393,10 +401,10 @@ mod tests {
     #[test]
     fn composite_material_widths_preserve_each_modulus() {
         for shape in [
-            SectionShape::SrcRect {
+            SectionShape::SrcColumnRect {
                 b: 600.0,
                 d: 800.0,
-                rebar: rebar(),
+                rebar: column_rebar(),
                 steel_height: 500.0,
                 steel_width: 300.0,
                 steel_web_thick: 12.0,

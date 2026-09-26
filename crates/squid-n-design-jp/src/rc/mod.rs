@@ -24,7 +24,8 @@ mod design_shear;
 pub(crate) mod section_props;
 mod shear_capacity;
 
-pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
+pub(crate) use bond::rc_beam_bond_check;
+pub use bond::{rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
 pub use column_mechanism::{
     compute_column_mechanism_sum_my, design_axial_for_mechanism, resolve_column_end_hinge,
     sum_my_from_end_hinges, ColumnEndHinge,
@@ -64,14 +65,30 @@ impl DesignCheck for RcDesign {
             };
         }
 
+        let new_rebar_unset = match &sec.shape {
+            Some(SectionShape::RcBeamRect { rebar, .. }) => rebar.is_unset(),
+            Some(SectionShape::RcColumnRect { rebar, .. }) => rebar.is_unset(),
+            Some(SectionShape::RcColumnCircle { rebar, .. }) => rebar.is_unset(),
+            _ => false,
+        };
+        if new_rebar_unset {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 配筋が未入力です".to_string(),
+            };
+        }
+
         let shape = match &sec.shape {
-            Some(s @ SectionShape::RcRect { .. }) => s,
-            Some(s @ SectionShape::RcCircle { .. }) => s,
+            Some(
+                s @ (SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }),
+            ) => s,
             _ => {
                 return CheckOutcome::Skipped {
-                    reason:
-                        "RC 検定: 配筋情報なし（Section.shape が RcRect/RcCircle ではありません）"
-                            .to_string(),
+                    reason: "RC 検定: 配筋情報なし\
+                             （Section.shape が RcBeamRect/\
+                             RcColumnRect/RcColumnCircle ではありません）"
+                        .to_string(),
                 };
             }
         };
@@ -97,11 +114,47 @@ impl DesignCheck for RcDesign {
             };
         }
 
-        let cr = match ctx.kind {
-            MemberKind::Beam | MemberKind::Brace => {
-                beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+        if matches!(shape, SectionShape::RcBeamRect { .. }) && ctx.kind == MemberKind::Column {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 梁用断面を柱部材に割り当てています（用途不一致）".to_string(),
+            };
+        }
+        if matches!(
+            shape,
+            SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }
+        ) && matches!(ctx.kind, MemberKind::Beam | MemberKind::Brace)
+        {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 柱用断面を梁部材に割り当てています（用途不一致）".to_string(),
+            };
+        }
+
+        let rebar_issue = match shape {
+            SectionShape::RcBeamRect { b, d, rebar } => rebar.validate(*b, *d).err(),
+            SectionShape::RcColumnRect { b, d, rebar } => rebar.validate(*b, *d).err(),
+            SectionShape::RcColumnCircle { d, rebar } => rebar.validate(*d).err(),
+            _ => None,
+        };
+        if let Some(e) = rebar_issue {
+            return CheckOutcome::Skipped {
+                reason: format!("RC 検定: 配筋が不整合です（{e}）"),
+            };
+        }
+
+        let cr = if matches!(shape, SectionShape::RcBeamRect { .. }) {
+            beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+        } else if matches!(
+            shape,
+            SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. }
+        ) {
+            column::column_check(forces, sec, mat, ctx, shape, fc_raw)
+        } else {
+            match ctx.kind {
+                MemberKind::Beam | MemberKind::Brace => {
+                    beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
+                }
+                MemberKind::Column => column::column_check(forces, sec, mat, ctx, shape, fc_raw),
             }
-            MemberKind::Column => column::column_check(forces, sec, mat, ctx, shape, fc_raw),
         };
         CheckOutcome::Checked(cr)
     }

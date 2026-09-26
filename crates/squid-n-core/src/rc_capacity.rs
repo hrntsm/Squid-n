@@ -163,10 +163,9 @@ pub fn rc_crack_moment(fc: f64, ze: f64) -> f64 {
     RC_CRACK_COEF * fc.sqrt() * ze
 }
 
-/// `SectionShape::RcRect` 相当の配筋から [`RcCapacityInput`] を組み立てる。
+/// RC 矩形柱の用途別配筋から [`RcCapacityInput`] を組み立てる。
 ///
-/// - `main`: 引張側として用いる主筋セット（強軸なら `main_x`、弱軸なら `main_y`）
-/// - `rebar`: かぶり・帯筋（`d_eff`・`pw` 用）。`main` と別軸の主筋は見ない
+/// - `rebar`: X 方向の引張主筋・かぶり・帯筋
 /// - σy は主筋材質 → 材料 `fy` → 345（SD345 相当）の順。**材料強度割増は掛けない**
 ///   （保有水平耐力など割増が要る呼び出し側が後掛けする）
 /// - σwy はせん断補強筋材質 → SD295 相当既定。割増対象外
@@ -176,18 +175,21 @@ pub fn rc_crack_moment(fc: f64, ze: f64) -> f64 {
 pub fn rc_capacity_input_from_rect(
     b: f64,
     d: f64,
-    main: &crate::section_shape::BarSet,
-    rebar: &crate::section_shape::RcRebar,
+    rebar: &crate::section_shape::RcRectColumnRebar,
     mat: &crate::model::Material,
     rebar_mat: Option<&crate::model::Material>,
     shear_mat: Option<&crate::model::Material>,
     clear_span: f64,
 ) -> Option<RcCapacityInput> {
     let fc = mat.fc?;
-    let at = crate::section_shape::bar_set_area(main) / 2.0;
-    let d_eff =
-        crate::rc_rebar_geom::tension_effective_depth(d, rebar.cover, rebar.shear.dia, main);
-    let pw = crate::rc_rebar_geom::pw_ratio(&rebar.shear, b);
+    let at = rebar.x_direction_area_mm2() / 2.0;
+    let side = rebar.edge_steel(crate::rc_rebar_geom::RectEdge::Top, b, d);
+    let d_eff = side.effective_depth_mm;
+    let pw = if rebar.hoop.pitch > 0.0 && b > 0.0 {
+        rebar.aw_x_mm2() / (b * rebar.hoop.pitch)
+    } else {
+        0.0
+    };
     Some(RcCapacityInput {
         b,
         d,
@@ -210,7 +212,7 @@ mod tests {
     use super::*;
     use crate::ids::MaterialId;
     use crate::model::{Material, MaterialCategory};
-    use crate::section_shape::{BarSet, RcRebar, ShearBar};
+    use crate::section_shape::{RcRectColumnRebar, RectColumnHoop};
 
     /// 代表断面: b=400, D=600, at=1935(D25×3程度), d_eff=530, σy=345, Fc=24,
     /// pw=0.002, σwy=295, h0=3000。
@@ -229,27 +231,21 @@ mod tests {
         }
     }
 
-    /// `rc_capacity_input_from_rect` が `RcRebar`/`Material` を `RcCapacityInput` へ
+    /// `rc_capacity_input_from_rect` が用途別配筋と `Material` を `RcCapacityInput` へ
     /// 配線する処理を、独立に計算した代表値で確認する。main_x = 8-D22 の総断面積の
     /// 半分が引張側 `at`、かぶり・帯筋径・主筋径から決まる有効せいが `d_eff`。
     #[test]
     fn rc_capacity_input_from_rect_matches_handcalc_without_strength_factor() {
-        let rebar = RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        let rebar = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![2],
             cover: 40.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 150.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         };
         let mat = Material {
@@ -265,17 +261,8 @@ mod tests {
             fc: Some(24.0),
             fy: None,
         };
-        let input = rc_capacity_input_from_rect(
-            400.0,
-            600.0,
-            &rebar.main_x,
-            &rebar,
-            &mat,
-            None,
-            None,
-            3000.0,
-        )
-        .expect("fc set");
+        let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, &mat, None, None, 3000.0)
+            .expect("fc set");
         let at_expected = 8.0 * std::f64::consts::PI * (22.0_f64 / 2.0).powi(2) / 2.0;
         let d_eff_expected = 600.0 - (40.0 + 10.0 + 22.0 / 2.0);
         assert!((input.at - at_expected).abs() < 1e-9);

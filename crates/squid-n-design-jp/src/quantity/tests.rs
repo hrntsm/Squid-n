@@ -9,7 +9,10 @@ use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
     MaterialCategory, Model, Node, RigidZone, Section,
 };
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
+};
 
 use super::*;
 
@@ -46,20 +49,13 @@ fn line_elem(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
     }
 }
 
-fn rc_rebar() -> RcRebar {
-    RcRebar {
-        main_x: BarSet {
-            count: 8,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 0,
-            dia: 25.0,
-            layers: 1,
-        },
+fn rc_beam_rebar() -> RcBeamRebar {
+    RcBeamRebar {
+        main_dia: 25.0,
+        top: vec![4],
+        bottom: vec![4],
         cover: 40.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch: 200.0,
             legs: 2,
@@ -68,10 +64,10 @@ fn rc_rebar() -> RcRebar {
 }
 
 fn rc_girder_section(id: u32) -> Section {
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 800.0,
-        rebar: rc_rebar(),
+        rebar: rc_beam_rebar(),
     };
     with_rc_materials(shape.to_section(SectionId(id), format!("G{id}")))
 }
@@ -102,25 +98,19 @@ fn rebar_material(id: u32) -> Material {
 }
 
 fn rc_column_section(id: u32) -> Section {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: 6,
-            dia: 25.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 4,
-            dia: 25.0,
-            layers: 1,
-        },
+    let rebar = RcRectColumnRebar {
+        main_dia: 25.0,
+        x: vec![4],
+        y: vec![3],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
             dia: 13.0,
             pitch: 100.0,
-            legs: 2,
+            legs_x: 2,
+            legs_y: 2,
         },
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcColumnRect {
         b: 700.0,
         d: 700.0,
         rebar,
@@ -329,7 +319,7 @@ fn test_rc_column_rebar() {
         .find(|i| i.category == MemberCategory::Column)
         .unwrap();
 
-    // 主筋: X 6 本 + Y 4 本、各 H=3.5m
+    // 主筋: 固有本数 2·4+2·3−4=10 本、各 H=3.5m
     let total_main_len: f64 = col
         .rebar
         .iter()
@@ -807,4 +797,241 @@ fn test_formwork_plateless_no_deduction_attached_deducts() {
         form_att < form_empty - 1e-6,
         "取り付く床板ありは型枠が減る empty={form_empty} att={form_att}"
     );
+}
+
+/// 新型 `RcBeamRect`（上 4+2 / 下 3+2）で主筋本数・質量・あばら筋が
+/// 段別本数の合計（11 本）どおりに算定される。
+#[test]
+fn test_new_rc_beam_rebar_uses_layer_counts() {
+    let mut model = rc_portal_model();
+    model.sections[0] = with_rc_materials(
+        SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 800.0,
+            rebar: RcBeamRebar {
+                main_dia: 25.0,
+                top: vec![4, 2],
+                bottom: vec![3, 2],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 200.0,
+                    legs: 2,
+                },
+            },
+        }
+        .to_section(SectionId(0), "RCB-400x800".to_string()),
+    );
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    let girder = q
+        .items
+        .iter()
+        .find(|i| i.category == MemberCategory::Girder)
+        .unwrap();
+
+    // 主筋本数は段別合計 4+2+3+2=11（総本数÷段数の推定は使わない）。
+    // 両外端 Lo=5300、L2=35×25=875 → 1 本 7050mm。
+    let mains: Vec<_> = girder
+        .rebar
+        .iter()
+        .filter(|r| r.usage == RebarUsage::MainBar)
+        .collect();
+    assert_eq!(mains.len(), 1);
+    assert_eq!(mains[0].dia, Some(25.0));
+    assert!((mains[0].total_length_m - 11.0 * 7.05).abs() < 1e-9);
+    assert!((mains[0].weight_t - 11.0 * 7.05 * 3.98 / 1_000.0).abs() < 1e-9);
+
+    // あばら筋: 一組 2×400+2×800=2400、本数 5300/200=26.5。
+    let stirrup = girder
+        .rebar
+        .iter()
+        .find(|r| r.usage == RebarUsage::Stirrup)
+        .unwrap();
+    assert_eq!(stirrup.dia, Some(10.0));
+    assert!((stirrup.total_length_m - 2.4 * 26.5).abs() < 1e-9);
+    assert!((stirrup.weight_t - 2.4 * 26.5 * 0.560 / 1_000.0).abs() < 1e-9);
+
+    // 継手: 11 本 × (0.5 + 0.5×floor(5.3/5)) = 11 × 1.0。
+    assert!((girder.rebar_joints - 11.0).abs() < 1e-9);
+}
+
+/// 新型 `RcColumnRect`（x:[3] / y:[3]）で、主筋は固有本数 8 本、
+/// 帯筋は X/Y 脚数（各 2）で算定される。
+#[test]
+fn test_new_rc_rect_column_rebar_uses_layer_counts() {
+    let mut model = rc_portal_model();
+    model.sections[1] = with_rc_materials(
+        SectionShape::RcColumnRect {
+            b: 700.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![3],
+                y: vec![3],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 13.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+        .to_section(SectionId(1), "RCC-700x700".to_string()),
+    );
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    let col = q
+        .items
+        .iter()
+        .find(|i| i.category == MemberCategory::Column)
+        .unwrap();
+
+    // 固有本数 = 2·Σx + 2·Σy − 4·nx·ny = 2×3 + 2×3 − 4×1×1 = 8 本。柱高 3.5m。
+    let main_len: f64 = col
+        .rebar
+        .iter()
+        .filter(|r| r.usage == RebarUsage::MainBar)
+        .map(|r| r.total_length_m)
+        .sum();
+    assert!((main_len - 8.0 * 3.5).abs() < 1e-9);
+
+    // 帯筋: 一組 legs_x×700 + legs_y×700 = 2800、本数 3500/100=35 → 98m。
+    let hoop = col
+        .rebar
+        .iter()
+        .find(|r| r.usage == RebarUsage::Hoop)
+        .unwrap();
+    assert!((hoop.total_length_m - 2.8 * 35.0).abs() < 1e-9);
+
+    // 継手: 8 本 × 1 個所。
+    assert!((col.rebar_joints - 8.0).abs() < 1e-9);
+}
+
+/// 新型 `RcColumnCircle`（count=8）で、主筋は総本数 8 本、
+/// 帯筋は 1 リング 1 周分（πd）として算定される。
+#[test]
+fn test_new_rc_circle_column_rebar_uses_total_count() {
+    let mut model = rc_portal_model();
+    model.sections[1] = with_rc_materials(
+        SectionShape::RcColumnCircle {
+            d: 700.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 25.0,
+                count: 8,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 13.0,
+                    pitch: 100.0,
+                },
+            },
+        }
+        .to_section(SectionId(1), "RD-700".to_string()),
+    );
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    let col = q
+        .items
+        .iter()
+        .find(|i| i.category == MemberCategory::Column)
+        .unwrap();
+
+    // 主筋: 総本数 8 × 柱高 3.5m。
+    let main_len: f64 = col
+        .rebar
+        .iter()
+        .filter(|r| r.usage == RebarUsage::MainBar)
+        .map(|r| r.total_length_m)
+        .sum();
+    assert!((main_len - 8.0 * 3.5).abs() < 1e-9);
+
+    // 帯筋: 1 リング 1 周分 = π×700、本数 3500/100=35。
+    let hoop = col
+        .rebar
+        .iter()
+        .find(|r| r.usage == RebarUsage::Hoop)
+        .unwrap();
+    let expected = std::f64::consts::PI * 700.0 * 35.0 / 1_000.0;
+    assert!((hoop.total_length_m - expected).abs() < 1e-9);
+    assert!((hoop.weight_t - expected * 0.995 / 1_000.0).abs() < 1e-9);
+
+    // 継手: 8 本 × 1 個所。
+    assert!((col.rebar_joints - 8.0).abs() < 1e-9);
+}
+
+/// 配筋未入力（`is_unset`）の新型断面は数量 0 とし、panic しない。
+#[test]
+fn test_new_rc_rebar_unset_yields_zero_without_panic() {
+    let mut model = rc_portal_model();
+    model.sections[0] = with_rc_materials(
+        SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 800.0,
+            rebar: RcBeamRebar {
+                main_dia: 25.0,
+                top: vec![],
+                bottom: vec![],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 200.0,
+                    legs: 2,
+                },
+            },
+        }
+        .to_section(SectionId(0), "RCB".to_string()),
+    );
+    model.sections[1] = with_rc_materials(
+        SectionShape::RcColumnRect {
+            b: 700.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![],
+                y: vec![],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 13.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+        .to_section(SectionId(1), "RCC".to_string()),
+    );
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    assert!(
+        q.items.iter().all(|i| i.rebar_weight_t() == 0.0),
+        "未入力の新型は鉄筋重量 0"
+    );
+    assert!(q.items.iter().all(|i| i.rebar_joints == 0.0));
+    // コンクリート・型枠は形状から算定される（未入力でも panic しない）。
+    assert!(q.items.iter().any(|i| i.concrete_m3 > 0.0));
+
+    // 円形柱 count=0 も同様に 0。
+    let mut model = rc_portal_model();
+    model.sections[1] = with_rc_materials(
+        SectionShape::RcColumnCircle {
+            d: 700.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 25.0,
+                count: 0,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 13.0,
+                    pitch: 100.0,
+                },
+            },
+        }
+        .to_section(SectionId(1), "RD".to_string()),
+    );
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    assert!(q
+        .items
+        .iter()
+        .filter(|i| i.category == MemberCategory::Column)
+        .all(|i| i.rebar_weight_t() == 0.0));
 }

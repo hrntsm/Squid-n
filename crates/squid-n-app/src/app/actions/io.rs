@@ -419,11 +419,14 @@ impl App {
     /// モデルを標準 ST-Bridge 2.0.2（XML, 幾何サブセット）として指定パスへ書き出す。
     pub fn export_stbridge_to(&mut self, path: std::path::PathBuf) {
         self.core.scoped.last_error = None;
-        match squid_n_io::stbridge::export_stbridge(&self.core.model) {
-            Ok(xml) => {
+        match squid_n_io::stbridge::export_stbridge_with_report(&self.core.model) {
+            Ok((xml, report)) => {
                 if let Err(e) = std::fs::write(&path, xml) {
                     self.report_error(format!("ST-Bridge書出エラー: {}", e));
                     return;
+                }
+                for warning in report.warnings {
+                    self.report_notice(format!("ST-Bridge書出: {warning}"));
                 }
                 let dropped = self
                     .core

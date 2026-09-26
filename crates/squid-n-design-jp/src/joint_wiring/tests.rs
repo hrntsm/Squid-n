@@ -550,29 +550,23 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
 /// 算定・出力される（付帯柱の主筋量が得られる壁のみ）。
 #[test]
 fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
 
     let mut model = wall_model(None);
     // 四周のうち両側の鉛直辺（ElemId 3・4）へ 600×600 RC 側柱の断面を与える。
-    let col_shape = SectionShape::RcRect {
+    let col_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![4],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
     };
@@ -630,35 +624,42 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
 /// RC 十字形接合部で終局検定（Vju/Qdu）の「接合部終局(RC)」チェックが出力される。
 #[test]
 fn rc_cross_joint_emits_ultimate_check() {
-    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
 
-    let rebar = |count: u32, dia: f64| RcRebar {
-        main_x: BarSet {
-            count,
-            dia,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count,
-            dia,
-            layers: 1,
-        },
+    let col_rebar = |count: u32, dia: f64| RcRectColumnRebar {
+        main_dia: dia,
+        x: vec![count / 2],
+        y: vec![count / 2],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    };
+    let beam_rebar = |top: Vec<u32>, bottom: Vec<u32>, dia: f64| RcBeamRebar {
+        main_dia: dia,
+        top,
+        bottom,
+        cover: 40.0,
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
         },
     };
-    let col_shape = SectionShape::RcRect {
+    let col_shape = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: rebar(8, 25.0),
+        rebar: col_rebar(8, 25.0),
     };
-    let beam_shape = SectionShape::RcRect {
+    let beam_shape = SectionShape::RcBeamRect {
         b: 400.0,
         d: 700.0,
-        rebar: rebar(6, 25.0),
+        rebar: beam_rebar(vec![4], vec![4], 25.0),
     };
 
     // 中央節点 0 に上下柱・左右梁が取り付く十字形接合部。
@@ -784,4 +785,334 @@ fn rc_cross_joint_emits_ultimate_check() {
     assert!(cr.ratio().is_finite());
     let full = crate::full_detail(cr);
     assert!(full.contains("κ=1.00"), "detail={}", full);
+}
+
+/// 中央節点に上下柱・左右梁が取り付く十字形接合部のモデル。
+fn cross_joint_model(col_shape: SectionShape, beam_shape: SectionShape) -> Model {
+    let coords = [
+        [0.0, 0.0, 3000.0],     // 0: 中央（接合部）
+        [0.0, 0.0, 0.0],        // 1: 柱下端
+        [0.0, 0.0, 6000.0],     // 2: 柱上端
+        [-6000.0, 0.0, 3000.0], // 3: 梁左端
+        [6000.0, 0.0, 3000.0],  // 4: 梁右端
+    ];
+    let mut nodes = Vec::new();
+    for (i, c) in coords.iter().enumerate() {
+        nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i == 1 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let with_mats = |mut sec: Section| {
+        sec.material = Some(MaterialId(0));
+        sec.rebar_material = Some(MaterialId(1));
+        sec.shear_rebar_material = Some(MaterialId(1));
+        sec.steel_material = Some(MaterialId(2));
+        sec
+    };
+    let sections = vec![
+        with_mats(col_shape.to_section(SectionId(0), "C".into())),
+        with_mats(beam_shape.to_section(SectionId(1), "B".into())),
+    ];
+    let materials = vec![
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".to_string(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        },
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SD345".to_string(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(345.0),
+        },
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(2),
+            name: "SN400B".to_string(),
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        },
+    ];
+    let make_elem = |id: u32, sec: u32, n0: u32, n1: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: {
+            let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+            v.push(NodeId(n0));
+            v.push(NodeId(n1));
+            v
+        },
+        section: Some(SectionId(sec)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: RigidZone::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let elements = vec![
+        make_elem(0, 0, 1, 0), // 柱下
+        make_elem(1, 0, 0, 2), // 柱上
+        make_elem(2, 1, 3, 0), // 梁左
+        make_elem(3, 1, 0, 4), // 梁右
+    ];
+    Model {
+        nodes,
+        elements,
+        sections,
+        materials,
+        ..Default::default()
+    }
+}
+
+/// 実配筋モデル（`RcBeamRect`＋`RcColumnRect`）の RC 十字形接合部で、
+/// 許容応力度・終局の両検定が出力される。
+#[test]
+fn rc_cross_joint_new_types_emits_checks() {
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
+
+    let col_shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4, 2],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    };
+    let beam_shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 25.0,
+            top: vec![4, 2],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    let model = cross_joint_model(col_shape, beam_shape);
+
+    let col_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let beam_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0e8]),
+        (1.0, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0e8]),
+    ];
+    let member_forces: Vec<(ElemId, ForcesAt)> = vec![
+        (ElemId(0), &col_f),
+        (ElemId(1), &col_f),
+        (ElemId(2), &beam_f),
+        (ElemId(3), &beam_f),
+    ];
+
+    let checks = collect_joint_checks(&model, &member_forces, LoadTerm::Short);
+    for label in ["接合部(RC)", "接合部終局(RC)"] {
+        let found = checks
+            .iter()
+            .find(|(_, l, _)| l == label)
+            .unwrap_or_else(|| panic!("{label} が出力されるはず"));
+        let cr = found.2.clone().unwrap_checked();
+        assert!(cr.ratio().is_finite(), "{label} ratio={}", cr.ratio());
+    }
+}
+
+/// 実配筋の幾何が不整合な梁が取り付く接合部は、RC 接合部検定を実施せず
+/// 検定不能として理由を示す。不整合な集約値で検定比を作らない。
+#[test]
+fn rc_joint_with_invalid_beam_rebar_is_skipped() {
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
+
+    let col_shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    };
+    let beam_shape = SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: RcBeamRebar {
+            main_dia: 25.0,
+            top: vec![0],
+            bottom: vec![6],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    if let SectionShape::RcBeamRect { b, d, ref rebar } = beam_shape {
+        assert!(rebar.validate(b, d).is_err());
+    } else {
+        unreachable!();
+    }
+    let model = cross_joint_model(col_shape, beam_shape);
+
+    let col_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [0.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let beam_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let member_forces: Vec<(ElemId, ForcesAt)> = vec![
+        (ElemId(0), &col_f),
+        (ElemId(1), &col_f),
+        (ElemId(2), &beam_f),
+        (ElemId(3), &beam_f),
+    ];
+
+    let checks = collect_joint_checks(&model, &member_forces, LoadTerm::Short);
+    for label in ["接合部(RC)", "接合部終局(RC)"] {
+        let found = checks
+            .iter()
+            .find(|(_, l, _)| l == label)
+            .unwrap_or_else(|| panic!("{label} が出力されるはず"));
+        match &found.2 {
+            CheckOutcome::Skipped { reason } => {
+                assert!(reason.contains("幾何が不整合"), "{label} reason={reason}");
+            }
+            CheckOutcome::Checked(_) => panic!("{label} は不整合時に検定してはならない"),
+        }
+    }
+}
+
+/// 実配筋モデル（`SrcBeamRect`＋`SrcColumnRect`）の SRC 十字形接合部で、
+/// パネルゾーン検定が出力される。
+#[test]
+fn src_cross_panel_new_types_emits_check() {
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+    };
+
+    let col_shape = SectionShape::SrcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 25.0,
+            x: vec![4, 2],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 16.0,
+    };
+    let beam_shape = SectionShape::SrcBeamRect {
+        b: 400.0,
+        d: 600.0,
+        rebar: RcBeamRebar {
+            main_dia: 25.0,
+            top: vec![4, 2],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 16.0,
+    };
+    let model = cross_joint_model(col_shape, beam_shape);
+
+    let col_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [-500_000.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+        (1.0, [-500_000.0, 100_000.0, 0.0, 0.0, 0.0, 0.0]),
+    ];
+    let beam_f: [(f64, [f64; 6]); 2] = [
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0e8]),
+        (1.0, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0e8]),
+    ];
+    let member_forces: Vec<(ElemId, ForcesAt)> = vec![
+        (ElemId(0), &col_f),
+        (ElemId(1), &col_f),
+        (ElemId(2), &beam_f),
+        (ElemId(3), &beam_f),
+    ];
+
+    let checks = collect_joint_checks(&model, &member_forces, LoadTerm::Short);
+    let found = checks
+        .iter()
+        .find(|(_, l, _)| l == "柱梁接合部(SRC)")
+        .expect("SRC 十字形接合部はパネルゾーン検定が出力されるはず");
+    let cr = found.2.clone().unwrap_checked();
+    assert!(
+        cr.ratio().is_finite() && cr.ratio() > 0.0,
+        "ratio={}",
+        cr.ratio()
+    );
 }

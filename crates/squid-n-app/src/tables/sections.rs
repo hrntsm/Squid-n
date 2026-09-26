@@ -31,12 +31,111 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
         SectionMaterialRole::Main => true,
         SectionMaterialRole::Rebar | SectionMaterialRole::ShearRebar => matches!(
             shape,
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
+            SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
                 | SectionShape::RcWall { .. }
         ),
-        SectionMaterialRole::Steel => matches!(shape, SectionShape::SrcRect { .. }),
+        SectionMaterialRole::Steel => matches!(
+            shape,
+            SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }
+        ),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::role_applies;
+    use squid_n_core::section_shape::SectionShape;
+    use squid_n_edit::SectionMaterialRole;
+
+    #[test]
+    fn new_rc_and_src_shapes_expose_material_roles() {
+        use squid_n_core::section_shape::{
+            BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+            RectColumnHoop,
+        };
+        let beam_rebar = RcBeamRebar {
+            main_dia: 20.0,
+            top: vec![2],
+            bottom: vec![2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        };
+        let column_rebar = RcRectColumnRebar {
+            main_dia: 20.0,
+            x: vec![2],
+            y: vec![2],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        };
+        let circle_rebar = RcCircleColumnRebar {
+            main_dia: 20.0,
+            count: 8,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+            },
+        };
+        let rc_shapes = [
+            SectionShape::RcBeamRect {
+                b: 400.0,
+                d: 600.0,
+                rebar: beam_rebar.clone(),
+            },
+            SectionShape::RcColumnRect {
+                b: 400.0,
+                d: 600.0,
+                rebar: column_rebar.clone(),
+            },
+            SectionShape::RcColumnCircle {
+                d: 600.0,
+                rebar: circle_rebar,
+            },
+        ];
+        for shape in &rc_shapes {
+            assert!(role_applies(Some(shape), SectionMaterialRole::Rebar));
+            assert!(role_applies(Some(shape), SectionMaterialRole::ShearRebar));
+            assert!(!role_applies(Some(shape), SectionMaterialRole::Steel));
+        }
+        let src_shapes = [
+            SectionShape::SrcBeamRect {
+                b: 400.0,
+                d: 600.0,
+                rebar: beam_rebar,
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 10.0,
+                steel_flange_thick: 16.0,
+            },
+            SectionShape::SrcColumnRect {
+                b: 400.0,
+                d: 600.0,
+                rebar: column_rebar,
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 10.0,
+                steel_flange_thick: 16.0,
+            },
+        ];
+        for shape in &src_shapes {
+            assert!(role_applies(Some(shape), SectionMaterialRole::Rebar));
+            assert!(role_applies(Some(shape), SectionMaterialRole::ShearRebar));
+            assert!(role_applies(Some(shape), SectionMaterialRole::Steel));
+        }
     }
 }
 

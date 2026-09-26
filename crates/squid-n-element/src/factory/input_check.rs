@@ -13,7 +13,10 @@ const MAX_LISTED: usize = 5;
 fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
     !matches!(
         shape,
-        SectionShape::RcRect { .. } | SectionShape::RcCircle { .. } | SectionShape::RcWall { .. }
+        SectionShape::RcBeamRect { .. }
+            | SectionShape::RcColumnRect { .. }
+            | SectionShape::RcColumnCircle { .. }
+            | SectionShape::RcWall { .. }
     )
 }
 
@@ -83,7 +86,11 @@ fn category_mismatch_issue(
     let has_rebar = sec.and_then(|s| s.shape.as_ref()).is_some_and(|s| {
         matches!(
             s,
-            SectionShape::RcRect { .. } | SectionShape::RcCircle { .. }
+            SectionShape::RcBeamRect { .. }
+                | SectionShape::RcColumnRect { .. }
+                | SectionShape::RcColumnCircle { .. }
+                | SectionShape::SrcBeamRect { .. }
+                | SectionShape::SrcColumnRect { .. }
         )
     });
     if has_rebar && mat.category == MaterialCategory::Steel {
@@ -124,6 +131,18 @@ pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option
     if let Some(msg) = category_mismatch_issue(data, sec, mat) {
         return Some(msg);
     }
+    if let Some(shape) = sec.and_then(|s| s.shape.as_ref()) {
+        if let Err(err) = shape.validate_rebar() {
+            return Some(format!(
+                "部材 ID {} の断面「{}」は実配筋の幾何が不整合です（{}）。\
+                 断面タブで段別本数・かぶり・断面寸法を見直してください。\
+                 非線形解析では実配筋から曲げ降伏・せん断終局の各耐力を算定するため解析を開始できません。",
+                data.id.0,
+                sec.map(|s| s.name.as_str()).unwrap_or("名称未設定"),
+                err
+            ));
+        }
+    }
     let is_concrete = sec
         .and_then(|s| s.shape.as_ref())
         .is_some_and(|s| s.is_concrete_like());
@@ -147,8 +166,12 @@ pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option
             }
             Some(_) => {}
         }
-        let rebar = sec.and_then(|s| s.shape.as_ref()).and_then(|s| s.rebar());
-        if rebar.is_some()
+        let has_rebar = sec.and_then(|s| s.shape.as_ref()).is_some_and(|s| {
+            s.beam_rebar().is_some()
+                || s.rect_column_rebar().is_some()
+                || s.circle_column_rebar().is_some()
+        });
+        if has_rebar
             && squid_n_core::material_grade::rebar_yield_strength(
                 model.element_rebar_material(data),
             )

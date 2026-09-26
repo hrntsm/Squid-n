@@ -6,8 +6,9 @@ use squid_n_core::rc_capacity::{rc_column_mu_simple, rc_mu_simple, RcCapacityInp
 use squid_n_core::section_shape::SectionShape;
 use squid_n_element::transform::LocalFrame;
 
-use super::section_props::{bar_set_area, rect_axis_props_strong, rect_axis_props_weak};
+use super::section_props::{axis_props_from_shape, rebar_info_from_shape, AxisProps};
 use crate::material_strength::rebar_sigma_y_of;
+use crate::ultimate::rc_props::RcDirection;
 use crate::MemberKind;
 
 /// 柱端のヒンジ種別。
@@ -98,41 +99,42 @@ fn aligns_exclusively(
     s > sp + 1e-12 || ((s - sp).abs() <= 1e-12 && prefer_on_tie)
 }
 
+/// 梁の略算降伏モーメント。上下の大きい方を用いる。
 fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
     let sec = elem
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
-    let rebar = match &sec.shape {
-        Some(SectionShape::RcRect { rebar, .. }) | Some(SectionShape::RcCircle { rebar, .. }) => {
-            rebar
-        }
-        _ => return None,
-    };
-    let props = match &sec.shape {
-        Some(SectionShape::RcRect { .. }) => rect_axis_props_strong(sec, rebar),
-        Some(SectionShape::RcCircle { d, .. }) => {
-            let _ = d;
-            return None;
-        }
-        _ => return None,
-    };
+    let shape = sec.shape.as_ref()?;
     let sigma_y = rebar_sigma_y_of(model.element_rebar_material(elem));
-    if sigma_y <= 0.0 || props.at <= 0.0 || props.d <= 0.0 {
+    if sigma_y <= 0.0 {
         return None;
     }
-    let inp = RcCapacityInput {
-        b: props.b,
-        d: props.d_full,
-        at: props.at,
-        d_eff: props.d,
-        sigma_y,
-        fc: 0.0,
-        pw: 0.0,
-        sigma_wy: 0.0,
-        clear_span: 0.0,
-        sigma_0: 0.0,
+    let mu_of = |props: AxisProps| -> Option<f64> {
+        if props.at <= 0.0 || props.d <= 0.0 {
+            return None;
+        }
+        let inp = RcCapacityInput {
+            b: props.b,
+            d: props.d_full,
+            at: props.at,
+            d_eff: props.d,
+            sigma_y,
+            fc: 0.0,
+            pw: 0.0,
+            sigma_wy: 0.0,
+            clear_span: 0.0,
+            sigma_0: 0.0,
+        };
+        Some(rc_mu_simple(&inp))
     };
-    Some(rc_mu_simple(&inp))
+    match shape {
+        SectionShape::RcBeamRect { .. } => {
+            let top = axis_props_from_shape(shape, RcDirection::Strong, true)?;
+            let bottom = axis_props_from_shape(shape, RcDirection::Strong, false)?;
+            Some(mu_of(top)?.max(mu_of(bottom)?))
+        }
+        _ => None,
+    }
 }
 
 fn column_my_at_n(model: &Model, elem: &ElementData, n_axial: f64, strong: bool) -> Option<f64> {
@@ -141,30 +143,20 @@ fn column_my_at_n(model: &Model, elem: &ElementData, n_axial: f64, strong: bool)
         .and_then(|sid| model.sections.get(sid.index()))?;
     let mat = model.element_material(elem)?;
     let fc = mat.fc.filter(|&v| v > 0.0)?;
-    let (rebar, props, b, d_full, as_total) = match &sec.shape {
-        Some(SectionShape::RcRect { rebar, .. }) => {
-            let props = if strong {
-                rect_axis_props_strong(sec, rebar)
+    let shape = sec.shape.as_ref()?;
+    let (props, b, d_full, as_total) = match shape {
+        SectionShape::RcColumnRect { .. } | SectionShape::RcColumnCircle { .. } => {
+            let direction = if strong {
+                RcDirection::Strong
             } else {
-                rect_axis_props_weak(sec, rebar)
+                RcDirection::Weak
             };
-            let (b, d_full) = if strong {
-                (sec.width, sec.depth)
-            } else {
-                (sec.depth, sec.width)
-            };
-            let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-            (rebar, props, b, d_full, as_total)
-        }
-        Some(SectionShape::RcCircle { d, rebar }) => {
-            let props = super::section_props::circle_axis_props(*d, rebar);
-            let as_total = bar_set_area(&rebar.main_x);
-            let b_eq = std::f64::consts::PI * d * d / 4.0 / d;
-            (rebar, props, b_eq, *d, as_total)
+            let props = axis_props_from_shape(shape, direction, true)?;
+            let info = rebar_info_from_shape(shape, true)?;
+            (props, props.b, props.d_full, info.main_area)
         }
         _ => return None,
     };
-    let _ = rebar;
     let sigma_y = rebar_sigma_y_of(model.element_rebar_material(elem));
     if sigma_y <= 0.0 {
         return None;
@@ -364,36 +356,42 @@ mod tests {
             ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
             MaterialCategory, Node, RigidZone,
         };
-        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+        use squid_n_core::section_shape::{
+            BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop,
+        };
         use squid_n_core::Dof6Mask;
 
-        let rebar = RcRebar {
+        let col_rebar = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![2],
+            y: vec![2],
             cover: 40.0,
-            main_x: BarSet {
-                dia: 22.0,
-                count: 4,
-                layers: 1,
-            },
-            main_y: BarSet {
-                dia: 22.0,
-                count: 4,
-                layers: 1,
-            },
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         };
-        let col_shape = SectionShape::RcRect {
+        let col_shape = SectionShape::RcColumnRect {
             b: 500.0,
             d: 500.0,
-            rebar: rebar.clone(),
+            rebar: col_rebar,
         };
-        let beam_shape = SectionShape::SrcRect {
+        let beam_shape = SectionShape::SrcBeamRect {
             b: 300.0,
             d: 600.0,
-            rebar,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
             steel_height: 400.0,
             steel_width: 200.0,
             steel_web_thick: 9.0,
@@ -506,5 +504,296 @@ mod tests {
         let weak = [0.0, 1.0];
         assert!(aligns_exclusively(strong, weak, axis, true));
         assert!(!aligns_exclusively(weak, strong, axis, false));
+    }
+
+    /// 梁のない鉛直柱 1 本だけのモデル。ΣMy は両端の柱 Mu 和になる。
+    fn column_only_model(shape: SectionShape) -> Model {
+        use smallvec::smallvec;
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+            MaterialCategory, Node, RigidZone,
+        };
+        use squid_n_core::Dof6Mask;
+
+        let materials = vec![
+            Material {
+                id: MaterialId(0),
+                name: "Fc24".into(),
+                category: MaterialCategory::Concrete,
+                young: 21_000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+                concrete_class: Default::default(),
+                strength_factor: None,
+            },
+            Material {
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205_000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+                concrete_class: Default::default(),
+                strength_factor: None,
+            },
+        ];
+        let mut sec = shape.to_section(SectionId(0), "C".into());
+        sec.material = Some(MaterialId(0));
+        sec.rebar_material = Some(MaterialId(1));
+        let node = |id: u32, z: f64| Node {
+            id: NodeId(id),
+            coord: [0.0, 0.0, z],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        Model {
+            nodes: vec![node(0, 0.0), node(1, 4000.0)],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Beam,
+                nodes: smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: RigidZone::default(),
+                plastic_zone: None,
+                spring: None,
+            }],
+            sections: vec![sec],
+            materials,
+            ..Default::default()
+        }
+    }
+
+    fn sum_my_of(model: &Model) -> (Option<f64>, Option<f64>) {
+        let adj = NodeAdjacency::build(model);
+        compute_column_mechanism_sum_my(model, &adj, &model.elements[0], 0.0, 0.0, 0.0, 0.0, 1.0)
+            .expect("柱として算定できる")
+    }
+
+    /// 柱 1 本の上端（節点 j）に X 方向の梁 1 本を取り付けたモデル。
+    /// 柱の強軸たわみ方向 ey は X を向き、梁は強軸方向へ割り当てられる。
+    fn column_with_beam(beam_shape: SectionShape) -> Model {
+        use smallvec::smallvec;
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+            MaterialCategory, Node, RigidZone,
+        };
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        use squid_n_core::Dof6Mask;
+
+        let materials = vec![
+            Material {
+                id: MaterialId(0),
+                name: "Fc24".into(),
+                category: MaterialCategory::Concrete,
+                young: 21_000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+                concrete_class: Default::default(),
+                strength_factor: None,
+            },
+            Material {
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205_000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+                concrete_class: Default::default(),
+                strength_factor: None,
+            },
+        ];
+        let col_shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        };
+        let mut col_sec = col_shape.to_section(SectionId(0), "C".into());
+        col_sec.material = Some(MaterialId(0));
+        col_sec.rebar_material = Some(MaterialId(1));
+        let mut beam_sec = beam_shape.to_section(SectionId(1), "B".into());
+        beam_sec.material = Some(MaterialId(0));
+        beam_sec.rebar_material = Some(MaterialId(1));
+
+        let node = |id: u32, x: f64, z: f64| Node {
+            id: NodeId(id),
+            coord: [x, 0.0, z],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let line = |id: u32, n0: u32, n1: u32, sid: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(n0), NodeId(n1)],
+            section: Some(SectionId(sid)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 0.0, 4000.0),
+                node(2, 6000.0, 4000.0),
+            ],
+            elements: vec![line(0, 0, 1, 0), line(1, 1, 2, 1)],
+            sections: vec![col_sec, beam_sec],
+            materials,
+            ..Default::default()
+        };
+        model.elements[0].local_axis.ref_vector = [1.0, 0.0, 0.0];
+        model
+    }
+
+    /// 上下非対称の `RcBeamRect` は ΣMy に大きい引張側（上端引張）の My を用いる。
+    #[test]
+    fn new_beam_rect_sum_my_uses_larger_tension_side() {
+        use squid_n_core::section_shape::{one_bar_area, BeamStirrup, RcBeamRebar};
+
+        let beam = |top: Vec<u32>, bottom: Vec<u32>| SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top,
+                bottom,
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        };
+
+        let sum = sum_my_of(&column_with_beam(beam(vec![4], vec![2])));
+        let s = sum.0.unwrap();
+
+        let a1 = one_bar_area(22.0);
+        let sigma_y = 345.0;
+        let col_my = 0.8 * 4.0 * a1 * sigma_y * 700.0;
+        let beam_bottom = 0.9 * 2.0 * a1 * sigma_y * 539.0;
+        let beam_top = 0.9 * 4.0 * a1 * sigma_y * 539.0;
+        let expected = col_my + 0.5 * beam_top;
+        let if_bottom_tension = col_my + 0.5 * beam_bottom;
+        assert!((s - expected).abs() < 1e-6, "s={s}, expected={expected}");
+        assert!(
+            (s - if_bottom_tension).abs() > 1.0,
+            "下端引張を採用してはならない: s={s}"
+        );
+    }
+
+    /// 新型 `RcColumnRect` の ΣMy が段数違いの等価断面と一致する。
+    ///
+    /// 最外段 4 本（`x:[4]`）は段構成（1段・2段）によらず引張側 `at` が等しく、
+    /// 軸力 0 では `Mu = 0.8·at·σy·D` のため両者は一致する。
+    #[test]
+    fn new_column_rect_sum_my_matches_legacy_equivalent() {
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+
+        let new_shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        };
+        let equivalent_shape = SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4, 2],
+                y: vec![4],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        };
+
+        let new_sum = sum_my_of(&column_only_model(new_shape));
+        let equivalent_sum = sum_my_of(&column_only_model(equivalent_shape));
+
+        let (ns, nw) = (new_sum.0.unwrap(), new_sum.1.unwrap());
+        assert!(ns > 0.0 && nw > 0.0, "new_sum={new_sum:?}");
+        assert!(
+            (ns - equivalent_sum.0.unwrap()).abs() < 1e-6
+                && (nw - equivalent_sum.1.unwrap()).abs() < 1e-6,
+            "new={new_sum:?}, equivalent={equivalent_sum:?}"
+        );
+    }
+
+    /// 新型 `RcColumnCircle`（等価正方形）の ΣMy は両方向で同値の非ゼロを返す。
+    #[test]
+    fn new_column_circle_sum_my_is_nonzero_and_isotropic() {
+        use squid_n_core::section_shape::{CircleColumnHoop, RcCircleColumnRebar};
+
+        let shape = SectionShape::RcColumnCircle {
+            d: 600.0,
+            rebar: RcCircleColumnRebar {
+                main_dia: 22.0,
+                count: 8,
+                cover: 40.0,
+                hoop: CircleColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                },
+            },
+        };
+        let sum = sum_my_of(&column_only_model(shape));
+        let (s, w) = (sum.0.unwrap(), sum.1.unwrap());
+        assert!(s > 0.0 && w > 0.0, "sum={sum:?}");
+        assert!((s - w).abs() < 1e-9, "円形柱は両方向同値: sum={sum:?}");
     }
 }

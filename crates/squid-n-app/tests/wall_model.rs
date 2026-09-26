@@ -38,7 +38,7 @@
 //! （＝もともと本フィクスチャは、この検定の観点では気づかれずに不正な混合構造
 //! だった）。柱 0・1・大梁 4・8 の材料を RC（`MaterialId(1)`）へ差し替えて是正した。
 //!
-//! **側柱・壁上下大梁は本物の `SectionShape::RcRect`＋主筋（300x300・300x400、
+//! **側柱・壁上下大梁は本物の実配筋矩形（300x300・300x400、
 //! 主筋 3-D22・せん断補強筋 D10@100）を使う。** 以前は「鋼断面（H 形）の断面性能を
 //! そのまま流用し材料だけ RC へ差し替える」トリックを使っていたが、これは
 //! 実在しない断面（形状は鋼、材料は RC）で、増分解析（プッシュオーバー）・
@@ -72,7 +72,7 @@ use squid_n_core::model::{
     WallPlate, WallPlateShape,
 };
 use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
-use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_section::shape::{RcBeamRebar, RcRectColumnRebar, SectionShape};
 use squid_n_solver::statics::analysis::SeismicDir;
 
 /// 有効数字 4 桁の指数表記（`full_model.rs::sig4` と同じ丸め規則。両ファイルの
@@ -195,47 +195,52 @@ fn wall_bay_model() -> Model {
     // （`wall_frame_category_issue`）。柱脚どうしの梁を足して壁面を「四周を持つ」
     // 状態にする以上、四周をすべて RC にそろえる必要がある。
     //
-    // **本物の `SectionShape::RcRect`＋主筋（自己矛盾のない断面）を使う。**
+    // **本物の実配筋矩形（自己矛盾のない断面）を使う。**
     // 以前は「鋼断面（`col_shape`／`beam_shape`）の断面性能をそのまま流用し材料だけ
     // RC へ差し替える」トリックを使っていたが、これは実在しない断面（形状は鋼、
     // 材料は RC）だった。増分解析のファイバー断面は `shape` だけを見て鋼材と
     // 判定するため材料の `fy` を要求してエラーになり、保有水平耐力の壁の等価
-    // 引張鉄筋比 pte も側柱の主筋（`RcRect` の `rebar`）がなければ算定できない。
+    // 引張鉄筋比 pte も側柱の主筋がなければ算定できない。
     // どちらも「RC 壁の側柱に鋼断面を使う」という組み合わせ自体が実在しえないことが
     // 原因であり、鋼断面の数値流用は削って本物の RC 矩形（300x300・300x400、
     // 主筋 3-D22・せん断補強筋 D10@100）に差し替えた。
-    let side_column_rebar = RcRebar {
-        main_x: BarSet {
-            count: 3,
-            dia: 22.0,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: 3,
-            dia: 22.0,
-            layers: 1,
-        },
+    let side_column_rebar = RcRectColumnRebar {
+        main_dia: 22.0,
+        x: vec![3],
+        y: vec![2],
         cover: 40.0,
-        shear: ShearBar {
+        hoop: squid_n_section::shape::RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    };
+    let wall_girder_rebar = RcBeamRebar {
+        main_dia: 22.0,
+        top: vec![3],
+        bottom: vec![3],
+        cover: 40.0,
+        stirrup: squid_n_section::shape::BeamStirrup {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
         },
     };
-    let mut side_column_section = SectionShape::RcRect {
+    let mut side_column_section = SectionShape::RcColumnRect {
         b: 300.0,
         d: 300.0,
-        rebar: side_column_rebar.clone(),
+        rebar: side_column_rebar,
     }
     .to_section(SectionId(3), "側柱 RC 300x300".into());
     side_column_section.material = Some(MaterialId(1));
     side_column_section.rebar_material = Some(MaterialId(2));
     side_column_section.shear_rebar_material = Some(MaterialId(2));
     model.sections.push(side_column_section);
-    let mut wall_girder_section = SectionShape::RcRect {
+    let mut wall_girder_section = SectionShape::RcBeamRect {
         b: 300.0,
         d: 400.0,
-        rebar: side_column_rebar,
+        rebar: wall_girder_rebar,
     }
     .to_section(SectionId(4), "壁上下大梁 RC 300x400".into());
     wall_girder_section.material = Some(MaterialId(1));
@@ -506,14 +511,16 @@ fn wall_analysis_preserves_side_column_shapes_with_long_axial_cut() {
 #[test]
 fn circular_side_column_shear_section_runs_analysis() {
     let mut app = wall_bay_app();
-    let rebar = app.core.model.sections[3]
-        .shape
-        .as_ref()
-        .unwrap()
-        .rebar()
-        .unwrap()
-        .clone();
-    app.core.model.sections[3].shape = Some(SectionShape::RcCircle { d: 600.0, rebar });
+    let rebar = squid_n_section::shape::RcCircleColumnRebar {
+        main_dia: 22.0,
+        count: 8,
+        cover: 40.0,
+        hoop: squid_n_section::shape::CircleColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+        },
+    };
+    app.core.model.sections[3].shape = Some(SectionShape::RcColumnCircle { d: 600.0, rebar });
     app.run_preparation();
     app.run_static_all();
     assert!(
@@ -532,7 +539,7 @@ fn rotated_src_and_cft_side_columns_run_linear_analysis() {
             .shape
             .as_ref()
             .unwrap()
-            .rebar()
+            .rect_column_rebar()
             .unwrap()
             .clone();
         let shape = if cft {
@@ -542,7 +549,7 @@ fn rotated_src_and_cft_side_columns_run_linear_analysis() {
                 thick: 20.0,
             }
         } else {
-            SectionShape::SrcRect {
+            SectionShape::SrcColumnRect {
                 b: 500.0,
                 d: 700.0,
                 rebar,

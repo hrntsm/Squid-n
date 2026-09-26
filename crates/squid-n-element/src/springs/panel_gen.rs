@@ -447,25 +447,22 @@ mod tests {
         assert_eq!(model.beam_groups[0][0], model.elements[added_idx].id);
     }
 
-    /// RC 矩形断面（柱・梁の双方に使う）。
+    /// RC 矩形柱断面。
     fn rc_shape(b: f64, d: f64) -> SectionShape {
-        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-        let bars = BarSet {
-            dia: 25.0,
-            count: 4,
-            layers: 1,
-        };
-        SectionShape::RcRect {
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        SectionShape::RcColumnRect {
             b,
             d,
-            rebar: RcRebar {
-                main_x: bars.clone(),
-                main_y: bars,
+            rebar: RcRectColumnRebar {
+                main_dia: 25.0,
+                x: vec![4],
+                y: vec![4],
                 cover: 40.0,
-                shear: ShearBar {
+                hoop: RectColumnHoop {
                     dia: 10.0,
                     pitch: 100.0,
-                    legs: 2,
+                    legs_x: 2,
+                    legs_y: 2,
                 },
             },
         }

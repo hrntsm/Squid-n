@@ -1,6 +1,7 @@
 use crate::behavior::{Ctx, DuctilityProbe, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
+use squid_n_core::error::RebarGeometryError;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{AnalysisKind, HysteresisModel, SectionMassProperties};
 use squid_n_core::section_shape::SectionShape;
@@ -109,9 +110,14 @@ pub(crate) fn resolve_fiber_yield(
     let rebar =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(data));
     let steel = match model.element_section(data).and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::SrcRect {
-            steel_flange_thick, ..
-        }) => {
+        Some(
+            SectionShape::SrcBeamRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcColumnRect {
+                steel_flange_thick, ..
+            },
+        ) => {
             let thick = *steel_flange_thick;
             model.element_steel_material(data).and_then(|m| {
                 squid_n_core::material_grade::steel_f_value_prefix(&m.name, thick).or(m.fy)
@@ -130,8 +136,12 @@ pub(crate) fn fiber_yield_covers_shape(shape: Option<&SectionShape>, yield_: &Fi
     let rebar = yield_.rebar.or(yield_.main).is_some_and(|fy| fy > 0.0);
     let steel = yield_.steel.is_some_and(|fy| fy > 0.0);
     match shape {
-        Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcCircle { .. }) => rebar,
-        Some(SectionShape::SrcRect { .. }) => rebar && steel,
+        Some(SectionShape::RcBeamRect { .. })
+        | Some(SectionShape::RcColumnRect { .. })
+        | Some(SectionShape::RcColumnCircle { .. }) => rebar,
+        Some(SectionShape::SrcBeamRect { .. }) | Some(SectionShape::SrcColumnRect { .. }) => {
+            rebar && steel
+        }
         Some(SectionShape::CftBox { .. }) | Some(SectionShape::CftPipe { .. }) => steel,
         Some(SectionShape::RcWall { .. }) | None => true,
         Some(SectionShape::RcSlab { .. }) => true,
@@ -148,6 +158,19 @@ pub(crate) fn fiber_strength_params(
     fiber_strength_params_from_yield(data, model, basis, resolve_fiber_yield(model, data))
 }
 
+fn fiber_steel_material<'a>(
+    data: &squid_n_core::model::ElementData,
+    model: &'a squid_n_core::model::Model,
+) -> Option<&'a squid_n_core::model::Material> {
+    let main = model.element_material(data);
+    match model.element_section(data).and_then(|s| s.shape.as_ref()) {
+        Some(SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. }) => {
+            model.element_steel_material(data).or(main)
+        }
+        _ => main,
+    }
+}
+
 /// 解決済みの [`FiberYield`] を渡す内部版。呼び出し元が [`resolve_fiber_yield`] を
 /// 再実行せずに [`fiber_strength_params`] と同じ値を得るために用いる。
 fn fiber_strength_params_from_yield(
@@ -157,12 +180,13 @@ fn fiber_strength_params_from_yield(
     yield_: FiberYield,
 ) -> StrengthParams {
     let mat_ref = model.element_material(data);
+    let steel_mat_ref = fiber_steel_material(data, model);
     let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
     let fc = mat_ref.and_then(|m| m.fc);
     let rebar_fy = yield_.rebar.or(yield_.main);
     let steel_fy = yield_.steel;
     StrengthParams {
-        steel_fy: steel_fy.unwrap_or(235.0) * basis.steel_factor(mat_ref),
+        steel_fy: steel_fy.unwrap_or(235.0) * basis.steel_factor(steel_mat_ref),
         rebar_fy: rebar_fy.unwrap_or(345.0) * basis.rebar_factor(mat_ref),
         concrete_fc: fc.unwrap_or(24.0),
         steel_e: e,
@@ -175,9 +199,14 @@ pub(crate) fn resolve_steel_fiber_fy(
     mat_fy: Option<f64>,
 ) -> Option<f64> {
     match shape {
-        Some(SectionShape::SrcRect {
-            steel_flange_thick, ..
-        }) => steel_mat
+        Some(
+            SectionShape::SrcBeamRect {
+                steel_flange_thick, ..
+            }
+            | SectionShape::SrcColumnRect {
+                steel_flange_thick, ..
+            },
+        ) => steel_mat
             .and_then(|m| {
                 squid_n_core::material_grade::steel_f_value_prefix(&m.name, *steel_flange_thick)
                     .or(m.fy)
@@ -190,7 +219,7 @@ pub(crate) fn resolve_steel_fiber_fy(
 /// 同じ諸元のファイバー断面をガウス点 2 点分つくる。
 /// 各ガウス点は独立した断面と材料インスタンスを持つ。
 /// 断面・材料が未割当のときはゼロ剛性。
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn build_gauss_fiber_pair(
     data: &squid_n_core::model::ElementData,
     model: &squid_n_core::model::Model,
@@ -200,7 +229,7 @@ pub(crate) fn build_gauss_fiber_pair(
     depth: f64,
     nw: usize,
     nd: usize,
-) -> [(FiberSection, Vec<Box<dyn UniaxialMaterial>>); 2] {
+) -> Result<[(FiberSection, Vec<Box<dyn UniaxialMaterial>>); 2], RebarGeometryError> {
     let sec = model.element_section(data);
     let mat_ref = model.element_material(data);
     let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
@@ -208,7 +237,7 @@ pub(crate) fn build_gauss_fiber_pair(
     let fc = mat_ref.and_then(|m| m.fc);
     let yield_ = resolve_fiber_yield(model, data);
     let strength = fiber_strength_params_from_yield(data, model, basis, yield_);
-    let steel_factor = basis.steel_factor(mat_ref);
+    let steel_factor = basis.steel_factor(fiber_steel_material(data, model));
     let rebar_factor = basis.rebar_factor(mat_ref);
     let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
     let build = || {
@@ -227,7 +256,7 @@ pub(crate) fn build_gauss_fiber_pair(
             concrete_rule,
         )
     };
-    [build(), build()]
+    Ok([build()?, build()?])
 }
 
 /// ガウス点のファイバー断面と材料を構築する。
@@ -235,7 +264,7 @@ pub(crate) fn build_gauss_fiber_pair(
 ///
 /// ファイバの材料区分タグ（`Fiber::material`）:
 /// 0=コンクリート、1=主筋、2=鋼材。
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn build_gauss_fibers(
     width: f64,
     depth: f64,
@@ -249,8 +278,8 @@ pub(crate) fn build_gauss_fibers(
     rebar_factor: f64,
     strength: StrengthParams,
     concrete_rule: HysteresisModel,
-) -> (FiberSection, Vec<Box<dyn UniaxialMaterial>>) {
-    let mut result = shape
+) -> Result<(FiberSection, Vec<Box<dyn UniaxialMaterial>>), RebarGeometryError> {
+    let result = shape
         .filter(|s| !matches!(s, SectionShape::RcWall { .. }))
         .map(|s| {
             build_shape_fibers(
@@ -263,9 +292,10 @@ pub(crate) fn build_gauss_fibers(
                 strength,
                 concrete_rule,
             )
-        });
+        })
+        .transpose()?;
 
-    let (mut fibers, mats) = match result.take() {
+    let (mut fibers, mats) = match result {
         Some(r) => r,
         None => {
             let base: Box<dyn UniaxialMaterial> = if fc.is_some() {
@@ -287,12 +317,12 @@ pub(crate) fn build_gauss_fibers(
         f.y = z;
         f.z = -y;
     }
-    (FiberSection { fibers }, mats)
+    Ok((FiberSection { fibers }, mats))
 }
 
 /// 断面形状に応じたファイバ配置と材料の構築。
 /// 主筋の降伏点は断面の主筋材質から解決し、なければ部材材料の fy を用いる。
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn build_shape_fibers(
     shape: &SectionShape,
     fc: Option<f64>,
@@ -302,7 +332,7 @@ fn build_shape_fibers(
     rebar_factor: f64,
     strength: StrengthParams,
     concrete_rule: HysteresisModel,
-) -> (Vec<Fiber>, Vec<Box<dyn UniaxialMaterial>>) {
+) -> Result<(Vec<Fiber>, Vec<Box<dyn UniaxialMaterial>>), RebarGeometryError> {
     use squid_n_section::mn_surface::{max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion};
 
     let rebar_fy = yield_.rebar.or(yield_.main);
@@ -313,7 +343,7 @@ fn build_shape_fibers(
         n_r_thin: 2,
         n_r_solid: 8,
     };
-    let placed = plastic_fibers_at(shape, &strength, target, ring);
+    let placed = plastic_fibers_at(shape, &strength, target, ring)?;
 
     let mut concrete: Option<Box<dyn UniaxialMaterial>> = None;
     let mut steel: Option<Box<dyn UniaxialMaterial>> = None;
@@ -349,7 +379,7 @@ fn build_shape_fibers(
         });
         mats.push(mat);
     }
-    (fibers, mats)
+    Ok((fibers, mats))
 }
 
 /// 材端解放で内部自由度へ分離した要素端回転。
@@ -553,7 +583,7 @@ impl FiberBeam {
         kind: AnalysisKind,
     ) -> Self {
         Self::try_new(data, model, basis, kind)
-            .unwrap_or_else(|error| panic!("質量特性を解決できません: {error}"))
+            .unwrap_or_else(|error| panic!("ファイバー梁要素を生成できません: {error}"))
     }
 
     pub fn try_new(
@@ -601,7 +631,8 @@ impl FiberBeam {
         let nw = FIBER_NW;
         let nd = FIBER_ND;
         let [(sec_a, mats_a), (sec_b, mats_b)] =
-            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd);
+            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd)
+                .map_err(|error| format!("ファイバー断面を生成できません: {error}"))?;
         let gauss_points = vec![
             GaussPoint::new(
                 -0.5773502691896257,
@@ -861,7 +892,8 @@ impl FiberBeam {
 
         let w_end = 2.0 * lp / l;
         let [(sec_a, mats_a), (sec_b, mats_b)] =
-            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd);
+            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd)
+                .expect("Self::new で断面ファイバーの生成を検証済み");
         fb.gauss_points = vec![
             GaussPoint::new(-1.0, w_end, sec_a, mats_a, l, fb.phi_y, fb.phi_z),
             GaussPoint::new(1.0, w_end, sec_b, mats_b, l, fb.phi_y, fb.phi_z),

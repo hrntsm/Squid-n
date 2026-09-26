@@ -12,8 +12,8 @@ use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
-use squid_n_core::rc_capacity::{rc_capacity_input_from_rect, rc_qsu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
+use squid_n_core::section_shape::SectionShape;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
 
@@ -64,30 +64,155 @@ impl DirThreshold {
 /// せん断降伏耐力 Qy 算定対象の方向（局所座標系。せい方向＝ローカル y）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShearDir {
-    /// 局所 y 方向（強軸曲げ＝Mz 面に伴うせん断、`Section.as_z`・`RcRebar.main_x` 対応）。
+    /// 局所 y 方向（強軸曲げ＝Mz 面に伴うせん断、`Section.as_z` 対応）。
     Y,
-    /// 局所 z 方向（弱軸曲げ＝My 面に伴うせん断、`Section.as_y`・`RcRebar.main_y` 対応）。
+    /// 局所 z 方向（弱軸曲げ＝My 面に伴うせん断、`Section.as_y` 対応）。
     Z,
 }
 
-/// 指定方向の荒川式用入力一式を組み立てる。
-///
-/// `clear_span` は剛域控除後の内法スパンを渡す。
-#[allow(clippy::too_many_arguments)]
-fn rc_rect_capacity_input(
-    b: f64,
-    d: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
+fn real_rebar_capacity_input(
+    shape: &SectionShape,
     mat: &Material,
     rebar_mat: Option<&Material>,
     shear_mat: Option<&Material>,
+    steel_mat: Option<&Material>,
+    dir: ShearDir,
     clear_span: f64,
-) -> Option<RcCapacityInput> {
-    let mut input =
-        rc_capacity_input_from_rect(b, d, main, rebar, mat, rebar_mat, shear_mat, clear_span)?;
-    input.sigma_y *= rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1);
-    Some(input)
+) -> Option<(RcCapacityInput, f64)> {
+    let (b, d, steel_candidates, pw) = match shape {
+        SectionShape::RcBeamRect { b, d, rebar }
+        | SectionShape::SrcBeamRect { b, d, rebar, .. } => {
+            if dir != ShearDir::Y {
+                return None;
+            }
+            let bottom = rebar.bending_steel(*d, false).tension;
+            let top = rebar.bending_steel(*d, true).tension;
+            (
+                *b,
+                *d,
+                vec![
+                    (bottom.area_mm2, bottom.effective_depth_mm),
+                    (top.area_mm2, top.effective_depth_mm),
+                ],
+                rebar.pw(*b),
+            )
+        }
+        SectionShape::RcColumnRect { b, d, rebar }
+        | SectionShape::SrcColumnRect { b, d, rebar, .. } => {
+            let edge = rebar.edge_steel(
+                if dir == ShearDir::Y {
+                    squid_n_core::rc_rebar_geom::RectEdge::Top
+                } else {
+                    squid_n_core::rc_rebar_geom::RectEdge::Left
+                },
+                *b,
+                *d,
+            );
+            let (width, depth, pw) = if dir == ShearDir::Y {
+                (
+                    *b,
+                    *d,
+                    if rebar.hoop.pitch > 0.0 {
+                        rebar.aw_x_mm2() / (*b * rebar.hoop.pitch)
+                    } else {
+                        0.0
+                    },
+                )
+            } else {
+                (
+                    *d,
+                    *b,
+                    if rebar.hoop.pitch > 0.0 {
+                        rebar.aw_y_mm2() / (*d * rebar.hoop.pitch)
+                    } else {
+                        0.0
+                    },
+                )
+            };
+            (
+                width,
+                depth,
+                vec![(edge.area_mm2, edge.effective_depth_mm)],
+                pw,
+            )
+        }
+        SectionShape::RcColumnCircle { d, rebar } => {
+            let side = rebar.equivalent_square_side_mm(*d);
+            (
+                side,
+                side,
+                vec![(
+                    rebar.equivalent_tension_area_mm2(),
+                    rebar.equivalent_effective_depth_mm(*d),
+                )],
+                rebar.pw(side),
+            )
+        }
+        _ => return None,
+    };
+    let fc = mat.fc?;
+    if b <= 0.0 || d <= 0.0 {
+        return None;
+    }
+    let input_for = |(at, d_eff)| RcCapacityInput {
+        b,
+        d,
+        at,
+        d_eff,
+        sigma_y: squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+            .or(mat.fy)
+            .unwrap_or(345.0)
+            * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1),
+        fc,
+        pw,
+        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
+            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
+        clear_span,
+        sigma_0: 0.0,
+    };
+    let input = steel_candidates
+        .into_iter()
+        .filter(|(at, d_eff)| *at > 0.0 && *d_eff > 0.0)
+        .map(input_for)
+        .min_by(|a, b| {
+            rc_qsu_simple(a)
+                .partial_cmp(&rc_qsu_simple(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    let steel_qy = match shape {
+        SectionShape::SrcBeamRect {
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+            ..
+        }
+        | SectionShape::SrcColumnRect {
+            steel_height,
+            steel_width,
+            steel_web_thick,
+            steel_flange_thick,
+            ..
+        } => {
+            let (sh, sb, tw, tf) = (
+                *steel_height,
+                *steel_width,
+                *steel_web_thick,
+                *steel_flange_thick,
+            );
+            let (s_aw, plate_t) = match dir {
+                ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
+                ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
+            };
+            let name = steel_mat.map(|m| m.name.as_str()).unwrap_or("");
+            let f = squid_n_core::material_grade::steel_f_value_prefix(name, plate_t)
+                .or_else(|| steel_mat.and_then(|m| m.fy))
+                .unwrap_or(235.0);
+            s_aw * f * steel_mat.map(material_strength_factor_steel).unwrap_or(1.0) / 3.0_f64.sqrt()
+        }
+        _ => 0.0,
+    };
+    Some((input, steel_qy))
 }
 
 /// 方向別のせん断降伏耐力しきい値（[`DirThreshold`]）を組み立てる。
@@ -119,100 +244,10 @@ fn build_dir_threshold(
     let Some(mat) = material else {
         return DirThreshold::Static(f64::INFINITY);
     };
-    if let Some(Section {
-        shape: Some(SectionShape::RcRect { b, d, rebar }),
-        ..
-    }) = section
-    {
-        let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(
-                *b,
-                *d,
-                &rebar.main_x,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-            ShearDir::Z => rc_rect_capacity_input(
-                *d,
-                *b,
-                &rebar.main_y,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-        };
-        if let Some(input) = input {
-            if rc_qsu_simple(&input) > 0.0 {
-                return DirThreshold::RcArakawa {
-                    gross_area: input.b * input.d,
-                    input,
-                    steel_qy: 0.0,
-                };
-            }
-        }
-    }
-    if let Some(Section {
-        shape:
-            Some(SectionShape::SrcRect {
-                b,
-                d,
-                rebar,
-                steel_height,
-                steel_width,
-                steel_web_thick,
-                steel_flange_thick,
-            }),
-        ..
-    }) = section
-    {
-        let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(
-                *b,
-                *d,
-                &rebar.main_x,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-            ShearDir::Z => rc_rect_capacity_input(
-                *d,
-                *b,
-                &rebar.main_y,
-                rebar,
-                mat,
-                rebar_mat,
-                shear_mat,
-                clear_span,
-            ),
-        };
-        let (sh, sb, tw, tf) = (
-            *steel_height,
-            *steel_width,
-            *steel_web_thick,
-            *steel_flange_thick,
-        );
-        let (s_aw, plate_t) = match dir {
-            ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
-            ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
-        };
-        let steel_name = steel_mat.map(|m| m.name.as_str()).unwrap_or("");
-        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_name, plate_t)
-            .or_else(|| steel_mat.and_then(|m| m.fy))
-            .unwrap_or(235.0);
-        let factor = steel_mat
-            .and_then(|m| m.strength_factor)
-            .unwrap_or_else(|| {
-                squid_n_core::material_grade::steel_material_strength_factor(steel_name)
-            });
-        let steel_qy = s_aw * s_f * factor / 3.0_f64.sqrt();
-        if let Some(input) = input {
+    if let Some(shape) = section.and_then(|s| s.shape.as_ref()) {
+        if let Some((input, steel_qy)) =
+            real_rebar_capacity_input(shape, mat, rebar_mat, shear_mat, steel_mat, dir, clear_span)
+        {
             if rc_qsu_simple(&input) + steel_qy > 0.0 {
                 return DirThreshold::RcArakawa {
                     gross_area: input.b * input.d,

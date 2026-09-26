@@ -6,23 +6,26 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
     Node, RigidZone, Section,
 };
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{
+    BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar,
+    RectColumnHoop, SectionShape,
+};
 
-/// テスト用の矩形 RC 断面（b×d, main_x=main_y, 帯筋 D10@pitch）。
-fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitch: f64) -> Section {
-    let rebar = RcRebar {
-        main_x: BarSet {
-            count: main_count,
-            dia: main_dia,
-            layers: 1,
-        },
-        main_y: BarSet {
-            count: main_count,
-            dia: main_dia,
-            layers: 1,
-        },
+/// テスト用の梁矩形 RC 断面（上下各 `main_count` 本、帯筋 D10@pitch）。
+fn rc_beam_rect_section(
+    id: u32,
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    main_count: u32,
+    pitch: f64,
+) -> Section {
+    let rebar = RcBeamRebar {
+        main_dia,
+        top: vec![main_count],
+        bottom: vec![main_count],
         cover: 40.0,
-        shear: ShearBar {
+        stirrup: BeamStirrup {
             dia: 10.0,
             pitch,
             legs: 2,
@@ -42,8 +45,52 @@ fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitc
         floor: None,
         panel_thickness: None,
         thickness: None,
-        shape: Some(SectionShape::RcRect { b, d, rebar }),
+        shape: Some(SectionShape::RcBeamRect { b, d, rebar }),
         // 材料は断面が持つ。主筋・せん断補強筋も同じ材料（SD345）とする。
+        material: Some(MaterialId(0)),
+        rebar_material: Some(MaterialId(0)),
+        shear_rebar_material: Some(MaterialId(0)),
+        steel_material: None,
+    }
+}
+
+/// テスト用の柱矩形 RC 断面（`x:[nx]`・`y:[ny]`、帯筋 D10@pitch）。
+fn rc_column_rect_section(
+    id: u32,
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    nx: u32,
+    ny: u32,
+    pitch: f64,
+) -> Section {
+    let rebar = RcRectColumnRebar {
+        main_dia,
+        x: vec![nx],
+        y: vec![ny],
+        cover: 40.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    };
+    Section {
+        id: SectionId(id),
+        name: format!("RC{id}"),
+        area: b * d,
+        iy: b * d.powi(3) / 12.0,
+        iz: d * b.powi(3) / 12.0,
+        j: 1.0,
+        depth: d,
+        width: b,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: Some(SectionShape::RcColumnRect { b, d, rebar }),
         material: Some(MaterialId(0)),
         rebar_material: Some(MaterialId(0)),
         shear_rebar_material: Some(MaterialId(0)),
@@ -106,8 +153,8 @@ fn column_and_beam_model() -> Model {
         node(2, [6000.0, 0.0, 3000.0]), // 梁: 水平
     ];
     let sections = vec![
-        rc_rect_section(0, 600.0, 600.0, 25.0, 8, 100.0), // 柱断面
-        rc_rect_section(1, 400.0, 700.0, 25.0, 6, 100.0), // 梁断面
+        rc_column_rect_section(0, 600.0, 600.0, 25.0, 4, 4, 100.0), // 柱断面
+        rc_beam_rect_section(1, 400.0, 700.0, 25.0, 4, 100.0),      // 梁断面
     ];
     let materials = vec![material()];
     let elements = vec![
@@ -160,20 +207,17 @@ fn test_ultimate_sigma_wy_from_shear_rebar_material_fy() {
     let opts = UltimateShearOptions::default();
     // 梁断面（要素 1）の σwy だけを変えた Qsu の手計算値を返す。
     let qsu_with_sigma_wy = |model: &Model, sigma_wy: f64| -> f64 {
-        let SectionShape::RcRect { b, d, rebar } = model.sections[1].shape.clone().unwrap() else {
-            unreachable!()
-        };
-        let dt = squid_n_core::rc_rebar_geom::rebar_tension_dt(&rebar);
-        let d_eff = d - dt;
-        let jt = 7.0 * d_eff / 8.0;
-        let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
+        let shape = model.sections[1].shape.clone().unwrap();
+        let p = super::rc_props::rc_bar_props(
+            &shape,
+            super::rc_props::RcDirection::Strong,
+            false,
+            false,
+        )
+        .expect("梁断面の諸元");
         let l_clear = super::geometry::clear_span(&model.elements[1], model);
         super::rc_strength::member_shear_strength(
-            b,
-            d,
-            jt,
-            pw,
-            &rebar,
+            &p,
             24.0,
             0.0,
             l_clear,
@@ -648,4 +692,238 @@ fn test_collect_cft_ultimate_checks() {
     assert_eq!(c.class, CftColumnClass::Medium);
     // 短柱 N-M 曲げ耐力 Mu(N) が正（圧縮軸力 3000kN 時）。
     assert!(c.mu_nm > 0.0, "mu_nm={}", c.mu_nm);
+}
+
+/// 実配筋モデルの断面から 1 部材のモデルを作る（部材軸は `horizontal` で切替）。
+fn single_shape_model(shape: SectionShape, b: f64, d: f64, horizontal: bool) -> Model {
+    let sec = Section {
+        id: SectionId(0),
+        name: "NEW0".to_string(),
+        area: shape.calc_area(),
+        iy: shape.calc_iy(),
+        iz: shape.calc_iz(),
+        j: 1.0,
+        depth: d,
+        width: b,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: Some(shape),
+        material: Some(MaterialId(0)),
+        rebar_material: Some(MaterialId(0)),
+        shear_rebar_material: Some(MaterialId(0)),
+        steel_material: None,
+    };
+    let nodes = if horizontal {
+        vec![node(0, [0.0, 0.0, 0.0]), node(1, [6000.0, 0.0, 0.0])]
+    } else {
+        vec![node(0, [0.0, 0.0, 0.0]), node(1, [0.0, 0.0, 3000.0])]
+    };
+    Model {
+        nodes,
+        sections: vec![sec],
+        materials: vec![material()],
+        elements: vec![frame_element(0, 0, 0, 1)],
+        ..Default::default()
+    }
+}
+
+/// 上 4+2 本・下 3+2 本の非対称 RC 梁断面。
+fn beam_rect_shape() -> SectionShape {
+    SectionShape::RcBeamRect {
+        b: 400.0,
+        d: 600.0,
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4, 2],
+            bottom: vec![3, 2],
+            cover: 40.0,
+            stirrup: BeamStirrup {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    }
+}
+
+/// x=[3], y=[3] の RC 矩形柱断面。
+fn column_rect_shape() -> SectionShape {
+    SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        },
+    }
+}
+
+/// count=8 の RC 円形柱断面。
+fn column_circle_shape() -> SectionShape {
+    SectionShape::RcColumnCircle {
+        d: 600.0,
+        rebar: RcCircleColumnRebar {
+            main_dia: 22.0,
+            count: 8,
+            cover: 40.0,
+            hoop: CircleColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+            },
+        },
+    }
+}
+
+/// 実配筋モデルの新型バリアント（梁・矩形柱・円形柱）が終局検定の対象になる。
+#[test]
+fn test_ultimate_check_new_rc_shapes_supported() {
+    let opts = UltimateShearOptions::default();
+
+    let beam = single_shape_model(beam_rect_shape(), 400.0, 600.0, true);
+    let checks = collect_rc_ultimate_checks(&beam, &[], &opts).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].kind, MemberKind::Beam);
+    assert!(checks[0].mu > 0.0 && checks[0].qsu > 0.0 && checks[0].qmu > 0.0);
+    assert!(checks[0].axial.is_none());
+
+    let column = single_shape_model(column_rect_shape(), 600.0, 700.0, false);
+    let checks = collect_rc_ultimate_checks(&column, &[], &opts).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].kind, MemberKind::Column);
+    assert!(checks[0].mu > 0.0 && checks[0].qsu > 0.0 && checks[0].qmu > 0.0);
+    assert!(checks[0].axial.is_some());
+
+    let circle = single_shape_model(column_circle_shape(), 600.0, 600.0, false);
+    let checks = collect_rc_ultimate_checks(&circle, &[], &opts).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0].kind, MemberKind::Column);
+    assert!(checks[0].mu > 0.0 && checks[0].qsu > 0.0 && checks[0].qmu > 0.0);
+    assert!(checks[0].axial.is_some());
+}
+
+/// 実配筋が幾何的に成立しない新モデル断面は、終局検定の入力不備として
+/// 部材 ID 付きで停止する（無言スキップしない）。
+#[test]
+fn test_ultimate_inconsistent_rebar_errors() {
+    let opts = UltimateShearOptions::default();
+    let shape = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 700.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        },
+    };
+    let model = single_shape_model(shape, 600.0, 700.0, false);
+    let err = collect_rc_ultimate_checks(&model, &[], &opts).unwrap_err();
+    assert!(err.contains("部材 ID 0"), "{err}");
+    assert!(err.contains("配筋形状"), "{err}");
+}
+
+/// 矩形柱・円形柱の Mu が軸力 0 の手計算（0.8·at·σy·D）に一致する。
+#[test]
+fn test_ultimate_new_columns_mu_matches_handcalc() {
+    let opts = UltimateShearOptions::default();
+    let a22 = std::f64::consts::PI * (22.0_f64 / 2.0).powi(2);
+
+    let column = single_shape_model(column_rect_shape(), 600.0, 700.0, false);
+    let checks = collect_rc_ultimate_checks(&column, &[], &opts).unwrap();
+    let at = 3.0 * a22;
+    let expected = 0.8 * at * 345.0 * 700.0;
+    assert!(
+        (checks[0].mu - expected).abs() / expected < 1e-9,
+        "矩形柱 mu={} expected={expected}",
+        checks[0].mu
+    );
+
+    let circle = single_shape_model(column_circle_shape(), 600.0, 600.0, false);
+    let checks = collect_rc_ultimate_checks(&circle, &[], &opts).unwrap();
+    let side = (std::f64::consts::PI * 600.0 * 600.0 / 4.0).sqrt();
+    let at = 2.0 * a22;
+    let expected = 0.8 * at * 345.0 * side;
+    assert!(
+        (checks[0].mu - expected).abs() / expected < 1e-9,
+        "円形柱 mu={} expected={expected}",
+        checks[0].mu
+    );
+}
+
+/// 梁の上下非対称では曲げモーメントの符号で引張側が変わり Mu に反映される。
+#[test]
+fn test_ultimate_beam_rect_tension_side_affects_mu() {
+    let opts = UltimateShearOptions::default();
+    let model = single_shape_model(beam_rect_shape(), 400.0, 600.0, true);
+
+    let top_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: -1.0e8,
+            ..Default::default()
+        },
+    )];
+    let bottom_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: 1.0e8,
+            ..Default::default()
+        },
+    )];
+    let mu_top = collect_rc_ultimate_checks(&model, &top_demand, &opts).unwrap()[0].mu;
+    let mu_bottom = collect_rc_ultimate_checks(&model, &bottom_demand, &opts).unwrap()[0].mu;
+    assert!(mu_top > 0.0 && mu_bottom > 0.0);
+    assert!(
+        (mu_top - mu_bottom).abs() > 1.0,
+        "上端引張 {mu_top} と下端引張 {mu_bottom} は異なるはず"
+    );
+    // 上端筋 6 本 > 下端筋 5 本のため上端引張の Mu が大きい。
+    assert!(mu_top > mu_bottom, "mu_top={mu_top} mu_bottom={mu_bottom}");
+}
+
+/// 新型 RC 梁の付着検定では、上端引張のとき上端筋低減（αt）を反映する。
+/// 上端筋 6 本 > 下端筋 5 本でも、αt 低減により上端引張の Qbu が下端引張より小さくなる。
+#[test]
+fn test_ultimate_beam_rect_top_tension_reduces_qbu() {
+    let opts = UltimateShearOptions::default();
+    let model = single_shape_model(beam_rect_shape(), 400.0, 600.0, true);
+
+    let top_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: -1.0e8,
+            ..Default::default()
+        },
+    )];
+    let bottom_demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            mz: 1.0e8,
+            ..Default::default()
+        },
+    )];
+    let qbu_top = collect_rc_ultimate_checks(&model, &top_demand, &opts).unwrap()[0].qbu;
+    let qbu_bottom = collect_rc_ultimate_checks(&model, &bottom_demand, &opts).unwrap()[0].qbu;
+    assert!(qbu_top > 0.0 && qbu_bottom > 0.0);
+    assert!(
+        qbu_top < qbu_bottom,
+        "上端引張 Qbu={qbu_top} は下端引張 Qbu={qbu_bottom} より小さいはず（αt 低減）"
+    );
 }

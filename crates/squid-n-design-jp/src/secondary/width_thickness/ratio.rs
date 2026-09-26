@@ -90,9 +90,11 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
         SectionShape::SteelFlatBar { .. }
         | SectionShape::SteelRoundBar { .. }
         | SectionShape::SteelLipChannel { .. }
-        | SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
-        | SectionShape::SrcRect { .. }
+        | SectionShape::RcBeamRect { .. }
+        | SectionShape::RcColumnRect { .. }
+        | SectionShape::RcColumnCircle { .. }
+        | SectionShape::SrcBeamRect { .. }
+        | SectionShape::SrcColumnRect { .. }
         | SectionShape::RcWall { .. }
         | SectionShape::RcSlab { .. } => None,
     }

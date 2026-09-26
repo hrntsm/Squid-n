@@ -2,7 +2,7 @@
 //!
 //! 責務ごとにサブモジュールへ分割している。
 //!
-//! - [`types`] — 型定義（BarSet, ShearBar, RcRebar, SectionShape, one_bar_area, bar_set_area, shear_legs_area）
+//! - [`types`] — 型定義（RcBeamRebar, RcRectColumnRebar, RcCircleColumnRebar, RebarPoint, SectionShape, one_bar_area）
 //! - [`constants`] — 材料・換算定数
 //! - [`material`] — 材料換算関数（Ec, 壁せん断形状係数）
 //! - [`geometry`] — 断面幾何量のヘルパ
@@ -24,9 +24,6 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use crate::ids::SectionId;
-
 pub use composite::{CftCoreProps, CompositeProps};
 pub use constants::{E_STEEL, KAPPA_RC, N_S_EQ};
 pub use material::{
@@ -38,5 +35,6 @@ pub use shear::{
     StripSectionProperties,
 };
 pub use types::{
-    bar_set_area, one_bar_area, shear_legs_area, BarSet, RcRebar, SectionShape, ShearBar,
+    one_bar_area, BeamStirrup, CircleColumnHoop, RcBeamRebar, RcCircleColumnRebar,
+    RcRectColumnRebar, RebarPoint, RectColumnHoop, SectionShape,
 };

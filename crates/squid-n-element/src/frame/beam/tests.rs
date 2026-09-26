@@ -74,27 +74,23 @@ fn test_beam_new_src_cft_composite_props() {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Model};
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar, E_STEEL, N_S_EQ};
+    use squid_n_core::section_shape::{
+        RcRectColumnRebar, RectColumnHoop, SectionShape, E_STEEL, N_S_EQ,
+    };
 
-    let src_shape = SectionShape::SrcRect {
+    let src_shape = SectionShape::SrcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 8,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![8],
+            y: vec![8],
             cover: 50.0,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
         steel_height: 400.0,
@@ -208,10 +204,10 @@ fn test_beam_new_src_cft_composite_props() {
         assert!((nodal_mass - beam.density * beam.a_mass * beam.length).abs() < 1e-9);
     }
     let rc_rebar = match &src_shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    model.sections[0] = SectionShape::RcRect {
+    model.sections[0] = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
         rebar: rc_rebar,
@@ -246,7 +242,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, Slab,
         SlabPlate, SlabShape,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
     let make_node = |id: u32, coord: [f64; 3]| Node {
         id: NodeId(id),
@@ -256,22 +252,15 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         story: None,
         support_spring: None,
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 300.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4],
+            bottom: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            stirrup: squid_n_core::section_shape::BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
@@ -380,7 +369,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, Slab,
         SlabPlate, SlabShape,
     };
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
 
     let make_node = |id: u32, coord: [f64; 3]| Node {
         id: NodeId(id),
@@ -390,22 +379,15 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         story: None,
         support_spring: None,
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 300.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4],
+            bottom: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            stirrup: squid_n_core::section_shape::BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
@@ -502,7 +484,7 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId, SlabId};
     use squid_n_core::model::{EndCondition, FloorRegion, ForceRegime, LocalAxis, Slab, SlabShape};
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_core::section_shape::{RcBeamRebar, SectionShape};
     let make_node = |id: u32, coord: [f64; 3]| Node {
         id: NodeId(id),
         coord,
@@ -511,22 +493,15 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
         story: None,
         support_spring: None,
     };
-    let shape = SectionShape::RcRect {
+    let shape = SectionShape::RcBeamRect {
         b: 300.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
+        rebar: RcBeamRebar {
+            main_dia: 22.0,
+            top: vec![4],
+            bottom: vec![4],
             cover: 40.0,
-            shear: ShearBar {
+            stirrup: squid_n_core::section_shape::BeamStirrup {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
@@ -648,6 +623,38 @@ fn test_slab_stiffness_factor_only_for_enclosed_plated_slabs() {
         (b_attached.slab - 1.0).abs() < 1e-12,
         "取り付く床板は協力幅 1.0、got {}",
         b_attached.slab
+    );
+}
+
+/// SRC 梁はスラブ協力幅の対象外で倍率 1.0（RC 矩形梁のみ増大）。
+///
+/// 版あり床板が取り付いても増大しないことを固定する。
+#[test]
+fn test_src_beam_slab_stiffness_falls_back_to_one() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    let (mut m_plated, e) = rc_beam_for_slab_factor(Some(squid_n_core::model::SlabPlate {
+        section: Some(SectionId(1)),
+        ..Default::default()
+    }));
+    let Some(SectionShape::RcBeamRect { b, d, rebar }) = m_plated.sections[0].shape.clone() else {
+        panic!("RC 矩形梁のはず");
+    };
+    m_plated.sections[0].shape = Some(SectionShape::SrcBeamRect {
+        b,
+        d,
+        rebar,
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    });
+    let got = stiffness_breakdown(&m_plated, &e);
+    assert!(
+        (got.slab - 1.0).abs() < 1e-12,
+        "SRC 梁のスラブ協力幅は 1.0、got {}",
+        got.slab
     );
 }
 

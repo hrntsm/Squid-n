@@ -221,25 +221,263 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
-/// 診断用の SRC 断面（内蔵 H 形鉄骨付き）。
-fn src_shape() -> squid_n_core::section_shape::SectionShape {
-    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
-    let bars = BarSet {
-        dia: 22.0,
-        count: 8,
-        layers: 1,
+/// 梁用断面を柱部材へ、柱用断面を梁部材へ割り当てた誤りを解析前チェックが止める。
+#[test]
+fn test_model_issues_detects_rc_shape_purpose_mismatch() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::section_shape::{
+        BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
     };
-    SectionShape::SrcRect {
+
+    fn beam_shape() -> SectionShape {
+        SectionShape::RcBeamRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: RcBeamRebar {
+                main_dia: 22.0,
+                top: vec![4],
+                bottom: vec![4],
+                cover: 40.0,
+                stirrup: BeamStirrup {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+    fn column_shape() -> SectionShape {
+        SectionShape::RcColumnRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRectColumnRebar {
+                main_dia: 22.0,
+                x: vec![4],
+                y: vec![4],
+                cover: 40.0,
+                hoop: RectColumnHoop {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs_x: 2,
+                    legs_y: 2,
+                },
+            },
+        }
+    }
+
+    // 梁用断面を鉛直材（柱）へ割り当てる。
+    let mut model = make_cantilever_model();
+    model.nodes[1].coord = [0.0, 0.0, 3000.0];
+    model.sections[0].shape = Some(beam_shape());
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("梁用断面を柱部材")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+
+    // 柱用断面を水平材（梁）へ割り当てる。
+    let mut model = make_cantilever_model();
+    model.sections[0].shape = Some(column_shape());
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("柱用断面を梁部材")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+}
+
+/// 実配筋型（`RcColumnRect`）の幾何が不整合な断面を使う部材は、
+/// 解析前チェックがエラーとして止める。
+#[test]
+fn test_model_issues_errors_on_invalid_rebar_geometry() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
+
+    let mut model = make_cantilever_model();
+    model.nodes[1].coord = [0.0, 0.0, 3000.0];
+    let mut sec = SectionShape::RcColumnRect {
         b: 600.0,
         d: 600.0,
-        rebar: RcRebar {
-            main_x: bars.clone(),
-            main_y: bars,
-            cover: 50.0,
-            shear: ShearBar {
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
                 dia: 10.0,
                 pitch: 100.0,
-                legs: 2,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    }
+    .to_section(SectionId(0), "RCC".into());
+    sec.rebar_material = Some(MaterialId(0));
+    sec.shear_rebar_material = Some(MaterialId(0));
+    model.sections[0] = sec;
+
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error
+                && i.message.contains("実配筋の幾何が不整合")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+}
+
+/// 新型 RC 矩形柱の主筋・せん断補強筋の材料未割当を、旧型と同じ文言で検出する。
+#[test]
+fn test_model_issues_detects_new_rc_column_material_missing() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
+
+    let mut model = make_cantilever_model();
+    model.nodes[1].coord = [0.0, 0.0, 3000.0];
+    let sec = SectionShape::RcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4],
+            y: vec![4],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    }
+    .to_section(SectionId(0), "RCC".into());
+    model.sections[0] = sec;
+
+    let issues = model_issues(&model);
+    assert!(
+        issues.iter().any(|i| i.severity == IssueSeverity::Error
+            && i.message.contains("主筋の材料が未割当")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(
+        issues.iter().any(|i| i.severity == IssueSeverity::Error
+            && i.message.contains("せん断補強筋の材料が未割当")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+}
+
+/// 診断用の新型 SRC 矩形柱の実配筋。
+fn src_column_rebar() -> squid_n_core::section_shape::RcRectColumnRebar {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+    RcRectColumnRebar {
+        main_dia: 22.0,
+        x: vec![4],
+        y: vec![4],
+        cover: 40.0,
+        hoop: RectColumnHoop {
+            dia: 10.0,
+            pitch: 100.0,
+            legs_x: 2,
+            legs_y: 2,
+        },
+    }
+}
+
+/// 新型 SRC 矩形柱断面の用途不一致（柱用断面を梁部材へ）を検出する。
+#[test]
+fn test_model_issues_detects_new_src_column_purpose_mismatch() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_cantilever_model();
+    let mut sec = SectionShape::SrcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: src_column_rebar(),
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    }
+    .to_section(SectionId(0), "SRCC".into());
+    sec.rebar_material = Some(MaterialId(0));
+    sec.shear_rebar_material = Some(MaterialId(0));
+    sec.steel_material = Some(MaterialId(0));
+    model.sections[0] = sec;
+
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("柱用断面を梁部材")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+}
+
+/// 新型 SRC 矩形柱の内蔵鉄骨材料が未割当のとき、エラーとして検出する。
+#[test]
+fn test_model_issues_detects_new_src_column_steel_missing() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_cantilever_model();
+    model.nodes[1].coord = [0.0, 0.0, 3000.0];
+    let mut sec = SectionShape::SrcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: src_column_rebar(),
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    }
+    .to_section(SectionId(0), "SRCC".into());
+    sec.rebar_material = Some(MaterialId(0));
+    sec.shear_rebar_material = Some(MaterialId(0));
+    sec.steel_material = None;
+    model.sections[0] = sec;
+
+    let issues = model_issues(&model);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error
+                && i.message.contains("内蔵鉄骨の材料が未割当")),
+        "{:?}",
+        issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+    );
+    assert!(precheck_model(&model).is_err());
+}
+
+/// 診断用の SRC 断面（内蔵 H 形鉄骨付き）。
+fn src_shape() -> squid_n_core::section_shape::SectionShape {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop, SectionShape};
+    SectionShape::SrcColumnRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![8],
+            y: vec![8],
+            cover: 50.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
             },
         },
         steel_height: 400.0,

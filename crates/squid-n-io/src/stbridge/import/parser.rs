@@ -5,7 +5,10 @@
 //! へ集め、後段の組み立て（`assemble`）が id 正規化とモデル構築を行う。
 
 use super::super::StbError;
-use super::rebar::{default_rebar, parse_rebar};
+use super::rebar::{
+    default_beam_rebar, default_circle_column_rebar, default_rect_column_rebar, parse_beam_rebar,
+    parse_circle_column_rebar, parse_rect_column_rebar, RebarGrades,
+};
 use super::steel::steel_shape_from;
 use super::xml::{
     attrs, get_f64, get_f64_any, get_i64, get_opt_f64, get_u32, push_node_id_tokens, Attrs,
@@ -14,13 +17,34 @@ use super::{
     PendingMember, PendingMemberKind, PendingSec, PendingSecKind, PendingSecondary, RawAxis,
     RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall, SecMatRef,
 };
-use squid_n_core::section_shape::{RcRebar, SectionShape};
+use squid_n_core::section_shape::{
+    RcBeamRebar, RcCircleColumnRebar, RcRectColumnRebar, SectionShape,
+};
 use std::collections::HashMap;
 
 /// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
 pub(super) enum RcGeom {
     Rect { b: f64, d: f64 },
     Circle { d: f64 },
+}
+
+/// RC 断面が梁用か柱用か（`StbSecBeam_RC` / `StbSecColumn_RC` の別）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RcKind {
+    Beam,
+    Column,
+}
+
+pub(super) enum SrcRebarData {
+    Beam(RcBeamRebar),
+    Column(RcRectColumnRebar),
+}
+
+/// 解析済みの RC 実配筋（種別・形状別）。
+pub(super) enum RcRebarData {
+    Beam(RcBeamRebar),
+    RectColumn(RcRectColumnRebar),
+    CircleColumn(RcCircleColumnRebar),
 }
 
 /// 現在パース中の標準断面要素（子の図形・配筋要素を集める）。
@@ -41,10 +65,12 @@ pub(super) enum CurSec {
         name: String,
         /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
         floor: Option<String>,
+        /// 梁用か柱用か（`StbSecBeam_RC` / `StbSecColumn_RC` の別）。
+        kind: RcKind,
         geom: Option<RcGeom>,
-        rebar: Option<RcRebar>,
+        rebar: Option<RcRebarData>,
         /// 配筋の材質（グレード名）。材料は断面が持つため形状には入れない。
-        rebar_grades: super::rebar::RebarGrades,
+        rebar_grades: RebarGrades,
         /// 配筋コンテナ（`StbSecBarArrangement*`）側に付くかぶり [mm]。実 ST-Bridge は
         /// かぶりをコンテナに、本数・径を子の `*_Same` に持つため別枠で控える。
         rebar_cover: Option<f64>,
@@ -64,8 +90,9 @@ pub(super) enum CurSec {
         name: String,
         /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
         floor: Option<String>,
+        kind: RcKind,
         geom: Option<(f64, f64)>,
-        rebar: Option<RcRebar>,
+        rebar: Option<SrcRebarData>,
         /// 配筋の材質（グレード名。[`CurSec::Rc`] と同じ）。
         rebar_grades: super::rebar::RebarGrades,
         /// 配筋コンテナ側に付くかぶり [mm]（[`CurSec::Rc`] と同じ）。
@@ -396,10 +423,16 @@ impl StbParser {
                 }
             }
             "StbSecColumn_RC" | "StbSecBeam_RC" => {
+                let kind = if tag == "StbSecBeam_RC" {
+                    RcKind::Beam
+                } else {
+                    RcKind::Column
+                };
                 self.cur = CurSec::Rc {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
                     floor: floor_of(a),
+                    kind,
                     geom: None,
                     rebar: None,
                     rebar_grades: Default::default(),
@@ -446,10 +479,16 @@ impl StbParser {
                 };
             }
             "StbSecColumn_SRC" | "StbSecBeam_SRC" => {
+                let kind = if tag == "StbSecBeam_SRC" {
+                    RcKind::Beam
+                } else {
+                    RcKind::Column
+                };
                 self.cur = CurSec::Src {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
                     floor: floor_of(a),
+                    kind,
                     geom: None,
                     rebar: None,
                     rebar_grades: Default::default(),
@@ -483,6 +522,37 @@ impl StbParser {
                     }
                 }
             }
+            t if t.starts_with("StbSecBarBeam_SRC_") || t.starts_with("StbSecBarColumn_SRC_") => {
+                let mut new_warnings = Vec::new();
+                if let CurSec::Src {
+                    kind,
+                    rebar,
+                    rebar_grades,
+                    geom,
+                    ..
+                } = &mut self.cur
+                {
+                    if rebar.is_none() {
+                        let (parsed, grades, warnings) = match kind {
+                            RcKind::Beam => {
+                                let (r, g, w) = parse_beam_rebar(a);
+                                (SrcRebarData::Beam(r), g, w)
+                            }
+                            RcKind::Column => {
+                                let (r, g, w) = parse_rect_column_rebar(a);
+                                (SrcRebarData::Column(r), g, w)
+                            }
+                        };
+                        if geom.is_none() {
+                            new_warnings.push("SRC 配筋は図形未認識のため反映できません".into());
+                        }
+                        *rebar = Some(parsed);
+                        *rebar_grades = grades;
+                        new_warnings.extend(warnings);
+                    }
+                }
+                self.warnings.extend(new_warnings);
+            }
             t if t.starts_with("StbSecBarArrangement") => {
                 if let Ok(c) = get_f64_any(
                     a,
@@ -505,28 +575,50 @@ impl StbParser {
                     }
                 }
             }
+            t if t.starts_with("StbSecBarArrangementBeam_SRC")
+                || t.starts_with("StbSecBarArrangementColumn_SRC") => {}
             t if t.starts_with("StbSecBarColumn_") || t.starts_with("StbSecBarBeam_") => {
+                let mut new_warnings = Vec::new();
                 match &mut self.cur {
                     CurSec::Rc {
+                        kind,
+                        geom,
                         rebar,
                         rebar_grades,
                         ..
                     } if rebar.is_none() => {
-                        let (r, g) = parse_rebar(a);
-                        *rebar = Some(r);
+                        let (data, g, w) = parse_rc_rebar(*kind, geom.as_ref(), t, a);
+                        *rebar = Some(data);
                         *rebar_grades = g;
+                        new_warnings = w;
                     }
                     CurSec::Src {
+                        kind,
+                        geom,
                         rebar,
                         rebar_grades,
                         ..
                     } if rebar.is_none() => {
-                        let (r, g) = parse_rebar(a);
+                        let (r, g, w) = match kind {
+                            RcKind::Beam => {
+                                let (r, g, w) = parse_beam_rebar(a);
+                                (SrcRebarData::Beam(r), g, w)
+                            }
+                            RcKind::Column => {
+                                let (r, g, w) = parse_rect_column_rebar(a);
+                                (SrcRebarData::Column(r), g, w)
+                            }
+                        };
+                        if geom.is_none() {
+                            new_warnings.push("SRC 配筋は図形未認識のため反映できません".into());
+                        }
+                        new_warnings.extend(w);
                         *rebar = Some(r);
                         *rebar_grades = g;
                     }
                     _ => {}
                 }
+                self.warnings.extend(new_warnings);
             }
             t if t.starts_with("StbSecRoll-")
                 || t.starts_with("StbSecBuild-")
@@ -858,6 +950,7 @@ impl StbParser {
                     file_id,
                     name,
                     floor,
+                    kind,
                     geom,
                     rebar,
                     rebar_grades,
@@ -867,28 +960,52 @@ impl StbParser {
                 {
                     match geom {
                         Some(geom) => {
-                            let mut rebar = rebar.unwrap_or_else(default_rebar);
-                            if rebar.cover == 0.0 {
-                                if let Some(c) = rebar_cover {
-                                    rebar.cover = c;
+                            let shape = match (kind, geom) {
+                                (RcKind::Beam, RcGeom::Rect { b, d }) => {
+                                    let mut r = match rebar {
+                                        Some(RcRebarData::Beam(r)) => r,
+                                        _ => default_beam_rebar(),
+                                    };
+                                    apply_cover(&mut r.cover, rebar_cover);
+                                    Some(SectionShape::RcBeamRect { b, d, rebar: r })
                                 }
-                            }
-                            let shape = match geom {
-                                RcGeom::Rect { b, d } => SectionShape::RcRect { b, d, rebar },
-                                RcGeom::Circle { d } => SectionShape::RcCircle { d, rebar },
+                                (RcKind::Column, RcGeom::Rect { b, d }) => {
+                                    let mut r = match rebar {
+                                        Some(RcRebarData::RectColumn(r)) => r,
+                                        _ => default_rect_column_rebar(),
+                                    };
+                                    apply_cover(&mut r.cover, rebar_cover);
+                                    Some(SectionShape::RcColumnRect { b, d, rebar: r })
+                                }
+                                (RcKind::Column, RcGeom::Circle { d }) => {
+                                    let mut r = match rebar {
+                                        Some(RcRebarData::CircleColumn(r)) => r,
+                                        _ => default_circle_column_rebar(),
+                                    };
+                                    apply_cover(&mut r.cover, rebar_cover);
+                                    Some(SectionShape::RcColumnCircle { d, rebar: r })
+                                }
+                                (RcKind::Beam, RcGeom::Circle { .. }) => {
+                                    self.warnings.push(format!(
+                                        "RC 円形梁 (id={file_id}, name=\"{name}\") は ST-Bridge に円形梁の表現がないため取り込めませんでした"
+                                    ));
+                                    None
+                                }
                             };
-                            self.pending_secs.push(PendingSec {
-                                file_id,
-                                name,
-                                floor,
-                                kind: PendingSecKind::Shape(shape),
-                                mat,
-                                grades: super::SecGrades {
-                                    main_rebar: rebar_grades.main,
-                                    shear_rebar: rebar_grades.shear,
-                                    steel: None,
-                                },
-                            });
+                            if let Some(shape) = shape {
+                                self.pending_secs.push(PendingSec {
+                                    file_id,
+                                    name,
+                                    floor,
+                                    kind: PendingSecKind::Shape(shape),
+                                    mat,
+                                    grades: super::SecGrades {
+                                        main_rebar: rebar_grades.main,
+                                        shear_rebar: rebar_grades.shear,
+                                        steel: None,
+                                    },
+                                });
+                            }
                         }
                         None => self.warnings.push(format!(
                             "RC 断面 (id={file_id}, name=\"{name}\") の図形を認識できず取り込めませんでした（テーパ・ハンチ等は未対応）"
@@ -920,6 +1037,7 @@ impl StbParser {
                     file_id,
                     name,
                     floor,
+                    kind,
                     geom,
                     rebar,
                     rebar_grades,
@@ -931,12 +1049,12 @@ impl StbParser {
                 {
                     match geom {
                         Some((b, d)) => {
-                            let mut rebar = rebar.unwrap_or_else(default_rebar);
-                            if rebar.cover == 0.0 {
-                                if let Some(c) = rebar_cover {
-                                    rebar.cover = c;
-                                }
-                            }
+                            let shape = match (kind, rebar) {
+                                (RcKind::Beam, Some(SrcRebarData::Beam(mut r))) => { apply_cover(&mut r.cover, rebar_cover); SrcRebarData::Beam(r) },
+                                (RcKind::Column, Some(SrcRebarData::Column(mut r))) => { apply_cover(&mut r.cover, rebar_cover); SrcRebarData::Column(r) },
+                                (RcKind::Beam, _) => { let mut r=default_beam_rebar(); apply_cover(&mut r.cover,rebar_cover); SrcRebarData::Beam(r) },
+                                (RcKind::Column, _) => { let mut r=default_rect_column_rebar(); apply_cover(&mut r.cover,rebar_cover); SrcRebarData::Column(r) },
+                            };
                             self.pending_secs.push(PendingSec {
                                 file_id,
                                 name,
@@ -950,7 +1068,7 @@ impl StbParser {
                                 kind: PendingSecKind::SrcRef {
                                     b,
                                     d,
-                                    rebar,
+                                    rebar: shape,
                                     steel_name,
                                 },
                             });
@@ -1089,6 +1207,57 @@ fn end_condition_of(a: &Attrs, keys: &[&str]) -> squid_n_core::model::EndConditi
         }
     }
     EndCondition::Fixed
+}
+
+/// RC 配筋子要素の属性を、断面の種別（梁／柱）と形状（矩形／円形）に応じて解析する。
+/// 形状は子要素名の `Circle`/`Rect` を優先し、判別できなければ図形から決める。
+/// 梁＋円形は梁配筋として読み、断面は閉じる際に未対応として警告する。
+fn parse_rc_rebar(
+    kind: RcKind,
+    geom: Option<&RcGeom>,
+    tag: &str,
+    a: &Attrs,
+) -> (RcRebarData, RebarGrades, Vec<String>) {
+    if rc_is_circle(tag, geom) {
+        if kind == RcKind::Beam {
+            let (r, g, w) = parse_beam_rebar(a);
+            (RcRebarData::Beam(r), g, w)
+        } else {
+            let (r, g, w) = parse_circle_column_rebar(a);
+            (RcRebarData::CircleColumn(r), g, w)
+        }
+    } else {
+        match kind {
+            RcKind::Beam => {
+                let (r, g, w) = parse_beam_rebar(a);
+                (RcRebarData::Beam(r), g, w)
+            }
+            RcKind::Column => {
+                let (r, g, w) = parse_rect_column_rebar(a);
+                (RcRebarData::RectColumn(r), g, w)
+            }
+        }
+    }
+}
+
+/// 配筋子要素が円形断面のものか。要素名の `Circle`/`Rect` を優先し、なければ図形で決める。
+fn rc_is_circle(tag: &str, geom: Option<&RcGeom>) -> bool {
+    if tag.contains("Circle") {
+        return true;
+    }
+    if tag.contains("Rect") {
+        return false;
+    }
+    matches!(geom, Some(RcGeom::Circle { .. }))
+}
+
+/// 配筋コンテナ側のかぶり [mm] を、配筋子要素側のかぶり未入力（0）にだけ補う。
+fn apply_cover(cover: &mut f64, rebar_cover: Option<f64>) {
+    if *cover == 0.0 {
+        if let Some(c) = rebar_cover {
+            *cover = c;
+        }
+    }
 }
 
 /// RC/SRC/CFT 断面のコンクリート材料参照。数値 id（`id_material` 系）を優先し、

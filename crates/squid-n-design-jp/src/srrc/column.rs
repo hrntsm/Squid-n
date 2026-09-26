@@ -6,10 +6,7 @@
 //! モーメントを軸力範囲に応じて 3 分岐で累加する（[`src_column_axis_ma`]）。
 //! せん断は [`super::src_shear_check`] に委譲する。
 
-use super::{
-    bar_set_area, ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props,
-    SrcAxisProps, SrcSeismicCtx,
-};
+use super::{ratio_or_large, src_shear_check, steel_h_props, SrcAxisProps, SrcSeismicCtx};
 use crate::material_strength::{main_rebar_grade, rebar_sigma_y_of};
 use crate::rc::{
     concrete_allowable_compression, concrete_allowable_shear_class, interp_ma,
@@ -19,7 +16,6 @@ use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::Material;
 use squid_n_core::rc_capacity::{rc_column_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::RcRebar;
 
 struct SrcColumnAxis {
     props: SrcAxisProps,
@@ -160,14 +156,22 @@ fn src_column_axis_ma(
 }
 
 /// SRC 柱の断面検定（軸力+二軸曲げ+二方向せん断、SRC 規準 1987 累加強度式）。
+///
+/// `props_z`・`props_y` は強軸・弱軸の RC 部分諸元、`at_perp_z`・`at_perp_y` は
+/// 直交方向の主筋総断面積、`as_total` は全主筋断面積。`main_dia_z`・`main_dia_y`
+/// は各軸の主筋径。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn src_column_check(
     forces: &MemberForcesAt,
     mat: &Material,
     ctx: &DesignCtx,
-    b: f64,
-    d_full: f64,
-    rebar: &RcRebar,
+    props_z: SrcAxisProps,
+    props_y: SrcAxisProps,
+    at_perp_z: f64,
+    at_perp_y: f64,
+    as_total: f64,
+    main_dia_z: f64,
+    main_dia_y: f64,
     steel_height: f64,
     steel_width: f64,
     steel_web_thick: f64,
@@ -199,19 +203,14 @@ pub(crate) fn src_column_check(
         steel_flange_thick,
     );
 
-    let s_pc = (steel_width * steel_flange_thick) / (b * d_full).max(1e-9);
+    let s_pc = (steel_width * steel_flange_thick) / (props_z.b * props_z.d_full).max(1e-9);
     let fc_prime = (fc_allow * (1.0 - 15.0 * s_pc)).max(0.0);
 
-    let ft_z = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
-    let ft_y = rebar_allowable_tension(grade, rebar.main_y.dia, long_term);
-    let ft_axial =
-        rebar_allowable_tension(grade, rebar.main_x.dia.max(rebar.main_y.dia), long_term);
+    let ft_z = rebar_allowable_tension(grade, main_dia_z, long_term);
+    let ft_y = rebar_allowable_tension(grade, main_dia_y, long_term);
+    let ft_axial = rebar_allowable_tension(grade, main_dia_z.max(main_dia_y), long_term);
 
-    let as_x = bar_set_area(&rebar.main_x);
-    let as_y = bar_set_area(&rebar.main_y);
-    let as_total = as_x + as_y;
-
-    let ae = b * d_full + (n_ratio - 1.0) * as_total;
+    let ae = props_z.b * props_z.d_full + (n_ratio - 1.0) * as_total;
     let rnc1 = ae * fc_prime;
     let rnc2 = ae * ft_axial / n_ratio;
     let rnc = rnc1.min(rnc2).max(0.0);
@@ -220,17 +219,14 @@ pub(crate) fn src_column_check(
     let s_nc = sa * s_fc;
     let s_nt = sa * s_ft;
 
-    let props_z = src_rect_axis_props(b, d_full, &rebar.main_x, rebar);
-    let props_y = src_rect_axis_props(d_full, b, &rebar.main_y, rebar);
-
     let axis_z = SrcColumnAxis {
         props: props_z,
-        at_perp: as_y,
+        at_perp: at_perp_z,
         ft: ft_z,
     };
     let axis_y = SrcColumnAxis {
         props: props_y,
-        at_perp: as_x,
+        at_perp: at_perp_y,
         ft: ft_y,
     };
 
@@ -292,7 +288,6 @@ pub(crate) fn src_column_check(
         n_design,
     );
 
-    let n_ratio = young_ratio_n(fc_raw);
     let sd_flange = (steel_height - steel_flange_thick).max(0.0);
     let beta_z = if props_z.b * props_z.j > 1e-9 {
         n_ratio * steel_web_thick * sd_flange / (props_z.b * props_z.j)
@@ -306,7 +301,7 @@ pub(crate) fn src_column_check(
     };
 
     let (m_alpha_z, q_alpha_z) = ctx.shear_span.unwrap_or((forces.mz.abs(), forces.qy.abs()));
-    let b_prime_z = (b - steel_width).max(0.0);
+    let b_prime_z = (props_z.b - steel_width).max(0.0);
     let seismic_z = SrcSeismicCtx {
         ctx,
         pos: forces.pos,
@@ -337,7 +332,7 @@ pub(crate) fn src_column_check(
     let (m_alpha_y, q_alpha_y) = ctx
         .shear_span_y
         .unwrap_or((forces.my.abs(), forces.qz.abs()));
-    let b_prime_y = (d_full - steel_height).max(0.0);
+    let b_prime_y = (props_z.d_full - steel_height).max(0.0);
     let seismic_y = SrcSeismicCtx {
         ctx,
         pos: forces.pos,
@@ -410,6 +405,7 @@ pub(crate) fn src_column_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::srrc::column_axis_props;
     use crate::srrc::src_seismic_qd;
     use crate::srrc::tests::{
         ctx_column, make_material, make_section, src_column_shape, src_rect_shape, zero_forces,
@@ -603,11 +599,11 @@ mod tests {
 
         let shape = src_column_shape();
         let rebar = match &shape {
-            SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+            SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
             _ => unreachable!(),
         };
-        let props_z = src_rect_axis_props(500.0, 500.0, &rebar.main_x, &rebar);
-        let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
+        let props_z = column_axis_props(500.0, 500.0, &rebar, true);
+        let as_total = rebar.total_main_area();
         // σy は断面の主筋材料から決まる（検定コンテキストと同じ材料を使う）。
         let rebar_mat = crate::srrc::tests::make_rebar_material("SD345", 345.0);
         let sigma_y = rebar_sigma_y_of(Some(&rebar_mat));

@@ -5,7 +5,9 @@ use crate::{LoadTerm, SeismicQd};
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::model::MaterialCategory;
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::{
+    BeamStirrup, RcBeamRebar, RcRectColumnRebar, RectColumnHoop, SectionShape,
+};
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
     Material {
@@ -55,25 +57,19 @@ pub(crate) fn src_rect_shape(
     steel_web_thick: f64,
     steel_flange_thick: f64,
 ) -> SectionShape {
-    SectionShape::SrcRect {
+    SectionShape::SrcColumnRect {
         b,
         d,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
-            main_y: BarSet {
-                count: main_count,
-                dia: main_dia,
-                layers: main_layers,
-            },
+        rebar: RcRectColumnRebar {
+            main_dia,
+            x: vec![main_count / 2; main_layers as usize],
+            y: vec![main_count / 2; main_layers as usize],
             cover,
-            shear: ShearBar {
+            hoop: RectColumnHoop {
                 dia: shear_dia,
                 pitch: shear_pitch,
-                legs: shear_legs,
+                legs_x: shear_legs,
+                legs_y: shear_legs,
             },
         },
         steel_height,
@@ -88,6 +84,84 @@ pub(crate) fn src_column_shape() -> SectionShape {
     src_rect_shape(
         500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 200.0, 9.0, 14.0,
     )
+}
+
+/// 実配筋 SRC 梁のテスト断面（RC 部分は [`RcBeamRebar`]）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn src_beam_rect_shape(
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    top: Vec<u32>,
+    bottom: Vec<u32>,
+    cover: f64,
+    shear_dia: f64,
+    shear_pitch: f64,
+    shear_legs: u32,
+    steel_height: f64,
+    steel_width: f64,
+    steel_web_thick: f64,
+    steel_flange_thick: f64,
+) -> SectionShape {
+    SectionShape::SrcBeamRect {
+        b,
+        d,
+        rebar: RcBeamRebar {
+            main_dia,
+            top,
+            bottom,
+            cover,
+            stirrup: BeamStirrup {
+                dia: shear_dia,
+                pitch: shear_pitch,
+                legs: shear_legs,
+            },
+        },
+        steel_height,
+        steel_width,
+        steel_web_thick,
+        steel_flange_thick,
+    }
+}
+
+/// 実配筋 SRC 矩形柱のテスト断面（RC 部分は [`RcRectColumnRebar`]）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn src_column_rect_shape(
+    b: f64,
+    d: f64,
+    main_dia: f64,
+    x: Vec<u32>,
+    y: Vec<u32>,
+    cover: f64,
+    hoop_dia: f64,
+    hoop_pitch: f64,
+    legs_x: u32,
+    legs_y: u32,
+    steel_height: f64,
+    steel_width: f64,
+    steel_web_thick: f64,
+    steel_flange_thick: f64,
+) -> SectionShape {
+    SectionShape::SrcColumnRect {
+        b,
+        d,
+        rebar: RcRectColumnRebar {
+            main_dia,
+            x,
+            y,
+            cover,
+            hoop: RectColumnHoop {
+                dia: hoop_dia,
+                pitch: hoop_pitch,
+                legs_x,
+                legs_y,
+            },
+        },
+        steel_height,
+        steel_width,
+        steel_web_thick,
+        steel_flange_thick,
+    }
 }
 
 pub(crate) fn make_section(shape: SectionShape) -> Section {
@@ -172,14 +246,26 @@ pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
 
 #[test]
 fn test_src_beam_shear_split_handcalc() {
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
 
     let q = 200_000.0;
@@ -228,14 +314,26 @@ fn test_src_beam_shear_split_handcalc() {
 fn test_src_shear_pw_capped_at_0_6_percent_both_terms() {
     // 過大なせん断補強筋比（pw > 0.6%）を与え、算定に使われる pw が
     // 0.6% に頭打ちされることを確認する。
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 30.0, 4, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        13.0,
+        30.0,
+        4,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     assert!(props.pw > 0.006, "テストの前提として pw > 0.6% が必要");
 
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
@@ -291,10 +389,10 @@ fn test_src_column_short_rc_allowable_has_no_alpha() {
         400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = column_axis_props(400.0, 700.0, &rebar, true);
     let fs = concrete_allowable_shear(24.0, false);
     let w_ft = rebar_allowable_shear("SD345", false);
     let ctx = ctx_column(LoadTerm::Short);
@@ -346,10 +444,10 @@ fn test_src_column_long_combined_formula() {
         400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcColumnRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = column_axis_props(400.0, 700.0, &rebar, true);
     let fs = concrete_allowable_shear(24.0, true);
     let ctx = ctx_column(LoadTerm::Long);
     let seismic = SrcSeismicCtx {
@@ -510,14 +608,26 @@ fn test_src_supported_shear_rebar_fy_missing_skip() {
 #[test]
 fn test_src_beam_seismic_qd2_handcalc() {
     use crate::QdMethod;
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
@@ -597,14 +707,26 @@ fn test_src_beam_seismic_qd2_handcalc() {
 #[test]
 fn test_src_beam_seismic_qd1_handcalc() {
     use crate::QdMethod;
-    let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![6, 2],
+        vec![6, 2],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
     );
     let rebar = match &shape {
-        SectionShape::SrcRect { rebar, .. } => rebar.clone(),
+        SectionShape::SrcBeamRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
     };
-    let props = src_rect_axis_props(400.0, 700.0, &rebar.main_x, &rebar);
+    let props = beam_axis_props(400.0, 700.0, &rebar, false);
     let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
     let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
@@ -683,4 +805,205 @@ fn test_src_beam_seismic_qd1_handcalc() {
         shear.r_q,
         r_qd1_expected
     );
+}
+
+// ------------------------------------------------------------------
+// 実配筋モデル（SrcBeamRect / SrcColumnRect）の SRC 検定
+// ------------------------------------------------------------------
+
+/// 実配筋 SRC 梁で許容応力度検定が動き、鉄骨 sMo に RC 部分 rMA が累加される
+/// （MA > sMo）。
+#[test]
+fn test_src_beam_rect_check_accumulates_steel_and_rc() {
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![3],
+        vec![3],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
+    );
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_beam(LoadTerm::Long);
+
+    // mz>0 は下端引張。
+    let forces = MemberForcesAt {
+        mz: 1.0,
+        ..zero_forces()
+    };
+    let r = SrcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(
+        r.ratio().is_finite() && r.ratio() > 0.0,
+        "ratio={}",
+        r.ratio()
+    );
+
+    let ma = 1.0 / r.ratio();
+    let (_sa, sz, _) = steel_h_props(500.0, 200.0, 9.0, 14.0);
+    let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
+    let s_mo = sz * steel_ft(f_value, LoadTerm::Long);
+    assert!(
+        ma > s_mo * 1.0001,
+        "RC 部分の累加で MA > sMo のはず: ma={ma}, sMo={s_mo}"
+    );
+}
+
+/// 実配筋 SRC 柱で許容応力度検定が動き、鉄骨 sMo に RC 部分の曲げ耐力が
+/// 累加される（N=0 の MA_z > sMo）。
+#[test]
+fn test_src_column_rect_check_accumulates_steel_and_rc() {
+    let shape = src_column_rect_shape(
+        500.0,
+        500.0,
+        22.0,
+        vec![4],
+        vec![4],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        2,
+        300.0,
+        200.0,
+        9.0,
+        14.0,
+    );
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let ctx = ctx_column(LoadTerm::Long);
+
+    let forces = MemberForcesAt {
+        mz: 1.0,
+        ..zero_forces()
+    };
+    let r = SrcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(
+        r.ratio().is_finite() && r.ratio() > 0.0,
+        "ratio={}",
+        r.ratio()
+    );
+
+    let ma_z = 1.0 / r.ratio();
+    let (_sa, sz_z, _) = steel_h_props(300.0, 200.0, 9.0, 14.0);
+    let f_value = steel_f_value_prefix("SN400B", 14.0).unwrap();
+    let s_mo = sz_z * steel_ft(f_value, LoadTerm::Long);
+    assert!(
+        ma_z >= s_mo * 0.99,
+        "RC 部分の累加で MA_z >= sMo のはず: ma_z={ma_z}, sMo={s_mo}"
+    );
+}
+
+/// 実配筋 SRC 梁で地震時短期の構造規定方式（終局曲げ rMu を含む）が動き、
+/// 設計用せん断力が弾性分担ではなく構造規定方式で算定される。
+#[test]
+fn test_src_beam_rect_seismic_qd_uses_ultimate_moment() {
+    use crate::QdMethod;
+    let shape = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![3],
+        vec![3],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
+    );
+    let sec = make_section(shape);
+    let mat = make_material(24.0, "SD345");
+    let ctx = DesignCtx {
+        seismic_qd: Some(SeismicQd {
+            long_at: vec![(0.0, [0.0, 50_000.0, 0.0, 0.0, 0.0, 0.0])],
+            n_factor: 1.5,
+            n_mechanism: 1.0,
+            q_simple: None,
+            clear_length: 4000.0,
+            method: QdMethod::Qd1,
+        }),
+        ..ctx_beam(LoadTerm::Short)
+    };
+    let forces = MemberForcesAt {
+        qy: 200_000.0,
+        ..zero_forces()
+    };
+    let r = SrcDesign.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    let shear = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::Shear)
+        .expect("せん断成分があるはず");
+    assert!(
+        shear.detail.contains("構造規定方式"),
+        "終局 rMu を含む構造規定方式が使われるはず: {}",
+        shear.detail
+    );
+}
+
+/// 実配筋 SRC 柱・梁の未入力配筋は検定不能（Skipped）とし、panic しない。
+#[test]
+fn test_src_new_types_unset_rebar_skip() {
+    let beam = src_beam_rect_shape(
+        400.0,
+        700.0,
+        22.0,
+        vec![],
+        vec![],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        500.0,
+        200.0,
+        9.0,
+        14.0,
+    );
+    let col = src_column_rect_shape(
+        500.0,
+        500.0,
+        22.0,
+        vec![],
+        vec![],
+        40.0,
+        10.0,
+        100.0,
+        2,
+        2,
+        300.0,
+        200.0,
+        9.0,
+        14.0,
+    );
+    let mat = make_material(24.0, "SD345");
+    let beam_out = SrcDesign.check(
+        &zero_forces(),
+        &make_section(beam),
+        &mat,
+        &ctx_beam(LoadTerm::Long),
+    );
+    let col_out = SrcDesign.check(
+        &zero_forces(),
+        &make_section(col),
+        &mat,
+        &ctx_column(LoadTerm::Long),
+    );
+    match beam_out {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("配筋"), "{reason}"),
+        CheckOutcome::Checked(_) => panic!("未入力梁配筋は Skipped のはず"),
+    }
+    match col_out {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("配筋"), "{reason}"),
+        CheckOutcome::Checked(_) => panic!("未入力柱配筋は Skipped のはず"),
+    }
 }

@@ -70,7 +70,10 @@ impl BeamElement {
 
         let a_stiff = match (&composite, &sec.shape) {
             (Some(p), _) => p.area_ax,
-            (None, Some(shape @ SectionShape::SrcRect { .. })) => shape.calc_axial_stiffness_area(),
+            (None, Some(shape @ SectionShape::SrcBeamRect { .. }))
+            | (None, Some(shape @ SectionShape::SrcColumnRect { .. })) => {
+                shape.calc_axial_stiffness_area()
+            }
             _ => sec.area,
         };
         let (sec_iy, sec_iz, j, sec_as_y, sec_as_z) = match &composite {

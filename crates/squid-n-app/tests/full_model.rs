@@ -850,12 +850,33 @@ fn design_check_covers_every_member() {
     assert!(!results.slab_checks.is_empty(), "スラブの検定結果が空");
 
     let mut checked = 0usize;
+    let mut skipped = 0usize;
+    let mut rc_src_positions = 0usize;
+    let mut rc_src_checked = 0usize;
     for mc in &results.member_checks {
         assert!(
             !mc.positions.is_empty(),
             "部材 {:?} の検定位置が空",
             mc.elem
         );
+        let is_rc_src = app
+            .core
+            .model
+            .elements
+            .get(mc.elem.index())
+            .and_then(|e| e.section)
+            .and_then(|sid| app.core.model.sections.get(sid.index()))
+            .and_then(|sec| sec.shape.as_ref())
+            .is_some_and(|shape| {
+                matches!(
+                    shape,
+                    squid_n_core::section_shape::SectionShape::RcBeamRect { .. }
+                        | squid_n_core::section_shape::SectionShape::RcColumnRect { .. }
+                        | squid_n_core::section_shape::SectionShape::RcColumnCircle { .. }
+                        | squid_n_core::section_shape::SectionShape::SrcBeamRect { .. }
+                        | squid_n_core::section_shape::SectionShape::SrcColumnRect { .. }
+                )
+            });
         for p in &mc.positions {
             if let squid_n_design_jp::CheckOutcome::Checked(r) = &p.outcome {
                 let ratio = r.ratio();
@@ -866,10 +887,35 @@ fn design_check_covers_every_member() {
                     p.xi
                 );
                 checked += 1;
+                if is_rc_src {
+                    rc_src_checked += 1;
+                }
+            } else if let squid_n_design_jp::CheckOutcome::Skipped { reason } = &p.outcome {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "Skipped の理由が空: 部材 {:?} 位置 {}",
+                    mc.elem,
+                    p.xi
+                );
+                skipped += 1;
+            }
+            if is_rc_src {
+                rc_src_positions += 1;
             }
         }
     }
     assert!(checked > 0, "検定が 1 件も実施されていない（全件 Skipped）");
+    assert_eq!(skipped, 0, "Skipped がある（全位置 Checked のはず）");
+    assert_eq!(checked, 345, "Checked 位置数");
+    assert!(
+        rc_src_positions > 0,
+        "RC/SRC 部材の検定位置がない（フィクスチャに RC 部材があるはず）"
+    );
+    assert_eq!(
+        rc_src_checked, rc_src_positions,
+        "RC/SRC 部材に Skipped がある"
+    );
+    eprintln!("full_model member check positions: Checked={checked}, Skipped={skipped}");
 }
 
 // ===================== 8. 二次設計（層指標） =====================
@@ -1698,6 +1744,28 @@ fn snapshot_key_scalars() {
         })
         .fold(0.0_f64, f64::max);
     line("design.max_ratio", sig4(max_ratio));
+    let (checked_positions, skipped_positions) = results
+        .member_checks
+        .iter()
+        .flat_map(|mc| mc.positions.iter())
+        .fold((0usize, 0usize), |(checked, skipped), p| match &p.outcome {
+            squid_n_design_jp::CheckOutcome::Checked(_) => (checked + 1, skipped),
+            squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "Skipped の理由が空: 位置 {}",
+                    p.xi
+                );
+                (checked, skipped + 1)
+            }
+        });
+    assert_eq!(
+        skipped_positions, 0,
+        "Skipped がある（全位置 Checked のはず）"
+    );
+    assert_eq!(checked_positions, 345, "Checked 位置数");
+    line("design.checked_positions", checked_positions.to_string());
+    line("design.skipped_positions", skipped_positions.to_string());
     // 小梁の最大検定比。件数だけでは「どのスラブで検定したか」の変化を捉えられないため、
     // 値そのものも固定する（負担幅・床荷重強度の取り違えはここに現れる）。
     let joist_max_ratio = results
