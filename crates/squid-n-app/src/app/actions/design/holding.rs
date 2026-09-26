@@ -516,6 +516,12 @@ fn rank_new_rc_column_rect(
             (d, b, RectEdge::Left, rebar.aw_y_mm2(), rebar.hoop.legs_y)
         };
         let steel = rebar.edge_steel(edge, b, d);
+        let pitch = rebar.hoop.pitch;
+        let pw = if bd <= 0.0 || pitch <= 0.0 {
+            0.0
+        } else {
+            aw / (bd * pitch)
+        };
         let input = RcCapacityInput {
             b: bd,
             d: dd,
@@ -523,7 +529,7 @@ fn rank_new_rc_column_rect(
             d_eff: steel.effective_depth_mm,
             sigma_y,
             fc,
-            pw: aw / (bd * rebar.hoop.pitch),
+            pw,
             sigma_wy,
             clear_span,
             sigma_0: response.axial / (b * d),
@@ -1115,6 +1121,78 @@ mod tests {
             .unwrap(),
             expected_rank,
         );
+    }
+
+    #[test]
+    fn 新型_rc矩形柱は帯筋ピッチ非正でpwゼロとしてランク付けする() {
+        use squid_n_core::rc_capacity::{rc_column_mu_simple, rc_qsu_simple, RcCapacityInput};
+        use squid_n_core::rc_rebar_geom::RectEdge;
+        use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+        use squid_n_design_jp::secondary::ds_group::rc_column_type;
+
+        let (mat, main_steel, shear_steel, response) = rank_input();
+        let base = RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![3],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 3,
+            },
+        };
+        let ag = base.total_main_area();
+        let expected_zero_pw = |strong: bool| {
+            let (bd, dd, edge, shear) = if strong {
+                (400.0, 600.0, RectEdge::Top, response.shear_strong)
+            } else {
+                (600.0, 400.0, RectEdge::Left, response.shear_weak)
+            };
+            let steel = base.edge_steel(edge, 400.0, 600.0);
+            let input = RcCapacityInput {
+                b: bd,
+                d: dd,
+                at: steel.area_mm2,
+                d_eff: steel.effective_depth_mm,
+                sigma_y: 345.0,
+                fc: 24.0,
+                pw: 0.0,
+                sigma_wy: 295.0,
+                clear_span: 3000.0,
+                sigma_0: response.axial / (400.0 * 600.0),
+            };
+            let qmu = 2.0 * rc_column_mu_simple(&input, ag, response.axial) / 3000.0;
+            let qsu = rc_qsu_simple(&input);
+            assert!(qmu.is_finite() && qsu.is_finite());
+            rc_column_type(
+                3000.0 / dd,
+                response.axial / (400.0 * 600.0 * 24.0),
+                100.0 * input.at / (bd * input.d_eff),
+                (shear.abs() / bd) / 24.0,
+                qsu < qmu,
+            )
+        };
+        let expected = worst_rank(&[expected_zero_pw(true), expected_zero_pw(false)]).unwrap();
+        for pitch in [0.0, -50.0] {
+            let mut rebar = base.clone();
+            rebar.hoop.pitch = pitch;
+            let rank = rank_new_rc_column_rect(
+                ElemId(3),
+                squid_n_core::ids::SectionId(4),
+                400.0,
+                600.0,
+                &rebar,
+                &mat,
+                Some(&main_steel),
+                Some(&shear_steel),
+                &response,
+                3000.0,
+            )
+            .unwrap();
+            assert_eq!(rank, expected, "pitch={pitch}");
+        }
     }
 
     #[test]
