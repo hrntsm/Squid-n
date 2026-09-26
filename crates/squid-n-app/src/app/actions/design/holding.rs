@@ -132,8 +132,11 @@ impl App {
                             matches!(
                                 section.shape,
                                 Some(
-                                    SectionShape::RcColumnRect { .. }
+                                    SectionShape::RcBeamRect { .. }
+                                        | SectionShape::RcColumnRect { .. }
                                         | SectionShape::RcColumnCircle { .. }
+                                        | SectionShape::SrcBeamRect { .. }
+                                        | SectionShape::SrcColumnRect { .. }
                                 )
                             )
                         })
@@ -196,24 +199,39 @@ impl App {
                         continue;
                     }
                     let Some(fc) = mat.fc.filter(|f| *f > 0.0) else {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: Fc が未設定または 0 以下です",
+                            elem.id, sec.id
+                        ));
                     };
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: 増分解析応答がありません",
+                            elem.id, sec.id
+                        ));
                     };
                     let shape = sec.shape.as_ref().expect("SRC 矩形柱と判定済み");
                     if shape.beam_rebar().is_none() && shape.rect_column_rebar().is_none() {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: 配筋が未設定です",
+                            elem.id, sec.id
+                        ));
                     }
                     let Some(rebar_sy) =
                         squid_n_core::material_grade::rebar_yield_strength(rebar_mat).or(mat.fy)
                     else {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: 主筋の降伏強度を解決できません",
+                            elem.id, sec.id
+                        ));
                     };
                     let Some((n_n0, smo_m0)) =
                         src_column_rank_ratios(shape, &steel_grade, fc, rebar_sy, resp.axial)
                     else {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: SRC 柱のランク判定比を算定できません",
+                            elem.id, sec.id
+                        ));
                     };
                     src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
@@ -278,7 +296,10 @@ impl App {
                         ));
                     }
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
-                        continue;
+                        return Err(format!(
+                            "部材 {:?}・断面 {:?}: 増分解析応答がありません",
+                            elem.id, sec.id
+                        ));
                     };
                     let geom_len = model.member_length(elem);
                     let face_sum =
