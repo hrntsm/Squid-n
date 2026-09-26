@@ -422,6 +422,42 @@ fn test_issue_when_member_material_is_rebar() {
     assert!(issues[0].contains("区分が鉄筋"), "{}", issues[0]);
 }
 
+/// 実配筋の幾何が不整合な部材は非線形解析の冒頭で止める。
+/// 不整合を鋼材相当の My・せん断耐力へフォールバックさせない。
+#[test]
+fn test_issue_when_rebar_geometry_is_invalid() {
+    use squid_n_core::section_shape::{RcRectColumnRebar, RectColumnHoop};
+
+    let mut sec = SectionShape::RcColumnRect {
+        b: 400.0,
+        d: 600.0,
+        rebar: RcRectColumnRebar {
+            main_dia: 22.0,
+            x: vec![4, 2],
+            y: vec![3],
+            cover: 40.0,
+            hoop: RectColumnHoop {
+                dia: 10.0,
+                pitch: 100.0,
+                legs_x: 2,
+                legs_y: 2,
+            },
+        },
+    }
+    .to_section(SectionId(0), "C1".into());
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(1));
+    assert!(sec
+        .shape
+        .as_ref()
+        .is_some_and(|s| s.validate_rebar().is_err()));
+    let model = beam_model(sec, concrete_material());
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("幾何が不整合"), "{}", issues[0]);
+    assert!(ensure_nonlinear_input(&model).is_err());
+}
+
 /// 複数件の不備はメッセージへ 5 件まで列挙し、残りは件数で示す。
 #[test]
 fn test_error_message_lists_head_and_remaining_count() {

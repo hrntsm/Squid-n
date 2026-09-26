@@ -131,6 +131,18 @@ pub(crate) fn member_strength_issue(data: &ElementData, model: &Model) -> Option
     if let Some(msg) = category_mismatch_issue(data, sec, mat) {
         return Some(msg);
     }
+    if let Some(shape) = sec.and_then(|s| s.shape.as_ref()) {
+        if let Err(err) = shape.validate_rebar() {
+            return Some(format!(
+                "部材 ID {} の断面「{}」は実配筋の幾何が不整合です（{}）。\
+                 断面タブで段別本数・かぶり・断面寸法を見直してください。\
+                 非線形解析では実配筋から曲げ降伏・せん断終局の各耐力を算定するため解析を開始できません。",
+                data.id.0,
+                sec.map(|s| s.name.as_str()).unwrap_or("名称未設定"),
+                err
+            ));
+        }
+    }
     let is_concrete = sec
         .and_then(|s| s.shape.as_ref())
         .is_some_and(|s| s.is_concrete_like());
