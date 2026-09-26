@@ -626,6 +626,38 @@ fn test_slab_stiffness_factor_only_for_enclosed_plated_slabs() {
     );
 }
 
+/// SRC 梁はスラブ協力幅の対象外で倍率 1.0（RC 矩形梁のみ増大）。
+///
+/// 版あり床板が取り付いても増大しないことを固定する。
+#[test]
+fn test_src_beam_slab_stiffness_falls_back_to_one() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    let (mut m_plated, e) = rc_beam_for_slab_factor(Some(squid_n_core::model::SlabPlate {
+        section: Some(SectionId(1)),
+        ..Default::default()
+    }));
+    let Some(SectionShape::RcBeamRect { b, d, rebar }) = m_plated.sections[0].shape.clone() else {
+        panic!("RC 矩形梁のはず");
+    };
+    m_plated.sections[0].shape = Some(SectionShape::SrcBeamRect {
+        b,
+        d,
+        rebar,
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 9.0,
+        steel_flange_thick: 12.0,
+    });
+    let got = stiffness_breakdown(&m_plated, &e);
+    assert!(
+        (got.slab - 1.0).abs() < 1e-12,
+        "SRC 梁のスラブ協力幅は 1.0、got {}",
+        got.slab
+    );
+}
+
 /// S 造合成梁の剛性（スラブ考慮換算断面と鉄骨単独の平均。計算編 02「合成梁の
 /// 断面性能」）。
 #[test]
