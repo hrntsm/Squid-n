@@ -314,7 +314,7 @@ impl DesignCheck for SrcDesign {
             Some(s @ (SectionShape::SrcBeamRect { .. } | SectionShape::SrcColumnRect { .. })) => s,
             _ => {
                 return CheckOutcome::Skipped {
-                    reason: "SRC検定: 断面形状不一致（Section.shape が SrcRect/SrcBeamRect/\
+                    reason: "SRC検定: 断面形状不一致（Section.shape が SrcBeamRect/\
                              SrcColumnRect ではありません）"
                         .to_string(),
                 };

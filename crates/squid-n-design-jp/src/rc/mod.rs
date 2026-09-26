@@ -86,7 +86,7 @@ impl DesignCheck for RcDesign {
             _ => {
                 return CheckOutcome::Skipped {
                     reason: "RC 検定: 配筋情報なし\
-                             （Section.shape が RcRect/RcCircle/RcBeamRect/\
+                             （Section.shape が RcBeamRect/\
                              RcColumnRect/RcColumnCircle ではありません）"
                         .to_string(),
                 };

@@ -99,7 +99,7 @@ fn aligns_exclusively(
     s > sp + 1e-12 || ((s - sp).abs() <= 1e-12 && prefer_on_tie)
 }
 
-/// 梁の略算降伏モーメント。上下の大きい方（安全側。柱 QD1 の過小を避ける）を用いる。
+/// 梁の略算降伏モーメント。上下の大きい方を用いる。
 fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
     let sec = elem
         .section

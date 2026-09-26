@@ -138,7 +138,7 @@ fn stage_counts(a: &Attrs, prefixes: &[&str]) -> Vec<u32> {
     found.into_iter().map(|(_, x)| x).collect()
 }
 
-/// 段別属性のない旧形式の合算本数を 1 段として扱う（見つからなければ空）。
+/// 段別属性のない合算本数を 1 段として扱う（見つからなければ空）。
 fn total_as_stage(a: &Attrs, keys: &[&str]) -> Vec<u32> {
     for k in keys {
         if let Some(x) = a.get(k).and_then(|v| v.parse::<u32>().ok()) {
@@ -336,7 +336,7 @@ pub(super) fn parse_rect_column_rebar(a: &Attrs) -> (RcRectColumnRebar, RebarGra
 }
 
 /// `StbSecBarColumn_RC_Circle*` から円形柱の実配筋を復元する。主筋は全本数
-/// （円周上へ等配）として `N_main` を優先し、旧形式の `N_main_X_*` も受ける。
+/// （円周上へ等配）として `N_main` を優先し、`N_main_X_*` も受ける。
 /// 段数が 3 を超える・主筋径が混在する・独自の段間隔属性がある場合は警告を返す。
 pub(super) fn parse_circle_column_rebar(
     a: &Attrs,
@@ -367,7 +367,7 @@ pub(super) fn parse_circle_column_rebar(
     (rebar, parse_grades(a), warnings)
 }
 
-/// 円形柱の主筋全本数。`N_main` を優先し、なければ `N_main_X_*`（旧形式）を合算する。
+/// 円形柱の主筋全本数。`N_main` を優先し、なければ `N_main_X_*` を合算する。
 fn circle_main_count(a: &Attrs) -> u32 {
     if let Some(x) = a.get("N_main").and_then(|v| v.parse::<u32>().ok()) {
         return x;

@@ -57,7 +57,7 @@ pub(crate) fn axis_props_from_shape(
     })
 }
 
-/// 構造規定・付着検定が必要とする鉄筋情報（旧 RcRebar 経路と新実モデルの共通化）。
+/// 構造規定・付着検定が必要とする鉄筋情報（中立型）。
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RcRebarInfo {
@@ -84,7 +84,7 @@ pub(crate) struct RcRebarInfo {
 }
 
 /// 断面形状から鉄筋情報を返す。`tension_is_top` は梁の引張側（付着・段数）。
-/// 旧 RcRect / RcCircle / RcBeamRect / RcColumnRect / RcColumnCircle を対象とし、
+/// `RcBeamRect`・`RcColumnRect`・`RcColumnCircle` を対象とし、
 /// 対象外・未入力・実配筋を生成できない配筋は None。
 pub(crate) fn rebar_info_from_shape(
     shape: &SectionShape,

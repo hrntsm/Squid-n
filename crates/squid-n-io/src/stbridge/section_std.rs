@@ -605,7 +605,7 @@ fn cover_attr_column(cover: f64) -> String {
 }
 
 /// RC 柱断面の配筋 `StbSecBarArrangementColumn_RC`（矩形/円形）。配筋のない形状は空文字。
-/// 旧型は 1 段、実配筋型は段別本数を書き出す（4 段目以降は警告を返して切り捨てる）。
+/// 段別本数を書き出す（4 段目以降は警告を返して切り捨てる）。
 fn rebar_arrangement_column(
     shape: &SectionShape,
     grades: BarGrades<'_>,
@@ -638,7 +638,7 @@ fn rebar_arrangement_column(
 }
 
 /// RC 梁断面の配筋 `StbSecBarArrangementBeam_RC`（矩形）。配筋のない形状は空文字。
-/// 旧型は 1 段、実配筋型は上端筋・下端筋の段別本数を書き出す（4 段目以降は警告を返す）。
+/// 上端筋・下端筋の段別本数を書き出す（4 段目以降は警告を返す）。
 fn rebar_arrangement_beam(
     shape: &SectionShape,
     grades: BarGrades<'_>,
